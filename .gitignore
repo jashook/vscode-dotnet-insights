@@ -443,4 +443,4 @@ $RECYCLE.BIN/
 
 package-lock.json
 
-out/*
+*/out/*
