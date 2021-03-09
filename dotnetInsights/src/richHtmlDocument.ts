@@ -12,6 +12,22 @@ class Token {
     }
 }
 
+class UnprocessedToken {
+    literal: boolean;
+    stringLiteral: boolean;
+    keyword: boolean;
+
+    value: string;
+
+    constructor(value: string) {
+        this.literal = false;
+        this.stringLiteral = false;
+        this.keyword = false;
+
+        this.value = value;
+    }
+}
+
 class TokenList {
     head: Token;
     tail: Token;
@@ -44,8 +60,12 @@ class TokenList {
         return this.unProcessedTokens;
     }
 
-    processToken(token: Token, replacement?: string[]) {
-        if (replacement == undefined) {
+    popUnprocessedToken(): Token | undefined {
+        return this.unProcessedTokens.pop();
+    }
+
+    processToken(token: Token, replacements?: UnprocessedToken[]) {
+        if (replacements == undefined) {
             // No action
             return;
         }
@@ -66,8 +86,15 @@ class TokenList {
             // if this is the first token in the list, then we do not need to splice
             if (previousToken != undefined) {
                 var movingToken = previousToken;
-                for (var index = 0; index < replacement.length; ++index) {
-                    movingToken.nextToken = new Token(replacement[index], movingToken);
+                for (var index = 0; index < replacements.length; ++index) {
+                    movingToken.nextToken = new Token(replacements[index].value, movingToken);
+
+                    if (replacements[index].keyword == false ||
+                        replacements[index].literal == false || 
+                        replacements[index].stringLiteral == false) {
+                        this.unProcessedTokens.push(movingToken.nextToken);
+                    }
+
                     movingToken = movingToken.nextToken;
                 }
 
@@ -97,7 +124,7 @@ export class RichHtmlDocument {
         this.lines.forEach((line) => {
             var lineNode = new Node("div");
             
-            var tokens = this.splitOutStringLiterals(line);
+            var tokens = this.splitOutComments(line);
 
             var processed: boolean = tokens[0][0] == "\"" || tokens[0][0] == "\'";
 
@@ -111,7 +138,6 @@ export class RichHtmlDocument {
                 var nextUnprocessedToken = tokenList.getUnprocessedTokens()[0];
 
                 var replacements = this.process(nextUnprocessedToken);
-
                 tokenList.processToken(nextUnprocessedToken, replacements);
             }
 
@@ -120,8 +146,17 @@ export class RichHtmlDocument {
         });
     }
 
-    private process(token: Token): string[] {
+    private process(token: Token): UnprocessedToken[] {
         return [];
+    }
+
+    private splitOutComments(line: string) {
+        var tokens = [] as string[];
+
+        var foundComment = false;
+
+        tokens = line.split("//");
+        return tokens;
     }
 
     private splitOutStringLiterals(line: string) {

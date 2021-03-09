@@ -19,29 +19,7 @@ export class IlDasmTextEditorProvider implements vscode.CustomReadonlyEditorProv
     constructor(
         private readonly context: vscode.ExtensionContext,
         private readonly insights: DotnetInsights
-    ) {
-        this.onDidChangeCustomDocument = undefined;
-    }
-
-    // asdas
-
-    onDidChangeCustomDocument: any;
-
-    saveCustomDocument(document: vscode.CustomDocument, cancellation: vscode.CancellationToken): Thenable<void> {
-        throw new Error('Method not implemented.');
-    }
-
-    saveCustomDocumentAs(document: vscode.CustomDocument, destination: vscode.Uri, cancellation: vscode.CancellationToken): Thenable<void> {
-        throw new Error('Method not implemented.');
-    }
-
-    revertCustomDocument(document: vscode.CustomDocument, cancellation: vscode.CancellationToken): Thenable<void> {
-        throw new Error('Method not implemented.');
-    }
-
-    backupCustomDocument(document: vscode.CustomDocument, context: vscode.CustomDocumentBackupContext, cancellation: vscode.CancellationToken): Thenable<vscode.CustomDocumentBackup> {
-        throw new Error('Method not implemented.');
-    }
+    ) { }
 
     openCustomDocument(uri: vscode.Uri, openContext: vscode.CustomDocumentOpenContext, token: vscode.CancellationToken): vscode.CustomDocument | Thenable<vscode.CustomDocument> {
         if (this.insights.ilDasmPath == "") {
