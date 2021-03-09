@@ -6,9 +6,10 @@ import * as child from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import * as os from "os"
 
 import { DepNodeProvider, Dependency, DotnetInsights } from './dotnetInsights';
-import { IlDasmTextEditor } from "./IlDasmTextEditor";
+import { IlDasmTextEditorProvider } from "./IlDasmTextEditor";
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -25,7 +26,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage('Hello world!');
     });
     
-    context.subscriptions.push(IlDasmTextEditor.register(context));
+    context.subscriptions.push(IlDasmTextEditorProvider.register(context, insights));
     context.subscriptions.push(disposable);
 }
 
@@ -34,23 +35,7 @@ export function deactivate() {
 }
 
 function setupIlDasm(insights: DotnetInsights, callback: (insights: DotnetInsights, success: boolean) => void) {
-    const config = vscode.workspace.getConfiguration();
-
-    var ilDasmPath = "";
-
-    var dotnetInsightsSettings: any = config.get("dotnet-insights");
-
-    // Check to see if we have set the configuration for the ildasm path.
-    if (dotnetInsightsSettings.ildasmPath != undefined) {
-        console.log("Found configuration for a local ILDasm");
-        
-        ilDasmPath = dotnetInsightsSettings.ildasmPath;
-    } 
-    else {
-        console.error("Please set setting: dotnet-insights.ildasmPath");
-        ilDasmPath = "";
-    }
-
+    const ilDasmPath = insights.ilDasmPath;
     console.log("ILDasm Path: " + ilDasmPath);
 
     // Verify that the ildasm path exists and the executable runs
@@ -71,7 +56,7 @@ function setupIlDasm(insights: DotnetInsights, callback: (insights: DotnetInsigh
                 else {
                     try {
                         // No error, output should have a version number
-                        var splitOutput = stdout.split(".NET Framework IL Disassembler.")[1];
+                        var splitOutput = stdout.split("IL Disassembler.")[1];
 
                         var versionNumber = splitOutput.split("Version ")[1].split("\n")[0];
                         console.log("Working ilDasm: Version Number: " + versionNumber);
@@ -107,6 +92,44 @@ function setupSuperPmiForVersion(version: string, localRuntimeBuild: string | nu
     }
 }
 
+function setupPmi(insights: DotnetInsights) {
+    const pmiPath = insights.pmiPath;
+    console.log("ILDasm Path: " + pmiPath);
+
+    // Verify that the ildasm path exists and the executable runs
+    fs.exists(pmiPath, (exists: boolean) => {
+        if (exists) {
+            console.log("Found ILDasm on disk.");
+
+            var coreRunExe = "";
+            if (os.platform() == "win32") {
+                coreRunExe = "CoreRun.exe";
+            }
+            else {
+                coreRunExe = "corerun";
+            }
+
+            // Verify it runs
+            var pmiCommand = insights.coreRoot + coreRunExe + " " + pmiPath + " " + "-h";
+            console.log(pmiCommand);
+
+            var foo : child.ChildProcess = child.exec(pmiCommand, (error: any, stdout: string, stderr: string) => {
+                var success = false;
+                
+                if (error != null && stdout == undefined) {
+                    console.log(stderr);
+                }
+                else {
+                    console.log("PMI setup successfully.");
+                }
+            });
+        }
+        else {
+            console.log("Error setting incorrect, will download ildasm.");
+        }
+    });
+}
+
 function checkForDotnetSdk(insights: DotnetInsights, success: boolean) {
     if (!success) {
         return;
@@ -139,12 +162,67 @@ function checkForDotnetSdk(insights: DotnetInsights, success: boolean) {
             }
             
             insights.sdkVersions = installedSdks;
+
+            setupPmi(insights);
         }
     });
 }
 
 function setup(insights: DotnetInsights) {
     console.log("Setting up dotnetInsights.");
+
+    const config = vscode.workspace.getConfiguration();
+    var dotnetInsightsSettings: any = config.get("dotnet-insights");
+
+    var ilDasmPath = dotnetInsightsSettings["ildasmPath"];
+    var pmiPath = dotnetInsightsSettings["pmiPath"];
+    var coreRoot = dotnetInsightsSettings["coreRoot"];
+
+    if (typeof(ilDasmPath) != "string") {
+        if (os.platform() == "darwin") {
+            ilDasmPath = ilDasmPath["osx"];
+        }
+        else if (os.platform() == "linux") {
+            ilDasmPath = ilDasmPath["linux"];
+        }
+        else {
+            ilDasmPath = ilDasmPath["windows"];
+        }
+    }
+
+    if (typeof(pmiPath) != "string") {
+        if (os.platform() == "darwin") {
+            pmiPath = pmiPath["osx"];
+        }
+        else if (os.platform() == "linux") {
+            pmiPath = pmiPath["linux"];
+        }
+        else {
+            pmiPath = pmiPath["windows"];
+        }
+    }
+
+    if (typeof(coreRoot) != "string") {
+        if (os.platform() == "darwin") {
+            coreRoot = coreRoot["osx"];
+        }
+        else if (os.platform() == "linux") {
+            coreRoot = coreRoot["linux"];
+        }
+        else {
+            coreRoot = coreRoot["windows"];
+        }
+    }
+
+    if (pmiPath == undefined || ilDasmPath == undefined || coreRoot == undefined) {
+        console.error("PMI Path and ILDasm Path must be set.");
+
+        return;
+    }
+
+    insights.ilDasmPath = ilDasmPath;
+    insights.pmiPath = pmiPath;
+    insights.coreRoot = coreRoot;
 
     // Setup mostly will involve making sure we have the dotnet tools required
     // to provide insights.

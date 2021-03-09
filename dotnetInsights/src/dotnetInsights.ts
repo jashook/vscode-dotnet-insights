@@ -49,11 +49,19 @@ export class Dependency extends vscode.TreeItem {
 export class DotnetInsights {
     public ilDasmPath: string;
     public ilDasmVersion: string;
+
+    public pmiPath: string;
+    public coreRoot: string;
+
     public sdkVersions: string[];
 
     constructor() {
         this.ilDasmPath = "";
         this.ilDasmVersion = "";
+
+        this.pmiPath = "";
+        this.coreRoot = "";
+
         this.sdkVersions = [] as string[];
     }
 }
