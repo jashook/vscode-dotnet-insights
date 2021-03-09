@@ -110,13 +110,18 @@ export class RichHtmlDocument {
             while (tokenList.getUnprocessedTokens().length > 0) {
                 var nextUnprocessedToken = tokenList.getUnprocessedTokens()[0];
 
-                var replacement = this.process(nextUnprocessedToken);
-                
+                var replacements = this.process(nextUnprocessedToken);
+
+                tokenList.processToken(nextUnprocessedToken, replacements);
             }
 
             // Add this as a child to the root node.
             this.root.children.push(lineNode);
         });
+    }
+
+    private process(token: Token): string[] {
+        return [];
     }
 
     private splitOutStringLiterals(line: string) {
