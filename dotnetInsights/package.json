@@ -10,14 +10,15 @@
     "Other"
   ],
   "activationEvents": [
-    "onCustomEditor:ildasm.edit"
+    "*",
+    "onCustomEditor:dotnetInsights.edit"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "customEditors": [
       {
-        "viewType": "ildasm.edit",
-        "displayName": ".NET IL",
+        "viewType": "dotnetInsights.edit",
+        "displayName": "Dotnet Insights Editor",
         "selector": [
           {
             "filenamePattern": "*.dll",
@@ -47,8 +48,52 @@
     },
     "commands": [
       {
-        "command": "dotnetInsights.helloWorld",
-        "title": "Hello World"
+        "command": "dotnetInsights.usePmi",
+        "title": "Switch to use PMI"
+      },
+      {
+        "command": "dotnetInsights.useIlDasm",
+        "title": "Switch to use ILDasm"
+      }
+    ],
+    "languages": [
+      {
+        "id": "ildasm",
+        "aliases": [
+          "ildasm",
+          "ILDASM",
+          "ilDasm",
+          "ildasm"
+        ],
+        "extensions": [
+          ".ildasm"
+        ],
+        "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "asm",
+        "aliases": [
+          "asm",
+          "ASM",
+          "s",
+          "S"
+        ],
+        "extensions": [
+          ".asm"
+        ],
+        "configuration": "./asm-language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "ildasm",
+        "scopeName": "source.ildasm",
+        "path": "./syntaxes/ildasm.tmLanguage.json"
+      },
+      {
+        "language": "asm",
+        "scopeName": "source.asm",
+        "path": "./syntaxes/asm.tmLanguage.json"
       }
     ]
   },

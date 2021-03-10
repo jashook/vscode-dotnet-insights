@@ -3,3 +3,8 @@
 */
 div {
 }
+
+.comment {
+    color: gray;
+    font: italic;
+}

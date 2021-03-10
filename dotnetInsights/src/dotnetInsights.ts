@@ -52,8 +52,15 @@ export class DotnetInsights {
 
     public pmiPath: string;
     public coreRoot: string;
+    public coreRunPath: string;
 
     public sdkVersions: string[];
+
+    public ilDasmOutputPath: string;
+    public pmiOutputPath: string;
+
+    public useIldasm: boolean;
+    public usePmi: boolean
 
     constructor() {
         this.ilDasmPath = "";
@@ -61,7 +68,24 @@ export class DotnetInsights {
 
         this.pmiPath = "";
         this.coreRoot = "";
+        this.coreRunPath = "";
+
+        this.ilDasmOutputPath = "";
+        this.pmiOutputPath = "";
+
+        this.useIldasm = false;
+        this.usePmi = true;
 
         this.sdkVersions = [] as string[];
+    }
+
+    public setUseIldasm() {
+        this.useIldasm = true;
+        this.usePmi = false;
+    }
+
+    public setUsePmi() {
+        this.useIldasm = false;
+        this.usePmi = true;
     }
 }

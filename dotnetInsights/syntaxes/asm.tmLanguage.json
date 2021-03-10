@@ -1,0 +1,348 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "asm",
+	"patterns": [
+		{
+			"include": "#keywords"
+		},
+		{
+			"include": "#stringsSingleQuote"
+		},
+		{
+			"include": "#strings"
+		},
+		{
+			"include": "#expression"
+		}
+	],
+	"repository": {
+		"keywords": {
+			"patterns": [{
+				"name": "keyword.control.asm",
+				"match": "\\b(if|while|for|return|def|this|cluster|is|not|and|or|a)\\b"
+			}]
+		},
+		"expression": {
+			"comment": "All valid asm expressions",
+			"patterns": [
+				{
+					"include": "#expression-base"
+				}
+			]
+		},
+		"expression-base": {
+			"comment": "valid asm expressions with comments and line continuation",
+			"patterns": [
+				{
+					"include": "#comments"
+				},
+				{
+					"include": "#builtin-functions"
+				},
+				{
+					"include": "#literal"
+				},
+				{
+					"include": "#list"
+				},
+				{
+					"include": "#punctuation"
+				},
+				{
+					"include": "#member-access"
+				}
+			]
+		},
+		"comments": {
+			"patterns": [
+				{
+					"name": "comment.line.asm",
+					"begin": "(\\;)",
+					"beginCaptures": {
+						"0": {
+							"name": "punctuation.definition.comment.asm"
+						}
+					},
+					"end": "($)"
+				}
+			]
+		},
+		"builtin-functions": {
+			"patterns": [
+				{
+					"name": "support.function.builtin.asm",
+					"match": "(?x)\n  (?<!\\.) \\b(\n    rax|rbx|rcx|rdx|rsi|rdi|rsp|r8|r9|r10|r11|r12|r13|r14|r15|eax|ebx|ecx|edx|esi|ebp|esp|r8d|r9d|r10d|r11d|r12d|r13d|r14d|r15d|ax|bx|cx|dx|si|di|bp|sp|r8w|r9w|r10w|r11w|r12w|r13w|r14w|r15w|al|bl|cl|dl|sil|dil|bpl|spl|r8b|r9b|r10b|r11b|r12b|r13b|r14b|r15b\n  )\\b\n"
+				}
+			]
+		},
+		"builtin-types": {
+			"name": "support.type.asm",
+			"match": "(?x)\n  (?<!\\.) \\b(\n    bool|double|float|int|long|int32|int64|string|object\n )\\b\n"
+		},
+		"list": {
+			"begin": "\\[",
+			"end": "\\]",
+			"beginCaptures": {
+				"0": {
+					"name": "punctuation.definition.list.begin.asm"
+				}
+			},
+			"endCaptures": {
+				"0": {
+					"name": "punctuation.definition.list.end.asm"
+				}
+			},
+			"patterns": [
+				{
+					"include": "#expression"
+				}
+			]
+		},
+		"punctuation": {
+			"patterns": [
+				{
+					"name": "punctuation.separator.element.asm",
+					"match": ","
+				}
+			]
+		},
+		"literal": {
+			"patterns": [
+				{
+					"name": "constant.language.asm",
+					"match": "\\b(true|false|null|nyi)\\b"
+				},
+				{
+					"include": "#number"
+				}
+			]
+		},
+		"number": {
+			"name": "constant.numeric.asm",
+			"patterns": [
+				{
+					"include": "#number-float"
+				},
+				{
+					"include": "#number-dec"
+				},
+				{
+					"include": "#number-hex"
+				},
+				{
+					"include": "#number-oct"
+				},
+				{
+					"include": "#number-long"
+				},
+				{
+					"include": "#number-il"
+				},
+				{
+					"name": "invalid.illegal.name.asm",
+					"match": "\\b[0-9]+\\w+"
+				}
+			]
+		},
+		"number-float": {
+			"name": "constant.numeric.float.asm",
+			"match": "(?x)\n  (?<! \\w)(?:\n    (?:\n      \\.[0-9](?: _?[0-9] )*\n      |\n      [0-9](?: _?[0-9] )* \\. [0-9](?: _?[0-9] )*\n      |\n      [0-9](?: _?[0-9] )* \\.\n    ) (?: [eE][+-]?[0-9](?: _?[0-9] )* )?\n    |\n    [0-9](?: _?[0-9] )* (?: [eE][+-]?[0-9](?: _?[0-9] )* )\n  )([jJ])?\\b\n",
+			"captures": {
+				"1": {
+					"name": "storage.type.imaginary.number.asm"
+				}
+			}
+		},
+		"number-dec": {
+			"name": "constant.numeric.dec.asm",
+			"match": "(?x)\n  (?<![\\w\\.])(?:\n      [1-9](?: _?[0-9] )*\n      |\n      0+\n      |\n      [0-9](?: _?[0-9] )* ([jJ])\n      |\n      0 ([0-9]+)(?![eE\\.])\n  )\\b\n",
+			"captures": {
+				"1": {
+					"name": "storage.type.imaginary.number.asm"
+				},
+				"2": {
+					"name": "invalid.illegal.dec.asm"
+				},
+				"3": {
+					"name": "invalid.illegal.dec.asm"
+				}
+			}
+		},
+		"number-il": {
+			"name": "constant.numeric.dec.il.asm",
+			"match": "(?x)\n  (?<![\\w\\.])(?:\n      [1-9](?: _?[0-9] )*\n      |\n      0+\n      |\n      [0-9](?: _?[0-9] )* ([jJ])\n      |IL_[0-9](?: _?[0-9A-Fa-f] )*|\n      0 ([0-9]+)(?![eE\\.])\n  )\\b\n",
+			"captures": {
+				"1": {
+					"name": "storage.type.imaginary.ilnumber.asm"
+				},
+				"2": {
+					"name": "invalid.illegal.decil.asm"
+				},
+				"3": {
+					"name": "invalid.illegal.decil.asm"
+				}
+			}
+		},
+		"number-hex": {
+			"name": "constant.numeric.hex.asm",
+			"match": "(?x)\n  (?<![\\w\\.])\n    (0[xX]) (_?[0-9a-fA-F])+\n|(?x)\n  (?<![\\w\\.])\n    (_?[0-9a-fA-F])+\n  \\b\n",
+			"captures": {
+				"1": {
+					"name": "storage.type.decimal.asm"
+				}
+			}
+		},
+		"number-oct": {
+			"name": "constant.numeric.oct.asm",
+			"match": "(?x)\n  (?<![\\w\\.])\n    (0[oO]) (_?[0-7])+\n  \\b\n",
+			"captures": {
+				"1": {
+					"name": "storage.type.number.asm"
+				}
+			}
+		},
+		"number-long": {
+			"name": "constant.numeric.bin.asm",
+			"comment": "this is to support asm2 syntax for long ints",
+			"match": "(?x)\n  (?<![\\w\\.])\n    ([1-9][0-9]* | 0) ([lL])\n  \\b\n",
+			"captures": {
+				"2": {
+					"name": "storage.type.number.asm"
+				}
+			}
+		},
+		"strings": {
+			"name": "string.quoted.double.asm",
+			"begin": "\"",
+			"end": "\"",
+			"patterns": [
+				{
+					"name": "constant.character.escape.asm",
+					"match": "\\\\."
+				}
+			]
+		},
+		"stringsSingleQuote": {
+			"name": "string.quoted.single.asm",
+			"begin": "'",
+			"end": "'",
+			"patterns": [
+				{
+					"name": "constant.character.escape.asm",
+					"match": "\\\\."
+				}
+			]
+		},
+		"function-call": {
+			"name": "meta.function-call.asm",
+			"begin": "(?x)\n  \\b(?=\n    ([[:alpha:]_]\\w*) \\s* (\\()\n  )\n",
+			"end": "(\\))",
+			"endCaptures": {
+				"1": {
+					"name": "punctuation.definition.arguments.end.asm"
+				}
+			},
+			"patterns": [
+				{
+					"include": "#special-variables"
+				},
+				{
+					"include": "#function-name"
+				},
+				{
+					"include": "#function-arguments"
+				}
+			]
+		},
+		"member-access": {
+			"name": "meta.member.access.asm",
+			"begin": "(\\.)\\s*(?!\\.)",
+			"end": "(?x)\n  # stop when you've just read non-whitespace followed by non-word\n  # i.e. when finished reading an identifier or function call\n  (?<=\\S)(?=\\W) |\n  # stop when seeing the start of something that's not a word,\n  # i.e. when seeing a non-identifier\n  (^|(?<=\\s))(?=[^\\\\\\w\\s]) |\n  $\n",
+			"beginCaptures": {
+				"1": {
+					"name": "punctuation.separator.period.asm"
+				}
+			},
+			"patterns": [
+				{
+					"include": "#function-call"
+				},
+				{
+					"include": "#member-access-base"
+				}
+			]
+		},
+		"function-name": {
+			"patterns": [
+				{
+					"include": "#builtin-possible-callables"
+				},
+				{
+					"comment": "Some color schemas support meta.function-call.generic scope",
+					"name": "meta.function-call.generic.asm",
+					"match": "(?x)\n  \\b ([[:alpha:]_]\\w*) \\b\n"
+				}
+			]
+		},
+		"function-arguments": {
+			"begin": "(\\()",
+			"end": "(?=\\))(?!\\)\\s*\\()",
+			"beginCaptures": {
+				"1": {
+					"name": "punctuation.definition.arguments.begin.asm"
+				}
+			},
+			"contentName": "meta.function-call.arguments.asm",
+			"patterns": [
+				{
+					"name": "punctuation.separator.arguments.asm",
+					"match": "(,)"
+				},
+				{
+					"match": "(?x)\n  (?:(?<=[,(])|^) \\s* (\\*{1,2})\n",
+					"captures": {
+						"1": {
+							"name": "keyword.operator.unpacking.arguments.asm"
+						}
+					}
+				},
+				{
+					"include": "#lambda-incomplete"
+				},
+				{
+					"include": "#illegal-names"
+				},
+				{
+					"match": "\\b([[:alpha:]_]\\w*)\\s*(=)(?!=)",
+					"captures": {
+						"1": {
+							"name": "variable.parameter.function-call.asm"
+						},
+						"2": {
+							"name": "keyword.operator.assignment.asm"
+						}
+					}
+				},
+				{
+					"name": "keyword.operator.assignment.asm",
+					"match": "=(?!=)"
+				},
+				{
+					"include": "#expression"
+				},
+				{
+					"match": "\\s*(\\))\\s*(\\()",
+					"captures": {
+						"1": {
+							"name": "punctuation.definition.arguments.end.asm"
+						},
+						"2": {
+							"name": "punctuation.definition.arguments.begin.asm"
+						}
+					}
+				}
+			]
+		}
+	},
+	"scopeName": "source.asm"
+}
