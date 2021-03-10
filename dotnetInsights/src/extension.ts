@@ -21,7 +21,11 @@ export function activate(context: vscode.ExtensionContext) {
     var insights = new DotnetInsights();
 
     // Setup
-    setup(insights).then(() => {
+    setup(insights).then((success: boolean) => {
+        if (!success) {
+            return;
+        }
+
         let disposablePmi = vscode.commands.registerCommand('dotnetInsights.usePmi', () => {
             insights.setUsePmi();
         });
@@ -176,7 +180,7 @@ function checkForDotnetSdk(insights: DotnetInsights, success: boolean) {
     });
 }
 
-function setup(insights: DotnetInsights) : Thenable<void>  {
+function setup(insights: DotnetInsights) : Thenable<boolean>  {
     console.log("Setting up dotnetInsights.");
 
     const config = vscode.workspace.getConfiguration();
@@ -187,6 +191,23 @@ function setup(insights: DotnetInsights) : Thenable<void>  {
     var coreRoot = dotnetInsightsSettings["coreRoot"];
 
     var outputPath = dotnetInsightsSettings["outputPath"];
+
+    if (ilDasmPath == undefined) {
+        vscode.window.showErrorMessage("dotnet-insights.ilDasmPath must be set.");
+        return Promise.resolve(false);
+    }
+    else if (pmiPath == undefined) {
+        vscode.window.showErrorMessage("dotnet-insights.pmiPath must be set.");
+        return Promise.resolve(false);
+    }
+    else if (coreRoot == undefined) {
+        vscode.window.showErrorMessage("dotnet-insights.coreRoot must be set.");
+        return Promise.resolve(false);
+    }
+    else if (outputPath == undefined) {
+        vscode.window.showErrorMessage("dotnet-insights.outputPath must be set.");
+        return Promise.resolve(false);
+    }
 
     if (typeof(ilDasmPath) != "string") {
         if (os.platform() == "darwin") {
@@ -262,7 +283,7 @@ function setup(insights: DotnetInsights) : Thenable<void>  {
     if (pmiPath == undefined || ilDasmPath == undefined || coreRoot == undefined) {
         console.error("PMI Path and ILDasm Path must be set.");
 
-        return Promise.resolve();
+        return Promise.resolve(false);
     }
 
     insights.ilDasmPath = ilDasmPath;
@@ -276,5 +297,5 @@ function setup(insights: DotnetInsights) : Thenable<void>  {
 
     setupIlDasm(insights, checkForDotnetSdk);
 
-    return Promise.resolve();
+    return Promise.resolve(true);
 }

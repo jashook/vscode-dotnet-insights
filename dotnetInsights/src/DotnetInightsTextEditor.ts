@@ -8,7 +8,6 @@ import * as assert from "assert"
 import { Uri } from 'vscode'
 
 import { DotnetInsights } from './dotnetInsights';
-import { RichBody } from "./richBody";
 
 export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEditorProvider {
     public static register(context: vscode.ExtensionContext, insights: DotnetInsights): vscode.Disposable {
