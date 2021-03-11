@@ -8,6 +8,7 @@ import * as assert from "assert"
 import { Uri } from 'vscode'
 
 import { DotnetInsights } from './dotnetInsights';
+import { parse } from 'node:path';
 
 export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEditorProvider {
     public static register(context: vscode.ExtensionContext, insights: DotnetInsights): vscode.Disposable {
@@ -31,13 +32,17 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
         var output: string;
         var outputFilePath: string;
 
+        var mb = 1024 * 1024;
+        var maxBufferSize = 512 * mb;
+        
+        // Used by pmi as it need FS access
+        const cwd: string =  this.insights.pmiTempDir;
+        const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+
         if (this.insights.useIldasm) {
             // We will run ildasm then render those contents
             var ildasmCommand = this.insights.ilDasmPath + " " + uri.path;
             console.log(ildasmCommand);
-
-            var mb = 1024 * 1024;
-            var maxBufferSize = 512 * mb;
 
             var output = child.execSync(ildasmCommand, {
                 maxBuffer: maxBufferSize
@@ -63,9 +68,6 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
             // We will run pmi then render those contents
             var pmiCommand = this.insights.coreRunPath + " " + this.insights.pmiPath + " " + "DRIVEALL" + " " + uri.path;
             console.log(pmiCommand);
-
-            var mb = 1024 * 1024;
-            var maxBufferSize = 512 * mb;
 
             var output = child.execSync(pmiCommand, {
                 maxBuffer: maxBufferSize,
@@ -94,27 +96,95 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
         fs.writeFileSync(outputFilePath, output);
 
         var openPath = vscode.Uri.file(outputFilePath);
-        vscode.workspace.openTextDocument(openPath).then(doc => {
-            vscode.window.showTextDocument(doc)
+
+        vscode.commands.executeCommand('workbench.action.closeActiveEditor').then(() => {
+            vscode.workspace.openTextDocument(openPath).then(doc => {
+                vscode.window.showTextDocument(doc)
+            });
         });
 
-        const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+        // After the text editor has loaded we will want to update the tree view
+        if (this.insights.useIldasm) {
+            this.insights.updateForPath(uri.path);
+        }
         
         var document = new DotnetInsightsDocument(uri,
-                                          outputFilePath,
-                                          false,
-                                          "DotnetInsights",
-                                          1,
-                                          false,
-                                          true,
-                                          endofLine,
-                                          output.length);
+                                                  outputFilePath,
+                                                  false,
+                                                  "DotnetInsights",
+                                                  1,
+                                                  false,
+                                                  true,
+                                                  endofLine,
+                                                  output.length);
 
         return document;
     }
 
     resolveCustomEditor(document: vscode.CustomDocument, webviewPanel: vscode.WebviewPanel, token: vscode.CancellationToken): void | Thenable<void> {
         // unused
+    }
+}
+
+export class Method {
+    public desc: string;
+    public isMinOpts: boolean;
+    public region: string;
+    public hash: string;
+    public hasEh: boolean;
+    public frame: string;
+    public hasLoop: boolean;
+    public directCallCount: number;
+    public indirectCallCount: number;
+    public basicBlockCount: number;
+    public localVarCount: number;
+    public assertionPropCount: number | undefined;
+    public cseCount: number | undefined;
+    public perfScore: number | undefined;
+    public ilBytes: number;
+    public hotCodeSize: number;
+    public coldCodeSize: number;
+    public totalCodeSize: number;
+    public name: string;
+
+    constructor(desc: string,
+                isMinOpts: boolean,
+                region: string,
+                hash: string,
+                hasEh: boolean,
+                frame: string,
+                hasLoop: boolean,
+                directCallCount: number,
+                indirectCallCount: number,
+                basicBlockCount: number,
+                localVarCount: number,
+                assertionPropCount: number | undefined,
+                cseCount: number | undefined,
+                perfScore: number | undefined,
+                ilBytes: number,
+                hotCodeSize: number,
+                coldCodeSize: number,
+                totalCodeSize: number,
+                name: string) {
+        this.desc = desc;
+        this.isMinOpts = isMinOpts;
+        this.region = region;
+        this.hash = hash;
+        this.hasEh = hasEh;
+        this.frame = frame;
+        this.hasLoop = hasLoop;
+        this.directCallCount = directCallCount;
+        this.indirectCallCount = indirectCallCount;
+        this.basicBlockCount = basicBlockCount;
+        this.localVarCount = localVarCount;
+        this.assertionPropCount = assertionPropCount;
+        this.cseCount = cseCount;
+        this.perfScore = perfScore;
+        this.ilBytes = ilBytes;
+        this.hotCodeSize = hotCodeSize;
+        this.coldCodeSize = coldCodeSize;
+        this.totalCodeSize = totalCodeSize;
+        this.name = name;
     }
 }
 

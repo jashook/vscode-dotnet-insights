@@ -9,7 +9,7 @@ import * as vscode from 'vscode';
 import * as os from "os"
 import * as assert from "assert";
 
-import { DepNodeProvider, Dependency, DotnetInsights } from './dotnetInsights';
+import { DotnetInsightsTreeDataProvider, Dependency, DotnetInsights } from './dotnetInsights';
 import { DotnetInsightsTextEditorProvider } from "./DotnetInightsTextEditor";
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -25,6 +25,10 @@ export function activate(context: vscode.ExtensionContext) {
         if (!success) {
             return;
         }
+
+        const dotnetInsightsTreeDataProvider = new DotnetInsightsTreeDataProvider(insights);
+        vscode.window.registerTreeDataProvider('dotnetInsights', dotnetInsightsTreeDataProvider);
+        vscode.commands.registerCommand('nodeDependencies.refreshEntry', () => dotnetInsightsTreeDataProvider.refresh());
 
         let disposablePmi = vscode.commands.registerCommand('dotnetInsights.usePmi', () => {
             insights.setUsePmi();
@@ -44,49 +48,45 @@ export function deactivate() {
     console.log("dotnetInsights: deactivated.");
 }
 
-function setupIlDasm(insights: DotnetInsights, callback: (insights: DotnetInsights, success: boolean) => void) {
+function setupIlDasm(insights: DotnetInsights, callback: (insights: DotnetInsights) => Thenable<boolean>): Thenable<boolean> {
     const ilDasmPath = insights.ilDasmPath;
     console.log("ILDasm Path: " + ilDasmPath);
 
     // Verify that the ildasm path exists and the executable runs
-    fs.exists(ilDasmPath, (exists: boolean) => {
-        if (exists) {
-            console.log("Found ILDasm on disk.");
+    var ildasmCommand = ilDasmPath + " " + "/?";
+    console.log(ildasmCommand);
 
-            // Verify it runs
-            var ildasmCommand = ilDasmPath + " " + "/?";
-            console.log(ildasmCommand);
-
-            var foo : child.ChildProcess = child.exec(ildasmCommand, (error: any, stdout: string, stderr: string) => {
-                var success = false;
-                
-                if (error != null) {
-                    console.log(stderr);
-                }
-                else {
-                    try {
-                        // No error, output should have a version number
-                        var splitOutput = stdout.split("IL Disassembler.")[1];
-
-                        var versionNumber = splitOutput.split("Version ")[1].split("\n")[0];
-                        console.log("Working ilDasm: Version Number: " + versionNumber);
-
-                        insights.ilDasmPath = ilDasmPath;
-                        insights.ilDasmVersion = versionNumber;
-
-                        success = true;
-                    }
-                    catch {
-                        console.error("Failed to setup .NET ILDasm.");
-                    }
-                }
-
-                callback(insights, success);
-            });
+    var childProcess : child.ChildProcess = child.exec(ildasmCommand, (error: any, stdout: string, stderr: string) => {
+        var success = false;
+        
+        if (error != null) {
+            console.log(stderr);
         }
         else {
-            console.log("Error setting incorrect, will download ildasm.");
+            try {
+                // No error, output should have a version number
+                var splitOutput = stdout.split("IL Disassembler.")[1];
+
+                var versionNumber = splitOutput.split("Version ")[1].split("\n")[0];
+                console.log("Working ilDasm: Version Number: " + versionNumber);
+
+                insights.ilDasmPath = ilDasmPath;
+                insights.ilDasmVersion = versionNumber;
+
+                success = true;
+            }
+            catch {
+                console.error("Failed to setup .NET ILDasm.");
+            }
         }
+    });
+
+    return new Promise((resolve, reject) => {
+        childProcess.addListener("close", (args: any) => {
+            callback(insights).then((success: boolean) => {
+                resolve(success);
+            });
+        });
     });
 }
 
@@ -102,58 +102,53 @@ function setupSuperPmiForVersion(version: string, localRuntimeBuild: string | nu
     }
 }
 
-function setupPmi(insights: DotnetInsights) {
+function setupPmi(insights: DotnetInsights) : Thenable<boolean> {
     const pmiPath = insights.pmiPath;
     console.log("PMI Path: " + pmiPath);
 
     // Verify that the ildasm path exists and the executable runs
-    fs.exists(pmiPath, (exists: boolean) => {
-        if (exists) {
-            console.log("Found PMI on disk.");
+    console.log("Found PMI on disk.");
 
-            var coreRunExe = "";
-            if (os.platform() == "win32") {
-                coreRunExe = "CoreRun.exe";
-            }
-            else {
-                coreRunExe = "corerun";
-            }
+    var coreRunExe = "";
+    if (os.platform() == "win32") {
+        coreRunExe = "CoreRun.exe";
+    }
+    else {
+        coreRunExe = "corerun";
+    }
 
-            insights.coreRunPath = insights.coreRoot + coreRunExe ;
+    insights.coreRunPath = insights.coreRoot + coreRunExe ;
 
-            // Verify it runs
-            var pmiCommand = insights.coreRoot + coreRunExe + " " + pmiPath + " " + "-h";
-            console.log(pmiCommand);
+    // Verify it runs
+    var pmiCommand = insights.coreRoot + coreRunExe + " " + pmiPath + " " + "-h";
+    console.log(pmiCommand);
 
-            var foo : child.ChildProcess = child.exec(pmiCommand, (error: any, stdout: string, stderr: string) => {
-                var success = false;
-                
-                if (error != null && stdout == undefined) {
-                    console.log(stderr);
-                }
-                else {
-                    console.log("PMI setup successfully.");
-                }
-            });
+    var success = false;
+    var childProcess : child.ChildProcess = child.exec(pmiCommand, (error: any, stdout: string, stderr: string) => {
+        if (error != null && stdout == undefined) {
+            console.log(stderr);
         }
         else {
-            console.log("Error setting incorrect, will download ildasm.");
+            success = true;
+            console.log("PMI setup successfully.");
         }
+    });
+
+    return new Promise((resolve, reject) => {
+        childProcess.addListener("close", (args: any) => {
+            resolve(success);
+        });
     });
 }
 
-function checkForDotnetSdk(insights: DotnetInsights, success: boolean) {
-    if (!success) {
-        return;
-    }
-
+function checkForDotnetSdk(insights: DotnetInsights) : Thenable<boolean> {
     // Check for the dotnet sdk. This is not necessary, it is possible to look
     // at managed pe files as well. In addition, we can hijack the jit dropped 
     // into the publish folder for superPMI.
 
     var dotnetCommand = "dotnet --list-sdks"
 
-    var foo: child.ChildProcess = child.exec(dotnetCommand, (error: any, stdout: string, stderr: string) => {
+    var childProcess: child.ChildProcess = child.exec(dotnetCommand, (error: any, stdout: string, stderr: string) => {
         if (error != null) {
             // The dotnet sdk is not installed.
             // We do not currently know what version to install.
@@ -174,9 +169,15 @@ function checkForDotnetSdk(insights: DotnetInsights, success: boolean) {
             }
             
             insights.sdkVersions = installedSdks;
-
-            setupPmi(insights);
         }
+    });
+
+    return new Promise((resolve, reject) => {
+        childProcess.addListener("close", (args: any) => {
+            setupPmi(insights).then((success: boolean) => {
+                resolve(success);
+            });
+        });
     });
 }
 
@@ -280,6 +281,12 @@ function setup(insights: DotnetInsights) : Thenable<boolean>  {
         fs.mkdirSync(pmiOutputPath);
     }
 
+    const pmiTempDir = path.join(outputPath, "pmiTemp");
+
+    if (!fs.existsSync(pmiTempDir)) {
+        fs.mkdirSync(pmiTempDir);
+    }
+
     if (pmiPath == undefined || ilDasmPath == undefined || coreRoot == undefined) {
         console.error("PMI Path and ILDasm Path must be set.");
 
@@ -292,10 +299,10 @@ function setup(insights: DotnetInsights) : Thenable<boolean>  {
     insights.ilDasmOutputPath = ilDasmOutputPath;
     insights.pmiOutputPath = pmiOutputPath;
 
+    insights.pmiTempDir = pmiTempDir;
+
     // Setup mostly will involve making sure we have the dotnet tools required
     // to provide insights.
 
-    setupIlDasm(insights, checkForDotnetSdk);
-
-    return Promise.resolve(true);
+    return setupIlDasm(insights, checkForDotnetSdk);
 }
