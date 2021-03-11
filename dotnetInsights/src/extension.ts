@@ -28,7 +28,6 @@ export function activate(context: vscode.ExtensionContext) {
 
         const dotnetInsightsTreeDataProvider = new DotnetInsightsTreeDataProvider(insights);
         vscode.window.registerTreeDataProvider('dotnetInsights', dotnetInsightsTreeDataProvider);
-        vscode.commands.registerCommand('nodeDependencies.refreshEntry', () => dotnetInsightsTreeDataProvider.refresh());
 
         let disposablePmi = vscode.commands.registerCommand('dotnetInsights.usePmi', () => {
             insights.setUsePmi();

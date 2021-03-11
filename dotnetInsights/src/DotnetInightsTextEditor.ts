@@ -41,20 +41,20 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
 
         if (this.insights.useIldasm) {
             // We will run ildasm then render those contents
-            var ildasmCommand = this.insights.ilDasmPath + " " + uri.path;
+            var ildasmCommand = this.insights.ilDasmPath + " " + uri.fsPath;
             console.log(ildasmCommand);
 
             var output = child.execSync(ildasmCommand, {
                 maxBuffer: maxBufferSize
             }).toString();
 
-            var filename = path.basename(uri.path);
+            var filename = path.basename(uri.fsPath);
 
             var extensionOutputPath = this.insights.ilDasmOutputPath;
             assert(fs.existsSync(extensionOutputPath));
 
             // Hijack the URI by saving the created file to a temporary location
-            var filename = path.basename(uri.path);
+            var filename = path.basename(uri.fsPath);
 
             // This must be a managed .dll file
             assert (path.extname(filename) == ".dll");
@@ -66,7 +66,7 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
         }
         else {
             // We will run pmi then render those contents
-            var pmiCommand = this.insights.coreRunPath + " " + this.insights.pmiPath + " " + "DRIVEALL" + " " + uri.path;
+            var pmiCommand = this.insights.coreRunPath + " " + this.insights.pmiPath + " " + "DRIVEALL" + " " + uri.fsPath;
             console.log(pmiCommand);
 
             var output = child.execSync(pmiCommand, {
@@ -76,13 +76,13 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
                 }
             }).toString();
 
-            var filename = path.basename(uri.path);
+            var filename = path.basename(uri.fsPath);
 
             var extensionOutputPath = this.insights.pmiOutputPath;
             assert(fs.existsSync(extensionOutputPath));
 
             // Hijack the URI by saving the created file to a temporary location
-            var filename = path.basename(uri.path);
+            var filename = path.basename(uri.fsPath);
 
             // This must be a managed .dll file
             assert (path.extname(filename) == ".dll");
@@ -105,7 +105,7 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
 
         // After the text editor has loaded we will want to update the tree view
         if (this.insights.useIldasm) {
-            this.insights.updateForPath(uri.path);
+            this.insights.updateForPath(uri.fsPath);
         }
         
         var document = new DotnetInsightsDocument(uri,

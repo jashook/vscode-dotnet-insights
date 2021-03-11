@@ -31,22 +31,39 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
             return Promise.resolve([]);
         }
         else if (this.insights != undefined && this.insights.methods != undefined && this.insights.methods.size > 0) {
-            var dependencies = [] as Dependency[];
+            if (element == undefined) {
+                // Get the top level items
+                var topLevelDeps = [] as Dependency[];
 
-            assert(this.insights != undefined);
-            assert(this.insights?.methods != undefined);
+                topLevelDeps.push(new Dependency("Types", undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
+                topLevelDeps.push(new Dependency("Methods", undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
 
-            const userMethods = this.insights?.methods.get("user");
-            if (userMethods == undefined) {
+                return Promise.resolve(topLevelDeps);
+            }
+            else if (element.label == "Methods") {
+                var dependencies = [] as Dependency[];
+
+                assert(this.insights != undefined);
+                assert(this.insights?.methods != undefined);
+
+                const userMethods = this.insights?.methods.get("user");
+                if (userMethods == undefined) {
+                    return Promise.resolve(dependencies);
+                }
+
+                for (var index = 0; index < userMethods?.length; ++index) {
+                    const currentMethod = userMethods[index];
+                    dependencies.push(new Dependency(currentMethod.name, currentMethod.ilBytes, currentMethod.totalCodeSize, vscode.TreeItemCollapsibleState.None));
+                }
+
                 return Promise.resolve(dependencies);
             }
-
-            for (var index = 0; index < userMethods?.length; ++index) {
-                const currentMethod = userMethods[index];
-                dependencies.push(new Dependency(currentMethod.name, currentMethod.ilBytes, vscode.TreeItemCollapsibleState.None));
+            else if (element.label == "Types") {
+                return Promise.resolve([]);
             }
-
-            return Promise.resolve(dependencies);
+            else {
+                return Promise.resolve([]);
+            }
         }
         else {
             return Promise.resolve([]);
@@ -59,14 +76,21 @@ export class Dependency extends vscode.TreeItem {
 
     constructor(
         public readonly label: string,
-        private readonly ilBytes: number,
+        private readonly ilBytes: number | undefined,
+        private readonly bytes: number | undefined,
         public readonly collapsibleState: vscode.TreeItemCollapsibleState,
         public readonly command?: vscode.Command
     ) {
         super(label, collapsibleState);
 
         this.tooltip = `${this.label}`;
-        this.description = this.ilBytes.toString();
+
+        if (this.ilBytes == undefined || this.bytes == undefined) {
+            this.description = "";
+        }
+        else {
+            this.description = `ilBytes: ${this.ilBytes.toString()} codeSize: ${this.bytes.toString()}`;
+        }
     }
 
     iconPath = {
@@ -146,7 +170,6 @@ export class DotnetInsights {
         var childProcess = child.exec(pmiCommand, {
             maxBuffer: maxBufferSize,
             "cwd": cwd,
-            "shell": "bash",
             "env": {
                 "COMPlus_JitOrder": "1",
                 "COMPlus_TieredCompilation": "0"
@@ -174,14 +197,25 @@ export class DotnetInsights {
         var lines = jitOrder.split(eolChar);
         
         for (var index = 0; index < lines.length; ++index) {
-            const currentLine = lines[index];
-            if (currentLine.indexOf("-------") != -1 ||
+            var currentLine = lines[index];
+            if (currentLine.length == 0 ||
+                currentLine.indexOf("-------") != -1 ||
                 currentLine.indexOf("Method has") != -1 ||
-                currentLine.indexOf("method name") != -1) {
+                currentLine.indexOf("method name") != -1 ) {
                 continue;
             }
 
-            var lineSplit = lines[index].split("| ");
+            if (currentLine.indexOf("Completed assembly jit-dasm ") != -1) {
+                const newCurrentLine = currentLine.split("skipped methods: ")[1];
+
+                const firstValue = newCurrentLine.split("| ")[0].trim();
+                const newValue = firstValue.substring(firstValue.length - 8, firstValue.length);
+
+                const changeValue = newCurrentLine.substring(newCurrentLine.indexOf(newValue), newCurrentLine.length);
+                currentLine = changeValue;
+            }
+
+            var lineSplit = currentLine.split("| ");
 
             try {
                 // '         |  Profiled   | Method   |   Method has    |   calls   | Num |LclV |AProp| CSE |   Perf  |bytes | x64 codesize| 
@@ -263,7 +297,8 @@ export class DotnetInsights {
                 currentMethod.name.indexOf("PMI") == -1 &&
                 currentMethod.name.indexOf("<ReadBufferAsync>") == -1 &&
                 currentMethod.name.indexOf("UnixConsoleStream") == -1 && 
-                currentMethod.name.indexOf("PrepareAll") == -1) {
+                currentMethod.name.indexOf("PrepareAll") == -1 &&
+                currentMethod.name.indexOf("WindowsConsoleStream") == -1) {
                 var userList = sortedMethods.get("user");
 
                 assert(userList != undefined);
