@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as assert from "assert"
 
 import { Method } from "./DotnetInightsTextEditor"
+import { type } from 'node:os';
 
 export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<Dependency> {
     private _onDidChangeTreeData: vscode.EventEmitter<Dependency | undefined | void> = new vscode.EventEmitter<Dependency | undefined | void>();
@@ -59,7 +60,18 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
                 return Promise.resolve(dependencies);
             }
             else if (element.label == "Types") {
-                return Promise.resolve([]);
+                var dependencies = [] as Dependency[];
+
+                assert(this.insights != undefined);
+                assert(this.insights?.types != undefined);
+
+                for (var index = 0; index < this.insights.types.length; ++index) {
+                    const currentType = this.insights.types[index];
+
+                    dependencies.push(new Dependency(currentType.name, undefined, currentType.size, vscode.TreeItemCollapsibleState.None, undefined, currentType.typeName));
+                }
+                
+                return Promise.resolve(dependencies);
             }
             else {
                 return Promise.resolve([]);
@@ -79,17 +91,23 @@ export class Dependency extends vscode.TreeItem {
         private readonly ilBytes: number | undefined,
         private readonly bytes: number | undefined,
         public readonly collapsibleState: vscode.TreeItemCollapsibleState,
-        public readonly command?: vscode.Command
+        public readonly command?: vscode.Command,
+        public readonly typeName? : string
     ) {
         super(label, collapsibleState);
 
         this.tooltip = `${this.label}`;
 
-        if (this.ilBytes == undefined || this.bytes == undefined) {
-            this.description = "";
+        if (typeName != undefined) {
+            this.description = `size: ${this.bytes} type: ${this.typeName}`;
         }
         else {
-            this.description = `ilBytes: ${this.ilBytes.toString()} codeSize: ${this.bytes.toString()}`;
+            if (this.ilBytes == undefined || this.bytes == undefined) {
+                this.description = "";
+            }
+            else {
+                this.description = `ilBytes: ${this.ilBytes.toString()} codeSize: ${this.bytes.toString()}`;
+            }
         }
     }
 
@@ -99,6 +117,25 @@ export class Dependency extends vscode.TreeItem {
     };
 
     contextValue = 'dependency';
+}
+
+class Type {
+    public name: string;
+    public baseType: string;
+    public typeName: string;
+    public size: number;
+    public nestedTypeCount: number;
+    public nestedType: Type[];
+
+    constructor(name: string, baseType: string, typeName: string, size: number, nestedTypeCount: number) {
+        this.name = name;
+        this.baseType = baseType;
+        this.typeName = typeName;
+        this.size = size;
+        this.nestedTypeCount = nestedTypeCount;
+        this.nestedType = [] as Type[];
+    }
+
 }
 
 export class DotnetInsights {
@@ -120,6 +157,7 @@ export class DotnetInsights {
     public usePmi: boolean
 
     public methods: Map<string, Method[]> | undefined;
+    public types: Type[] | undefined;
 
     public treeView: DotnetInsightsTreeDataProvider | undefined;
 
@@ -141,6 +179,7 @@ export class DotnetInsights {
 
         this.treeView = undefined;
         this.methods = undefined;
+        this.types = undefined;
 
         this.sdkVersions = [] as string[];
     }
@@ -155,7 +194,7 @@ export class DotnetInsights {
         this.usePmi = true;
     }
 
-    public updateForPath(path: string) {
+    public updateForPath(path: string, ilDasmOutput: string) {
         var pmiCommand = this.coreRunPath + " " + this.pmiPath + " " + "DRIVEALL-QUIET" + " " + path;
         console.log(pmiCommand);
 
@@ -165,7 +204,6 @@ export class DotnetInsights {
         // Used by pmi as it need FS access
         const cwd: string =  this.pmiTempDir;
         const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
-
 
         var childProcess = child.exec(pmiCommand, {
             maxBuffer: maxBufferSize,
@@ -184,6 +222,95 @@ export class DotnetInsights {
             this.methods = methods;
             this.treeView?.refresh();
         });
+
+        pmiCommand = this.coreRunPath + " " + this.pmiPath + " " + "DRIVEALL-QUIET-DUMPTYPES" + " " + path;
+        var typeChildProcess = child.exec(pmiCommand, {
+            maxBuffer: maxBufferSize,
+            "cwd": cwd
+        }, (error: any, output: string, stderr: string) => {
+            if (error) {
+                return;
+            }
+
+            var types = this.parseTypes(output, endofLine);
+            this.types = types;
+        });
+    }
+
+    private parseTypes(output: string, endofLine: vscode.EndOfLine) {
+        var eolChar = "\n";
+        if (endofLine == vscode.EndOfLine.CRLF) {
+            eolChar = "\r\n";
+        }
+
+        var types = [] as Type[];
+
+        // [<<Main>g__HelloWorldSync|0>d (class)]: [RuntimeType] Size: 20, nested types: 5
+        // - CHILD [<>1__state (struct)]: [System.Int32, System.Private.CoreLib, Version=5.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e] Size: 4, nested types: 0
+        // - CHILD [<>t__builder (struct)]: [System.Runtime.CompilerServices.AsyncTaskMethodBuilder, System.Private.CoreLib, Version=5.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e] Size: 0, nested types: 0
+        // - CHILD [<>4__this (class)]: [hello_world.Program+<>c__DisplayClass0_0, hello-world, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null] Size: 8, nested types: 0
+        // - CHILD [<client>5__1 (class)]: [System.Net.Http.HttpClient, System.Net.Http, Version=5.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a] Size: 8, nested types: 0
+        // - CHILD [<>u__1 (struct)]: [System.Runtime.CompilerServices.TaskAwaiter, System.Private.CoreLib, Version=5.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e] Size: 0, nested types: 0
+
+        var lines = output.split(eolChar);
+
+        var currentType: Type | undefined = undefined;
+        for (var index = 0; index < lines.length; ++index) {
+            var regex = /\[(.*) \((.*)\)\]: \[(.*)\] Size: (.*), nested types: (.*)/g;
+            const currentLine = lines[index];
+
+            if (currentLine.length == 0) {
+                continue;
+            }
+
+            if (currentLine.indexOf("- CHILD") == -1 && currentLine.indexOf("Completed assembly ") == -1) {
+                var splitLine = regex.exec(currentLine);
+
+                if (splitLine?.length != 6) {
+                    throw new Error("Unable to parse type");
+                }
+
+                var name = splitLine[1];
+                var baseType = splitLine[2];
+                var typeName = splitLine[3];
+                var size = parseInt(splitLine[4]);
+                var nestedTypeCount = parseInt(splitLine[5]);
+
+                if (currentType != undefined) {
+                    assert(currentType.nestedTypeCount == currentType.nestedType.length);
+                    types.push(currentType);
+                }
+
+                currentType = new Type(name, baseType, typeName, size, nestedTypeCount);
+            }
+            else if (currentLine.indexOf("- CHILD") != -1) {
+                var startTypeLine = currentLine.indexOf("- CHILD ");
+
+                var splitLine = regex.exec(currentLine.substring(startTypeLine, currentLine.length));
+
+                if (splitLine?.length != 6) {
+                    throw new Error("Unable to parse type");
+                }
+
+                var name = splitLine[1];
+                var baseType = splitLine[2];
+                var typeName = splitLine[3];
+                var size = parseInt(splitLine[4]);
+                var nestedTypeCount = parseInt(splitLine[5]);
+
+                var nestedType = new Type(name, baseType, typeName, size, nestedTypeCount);
+                currentType?.nestedType.push(nestedType);
+            }
+            else {
+                continue;
+            }
+        }
+
+        if (currentType != undefined) {
+            types.push(currentType);
+        }
+
+        return types;
     }
 
     private parseJitOrderOutput(jitOrder: string, eol: vscode.EndOfLine) {
