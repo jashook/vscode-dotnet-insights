@@ -31,13 +31,16 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
         if (this.insights?.methods?.size == 0) {
             return Promise.resolve([]);
         }
-        else if (this.insights != undefined && this.insights.methods != undefined && this.insights.methods.size > 0) {
+        else if (this.insights != undefined && this.insights.methods != undefined && this.insights.ilAsmVsCodePath != undefined && this.insights.methods.size > 0) {
             if (element == undefined) {
                 // Get the top level items
                 var topLevelDeps = [] as Dependency[];
 
-                topLevelDeps.push(new Dependency("Types", undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
-                topLevelDeps.push(new Dependency("Methods", undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
+                const ilAsmVsCodePath = this.insights.ilAsmVsCodePath;
+                assert(ilAsmVsCodePath != undefined);
+
+                topLevelDeps.push(new Dependency("Types", ilAsmVsCodePath, undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
+                topLevelDeps.push(new Dependency("Methods", ilAsmVsCodePath, undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
 
                 return Promise.resolve(topLevelDeps);
             }
@@ -52,9 +55,12 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
                     return Promise.resolve(dependencies);
                 }
 
+                const ilAsmVsCodePath = this.insights.ilAsmVsCodePath;
+                assert(ilAsmVsCodePath != undefined);
+
                 for (var index = 0; index < userMethods?.length; ++index) {
                     const currentMethod = userMethods[index];
-                    dependencies.push(new Dependency(currentMethod.name, currentMethod.ilBytes, currentMethod.totalCodeSize, vscode.TreeItemCollapsibleState.None));
+                    dependencies.push(new Dependency(currentMethod.name, ilAsmVsCodePath, currentMethod.ilBytes, currentMethod.totalCodeSize, vscode.TreeItemCollapsibleState.None));
                 }
 
                 return Promise.resolve(dependencies);
@@ -65,11 +71,34 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
                 assert(this.insights != undefined);
                 assert(this.insights?.types != undefined);
 
+                const ilAsmVsCodePath = this.insights.ilAsmVsCodePath;
+                assert(ilAsmVsCodePath != undefined);
+
                 for (var index = 0; index < this.insights.types.length; ++index) {
                     const currentType = this.insights.types[index];
 
                     const collapsedState = currentType.nestedType.length == 0 ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.Collapsed;
-                    dependencies.push(new Dependency(currentType.name, undefined, currentType.size, collapsedState, undefined, currentType.typeName, currentType));
+
+                    var dep = new Dependency(currentType.name, ilAsmVsCodePath, undefined, currentType.size, collapsedState, undefined, currentType.typeName, currentType);
+
+                    if (collapsedState == vscode.TreeItemCollapsibleState.None) {
+                        // We can add a command this has to be a type.
+
+                        if (this.insights.typeMap != undefined) {
+                            if (this.insights.typeMap.get(currentType.name) != undefined) {
+                                dep.command = {
+                                    command: "dotnetInsights.selectNode",
+                                    title: "View Type",
+                                    arguments: [dep]
+                                }
+
+                                dep.lineNumber = this.insights.typeMap.get(currentType.name);
+                            }
+                        }
+                        
+                    }
+
+                    dependencies.push(dep);
                 }
                 
                 return Promise.resolve(dependencies);
@@ -80,8 +109,29 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
                 for (var index = 0; index < element.type.nestedType.length; ++index) {
                     const currentType = element.type.nestedType[index];
 
+                    const ilAsmVsCodePath = this.insights.ilAsmVsCodePath;
+                    assert(ilAsmVsCodePath != undefined);
+
                     const collapsedState = currentType.nestedType.length == 0 ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.Collapsed;
-                    dependencies.push(new Dependency(currentType.name, undefined, currentType.size, collapsedState, undefined, currentType.typeName, currentType));
+                    const dep = new Dependency(currentType.name, ilAsmVsCodePath, undefined, currentType.size, collapsedState, undefined, currentType.typeName, currentType);
+        
+                    if (collapsedState == vscode.TreeItemCollapsibleState.None) {
+                        // We can add a command
+
+                        if (this.insights.fieldMap != undefined) {
+                            if (this.insights.fieldMap.get(currentType.name) != undefined) {
+                                dep.command = {
+                                    command: "dotnetInsights.selectNode",
+                                    title: "View Type",
+                                    arguments: [dep]
+                                }
+
+                                dep.lineNumber = this.insights.fieldMap.get(currentType.name);
+                            }
+                        }
+                    }
+
+                    dependencies.push(dep);
                 }
                 
                 return Promise.resolve(dependencies);
@@ -101,12 +151,14 @@ export class Dependency extends vscode.TreeItem {
 
     constructor(
         public readonly label: string,
+        public readonly fsPath: string,
         private readonly ilBytes: number | undefined,
         private readonly bytes: number | undefined,
         public readonly collapsibleState: vscode.TreeItemCollapsibleState,
-        public readonly command?: vscode.Command,
+        public command?: vscode.Command,
         public readonly typeName? : string,
-        public readonly type? : Type
+        public readonly type? : Type,
+        public lineNumber?: number
     ) {
         super(label, collapsibleState);
 
@@ -174,6 +226,12 @@ export class DotnetInsights {
     public methods: Map<string, Method[]> | undefined;
     public types: Type[] | undefined;
 
+    public ilAsmVsCodePath: string | undefined;
+    public dllPath: string | undefined;
+
+    public typeMap: Map<string, number> | undefined;
+    public fieldMap: Map<string, number> | undefined;
+
     public treeView: DotnetInsightsTreeDataProvider | undefined;
 
     constructor() {
@@ -196,6 +254,12 @@ export class DotnetInsights {
         this.methods = undefined;
         this.types = undefined;
 
+        this.typeMap = undefined;
+        this.fieldMap = undefined;
+
+        this.ilAsmVsCodePath = undefined;
+        this.dllPath = undefined;
+
         this.sdkVersions = [] as string[];
     }
 
@@ -209,7 +273,7 @@ export class DotnetInsights {
         this.usePmi = true;
     }
 
-    public updateForPath(path: string, ilDasmOutput: string) {
+    public updateForPath(ilAsmPath: string, path: string, ilDasmOutput: string) {
         var pmiCommand = this.coreRunPath + " " + this.pmiPath + " " + "PREPALL-QUIET" + " " + path;
         console.log(pmiCommand);
 
@@ -220,6 +284,9 @@ export class DotnetInsights {
         const cwd: string =  this.pmiTempDir;
         const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
 
+        var methodPromise = undefined;
+        var typePromise = undefined;
+        
         var childProcess = child.exec(pmiCommand, {
             maxBuffer: maxBufferSize,
             "cwd": cwd,
@@ -229,7 +296,8 @@ export class DotnetInsights {
             }
         }, (error: any, output: string, stderr: string) => {
             if (error) {
-                return;
+                console.error("Failed to execute pmi.");
+                console.error(error);
             }
 
             var methods = this.parseJitOrderOutput(output, endofLine);
@@ -239,17 +307,79 @@ export class DotnetInsights {
         });
 
         pmiCommand = this.coreRunPath + " " + this.pmiPath + " " + "PREPALL-QUIET-DUMPTYPES" + " " + path;
+        console.log(pmiCommand);
         var typeChildProcess = child.exec(pmiCommand, {
             maxBuffer: maxBufferSize,
             "cwd": cwd
         }, (error: any, output: string, stderr: string) => {
             if (error) {
-                return;
+                console.error("Failed to execute pmi for types.");
+                console.error(error);
             }
 
             var types = this.parseTypes(output, endofLine);
             this.types = types;
+            this.treeView?.refresh();
         });
+
+        const maps = this.parseIlDasmOutput(ilDasmOutput, endofLine);
+        this.typeMap = maps[0];
+        this.fieldMap = maps[1];
+
+        this.ilAsmVsCodePath = ilAsmPath;
+        this.dllPath = path;
+    }
+
+    private parseIlDasmOutput(output: string, eol: vscode.EndOfLine) {
+        var eolChar = "\n";
+        if (eol == vscode.EndOfLine.CRLF) {
+            eolChar = "\r\n";
+        }
+
+        var typeNumbers = new Map<string, number>();
+        var fieldNumbers = new Map<string, number>();
+
+        const lines = output.split(eolChar);
+        for (var index = 0; index < lines.length; ++index) {
+            const currentLine = lines[index];
+
+            if (currentLine.indexOf(".class") != -1) {
+                // Split out the class name
+                const classNameSplit = currentLine.split(" ")
+
+                var className = classNameSplit[classNameSplit.length - 1];
+
+                if (className[0] == "'" || className[0] == "\"") {
+                    const quoteChar = className[0] == "'" ? "'" : "\"";
+
+                    var lastIndex = className[className.length - 1] == quoteChar ? className.length - 1 : className.length;
+                    className = className.substring(1, lastIndex);
+                }
+
+                if (className.indexOf('.') != -1) {
+                    className = className.substring(className.indexOf('.'), className.length);
+                }
+
+                typeNumbers.set(className, index);
+            }
+            else if (currentLine.indexOf(".field") != -1) {
+                // Split out the class name
+                const classNameSplit = currentLine.split(" ")
+
+                var className = classNameSplit[classNameSplit.length - 1];
+
+                if (className[0] == "'" || className[0] == "\"") {
+                    const quoteChar = className[0] == "'" ? "'" : "\"";
+
+                    var lastIndex = className[className.length - 1] == quoteChar ? className.length - 1 : className.length;
+                    className = className.substring(1, lastIndex);
+                }
+
+                fieldNumbers.set(className, index);
+            }
+        }
+
+        return [typeNumbers, fieldNumbers];
     }
 
     private parseTypes(output: string, endofLine: vscode.EndOfLine) {
@@ -259,13 +389,6 @@ export class DotnetInsights {
         }
 
         var types = [] as Type[];
-
-        // [<<Main>g__HelloWorldSync|0>d (class)]: [RuntimeType] Size: 20, nested types: 5
-        // - CHILD [<>1__state (struct)]: [System.Int32, System.Private.CoreLib, Version=5.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e] Size: 4, nested types: 0
-        // - CHILD [<>t__builder (struct)]: [System.Runtime.CompilerServices.AsyncTaskMethodBuilder, System.Private.CoreLib, Version=5.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e] Size: 0, nested types: 0
-        // - CHILD [<>4__this (class)]: [hello_world.Program+<>c__DisplayClass0_0, hello-world, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null] Size: 8, nested types: 0
-        // - CHILD [<client>5__1 (class)]: [System.Net.Http.HttpClient, System.Net.Http, Version=5.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a] Size: 8, nested types: 0
-        // - CHILD [<>u__1 (struct)]: [System.Runtime.CompilerServices.TaskAwaiter, System.Private.CoreLib, Version=5.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e] Size: 0, nested types: 0
 
         var lines = output.split(eolChar);
 

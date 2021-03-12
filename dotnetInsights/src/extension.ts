@@ -36,6 +36,21 @@ export function activate(context: vscode.ExtensionContext) {
         let disposableIlDasm = vscode.commands.registerCommand('dotnetInsights.useIlDasm', () => {
             insights.setUseIldasm();
         });
+
+        vscode.commands.registerCommand("dotnetInsights.selectNode", (treeItem: Dependency) => {
+            if (treeItem.lineNumber != undefined) {
+                const lineNumber: number = treeItem.lineNumber;
+
+                vscode.workspace.openTextDocument(treeItem.fsPath).then(doc => {
+                    vscode.window.showTextDocument(doc).then(e => {
+                        const currentVisibleRange = e.visibleRanges[0];
+                        const size = currentVisibleRange.end.line - currentVisibleRange.start.line;
+
+                        e.revealRange(new vscode.Range(lineNumber, 0, lineNumber + size, 0));
+                    });
+                });
+            }
+        });
         
         context.subscriptions.push(DotnetInsightsTextEditorProvider.register(context, insights));
         context.subscriptions.push(disposablePmi);

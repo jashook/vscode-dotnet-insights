@@ -105,7 +105,7 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
 
         // After the text editor has loaded we will want to update the tree view
         if (this.insights.useIldasm) {
-            this.insights.updateForPath(uri.fsPath, output);
+            this.insights.updateForPath(outputFilePath, uri.fsPath, output);
         }
         
         var document = new DotnetInsightsDocument(uri,
