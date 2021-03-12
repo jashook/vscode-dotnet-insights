@@ -68,7 +68,20 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
                 for (var index = 0; index < this.insights.types.length; ++index) {
                     const currentType = this.insights.types[index];
 
-                    dependencies.push(new Dependency(currentType.name, undefined, currentType.size, vscode.TreeItemCollapsibleState.None, undefined, currentType.typeName));
+                    const collapsedState = currentType.nestedType.length == 0 ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.Collapsed;
+                    dependencies.push(new Dependency(currentType.name, undefined, currentType.size, collapsedState, undefined, currentType.typeName, currentType));
+                }
+                
+                return Promise.resolve(dependencies);
+            }
+            else if (element.type != undefined) {
+                var dependencies = [] as Dependency[];
+
+                for (var index = 0; index < element.type.nestedType.length; ++index) {
+                    const currentType = element.type.nestedType[index];
+
+                    const collapsedState = currentType.nestedType.length == 0 ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.Collapsed;
+                    dependencies.push(new Dependency(currentType.name, undefined, currentType.size, collapsedState, undefined, currentType.typeName, currentType));
                 }
                 
                 return Promise.resolve(dependencies);
@@ -92,7 +105,8 @@ export class Dependency extends vscode.TreeItem {
         private readonly bytes: number | undefined,
         public readonly collapsibleState: vscode.TreeItemCollapsibleState,
         public readonly command?: vscode.Command,
-        public readonly typeName? : string
+        public readonly typeName? : string,
+        public readonly type? : Type
     ) {
         super(label, collapsibleState);
 
@@ -100,6 +114,7 @@ export class Dependency extends vscode.TreeItem {
 
         if (typeName != undefined) {
             this.description = `size: ${this.bytes} type: ${this.typeName}`;
+            this.type = type;
         }
         else {
             if (this.ilBytes == undefined || this.bytes == undefined) {
@@ -195,7 +210,7 @@ export class DotnetInsights {
     }
 
     public updateForPath(path: string, ilDasmOutput: string) {
-        var pmiCommand = this.coreRunPath + " " + this.pmiPath + " " + "DRIVEALL-QUIET" + " " + path;
+        var pmiCommand = this.coreRunPath + " " + this.pmiPath + " " + "PREPALL-QUIET" + " " + path;
         console.log(pmiCommand);
 
         var mb = 1024 * 1024;
@@ -223,7 +238,7 @@ export class DotnetInsights {
             this.treeView?.refresh();
         });
 
-        pmiCommand = this.coreRunPath + " " + this.pmiPath + " " + "DRIVEALL-QUIET-DUMPTYPES" + " " + path;
+        pmiCommand = this.coreRunPath + " " + this.pmiPath + " " + "PREPALL-QUIET-DUMPTYPES" + " " + path;
         var typeChildProcess = child.exec(pmiCommand, {
             maxBuffer: maxBufferSize,
             "cwd": cwd
@@ -277,7 +292,9 @@ export class DotnetInsights {
                 var nestedTypeCount = parseInt(splitLine[5]);
 
                 if (currentType != undefined) {
-                    assert(currentType.nestedTypeCount == currentType.nestedType.length);
+                    if(currentType.nestedTypeCount != currentType.nestedType.length) {
+                        throw new Error("Error");
+                    }
                     types.push(currentType);
                 }
 

@@ -66,7 +66,7 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
         }
         else {
             // We will run pmi then render those contents
-            var pmiCommand = this.insights.coreRunPath + " " + this.insights.pmiPath + " " + "DRIVEALL" + " " + uri.fsPath;
+            var pmiCommand = this.insights.coreRunPath + " " + this.insights.pmiPath + " " + "PREPALL" + " " + uri.fsPath;
             console.log(pmiCommand);
 
             var output = child.execSync(pmiCommand, {
