@@ -51,6 +51,46 @@ export function activate(context: vscode.ExtensionContext) {
                 });
             }
         });
+
+        vscode.commands.registerCommand("dotnetInsights.selectMethod", (treeItem: Dependency, insights: DotnetInsights) => {
+            if (treeItem.label != undefined) {
+                var pmiCommand = insights.coreRunPath + " " + insights.pmiPath + " " + "PREPALL-QUIET" + " " + treeItem.dllPath;
+                console.log(pmiCommand);
+
+                var mb = 1024 * 1024;
+                var maxBufferSize = 512 * mb;
+
+                const selectMethodCwd = path.join(insights.pmiOutputPath, "selectMethod");
+
+                if  (!fs.existsSync(selectMethodCwd)) {
+                    fs.mkdirSync(selectMethodCwd);
+                }
+
+                const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+
+                const outputFileName = path.join(insights.pmiOutputPath, treeItem.label + ".asm");
+                
+                var childProcess = child.exec(pmiCommand, {
+                    maxBuffer: maxBufferSize,
+                    "cwd": selectMethodCwd,
+                    "env": {
+                        "COMPlus_JitOrder": "1",
+                        "COMPlus_JitDisasm": `${treeItem.label}`
+                    }
+                }, (error: any, output: string, stderr: string) => {
+                    if (error) {
+                        console.error("Failed to execute pmi.");
+                        console.error(error);
+                    }
+
+                    fs.writeFile(outputFileName, output, () => {
+                        vscode.workspace.openTextDocument(treeItem.fsPath).then(doc => {
+                            vscode.window.showTextDocument(doc, 1);
+                        });
+                    });
+                });
+            }
+        });
         
         context.subscriptions.push(DotnetInsightsTextEditorProvider.register(context, insights));
         context.subscriptions.push(disposablePmi);
