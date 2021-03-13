@@ -39,8 +39,8 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
                 const ilAsmVsCodePath = this.insights.ilAsmVsCodePath;
                 assert(ilAsmVsCodePath != undefined);
 
-                topLevelDeps.push(new Dependency("Types", ilAsmVsCodePath, undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
-                topLevelDeps.push(new Dependency("Methods", ilAsmVsCodePath, undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
+                topLevelDeps.push(new Dependency("Types", false, false, ilAsmVsCodePath, undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
+                topLevelDeps.push(new Dependency("Methods", false, false, ilAsmVsCodePath, undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
 
                 return Promise.resolve(topLevelDeps);
             }
@@ -60,7 +60,7 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
 
                 for (var index = 0; index < userMethods?.length; ++index) {
                     const currentMethod = userMethods[index];
-                    dependencies.push(new Dependency(currentMethod.name, ilAsmVsCodePath, currentMethod.ilBytes, currentMethod.totalCodeSize, vscode.TreeItemCollapsibleState.None));
+                    dependencies.push(new Dependency(currentMethod.name, true, false, ilAsmVsCodePath, currentMethod.ilBytes, currentMethod.totalCodeSize, vscode.TreeItemCollapsibleState.None));
                 }
 
                 return Promise.resolve(dependencies);
@@ -79,7 +79,7 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
 
                     const collapsedState = currentType.nestedType.length == 0 ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.Collapsed;
 
-                    var dep = new Dependency(currentType.name, ilAsmVsCodePath, undefined, currentType.size, collapsedState, undefined, currentType.typeName, currentType);
+                    var dep = new Dependency(currentType.name, false, true, ilAsmVsCodePath, undefined, currentType.size, collapsedState, undefined, currentType.typeName, currentType);
 
                     if (collapsedState == vscode.TreeItemCollapsibleState.None) {
                         // We can add a command this has to be a type.
@@ -112,8 +112,10 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
                     const ilAsmVsCodePath = this.insights.ilAsmVsCodePath;
                     assert(ilAsmVsCodePath != undefined);
 
+                    const isType = element.isType;
+
                     const collapsedState = currentType.nestedType.length == 0 ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.Collapsed;
-                    const dep = new Dependency(currentType.name, ilAsmVsCodePath, undefined, currentType.size, collapsedState, undefined, currentType.typeName, currentType);
+                    const dep = new Dependency(currentType.name, !isType, isType, ilAsmVsCodePath, undefined, currentType.size, collapsedState, undefined, currentType.typeName, currentType);
         
                     if (collapsedState == vscode.TreeItemCollapsibleState.None) {
                         // We can add a command
@@ -151,6 +153,8 @@ export class Dependency extends vscode.TreeItem {
 
     constructor(
         public readonly label: string,
+        public readonly isMethod: boolean,
+        public readonly isType: boolean,
         public readonly fsPath: string,
         private readonly ilBytes: number | undefined,
         private readonly bytes: number | undefined,
