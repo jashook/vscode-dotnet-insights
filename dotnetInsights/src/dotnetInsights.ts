@@ -273,13 +273,24 @@ export class DotnetInsights {
         this.usePmi = true;
     }
 
-    public updateForPath(ilAsmPath: string, path: string, ilDasmOutput: string) {
-        var pmiCommand = this.coreRunPath + " " + this.pmiPath + " " + "PREPALL-QUIET" + " " + path;
+    public updateForPath(ilAsmPath: string, fsPath: string, ilDasmOutput: string) {
+        var pmiCommand = this.coreRunPath + " " + this.pmiPath + " " + "PREPALL-QUIET" + " " + fsPath;
         console.log(pmiCommand);
 
         var mb = 1024 * 1024;
         var maxBufferSize = 512 * mb;
         
+        const jitOrderCwd = path.join(this.pmiOutputPath, "jitOrder");
+        const typeCwd = path.join(this.pmiOutputPath, "types");
+
+        if  (!fs.existsSync(jitOrderCwd)) {
+            fs.mkdirSync(jitOrderCwd);
+        }
+
+        if (!fs.existsSync(typeCwd)) {
+            fs.mkdirSync(typeCwd);
+        }
+
         // Used by pmi as it need FS access
         const cwd: string =  this.pmiTempDir;
         const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
@@ -289,7 +300,7 @@ export class DotnetInsights {
         
         var childProcess = child.exec(pmiCommand, {
             maxBuffer: maxBufferSize,
-            "cwd": cwd,
+            "cwd": jitOrderCwd,
             "env": {
                 "COMPlus_JitOrder": "1",
                 "COMPlus_TieredCompilation": "0"
@@ -306,11 +317,11 @@ export class DotnetInsights {
             this.treeView?.refresh();
         });
 
-        pmiCommand = this.coreRunPath + " " + this.pmiPath + " " + "PREPALL-QUIET-DUMPTYPES" + " " + path;
+        pmiCommand = this.coreRunPath + " " + this.pmiPath + " " + "PREPALL-QUIET-DUMPTYPES" + " " + fsPath;
         console.log(pmiCommand);
         var typeChildProcess = child.exec(pmiCommand, {
             maxBuffer: maxBufferSize,
-            "cwd": cwd
+            "cwd": typeCwd
         }, (error: any, output: string, stderr: string) => {
             if (error) {
                 console.error("Failed to execute pmi for types.");
@@ -327,7 +338,7 @@ export class DotnetInsights {
         this.fieldMap = maps[1];
 
         this.ilAsmVsCodePath = ilAsmPath;
-        this.dllPath = path;
+        this.dllPath = fsPath;
     }
 
     private parseIlDasmOutput(output: string, eol: vscode.EndOfLine) {
@@ -388,9 +399,11 @@ export class DotnetInsights {
             eolChar = "\r\n";
         }
 
+        output.replace(eolChar, "\n");
+
         var types = [] as Type[];
 
-        var lines = output.split(eolChar);
+        var lines = output.split("\n");
 
         var currentType: Type | undefined = undefined;
         for (var index = 0; index < lines.length; ++index) {
