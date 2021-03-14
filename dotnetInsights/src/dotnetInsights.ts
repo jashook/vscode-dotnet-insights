@@ -64,7 +64,7 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
                     var dep = new Dependency(currentMethod.name, true, false, ilAsmVsCodePath, dllPath, currentMethod.ilBytes, currentMethod.totalCodeSize, vscode.TreeItemCollapsibleState.None);
 
                     dep.command = {
-                        command: "dotnetInsights.selectMethod",
+                        command: "dotnetInsights.tier1",
                         title: "View DASM",
                         arguments: [dep, this.insights]
                     }

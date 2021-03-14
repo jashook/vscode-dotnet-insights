@@ -48,14 +48,34 @@
     },
     "commands": [
       {
-        "command": "dotnetInsights.usePmi",
-        "title": "Switch to use PMI"
+        "command": "dotnetInsights.minOpts",
+        "title": "Min Opts"
       },
       {
-        "command": "dotnetInsights.useIlDasm",
-        "title": "Switch to use ILDasm"
+        "command": "dotnetInsights.tier1",
+        "title": "Tier 1"
+      },
+      {
+        "command": "dotnetInsights.diff",
+        "title": "Diff"
       }
     ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "dotnetInsights.minOpts",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.tier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diff",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        }
+      ]
+    },
     "languages": [
       {
         "id": "ildasm",
@@ -115,5 +135,8 @@
     "mocha": "^8.2.1",
     "typescript": "^4.1.3",
     "vscode-test": "^1.5.0"
+  },
+  "dependencies": {
+    "uuid": "^8.3.2"
   }
 }

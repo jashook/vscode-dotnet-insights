@@ -9,6 +9,8 @@ import * as vscode from 'vscode';
 import * as os from "os"
 import * as assert from "assert";
 
+import * as crypto from "crypto";
+
 import { DotnetInsightsTreeDataProvider, Dependency, DotnetInsights } from './dotnetInsights';
 import { DotnetInsightsTextEditorProvider } from "./DotnetInightsTextEditor";
 
@@ -29,12 +31,207 @@ export function activate(context: vscode.ExtensionContext) {
         const dotnetInsightsTreeDataProvider = new DotnetInsightsTreeDataProvider(insights);
         vscode.window.registerTreeDataProvider('dotnetInsights', dotnetInsightsTreeDataProvider);
 
-        let disposablePmi = vscode.commands.registerCommand('dotnetInsights.usePmi', () => {
-            insights.setUsePmi();
+        vscode.commands.registerCommand("dotnetInsights.diff", (treeItem: Dependency) => {
+            if (treeItem.label != undefined) {
+                var pmiCommand = insights.coreRunPath + " " + insights.pmiPath + " " + "PREPALL-QUIET" + " " + treeItem.dllPath;
+                console.log(pmiCommand);
+
+                var mb = 1024 * 1024;
+                var maxBufferSize = 512 * mb;
+
+                const selectMethodCwd = path.join(insights.pmiOutputPath, "selectMethod");
+
+                if  (!fs.existsSync(selectMethodCwd)) {
+                    fs.mkdirSync(selectMethodCwd);
+                }
+
+                const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+
+                var id = crypto.randomBytes(16).toString("hex");
+                var minOptsOutputFileName = path.join(insights.pmiOutputPath, id + ".asm");
+                
+                var childProcess = child.exec(pmiCommand, {
+                    maxBuffer: maxBufferSize,
+                    "cwd": selectMethodCwd,
+                    "env": {
+                        "COMPlus_JitDisasm": `${treeItem.label}`,
+                        "COMPlus_TieredCompilation": "0",
+                        "COMPlus_JitMinOpts": "1",
+                        "COMPlus_JitDiffableDasm": "1"
+                    }
+                }, (error: any, output: string, stderr: string) => {
+                    if (error) {
+                        console.error("Failed to execute pmi.");
+                        console.error(error);
+                    }
+
+                    var replaceRegex = /completed assembly.*\n/i;
+                    if (os.platform() == "win32") {
+                        replaceRegex = /completed assembly.*\r\n/i;
+                    }
+
+                    output = output.replace(replaceRegex, "");
+
+                    fs.writeFile(minOptsOutputFileName, output, (error) => {
+                        if (error) {
+                            return;
+                        }
+
+                        id = crypto.randomBytes(16).toString("hex");
+                        var outputFileName = path.join(insights.pmiOutputPath, id + ".asm");
+                        
+                        childProcess = child.exec(pmiCommand, {
+                            maxBuffer: maxBufferSize,
+                            "cwd": selectMethodCwd,
+                            "env": {
+                                "COMPlus_JitDiffableDasm": "1",
+                                "COMPlus_TieredCompilation": "0",
+                                "COMPlus_JitDisasm": `${treeItem.label}`
+                            }
+                        }, (error: any, output: string, stderr: string) => {
+                            if (error) {
+                                console.error("Failed to execute pmi.");
+                                console.error(error);
+                            }
+
+                            var replaceRegex = /completed assembly.*\n/i;
+                            if (os.platform() == "win32") {
+                                replaceRegex = /completed assembly.*\r\n/i;
+                            }
+
+                            output = output.replace(replaceRegex, "");
+
+                            fs.writeFile(outputFileName, output, (error) => {
+                                if (error) {
+                                    return;
+                                }
+                                // vscode.workspace.openTextDocument(minOptsOutputFileName).then(minOpt => {
+                                //     vscode.workspace.openTextDocument(outputFileName).then(doc => {
+                                //         // left - Left-hand side resource of the diff editor
+                                //         // right - Right-hand side resource of the diff editor
+                                //         // title - (optional) Human readable title for the diff editor
+                                //         vscode.commands.executeCommand("vscode.diff", [minOpt, doc, "MinOpts/Tier 1 Diff"]);
+                                //     });
+                                // });
+
+                                // left - Left-hand side resource of the diff editor
+                                // right - Right-hand side resource of the diff editor
+                                // title - (optional) Human readable title for the diff editor
+                                
+                                console.log("Tier 0 file path: " + minOptsOutputFileName);
+                                console.log("Tier 1 file path: " + outputFileName);
+
+                                vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(minOptsOutputFileName), vscode.Uri.file(outputFileName), "Tier 0/Tier 1 Diff");
+                            });
+                        });
+                    });
+                });
+            }
         });
-    
-        let disposableIlDasm = vscode.commands.registerCommand('dotnetInsights.useIlDasm', () => {
-            insights.setUseIldasm();
+
+        vscode.commands.registerCommand('dotnetInsights.minOpts', (treeItem: Dependency) => {
+            if (treeItem.label != undefined) {
+                var pmiCommand = insights.coreRunPath + " " + insights.pmiPath + " " + "PREPALL-QUIET" + " " + treeItem.dllPath;
+                console.log(pmiCommand);
+
+                var mb = 1024 * 1024;
+                var maxBufferSize = 512 * mb;
+
+                const selectMethodCwd = path.join(insights.pmiOutputPath, "selectMethod");
+
+                if  (!fs.existsSync(selectMethodCwd)) {
+                    fs.mkdirSync(selectMethodCwd);
+                }
+
+                const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+
+                const id = crypto.randomBytes(16).toString("hex");
+
+                const outputFileName = path.join(insights.pmiOutputPath, id + ".asm");
+                
+                var childProcess = child.exec(pmiCommand, {
+                    maxBuffer: maxBufferSize,
+                    "cwd": selectMethodCwd,
+                    "env": {
+                        "COMPlus_JitDisasm": `${treeItem.label}`,
+                        "COMPlus_TieredCompilation": "0",
+                        "COMPlus_JitMinOpts": "1"
+                    }
+                }, (error: any, output: string, stderr: string) => {
+                    if (error) {
+                        console.error("Failed to execute pmi.");
+                        console.error(error);
+                    }
+
+                    var replaceRegex = /completed assembly.*\n/i;
+                    if (os.platform() == "win32") {
+                        replaceRegex = /completed assembly.*\r\n/i;
+                    }
+
+                    output = output.replace(replaceRegex, "");
+
+                    fs.writeFile(outputFileName, output, (error) => {
+                        if (error) {
+                            return;
+                        }
+                        vscode.workspace.openTextDocument(outputFileName).then(doc => {
+                            vscode.window.showTextDocument(doc, 1);
+                        });
+                    });
+                });
+            }
+        });
+
+        vscode.commands.registerCommand("dotnetInsights.tier1", (treeItem: Dependency) => {
+            if (treeItem.label != undefined) {
+                var pmiCommand = insights.coreRunPath + " " + insights.pmiPath + " " + "PREPALL-QUIET" + " " + treeItem.dllPath;
+                console.log(pmiCommand);
+
+                var mb = 1024 * 1024;
+                var maxBufferSize = 512 * mb;
+
+                const selectMethodCwd = path.join(insights.pmiOutputPath, "selectMethod");
+
+                if  (!fs.existsSync(selectMethodCwd)) {
+                    fs.mkdirSync(selectMethodCwd);
+                }
+
+                const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+
+                const id = crypto.randomBytes(16).toString("hex");
+
+                const outputFileName = path.join(insights.pmiOutputPath, id + ".asm");
+                
+                var childProcess = child.exec(pmiCommand, {
+                    maxBuffer: maxBufferSize,
+                    "cwd": selectMethodCwd,
+                    "env": {
+                        "COMPlus_JitDisasm": `${treeItem.label}`,
+                        "COMPlus_TieredCompilation": "0"
+                    }
+                }, (error: any, output: string, stderr: string) => {
+                    if (error) {
+                        console.error("Failed to execute pmi.");
+                        console.error(error);
+                    }
+
+                    var replaceRegex = /completed assembly.*\n/i;
+                    if (os.platform() == "win32") {
+                        replaceRegex = /completed assembly.*\r\n/i;
+                    }
+
+                    output = output.replace(replaceRegex, "");
+
+                    fs.writeFile(outputFileName, output, (error) => {
+                        if (error) {
+                            return;
+                        }
+                        vscode.workspace.openTextDocument(outputFileName).then(doc => {
+                            vscode.window.showTextDocument(doc, 1);
+                        });
+                    });
+                });
+            }
         });
 
         vscode.commands.registerCommand("dotnetInsights.selectNode", (treeItem: Dependency) => {
@@ -52,49 +249,59 @@ export function activate(context: vscode.ExtensionContext) {
             }
         });
 
-        vscode.commands.registerCommand("dotnetInsights.selectMethod", (treeItem: Dependency, insights: DotnetInsights) => {
-            if (treeItem.label != undefined) {
-                var pmiCommand = insights.coreRunPath + " " + insights.pmiPath + " " + "PREPALL-QUIET" + " " + treeItem.dllPath;
-                console.log(pmiCommand);
+        // vscode.commands.registerCommand("dotnetInsights.selectMethod", (treeItem: Dependency, insights: DotnetInsights) => {
+        //     if (treeItem.label != undefined) {
+        //         var pmiCommand = insights.coreRunPath + " " + insights.pmiPath + " " + "PREPALL-QUIET" + " " + treeItem.dllPath;
+        //         console.log(pmiCommand);
 
-                var mb = 1024 * 1024;
-                var maxBufferSize = 512 * mb;
+        //         var mb = 1024 * 1024;
+        //         var maxBufferSize = 512 * mb;
 
-                const selectMethodCwd = path.join(insights.pmiOutputPath, "selectMethod");
+        //         const selectMethodCwd = path.join(insights.pmiOutputPath, "selectMethod");
 
-                if  (!fs.existsSync(selectMethodCwd)) {
-                    fs.mkdirSync(selectMethodCwd);
-                }
+        //         if  (!fs.existsSync(selectMethodCwd)) {
+        //             fs.mkdirSync(selectMethodCwd);
+        //         }
 
-                const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+        //         const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
 
-                const outputFileName = path.join(insights.pmiOutputPath, treeItem.label + ".asm");
+        //         const id = crypto.randomBytes(16).toString("hex");
+
+        //         const outputFileName = path.join(insights.pmiOutputPath, id + ".asm");
                 
-                var childProcess = child.exec(pmiCommand, {
-                    maxBuffer: maxBufferSize,
-                    "cwd": selectMethodCwd,
-                    "env": {
-                        "COMPlus_JitOrder": "1",
-                        "COMPlus_JitDisasm": `${treeItem.label}`
-                    }
-                }, (error: any, output: string, stderr: string) => {
-                    if (error) {
-                        console.error("Failed to execute pmi.");
-                        console.error(error);
-                    }
+        //         var childProcess = child.exec(pmiCommand, {
+        //             maxBuffer: maxBufferSize,
+        //             "cwd": selectMethodCwd,
+        //             "env": {
+        //                 "COMPlus_JitDisasm": `${treeItem.label}`,
+        //                 "COMPlus_TieredCompilation": "0"
+        //             }
+        //         }, (error: any, output: string, stderr: string) => {
+        //             if (error) {
+        //                 console.error("Failed to execute pmi.");
+        //                 console.error(error);
+        //             }
 
-                    fs.writeFile(outputFileName, output, () => {
-                        vscode.workspace.openTextDocument(treeItem.fsPath).then(doc => {
-                            vscode.window.showTextDocument(doc, 1);
-                        });
-                    });
-                });
-            }
-        });
+        //             var replaceRegex = /completed assembly.*\n/i;
+        //             if (os.platform() == "win32") {
+        //                 replaceRegex = /completed assembly.*\r\n/i;
+        //             }
+
+        //             output = output.replace(replaceRegex, "");
+
+        //             fs.writeFile(outputFileName, output, (error) => {
+        //                 if (error) {
+        //                     return;
+        //                 }
+        //                 vscode.workspace.openTextDocument(outputFileName).then(doc => {
+        //                     vscode.window.showTextDocument(doc, 1);
+        //                 });
+        //             });
+        //         });
+        //     }
+        // });
         
         context.subscriptions.push(DotnetInsightsTextEditorProvider.register(context, insights));
-        context.subscriptions.push(disposablePmi);
-        context.subscriptions.push(disposableIlDasm);
     });
 }
 
