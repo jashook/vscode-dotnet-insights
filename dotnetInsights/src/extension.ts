@@ -23,7 +23,7 @@ export function activate(context: vscode.ExtensionContext) {
     var insights = new DotnetInsights();
 
     // Setup
-    setup(insights).then((success: boolean) => {
+    setup(context, insights).then((success: boolean) => {
         if (!success) {
             return;
         }
@@ -442,7 +442,7 @@ function checkForDotnetSdk(insights: DotnetInsights) : Thenable<boolean> {
     });
 }
 
-function setup(insights: DotnetInsights) : Thenable<boolean>  {
+function setup(context: vscode.ExtensionContext, insights: DotnetInsights) : Thenable<boolean>  {
     console.log("Setting up dotnetInsights.");
 
     const config = vscode.workspace.getConfiguration();
@@ -453,6 +453,10 @@ function setup(insights: DotnetInsights) : Thenable<boolean>  {
     var coreRoot = dotnetInsightsSettings["coreRoot"];
 
     var outputPath = dotnetInsightsSettings["outputPath"];
+
+    if (outputPath == undefined) {
+        outputPath = context.storageUri?.fsPath;
+    }
 
     if (ilDasmPath == undefined) {
         vscode.window.showErrorMessage("dotnet-insights.ilDasmPath must be set.");
