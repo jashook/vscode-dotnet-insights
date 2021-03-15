@@ -8,6 +8,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import * as os from "os"
 import * as assert from "assert";
+import * as http from "http"
 
 import * as crypto from "crypto";
 
@@ -22,8 +23,12 @@ export function activate(context: vscode.ExtensionContext) {
 
     var insights = new DotnetInsights();
 
+    
+
+    const lastestVersionNumber = "v0.1";
+
     // Setup
-    setup(context, insights).then((success: boolean) => {
+    setup(lastestVersionNumber, context, insights).then((success: boolean) => {
         if (!success) {
             return;
         }
@@ -442,7 +447,19 @@ function checkForDotnetSdk(insights: DotnetInsights) : Thenable<boolean> {
     });
 }
 
-function setup(context: vscode.ExtensionContext, insights: DotnetInsights) : Thenable<boolean>  {
+function download_and_unzip(url: string, unzipFolder: string) : Thenable<void> {
+    const unzipName = path.join(unzipFolder, crypto.randomBytes(16).toString("hex") + ".zip");
+
+
+
+    return Promise.resolve();
+}
+
+function download_runtimes(unzipFolder: string) : Thenable<void> {
+    
+}
+
+function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, insights: DotnetInsights) : Thenable<boolean>  {
     console.log("Setting up dotnetInsights.");
 
     const config = vscode.workspace.getConfiguration();
@@ -458,20 +475,60 @@ function setup(context: vscode.ExtensionContext, insights: DotnetInsights) : The
         outputPath = context.storageUri?.fsPath;
     }
 
-    if (ilDasmPath == undefined) {
-        vscode.window.showErrorMessage("dotnet-insights.ilDasmPath must be set.");
+    if (outputPath == "" || outputPath == undefined) {
+        console.error("outputPath must be set!");
+        assert(false);
+    }
+
+    if (!fs.existsSync(outputPath)) {
+        // Create the folder
+        fs.mkdirSync(outputPath);
+    }
+
+    var ilDasmOutputPath = path.join(outputPath, "ilDasm");
+
+    if (!fs.existsSync(ilDasmOutputPath)) {
+        // Create the folder
+        fs.mkdirSync(ilDasmOutputPath);
+    }
+
+    var pmiOutputPath = path.join(outputPath, "PMI");
+
+    if (!fs.existsSync(pmiOutputPath)) {
+        fs.mkdirSync(pmiOutputPath);
+    }
+
+    const pmiTempDir = path.join(outputPath, "pmiTemp");
+
+    if (!fs.existsSync(pmiTempDir)) {
+        fs.mkdirSync(pmiTempDir);
+    }
+
+    if (pmiPath == undefined || ilDasmPath == undefined || coreRoot == undefined) {
+        console.error("PMI Path and ILDasm Path must be set.");
+
         return Promise.resolve(false);
     }
+
+    // https://github.com/jashook/vscode-dotnet-insights/releases/download/v0.1/win-x64-net5.0-pmi.zip
+
+    var osVer = "osx";
+    if (os.platform() == 'win32') {
+        osVer = "win";
+    }
+    else if (os.platform() != "darwin") {
+        osVer = "linux";
+    }
+
+    // ildasm comes with the core_root
+    if (ilDasmPath == undefined || coreRoot == undefined) {
+        const coreRootPath = path.join(outputPath, "coreRoot");
+
+        download_runtimes(coreRootPath);
+    }
+
     else if (pmiPath == undefined) {
         vscode.window.showErrorMessage("dotnet-insights.pmiPath must be set.");
-        return Promise.resolve(false);
-    }
-    else if (coreRoot == undefined) {
-        vscode.window.showErrorMessage("dotnet-insights.coreRoot must be set.");
-        return Promise.resolve(false);
-    }
-    else if (outputPath == undefined) {
-        vscode.window.showErrorMessage("dotnet-insights.outputPath must be set.");
         return Promise.resolve(false);
     }
 
@@ -521,41 +578,6 @@ function setup(context: vscode.ExtensionContext, insights: DotnetInsights) : The
         else {
             outputPath = outputPath["windows"];
         }
-    }
-
-    if (outputPath == "" || outputPath == undefined) {
-        console.error("outputPath must be set!");
-        assert(false);
-    }
-
-    if (!fs.existsSync(outputPath)) {
-        // Create the folder
-        fs.mkdirSync(outputPath);
-    }
-
-    var ilDasmOutputPath = path.join(outputPath, "ilDasm");
-
-    if (!fs.existsSync(ilDasmOutputPath)) {
-        // Create the folder
-        fs.mkdirSync(ilDasmOutputPath);
-    }
-
-    var pmiOutputPath = path.join(outputPath, "PMI");
-
-    if (!fs.existsSync(pmiOutputPath)) {
-        fs.mkdirSync(pmiOutputPath);
-    }
-
-    const pmiTempDir = path.join(outputPath, "pmiTemp");
-
-    if (!fs.existsSync(pmiTempDir)) {
-        fs.mkdirSync(pmiTempDir);
-    }
-
-    if (pmiPath == undefined || ilDasmPath == undefined || coreRoot == undefined) {
-        console.error("PMI Path and ILDasm Path must be set.");
-
-        return Promise.resolve(false);
     }
 
     insights.ilDasmPath = ilDasmPath;
