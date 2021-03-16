@@ -1,8 +1,12 @@
 {
   "name": "dotnetInsights",
-  "displayName": "",
-  "description": "Insights into you dotnet applications",
-  "version": "0.0.1",
+  "displayName": ".NET Insights",
+  "publisher": "jashoo",
+  "description": "Drill into .NET DLLs by viewing the IL and compiled code. Relies on ildasm and a public .NET JIT tool PMI.",
+  "version": "0.0.3",
+  "repository": {
+    "url": "https://github.com/jashook/vscode-dotnet-insights"
+  },
   "engines": {
     "vscode": "^1.54.0"
   },

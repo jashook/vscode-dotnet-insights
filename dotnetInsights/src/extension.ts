@@ -7,7 +7,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import * as os from "os"
-import * as assert from "assert";
 import * as http from "http"
 
 import * as request from 'request';
@@ -18,18 +17,15 @@ import * as crypto from "crypto";
 
 import { DotnetInsightsTreeDataProvider, Dependency, DotnetInsights } from './dotnetInsights';
 import { DotnetInsightsTextEditorProvider } from "./DotnetInightsTextEditor";
-import { promises } from 'node:dns';
-import { platform } from 'node:os';
-import { rejects } from 'node:assert';
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
 export function activate(context: vscode.ExtensionContext) {
-    console.log('dotnetInsights: started');
+    const outputChannel = vscode.window.createOutputChannel(`.NET Insights`);
+    outputChannel.appendLine('dotnetInsights: started');
 
-    var insights = new DotnetInsights();
-
+    var insights = new DotnetInsights(outputChannel);
     const lastestVersionNumber = "0.1.1";
 
     // Setup
@@ -44,7 +40,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand("dotnetInsights.diff", (treeItem: Dependency) => {
             if (treeItem.label != undefined) {
                 var pmiCommand = `"${insights.coreRunPath}"` + " " + `"${insights.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${treeItem.dllPath}"`;
-                console.log(pmiCommand);
+                outputChannel.appendLine(pmiCommand);
 
                 var mb = 1024 * 1024;
                 var maxBufferSize = 512 * mb;
@@ -120,8 +116,8 @@ export function activate(context: vscode.ExtensionContext) {
                                 // right - Right-hand side resource of the diff editor
                                 // title - (optional) Human readable title for the diff editor
                                 
-                                console.log("Tier 0 file path: " + minOptsOutputFileName);
-                                console.log("Tier 1 file path: " + outputFileName);
+                                outputChannel.appendLine("Tier 0 file path: " + minOptsOutputFileName);
+                                outputChannel.appendLine("Tier 1 file path: " + outputFileName);
 
                                 vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(minOptsOutputFileName), vscode.Uri.file(outputFileName), "Tier 0/Tier 1 Diff");
                             });
@@ -134,7 +130,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('dotnetInsights.minOpts', (treeItem: Dependency) => {
             if (treeItem.label != undefined) {
                 var pmiCommand = `"${insights.coreRunPath}"` + " " + `"${insights.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${treeItem.dllPath}"`;
-                console.log(pmiCommand);
+                outputChannel.appendLine(pmiCommand);
 
                 var mb = 1024 * 1024;
                 var maxBufferSize = 512 * mb;
@@ -187,7 +183,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand("dotnetInsights.tier1", (treeItem: Dependency) => {
             if (treeItem.label != undefined) {
                 var pmiCommand = `"${insights.coreRunPath}"` + " " + `"${insights.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${treeItem.dllPath}"`;
-                console.log(pmiCommand);
+                outputChannel.appendLine(pmiCommand);
 
                 var mb = 1024 * 1024;
                 var maxBufferSize = 512 * mb;
@@ -261,17 +257,17 @@ export function deactivate() {
 
 function setupIlDasm(insights: DotnetInsights, callback: (insights: DotnetInsights) => Thenable<boolean>): Thenable<boolean> {
     const ilDasmPath = insights.ilDasmPath;
-    console.log("ILDasm Path: " + ilDasmPath);
+    insights.outputChannel.appendLine("ILDasm Path: " + ilDasmPath);
 
     // Verify that the ildasm path exists and the executable runs
     var ildasmCommand = `"${ilDasmPath}"` + " " + "/?";
-    console.log(ildasmCommand);
+    insights.outputChannel.appendLine(ildasmCommand);
 
     var childProcess : child.ChildProcess = child.exec(ildasmCommand, (error: any, stdout: string, stderr: string) => {
         var success = false;
         
         if (error != null) {
-            console.log(stderr);
+            insights.outputChannel.appendLine(stderr);
         }
         else {
             try {
@@ -279,7 +275,7 @@ function setupIlDasm(insights: DotnetInsights, callback: (insights: DotnetInsigh
                 var splitOutput = stdout.split("IL Disassembler.")[1];
 
                 var versionNumber = splitOutput.split("Version ")[1].split("\n")[0];
-                console.log("Working ilDasm: Version Number: " + versionNumber);
+                insights.outputChannel.appendLine("Working ilDasm: Version Number: " + versionNumber);
 
                 insights.ilDasmPath = ilDasmPath;
                 insights.ilDasmVersion = versionNumber;
@@ -315,10 +311,10 @@ function setupSuperPmiForVersion(version: string, localRuntimeBuild: string | nu
 
 function setupPmi(insights: DotnetInsights) : Thenable<boolean> {
     const pmiPath = insights.pmiPath;
-    console.log("PMI Path: " + pmiPath);
+    insights.outputChannel.appendLine("PMI Path: " + pmiPath);
 
     // Verify that the ildasm path exists and the executable runs
-    console.log("Found PMI on disk.");
+    insights.outputChannel.appendLine("Found PMI on disk.");
 
     var coreRunExe = "";
     if (os.platform() == "win32") {
@@ -332,16 +328,16 @@ function setupPmi(insights: DotnetInsights) : Thenable<boolean> {
 
     // Verify it runs
     var pmiCommand = `"${insights.coreRunPath}"` + " " + `"${pmiPath}"` + " " + "-h";
-    console.log(pmiCommand);
+    insights.outputChannel.appendLine(pmiCommand);
 
     var success = false;
     var childProcess : child.ChildProcess = child.exec(pmiCommand, (error: any, stdout: string, stderr: string) => {
         if (error != null && stdout == undefined) {
-            console.log(stderr);
+            insights.outputChannel.appendLine(stderr);
         }
         else {
             success = true;
-            console.log("PMI setup successfully.");
+            insights.outputChannel.appendLine("PMI setup successfully.");
         }
     });
 
@@ -371,11 +367,11 @@ function checkForDotnetSdk(insights: DotnetInsights) : Thenable<boolean> {
 
             var installedSdks = [];
 
-            console.log("Installed SDK Versions:");
+            insights.outputChannel.appendLine("Installed SDK Versions:");
             for (var index = 0; index < lines.length; ++index) {
                 var sdkVersion = lines[index].split(" ")[0]
 
-                console.log(sdkVersion);
+                insights.outputChannel.appendLine(sdkVersion);
                 installedSdks.push(sdkVersion);
             }
             
@@ -392,20 +388,20 @@ function checkForDotnetSdk(insights: DotnetInsights) : Thenable<boolean> {
     });
 }
 
-function downloadAnUnzip(url: string, unzipFolder: string, outputPath: string) : Thenable<void> {
+function downloadAnUnzip(insights: DotnetInsights, url: string, unzipFolder: string, outputPath: string) : Thenable<void> {
     const unzipName = path.join(unzipFolder, crypto.randomBytes(16).toString("hex") + ".zip");
 
     try {
         const fileStream = fs.createWriteStream(unzipName);
 
-        console.log(`[${url}] -> ${unzipName}`);
+        insights.outputChannel.appendLine(`[${url}] -> ${unzipName}`);
 
         var req = request(url).pipe(fileStream);
 
         return new Promise((resolve, reject) => {
             req.on("close", (response: any) => {
-                console.log(`Download completed: ${unzipName}`);
-                console.log(`unzip ${unzipName}`);
+                insights.outputChannel.appendLine(`Download completed: ${unzipName}`);
+                insights.outputChannel.appendLine(`unzip ${unzipName}`);
 
                 var unzipStream = fs.createReadStream(unzipName).pipe(unzipper.Extract({ path: outputPath }));
 
@@ -414,7 +410,7 @@ function downloadAnUnzip(url: string, unzipFolder: string, outputPath: string) :
                         fs.unlinkSync(unzipName);
                     }
 
-                    console.log(`unzip completed: ${unzipName}`);
+                    insights.outputChannel.appendLine(`unzip completed: ${unzipName}`);
 
                     resolve();
                 });
@@ -431,7 +427,7 @@ function downloadAnUnzip(url: string, unzipFolder: string, outputPath: string) :
     }
 }
 
-function downloadRuntimes(versionNumber: string, unzipFolder: string) : Thenable<void[]> {
+function downloadRuntimes(insights: DotnetInsights, versionNumber: string, unzipFolder: string) : Thenable<void[]> {
     const runtimes = ["netcore3.1", "net5.0"];
     const coreRootFolder = unzipFolder;
 
@@ -462,13 +458,13 @@ function downloadRuntimes(versionNumber: string, unzipFolder: string) : Thenable
         const outputPath = path.join(coreRootFolder, runtimes[index]);
 
         const runtimeUrl = baseRuntimeUrl + `${osName}-${arch}-${runtimes[index]}.zip`;
-        promises.push(downloadAnUnzip(runtimeUrl, unzipFolder, outputPath));
+        promises.push(downloadAnUnzip(insights, runtimeUrl, unzipFolder, outputPath));
     }
 
     return Promise.all(promises);
 }
 
-function downloadPmiExe(versionNumber: string, unzipFolder: string) : Thenable<void[]> {
+function downloadPmiExe(insights: DotnetInsights, versionNumber: string, unzipFolder: string) : Thenable<void[]> {
     const runtimes = ["netcore3.1", "net5.0"];
     const pmiExeFolder = unzipFolder;
 
@@ -494,14 +490,14 @@ function downloadPmiExe(versionNumber: string, unzipFolder: string) : Thenable<v
         const outputPath = path.join(pmiExeFolder, runtimes[index]);
 
         const pmiUrl = baseUrl + `${osName}-${arch}-${runtimes[index]}-pmi.zip`;
-        promises.push(downloadAnUnzip(pmiUrl, unzipFolder, outputPath));
+        promises.push(downloadAnUnzip(insights, pmiUrl, unzipFolder, outputPath));
     }
 
     return Promise.all(promises);
 }
 
 function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, insights: DotnetInsights) : Thenable<boolean>  {
-    console.log("Setting up dotnetInsights.");
+    insights.outputChannel.appendLine("Setting up dotnetInsights.");
 
     const config = vscode.workspace.getConfiguration();
     var dotnetInsightsSettings: any = config.get("dotnet-insights");
@@ -513,12 +509,11 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
     var outputPath = dotnetInsightsSettings?.get("outputPath");
 
     if (outputPath == undefined) {
-        outputPath = context.storageUri?.fsPath;
+        outputPath = context.globalStorageUri?.fsPath;
     }
 
     if (outputPath == "" || outputPath == undefined) {
         console.error("outputPath must be set!");
-        assert(false);
     }
 
     if (!fs.existsSync(outputPath)) {
@@ -573,7 +568,7 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
 
         if (doDownload) {
             var promise: Thenable<boolean> = new Promise((resolve, reject) => {
-                downloadRuntimes(lastestVersionNumber, coreRootPath).then(() => {
+                downloadRuntimes(insights, lastestVersionNumber, coreRootPath).then(() => {
                     // We will expect to now have coreRootPath/net5.0/Core_Root and coreRootPath/netcoreapp3.1/Core_Root
                     var runtimeDownloadSucceeded = false;
     
@@ -626,7 +621,7 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
 
         if (doDownload) {
             var promise: Thenable<boolean> = new Promise((resolve, reject) => {
-                downloadPmiExe(lastestVersionNumber, pmiExePath).then(() => {
+                downloadPmiExe(insights, lastestVersionNumber, pmiExePath).then(() => {
                     // We will expect to now have net5.0/net5.0/pmi.dll and netcore/netcoreapp3.1/pmi.dll
                     var pmiDownloadSucceeded = false;
                         

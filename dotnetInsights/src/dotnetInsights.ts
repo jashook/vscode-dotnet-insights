@@ -247,11 +247,15 @@ export class DotnetInsights {
     public typeMap: Map<string, number> | undefined;
     public fieldMap: Map<string, number> | undefined;
 
+    public outputChannel: vscode.OutputChannel;
+
     public treeView: DotnetInsightsTreeDataProvider | undefined;
 
-    constructor() {
+    constructor(outputChannel: vscode.OutputChannel) {
         this.ilDasmPath = "";
         this.ilDasmVersion = "";
+
+        this.outputChannel = outputChannel;
 
         this.pmiPath = "";
         this.coreRoot = "";
