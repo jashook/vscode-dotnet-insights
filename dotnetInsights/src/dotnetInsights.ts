@@ -289,7 +289,7 @@ export class DotnetInsights {
     }
 
     public updateForPath(ilAsmPath: string, fsPath: string, ilDasmOutput: string) {
-        var pmiCommand = this.coreRunPath + " " + this.pmiPath + " " + "PREPALL-QUIET" + " " + fsPath;
+        var pmiCommand = `"${this.coreRunPath}"` + " " + `"${this.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${fsPath}"`;
         console.log(pmiCommand);
 
         var mb = 1024 * 1024;
@@ -332,7 +332,7 @@ export class DotnetInsights {
             this.treeView?.refresh();
         });
 
-        pmiCommand = this.coreRunPath + " " + this.pmiPath + " " + "PREPALL-QUIET-DUMPTYPES" + " " + fsPath;
+        pmiCommand = `"${this.coreRunPath}"` + " " + `"${this.pmiPath}"` + " " + "PREPALL-QUIET-DUMPTYPES" + " " + `"${fsPath}"`;
         console.log(pmiCommand);
         var typeChildProcess = child.exec(pmiCommand, {
             maxBuffer: maxBufferSize,

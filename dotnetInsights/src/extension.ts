@@ -10,10 +10,17 @@ import * as os from "os"
 import * as assert from "assert";
 import * as http from "http"
 
+import * as request from 'request';
+
+import * as unzipper from 'unzipper';
+
 import * as crypto from "crypto";
 
 import { DotnetInsightsTreeDataProvider, Dependency, DotnetInsights } from './dotnetInsights';
 import { DotnetInsightsTextEditorProvider } from "./DotnetInightsTextEditor";
+import { promises } from 'node:dns';
+import { platform } from 'node:os';
+import { rejects } from 'node:assert';
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -23,9 +30,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     var insights = new DotnetInsights();
 
-    
-
-    const lastestVersionNumber = "v0.1";
+    const lastestVersionNumber = "0.1.1";
 
     // Setup
     setup(lastestVersionNumber, context, insights).then((success: boolean) => {
@@ -38,7 +43,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         vscode.commands.registerCommand("dotnetInsights.diff", (treeItem: Dependency) => {
             if (treeItem.label != undefined) {
-                var pmiCommand = insights.coreRunPath + " " + insights.pmiPath + " " + "PREPALL-QUIET" + " " + treeItem.dllPath;
+                var pmiCommand = `"${insights.coreRunPath}"` + " " + `"${insights.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${treeItem.dllPath}"`;
                 console.log(pmiCommand);
 
                 var mb = 1024 * 1024;
@@ -110,15 +115,7 @@ export function activate(context: vscode.ExtensionContext) {
                                 if (error) {
                                     return;
                                 }
-                                // vscode.workspace.openTextDocument(minOptsOutputFileName).then(minOpt => {
-                                //     vscode.workspace.openTextDocument(outputFileName).then(doc => {
-                                //         // left - Left-hand side resource of the diff editor
-                                //         // right - Right-hand side resource of the diff editor
-                                //         // title - (optional) Human readable title for the diff editor
-                                //         vscode.commands.executeCommand("vscode.diff", [minOpt, doc, "MinOpts/Tier 1 Diff"]);
-                                //     });
-                                // });
-
+                                
                                 // left - Left-hand side resource of the diff editor
                                 // right - Right-hand side resource of the diff editor
                                 // title - (optional) Human readable title for the diff editor
@@ -136,7 +133,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         vscode.commands.registerCommand('dotnetInsights.minOpts', (treeItem: Dependency) => {
             if (treeItem.label != undefined) {
-                var pmiCommand = insights.coreRunPath + " " + insights.pmiPath + " " + "PREPALL-QUIET" + " " + treeItem.dllPath;
+                var pmiCommand = `"${insights.coreRunPath}"` + " " + `"${insights.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${treeItem.dllPath}"`;
                 console.log(pmiCommand);
 
                 var mb = 1024 * 1024;
@@ -189,7 +186,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         vscode.commands.registerCommand("dotnetInsights.tier1", (treeItem: Dependency) => {
             if (treeItem.label != undefined) {
-                var pmiCommand = insights.coreRunPath + " " + insights.pmiPath + " " + "PREPALL-QUIET" + " " + treeItem.dllPath;
+                var pmiCommand = `"${insights.coreRunPath}"` + " " + `"${insights.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${treeItem.dllPath}"`;
                 console.log(pmiCommand);
 
                 var mb = 1024 * 1024;
@@ -254,58 +251,6 @@ export function activate(context: vscode.ExtensionContext) {
             }
         });
 
-        // vscode.commands.registerCommand("dotnetInsights.selectMethod", (treeItem: Dependency, insights: DotnetInsights) => {
-        //     if (treeItem.label != undefined) {
-        //         var pmiCommand = insights.coreRunPath + " " + insights.pmiPath + " " + "PREPALL-QUIET" + " " + treeItem.dllPath;
-        //         console.log(pmiCommand);
-
-        //         var mb = 1024 * 1024;
-        //         var maxBufferSize = 512 * mb;
-
-        //         const selectMethodCwd = path.join(insights.pmiOutputPath, "selectMethod");
-
-        //         if  (!fs.existsSync(selectMethodCwd)) {
-        //             fs.mkdirSync(selectMethodCwd);
-        //         }
-
-        //         const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
-
-        //         const id = crypto.randomBytes(16).toString("hex");
-
-        //         const outputFileName = path.join(insights.pmiOutputPath, id + ".asm");
-                
-        //         var childProcess = child.exec(pmiCommand, {
-        //             maxBuffer: maxBufferSize,
-        //             "cwd": selectMethodCwd,
-        //             "env": {
-        //                 "COMPlus_JitDisasm": `${treeItem.label}`,
-        //                 "COMPlus_TieredCompilation": "0"
-        //             }
-        //         }, (error: any, output: string, stderr: string) => {
-        //             if (error) {
-        //                 console.error("Failed to execute pmi.");
-        //                 console.error(error);
-        //             }
-
-        //             var replaceRegex = /completed assembly.*\n/i;
-        //             if (os.platform() == "win32") {
-        //                 replaceRegex = /completed assembly.*\r\n/i;
-        //             }
-
-        //             output = output.replace(replaceRegex, "");
-
-        //             fs.writeFile(outputFileName, output, (error) => {
-        //                 if (error) {
-        //                     return;
-        //                 }
-        //                 vscode.workspace.openTextDocument(outputFileName).then(doc => {
-        //                     vscode.window.showTextDocument(doc, 1);
-        //                 });
-        //             });
-        //         });
-        //     }
-        // });
-        
         context.subscriptions.push(DotnetInsightsTextEditorProvider.register(context, insights));
     });
 }
@@ -319,7 +264,7 @@ function setupIlDasm(insights: DotnetInsights, callback: (insights: DotnetInsigh
     console.log("ILDasm Path: " + ilDasmPath);
 
     // Verify that the ildasm path exists and the executable runs
-    var ildasmCommand = ilDasmPath + " " + "/?";
+    var ildasmCommand = `"${ilDasmPath}"` + " " + "/?";
     console.log(ildasmCommand);
 
     var childProcess : child.ChildProcess = child.exec(ildasmCommand, (error: any, stdout: string, stderr: string) => {
@@ -383,10 +328,10 @@ function setupPmi(insights: DotnetInsights) : Thenable<boolean> {
         coreRunExe = "corerun";
     }
 
-    insights.coreRunPath = insights.coreRoot + coreRunExe ;
+    insights.coreRunPath = path.join(insights.coreRoot, coreRunExe) ;
 
     // Verify it runs
-    var pmiCommand = insights.coreRoot + coreRunExe + " " + pmiPath + " " + "-h";
+    var pmiCommand = `"${insights.coreRunPath}"` + " " + `"${pmiPath}"` + " " + "-h";
     console.log(pmiCommand);
 
     var success = false;
@@ -447,16 +392,112 @@ function checkForDotnetSdk(insights: DotnetInsights) : Thenable<boolean> {
     });
 }
 
-function download_and_unzip(url: string, unzipFolder: string) : Thenable<void> {
+function downloadAnUnzip(url: string, unzipFolder: string, outputPath: string) : Thenable<void> {
     const unzipName = path.join(unzipFolder, crypto.randomBytes(16).toString("hex") + ".zip");
 
+    try {
+        const fileStream = fs.createWriteStream(unzipName);
 
+        console.log(`[${url}] -> ${unzipName}`);
 
-    return Promise.resolve();
+        var req = request(url).pipe(fileStream);
+
+        return new Promise((resolve, reject) => {
+            req.on("close", (response: any) => {
+                console.log(`Download completed: ${unzipName}`);
+                console.log(`unzip ${unzipName}`);
+
+                var unzipStream = fs.createReadStream(unzipName).pipe(unzipper.Extract({ path: outputPath }));
+
+                unzipStream.on("close", () => {
+                    if (fs.existsSync(unzipName)) {
+                        fs.unlinkSync(unzipName);
+                    }
+
+                    console.log(`unzip completed: ${unzipName}`);
+
+                    resolve();
+                });
+            });
+        });
+    }
+    catch (e) {
+        // Clean up temp zip file, which is large
+        if (fs.existsSync(unzipName)) {
+            fs.unlinkSync(unzipName);
+        }
+
+        return Promise.resolve();
+    }
 }
 
-function download_runtimes(unzipFolder: string) : Thenable<void> {
-    
+function downloadRuntimes(versionNumber: string, unzipFolder: string) : Thenable<void[]> {
+    const runtimes = ["netcore3.1", "net5.0"];
+    const coreRootFolder = unzipFolder;
+
+    unzipFolder = path.join(unzipFolder, "temp");
+
+    if (!fs.existsSync(coreRootFolder)) {
+        fs.mkdirSync(coreRootFolder);
+    }
+
+    if (!fs.existsSync(unzipFolder)) {
+        fs.mkdirSync(unzipFolder);
+    }
+
+    const baseRuntimeUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/`;
+
+    var promises = [];
+    const arch = "x64";
+
+    for (var index = 0; index < runtimes.length; ++index) {
+        var osName = "osx";
+        if (os.platform() == "win32") {
+            osName = "win";
+        }
+        else if (os.platform() != "darwin") {
+            osName = "linux";
+        }
+
+        const outputPath = path.join(coreRootFolder, runtimes[index]);
+
+        const runtimeUrl = baseRuntimeUrl + `${osName}-${arch}-${runtimes[index]}.zip`;
+        promises.push(downloadAnUnzip(runtimeUrl, unzipFolder, outputPath));
+    }
+
+    return Promise.all(promises);
+}
+
+function downloadPmiExe(versionNumber: string, unzipFolder: string) : Thenable<void[]> {
+    const runtimes = ["netcore3.1", "net5.0"];
+    const pmiExeFolder = unzipFolder;
+
+    unzipFolder = path.join(unzipFolder, "temp");
+
+    if (!fs.existsSync(pmiExeFolder)) {
+        fs.mkdirSync(pmiExeFolder);
+    }
+
+    if (!fs.existsSync(unzipFolder)) {
+        fs.mkdirSync(unzipFolder);
+    }
+
+    var promises = [];
+
+    const arch = "x64";
+    const baseUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/`;
+
+    for (var index = 0; index < runtimes.length; ++index) {
+        // Always download the windows built binaries for pmi
+        var osName = "win";
+
+        const outputPath = path.join(pmiExeFolder, runtimes[index]);
+
+        const pmiUrl = baseUrl + `${osName}-${arch}-${runtimes[index]}-pmi.zip`;
+        promises.push(downloadAnUnzip(pmiUrl, unzipFolder, outputPath));
+    }
+
+    return Promise.all(promises);
 }
 
 function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, insights: DotnetInsights) : Thenable<boolean>  {
@@ -465,11 +506,11 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
     const config = vscode.workspace.getConfiguration();
     var dotnetInsightsSettings: any = config.get("dotnet-insights");
 
-    var ilDasmPath = dotnetInsightsSettings["ildasmPath"];
-    var pmiPath = dotnetInsightsSettings["pmiPath"];
-    var coreRoot = dotnetInsightsSettings["coreRoot"];
+    var ilDasmPath:any = dotnetInsightsSettings?.get("ildasmPath");
+    var pmiPath: any = dotnetInsightsSettings?.get("pmiPath");
+    var coreRoot: any  = dotnetInsightsSettings?.get("coreRoot");
 
-    var outputPath = dotnetInsightsSettings["outputPath"];
+    var outputPath = dotnetInsightsSettings?.get("outputPath");
 
     if (outputPath == undefined) {
         outputPath = context.storageUri?.fsPath;
@@ -504,13 +545,7 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
         fs.mkdirSync(pmiTempDir);
     }
 
-    if (pmiPath == undefined || ilDasmPath == undefined || coreRoot == undefined) {
-        console.error("PMI Path and ILDasm Path must be set.");
-
-        return Promise.resolve(false);
-    }
-
-    // https://github.com/jashook/vscode-dotnet-insights/releases/download/v0.1/win-x64-net5.0-pmi.zip
+    var promises: Thenable<boolean>[] = [];
 
     var osVer = "osx";
     if (os.platform() == 'win32') {
@@ -524,14 +559,118 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
     if (ilDasmPath == undefined || coreRoot == undefined) {
         const coreRootPath = path.join(outputPath, "coreRoot");
 
-        download_runtimes(coreRootPath);
+        const netCoreFivePath = path.join(coreRootPath, "net5.0", "Core_Root");
+        var ilDasmCoreRootPath = path.join(netCoreFivePath, "ildasm.exe");
+        if (os.platform() != "win32") {
+            ilDasmCoreRootPath = path.join(netCoreFivePath, "ildasm");
+        }
+
+        var doDownload = false;
+
+        if (!fs.existsSync(netCoreFivePath) || !fs.existsSync(ilDasmCoreRootPath)) {
+            doDownload = true;
+        }
+
+        if (doDownload) {
+            var promise: Thenable<boolean> = new Promise((resolve, reject) => {
+                downloadRuntimes(lastestVersionNumber, coreRootPath).then(() => {
+                    // We will expect to now have coreRootPath/net5.0/Core_Root and coreRootPath/netcoreapp3.1/Core_Root
+                    var runtimeDownloadSucceeded = false;
+    
+                    if (fs.existsSync(netCoreFivePath) && fs.existsSync(ilDasmPath)) {
+                        runtimeDownloadSucceeded = true;
+                    }
+    
+                    if (coreRoot == undefined) {
+                        coreRoot = netCoreFivePath
+                    }
+    
+                    if (ilDasmPath == undefined) {
+                        ilDasmPath = ilDasmCoreRootPath;
+                    }
+    
+                    if (os.platform() != "win32") {
+                        // If on !windows set chmod +x to corerun and ildasm
+                        fs.chmodSync(ilDasmPath, "0755");
+    
+                        const coreRunPath = path.join(coreRoot, "corerun");
+                        fs.chmodSync(coreRunPath, "0755");
+                    }
+    
+                    resolve(runtimeDownloadSucceeded);
+                });
+            });
+
+            promises.push(promise);
+        }
+        else {
+            if (coreRoot == undefined) {
+                coreRoot = netCoreFivePath
+            }
+
+            if (ilDasmPath == undefined) {
+                ilDasmPath = ilDasmCoreRootPath;
+            }
+        }
     }
 
-    else if (pmiPath == undefined) {
-        vscode.window.showErrorMessage("dotnet-insights.pmiPath must be set.");
-        return Promise.resolve(false);
+    if (pmiPath == undefined) {
+        const pmiExePath = path.join(outputPath, "pmiExe");
+
+        const pmiPathDownloaded = path.join(pmiExePath, "net5.0", "net5.0", "pmi.dll");
+
+        var doDownload = false;
+        if (!fs.existsSync(pmiPathDownloaded)) {
+            doDownload = true;
+        }
+
+        if (doDownload) {
+            var promise: Thenable<boolean> = new Promise((resolve, reject) => {
+                downloadPmiExe(lastestVersionNumber, pmiExePath).then(() => {
+                    // We will expect to now have net5.0/net5.0/pmi.dll and netcore/netcoreapp3.1/pmi.dll
+                    var pmiDownloadSucceeded = false;
+                        
+                    if (fs.existsSync(pmiPathDownloaded)) {
+                        pmiDownloadSucceeded = true;
+                    }
+
+                    pmiPath = pmiPathDownloaded;
+                    resolve(pmiDownloadSucceeded);
+                });
+            });
+
+            promises.push(promise)
+        }
+        else {
+            pmiPath = pmiPathDownloaded;
+        }
     }
 
+    if (promises.length > 0) {
+        return new Promise((resolve, reject) => {
+            Promise.all(promises).then((successes) => {
+                var didSucceed = true;
+
+                for (var index = 0; index < successes.length; ++index) {
+                    didSucceed = didSucceed && successes[index];
+                }
+
+                if (!didSucceed) {
+                    resolve(false);
+                }
+                else {
+                    resolve(continueSetup(insights, ilDasmPath, pmiPath, coreRoot, outputPath, ilDasmOutputPath, pmiOutputPath, pmiTempDir));
+                }
+            });
+        });
+    }
+    else {
+        return continueSetup(insights, ilDasmPath, pmiPath, coreRoot, outputPath, ilDasmOutputPath, pmiOutputPath, pmiTempDir);
+    }
+}
+
+
+function continueSetup(insights: DotnetInsights, ilDasmPath: any, pmiPath: any, coreRoot: any, outputPath: any, ilDasmOutputPath: string, pmiOutputPath: string, pmiTempDir: string) : Thenable<boolean> {
     if (typeof(ilDasmPath) != "string") {
         if (os.platform() == "darwin") {
             ilDasmPath = ilDasmPath["osx"];
