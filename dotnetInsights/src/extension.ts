@@ -6,13 +6,10 @@ import * as child from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import * as os from "os"
-import * as http from "http"
+import * as os from "os" 
 
 import * as request from 'request';
-
 import * as unzipper from 'unzipper';
-
 import * as crypto from "crypto";
 
 import { DotnetInsightsTreeDataProvider, Dependency, DotnetInsights } from './dotnetInsights';
@@ -24,6 +21,7 @@ import { DotnetInsightsTextEditorProvider } from "./DotnetInightsTextEditor";
 export function activate(context: vscode.ExtensionContext) {
     const outputChannel = vscode.window.createOutputChannel(`.NET Insights`);
     outputChannel.appendLine('dotnetInsights: started');
+    vscode.window.showInformationMessage(".NET Insights is starting");
 
     var insights = new DotnetInsights(outputChannel);
     const lastestVersionNumber = "0.1.1";
@@ -397,6 +395,7 @@ function downloadAnUnzip(insights: DotnetInsights, url: string, unzipFolder: str
         var req = request(url).pipe(fileStream);
 
         return new Promise((resolve, reject) => {
+            resolve();
             req.on("close", (response: any) => {
                 insights.outputChannel.appendLine(`Download completed: ${unzipName}`);
                 insights.outputChannel.appendLine(`unzip ${unzipName}`);

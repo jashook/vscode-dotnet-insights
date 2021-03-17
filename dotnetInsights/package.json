@@ -3,7 +3,9 @@
   "displayName": ".NET Insights",
   "publisher": "jashoo",
   "description": "Drill into .NET DLLs by viewing the IL and compiled code. Relies on ildasm and a public .NET JIT tool PMI.",
-  "version": "0.0.5",
+  "version": "0.1.0",
+  "preview": true,
+  "icon": "media/dep.png",
   "repository": {
     "url": "https://github.com/jashook/vscode-dotnet-insights"
   },
@@ -144,8 +146,10 @@
     "vscode-test": "^1.5.0"
   },
   "dependencies": {
-    "node-stream-zip": "^1.13.2",
+    "@types/request": "^2.48.5",
+    "@types/unzipper": "^0.10.3",
     "request": "^2.88.2",
+    "unzipper": "^0.10.11",
     "uuid": "^8.3.2"
   }
 }
