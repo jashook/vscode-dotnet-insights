@@ -294,7 +294,7 @@ export class DotnetInsights {
 
     public updateForPath(ilAsmPath: string, fsPath: string, ilDasmOutput: string) {
         var pmiCommand = `"${this.coreRunPath}"` + " " + `"${this.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${fsPath}"`;
-        console.log(pmiCommand);
+        this.outputChannel.appendLine(pmiCommand);
 
         var mb = 1024 * 1024;
         var maxBufferSize = 512 * mb;
@@ -337,7 +337,7 @@ export class DotnetInsights {
         });
 
         pmiCommand = `"${this.coreRunPath}"` + " " + `"${this.pmiPath}"` + " " + "PREPALL-QUIET-DUMPTYPES" + " " + `"${fsPath}"`;
-        console.log(pmiCommand);
+        this.outputChannel.appendLine(pmiCommand);
         var typeChildProcess = child.exec(pmiCommand, {
             maxBuffer: maxBufferSize,
             "cwd": typeCwd
@@ -573,7 +573,7 @@ export class DotnetInsights {
                 }
             }
             catch (error: any) {
-                console.log(`Failed to parse line: ${index}`);
+                this.outputChannel.appendLine(`Failed to parse line: ${index}`);
             }
         }
 

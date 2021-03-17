@@ -572,7 +572,7 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
                     // We will expect to now have coreRootPath/net5.0/Core_Root and coreRootPath/netcoreapp3.1/Core_Root
                     var runtimeDownloadSucceeded = false;
     
-                    if (fs.existsSync(netCoreFivePath) && fs.existsSync(ilDasmPath)) {
+                    if (fs.existsSync(netCoreFivePath) && fs.existsSync(ilDasmCoreRootPath)) {
                         runtimeDownloadSucceeded = true;
                     }
     

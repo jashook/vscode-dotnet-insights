@@ -42,7 +42,7 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
         if (this.insights.useIldasm) {
             // We will run ildasm then render those contents
             var ildasmCommand = `\"${this.insights.ilDasmPath}\"` + " " + `\"${uri.fsPath}\"`;
-            console.log(ildasmCommand);
+            this.insights.outputChannel.appendLine(ildasmCommand);
 
             var output = child.execSync(ildasmCommand, {
                 maxBuffer: maxBufferSize
@@ -67,7 +67,7 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
         else {
             // We will run pmi then render those contents
             var pmiCommand = `"${this.insights.coreRunPath}"` + " " + `"${this.insights.pmiPath}"` + " " + "PREPALL" + " " + `"${uri.fsPath}"`;
-            console.log(pmiCommand);
+            this.insights.outputChannel.appendLine(pmiCommand);
 
             var output = child.execSync(pmiCommand, {
                 maxBuffer: maxBufferSize,
