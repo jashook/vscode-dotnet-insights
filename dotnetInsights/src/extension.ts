@@ -63,7 +63,8 @@ export function activate(context: vscode.ExtensionContext) {
                         "COMPlus_JitDisasm": `${treeItem.label}`,
                         "COMPlus_TieredCompilation": "0",
                         "COMPlus_JitMinOpts": "1",
-                        "COMPlus_JitDiffableDasm": "1"
+                        "COMPlus_JitDiffableDasm": "1",
+                        "COMPlus_TC_QuickJit": "0"
                     }
                 }, (error: any, output: string, stderr: string) => {
                     if (error) {
@@ -92,6 +93,7 @@ export function activate(context: vscode.ExtensionContext) {
                             "env": {
                                 "COMPlus_JitDiffableDasm": "1",
                                 "COMPlus_TieredCompilation": "0",
+                                "COMPlus_TC_QuickJit": "0",
                                 "COMPlus_JitDisasm": `${treeItem.label}`
                             }
                         }, (error: any, output: string, stderr: string) => {
@@ -153,6 +155,7 @@ export function activate(context: vscode.ExtensionContext) {
                     "env": {
                         "COMPlus_JitDisasm": `${treeItem.label}`,
                         "COMPlus_TieredCompilation": "0",
+                        "COMPlus_TC_QuickJit": "0",
                         "COMPlus_JitMinOpts": "1"
                     }
                 }, (error: any, output: string, stderr: string) => {
