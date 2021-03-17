@@ -286,6 +286,21 @@ function setupIlDasm(insights: DotnetInsights, callback: (insights: DotnetInsigh
         
         if (error != null) {
             insights.outputChannel.appendLine(stderr);
+            if (os.platform() != "win32") {
+                // If on !windows set chmod +x to corerun and ildasm
+                fs.chmodSync(ilDasmPath, "0755");
+
+                const coreRoot = path.basename(ilDasmPath);
+                const coreRunPath = path.join(coreRoot, "corerun");
+                fs.chmodSync(coreRunPath, "0755");
+
+                try {
+                    child.execSync(ilDasmPath);
+                }
+                catch (e) {
+                    insights.outputChannel.appendLine(stderr);
+                }
+            }
         }
         else {
             try {
