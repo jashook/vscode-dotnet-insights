@@ -53,7 +53,7 @@
     "commands": [
       {
         "command": "dotnetInsights.minOpts",
-        "title": "Min Opts"
+        "title": "Tier 0"
       },
       {
         "command": "dotnetInsights.tier1",

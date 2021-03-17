@@ -61,10 +61,8 @@ export function activate(context: vscode.ExtensionContext) {
                     "cwd": selectMethodCwd,
                     "env": {
                         "COMPlus_JitDisasm": `${treeItem.label}`,
-                        "COMPlus_TieredCompilation": "0",
                         "COMPlus_JitMinOpts": "1",
                         "COMPlus_JitDiffableDasm": "1",
-                        "COMPlus_TC_QuickJit": "0"
                     }
                 }, (error: any, output: string, stderr: string) => {
                     if (error) {
@@ -144,9 +142,7 @@ export function activate(context: vscode.ExtensionContext) {
                 }
 
                 const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
-
                 const id = crypto.randomBytes(16).toString("hex");
-
                 const outputFileName = path.join(insights.pmiOutputPath, id + ".asm");
                 
                 var childProcess = child.exec(pmiCommand, {
@@ -154,8 +150,6 @@ export function activate(context: vscode.ExtensionContext) {
                     "cwd": selectMethodCwd,
                     "env": {
                         "COMPlus_JitDisasm": `${treeItem.label}`,
-                        "COMPlus_TieredCompilation": "0",
-                        "COMPlus_TC_QuickJit": "0",
                         "COMPlus_JitMinOpts": "1"
                     }
                 }, (error: any, output: string, stderr: string) => {
@@ -208,7 +202,8 @@ export function activate(context: vscode.ExtensionContext) {
                     "cwd": selectMethodCwd,
                     "env": {
                         "COMPlus_JitDisasm": `${treeItem.label}`,
-                        "COMPlus_TieredCompilation": "0"
+                        "COMPlus_TieredCompilation": "0",
+                        "COMPlus_TC_QuickJit": "0"
                     }
                 }, (error: any, output: string, stderr: string) => {
                     if (error) {
@@ -595,6 +590,10 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
                         fs.chmodSync(coreRunPath, "0755");
                     }
     
+                    if (!runtimeDownloadSucceeded) {
+                        vscode.window.showWarningMessage("Unable to download runtime successfully.");
+                    }
+
                     resolve(runtimeDownloadSucceeded);
                 });
             });
@@ -633,6 +632,11 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
                     }
 
                     pmiPath = pmiPathDownloaded;
+
+                    if (!pmiDownloadSucceeded) {
+                        vscode.window.showWarningMessage("Unable to download pmi successfully.");
+                    }
+
                     resolve(pmiDownloadSucceeded);
                 });
             });
