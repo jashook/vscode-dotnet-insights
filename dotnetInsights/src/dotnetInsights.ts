@@ -584,20 +584,28 @@ export class DotnetInsights {
 
         for (var index = 0; index < methods.length; ++index) {
             const currentMethod = methods[index];
+            const methodName = currentMethod.name.split("\(")[0];
 
-            if (currentMethod.name.indexOf("System.") == -1 && 
-                currentMethod.name.indexOf("ILStubClass") == -1 &&
-                currentMethod.name.indexOf(".cctor") == -1 &&
-                currentMethod.name.indexOf("<>c:.ctor") == -1 && 
-                currentMethod.name.indexOf("Microsoft.Win32.") == -1 && 
-                currentMethod.name.indexOf("Sys:") == -1 && 
-                currentMethod.name.indexOf("PrepareMethodinator:") == -1 &&
-                currentMethod.name.indexOf("c:<Canonicalize>") == -1 &&
-                currentMethod.name.indexOf("PMI") == -1 &&
-                currentMethod.name.indexOf("<ReadBufferAsync>") == -1 &&
-                currentMethod.name.indexOf("UnixConsoleStream") == -1 && 
-                currentMethod.name.indexOf("PrepareAll") == -1 &&
-                currentMethod.name.indexOf("WindowsConsoleStream") == -1) {
+            if (methodName.indexOf("System.") == -1 && 
+                methodName.indexOf("ILStubClass") == -1 &&
+                methodName.indexOf(".cctor") == -1 &&
+                methodName.indexOf("<>c:.ctor") == -1 && 
+                methodName.indexOf("Microsoft.Win32.") == -1 && 
+                methodName.indexOf("Sys:") == -1 && 
+                methodName.indexOf("PrepareMethodinator:") == -1 &&
+                methodName.indexOf("c:<Canonicalize>") == -1 &&
+                methodName.indexOf("PMI") == -1 &&
+                methodName.indexOf("<ReadBufferAsync>") == -1 &&
+                methodName.indexOf("UnixConsoleStream") == -1 && 
+                methodName.indexOf("PrepareAll") == -1 &&
+                methodName.indexOf("Worker:") == -1 &&
+                methodName.indexOf("PrepareBase:") == -1 &&
+                methodName.indexOf("CounterBase:") == -1 &&
+                methodName.indexOf("CustomLoadContext:") == -1 &&
+                methodName.indexOf("Visitor:") == -1 &&
+                methodName.indexOf("Resolver:") == -1 &&
+                methodName.indexOf("Util:") == -1 &&
+                methodName.indexOf("WindowsConsoleStream") == -1) {
                 var userList = sortedMethods.get("user");
 
                 assert(userList != undefined);

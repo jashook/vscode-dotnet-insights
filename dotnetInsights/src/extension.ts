@@ -82,7 +82,7 @@ export function activate(context: vscode.ExtensionContext) {
                     "env": {
                         "COMPlus_JitDisasm": `${treeItem.label}`,
                         "COMPlus_JitMinOpts": "1",
-                        "COMPlus_JitDiffableDasm": "1",
+                        "COMPlus_JitDiffableDasm": "1"
                     }
                 }, (error: any, output: string, stderr: string) => {
                     if (error) {
@@ -170,7 +170,8 @@ export function activate(context: vscode.ExtensionContext) {
                     "cwd": selectMethodCwd,
                     "env": {
                         "COMPlus_JitDisasm": `${treeItem.label}`,
-                        "COMPlus_JitMinOpts": "1"
+                        "COMPlus_JitMinOpts": "1",
+                        "COMPlus_JitGCDump": `${treeItem.label}`
                     }
                 }, (error: any, output: string, stderr: string) => {
                     if (error) {
@@ -223,7 +224,113 @@ export function activate(context: vscode.ExtensionContext) {
                     "env": {
                         "COMPlus_JitDisasm": `${treeItem.label}`,
                         "COMPlus_TieredCompilation": "0",
-                        "COMPlus_TC_QuickJit": "0"
+                        "COMPlus_TC_QuickJit": "0",
+                        "COMPlus_JitGCDump": `${treeItem.label}`
+                    }
+                }, (error: any, output: string, stderr: string) => {
+                    if (error) {
+                        console.error("Failed to execute pmi.");
+                        console.error(error);
+                    }
+
+                    var replaceRegex = /completed assembly.*\n/i;
+                    if (os.platform() == "win32") {
+                        replaceRegex = /completed assembly.*\r\n/i;
+                    }
+
+                    output = output.replace(replaceRegex, "");
+
+                    fs.writeFile(outputFileName, output, (error) => {
+                        if (error) {
+                            return;
+                        }
+                        vscode.workspace.openTextDocument(outputFileName).then(doc => {
+                            vscode.window.showTextDocument(doc, 1);
+                        });
+                    });
+                });
+            }
+        });
+
+        vscode.commands.registerCommand('dotnetInsights.jitDumpTier0', (treeItem: Dependency) => {
+            if (treeItem.label != undefined) {
+                var pmiCommand = `"${insights.coreRunPath}"` + " " + `"${insights.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${treeItem.dllPath}"`;
+                outputChannel.appendLine(pmiCommand);
+
+                var mb = 1024 * 1024;
+                var maxBufferSize = 512 * mb;
+
+                const selectMethodCwd = path.join(insights.pmiOutputPath, "selectMethod");
+
+                if  (!fs.existsSync(selectMethodCwd)) {
+                    fs.mkdirSync(selectMethodCwd);
+                }
+
+                const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+                const id = crypto.randomBytes(16).toString("hex");
+                const outputFileName = path.join(insights.pmiOutputPath, id + ".jitdump");
+                
+                var childProcess = child.exec(pmiCommand, {
+                    maxBuffer: maxBufferSize,
+                    "cwd": selectMethodCwd,
+                    "env": {
+                        "COMPlus_JitDisasm": `${treeItem.label}`,
+                        "COMPlus_JitMinOpts": "1",
+                        "COMPlus_JitDump": `${treeItem.label}`
+                    }
+                }, (error: any, output: string, stderr: string) => {
+                    if (error) {
+                        console.error("Failed to execute pmi.");
+                        console.error(error);
+                    }
+
+                    var replaceRegex = /completed assembly.*\n/i;
+                    if (os.platform() == "win32") {
+                        replaceRegex = /completed assembly.*\r\n/i;
+                    }
+
+                    output = output.replace(replaceRegex, "");
+
+                    fs.writeFile(outputFileName, output, (error) => {
+                        if (error) {
+                            return;
+                        }
+                        vscode.workspace.openTextDocument(outputFileName).then(doc => {
+                            vscode.window.showTextDocument(doc, 1);
+                        });
+                    });
+                });
+            }
+        });
+
+        vscode.commands.registerCommand("dotnetInsights.jitDumpTier1", (treeItem: Dependency) => {
+            if (treeItem.label != undefined) {
+                var pmiCommand = `"${insights.coreRunPath}"` + " " + `"${insights.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${treeItem.dllPath}"`;
+                outputChannel.appendLine(pmiCommand);
+
+                var mb = 1024 * 1024;
+                var maxBufferSize = 512 * mb;
+
+                const selectMethodCwd = path.join(insights.pmiOutputPath, "selectMethod");
+
+                if  (!fs.existsSync(selectMethodCwd)) {
+                    fs.mkdirSync(selectMethodCwd);
+                }
+
+                const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+
+                const id = crypto.randomBytes(16).toString("hex");
+
+                const outputFileName = path.join(insights.pmiOutputPath, id + ".jitdump");
+                
+                var childProcess = child.exec(pmiCommand, {
+                    maxBuffer: maxBufferSize,
+                    "cwd": selectMethodCwd,
+                    "env": {
+                        "COMPlus_JitDisasm": `${treeItem.label}`,
+                        "COMPlus_TieredCompilation": "0",
+                        "COMPlus_TC_QuickJit": "0",
+                        "COMPlus_JitDump": `${treeItem.label}`
                     }
                 }, (error: any, output: string, stderr: string) => {
                     if (error) {
