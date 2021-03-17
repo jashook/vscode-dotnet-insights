@@ -20,8 +20,20 @@ import { DotnetInsightsTextEditorProvider } from "./DotnetInightsTextEditor";
 
 export function activate(context: vscode.ExtensionContext) {
     const outputChannel = vscode.window.createOutputChannel(`.NET Insights`);
+
+    var config = vscode.workspace.getConfiguration();
+    var dotnetInsightsSettings: any = config.get("dotnet-insights");
+
     outputChannel.appendLine('dotnetInsights: started');
-    vscode.window.showInformationMessage(".NET Insights is starting");
+
+    if (dotnetInsightsSettings != undefined) {
+        if (!dotnetInsightsSettings["surpressStartupMessage"]) {
+            vscode.window.showInformationMessage(".NET Insights is starting");
+        }
+    }
+    else {
+        vscode.window.showInformationMessage(".NET Insights is starting");
+    }
 
     var insights = new DotnetInsights(outputChannel);
     const lastestVersionNumber = "0.1.1";
@@ -29,7 +41,17 @@ export function activate(context: vscode.ExtensionContext) {
     // Setup
     setup(lastestVersionNumber, context, insights).then((success: boolean) => {
         if (!success) {
+            vscode.window.showWarningMessage(".NET Insights failed to start.");
             return;
+        }
+
+        if (dotnetInsightsSettings != undefined) {
+            if (!dotnetInsightsSettings["surpressStartupMessage"]) {
+                vscode.window.showInformationMessage(".NET Insights is setup. Please dismiss.");
+            }
+        }
+        else {
+            vscode.window.showInformationMessage(".NET Insights is setup. To surpress this message add \"dotnet-insights.surpressStartupMessage\" : true to settings.json.");
         }
 
         const dotnetInsightsTreeDataProvider = new DotnetInsightsTreeDataProvider(insights);
@@ -499,11 +521,19 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
     const config = vscode.workspace.getConfiguration();
     var dotnetInsightsSettings: any = config.get("dotnet-insights");
 
-    var ilDasmPath:any = dotnetInsightsSettings?.get("ildasmPath");
-    var pmiPath: any = dotnetInsightsSettings?.get("pmiPath");
-    var coreRoot: any  = dotnetInsightsSettings?.get("coreRoot");
+    
+    var ilDasmPath:any = undefined;
+    var pmiPath: any = undefined;
+    var coreRoot: any  = undefined
 
-    var outputPath = dotnetInsightsSettings?.get("outputPath");
+    var outputPath: any = undefined;
+
+    if (dotnetInsightsSettings != undefined) {
+        ilDasmPath = dotnetInsightsSettings["ildasmPath"];
+        pmiPath = dotnetInsightsSettings["pmiPath"];
+        coreRoot = dotnetInsightsSettings["coreRoot"];
+        outputPath = dotnetInsightsSettings["outputPath"];
+    }
 
     if (outputPath == undefined) {
         outputPath = context.globalStorageUri?.fsPath;
