@@ -721,6 +721,16 @@ function downloadAnUnzip(insights: DotnetInsights, url: string, unzipFolder: str
 
                 var unzipStream = fs.createReadStream(unzipName).pipe(unzipper.Extract({ path: outputPath }));
 
+                unzipStream.on("error", () => {
+                    if (fs.existsSync(unzipName)) {
+                        fs.unlinkSync(unzipName);
+                    }
+
+                    insights.outputChannel.appendLine(`unzip failed: ${unzipName}`);
+
+                    reject();
+                });
+
                 unzipStream.on("close", () => {
                     if (fs.existsSync(unzipName)) {
                         fs.unlinkSync(unzipName);
