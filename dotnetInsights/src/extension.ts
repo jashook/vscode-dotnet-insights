@@ -49,6 +49,8 @@ export function activate(context: vscode.ExtensionContext) {
             if (!dotnetInsightsSettings["surpressStartupMessage"]) {
                 vscode.window.showInformationMessage(".NET Insights is setup. Please dismiss.");
             }
+
+            insights.outputChannel.appendLine(".NET Insights is setup.");
         }
         else {
             vscode.window.showInformationMessage(".NET Insights is setup. To surpress this message add \"dotnet-insights.surpressStartupMessage\" : true to settings.json.");
@@ -56,6 +58,190 @@ export function activate(context: vscode.ExtensionContext) {
 
         const dotnetInsightsTreeDataProvider = new DotnetInsightsTreeDataProvider(insights);
         vscode.window.registerTreeDataProvider('dotnetInsights', dotnetInsightsTreeDataProvider);
+
+        vscode.commands.registerCommand("dotnetInsights.diffThreeVsFiveTier0", (treeItem: Dependency) => {
+            if (treeItem.label != undefined) {
+                var pmiCommand = `"${insights.netcoreThreeCoreRunPath}"` + " " + `"${insights.netcoreThreePmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${treeItem.dllPath}"`;
+                outputChannel.appendLine(pmiCommand);
+
+                var mb = 1024 * 1024;
+                var maxBufferSize = 512 * mb;
+
+                const selectMethodCwd = path.join(insights.pmiOutputPath, "selectMethod");
+
+                if  (!fs.existsSync(selectMethodCwd)) {
+                    fs.mkdirSync(selectMethodCwd);
+                }
+
+                const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+
+                var id = crypto.randomBytes(16).toString("hex");
+                var threeOnefilePath = path.join(insights.pmiOutputPath, id + ".asm");
+                
+                var childProcess = child.exec(pmiCommand, {
+                    maxBuffer: maxBufferSize,
+                    "cwd": selectMethodCwd,
+                    "env": {
+                        "COMPlus_JitDisasm": `${treeItem.label}`,
+                        "COMPlus_JitMinOpts": "1",
+                        "COMPlus_JitDiffableDasm": "1"
+                    }
+                }, (error: any, output: string, stderr: string) => {
+                    if (error) {
+                        console.error("Failed to execute pmi.");
+                        console.error(error);
+                    }
+
+                    var replaceRegex = /completed assembly.*\n/i;
+                    if (os.platform() == "win32") {
+                        replaceRegex = /completed assembly.*\r\n/i;
+                    }
+
+                    output = output.replace(replaceRegex, "");
+
+                    fs.writeFile(threeOnefilePath, output, (error) => {
+                        if (error) {
+                            return;
+                        }
+
+                        id = crypto.randomBytes(16).toString("hex");
+                        var outputFileName = path.join(insights.pmiOutputPath, id + ".asm");
+
+                        var pmiCommand = `"${insights.netcoreFiveCoreRunPath}"` + " " + `"${insights.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${treeItem.dllPath}"`;
+                        
+                        childProcess = child.exec(pmiCommand, {
+                            maxBuffer: maxBufferSize,
+                            "cwd": selectMethodCwd,
+                            "env": {
+                                "COMPlus_JitMinOpts": "1",
+                                "COMPlus_JitDiffableDasm": "1",
+                                "COMPlus_JitDisasm": `${treeItem.label}`
+                            }
+                        }, (error: any, output: string, stderr: string) => {
+                            if (error) {
+                                console.error("Failed to execute pmi.");
+                                console.error(error);
+                            }
+
+                            var replaceRegex = /completed assembly.*\n/i;
+                            if (os.platform() == "win32") {
+                                replaceRegex = /completed assembly.*\r\n/i;
+                            }
+
+                            output = output.replace(replaceRegex, "");
+
+                            fs.writeFile(outputFileName, output, (error) => {
+                                if (error) {
+                                    return;
+                                }
+                                
+                                // left - Left-hand side resource of the diff editor
+                                // right - Right-hand side resource of the diff editor
+                                // title - (optional) Human readable title for the diff editor
+                                
+                                outputChannel.appendLine(".Net Core 3.1 file path: " + threeOnefilePath);
+                                outputChannel.appendLine(".Net Core 5.0 file path: " + outputFileName);
+
+                                vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(threeOnefilePath), vscode.Uri.file(outputFileName), ".Net Core 3.1/.Net Core 5.0 Tier 0 Diff");
+                            });
+                        });
+                    });
+                });
+            }
+        });
+
+        vscode.commands.registerCommand("dotnetInsights.diffThreeVsFiveTier1", (treeItem: Dependency) => {
+            if (treeItem.label != undefined) {
+                var pmiCommand = `"${insights.netcoreThreeCoreRunPath}"` + " " + `"${insights.netcoreThreePmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${treeItem.dllPath}"`;
+                outputChannel.appendLine(pmiCommand);
+
+                var mb = 1024 * 1024;
+                var maxBufferSize = 512 * mb;
+
+                const selectMethodCwd = path.join(insights.pmiOutputPath, "selectMethod");
+
+                if  (!fs.existsSync(selectMethodCwd)) {
+                    fs.mkdirSync(selectMethodCwd);
+                }
+
+                const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+
+                var id = crypto.randomBytes(16).toString("hex");
+                var threeOnefilePath = path.join(insights.pmiOutputPath, id + ".asm");
+                
+                var childProcess = child.exec(pmiCommand, {
+                    maxBuffer: maxBufferSize,
+                    "cwd": selectMethodCwd,
+                    "env": {
+                        "COMPlus_JitDiffableDasm": "1",
+                        "COMPlus_TieredCompilation": "0",
+                        "COMPlus_TC_QuickJit": "0",
+                        "COMPlus_JitDisasm": `${treeItem.label}`
+                    }
+                }, (error: any, output: string, stderr: string) => {
+                    if (error) {
+                        console.error("Failed to execute pmi.");
+                        console.error(error);
+                    }
+
+                    var replaceRegex = /completed assembly.*\n/i;
+                    if (os.platform() == "win32") {
+                        replaceRegex = /completed assembly.*\r\n/i;
+                    }
+
+                    output = output.replace(replaceRegex, "");
+
+                    fs.writeFile(threeOnefilePath, output, (error) => {
+                        if (error) {
+                            return;
+                        }
+
+                        id = crypto.randomBytes(16).toString("hex");
+                        var outputFileName = path.join(insights.pmiOutputPath, id + ".asm");
+
+                        var pmiCommand = `"${insights.netcoreFiveCoreRunPath}"` + " " + `"${insights.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${treeItem.dllPath}"`;
+                        
+                        childProcess = child.exec(pmiCommand, {
+                            maxBuffer: maxBufferSize,
+                            "cwd": selectMethodCwd,
+                            "env": {
+                                "COMPlus_JitDiffableDasm": "1",
+                                "COMPlus_TieredCompilation": "0",
+                                "COMPlus_TC_QuickJit": "0",
+                                "COMPlus_JitDisasm": `${treeItem.label}`
+                            }
+                        }, (error: any, output: string, stderr: string) => {
+                            if (error) {
+                                console.error("Failed to execute pmi.");
+                                console.error(error);
+                            }
+
+                            var replaceRegex = /completed assembly.*\n/i;
+                            if (os.platform() == "win32") {
+                                replaceRegex = /completed assembly.*\r\n/i;
+                            }
+
+                            output = output.replace(replaceRegex, "");
+
+                            fs.writeFile(outputFileName, output, (error) => {
+                                if (error) {
+                                    return;
+                                }
+                                
+                                // left - Left-hand side resource of the diff editor
+                                // right - Right-hand side resource of the diff editor
+                                // title - (optional) Human readable title for the diff editor
+                                
+                                outputChannel.appendLine("Tier 0 file path: " + threeOnefilePath);
+                                outputChannel.appendLine("Tier 1 file path: " + outputFileName);
+
+                                vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(threeOnefilePath), vscode.Uri.file(outputFileName), ".Net Core 3.1/.Net Core 5.0 Tier 0 Diff");
+                            });
+                        });
+                    });
+                });
+            }
+        });
 
         vscode.commands.registerCommand("dotnetInsights.diff", (treeItem: Dependency) => {
             if (treeItem.label != undefined) {
@@ -456,16 +642,6 @@ function setupPmi(insights: DotnetInsights) : Thenable<boolean> {
     // Verify that the ildasm path exists and the executable runs
     insights.outputChannel.appendLine("Found PMI on disk.");
 
-    var coreRunExe = "";
-    if (os.platform() == "win32") {
-        coreRunExe = "CoreRun.exe";
-    }
-    else {
-        coreRunExe = "corerun";
-    }
-
-    insights.coreRunPath = path.join(insights.coreRoot, coreRunExe) ;
-
     // Verify it runs
     var pmiCommand = `"${insights.coreRunPath}"` + " " + `"${pmiPath}"` + " " + "-h";
     insights.outputChannel.appendLine(pmiCommand);
@@ -539,7 +715,6 @@ function downloadAnUnzip(insights: DotnetInsights, url: string, unzipFolder: str
         var req = request(url).pipe(fileStream);
 
         return new Promise((resolve, reject) => {
-            resolve();
             req.on("close", (response: any) => {
                 insights.outputChannel.appendLine(`Download completed: ${unzipName}`);
                 insights.outputChannel.appendLine(`unzip ${unzipName}`);
@@ -646,15 +821,31 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
     
     var ilDasmPath:any = undefined;
     var pmiPath: any = undefined;
-    var coreRoot: any  = undefined
+    var netcoreThreePmiPath: any = undefined;
+    var netcoreFivePmiPath: any = undefined;
+    var customCoreRootPath: any  = undefined
+
+    var netcoreFiveCoreRootPath: any = undefined;
+    var netcoreThreeCoreRootPath: any = undefined;
 
     var outputPath: any = undefined;
 
     if (dotnetInsightsSettings != undefined) {
         ilDasmPath = dotnetInsightsSettings["ildasmPath"];
         pmiPath = dotnetInsightsSettings["pmiPath"];
-        coreRoot = dotnetInsightsSettings["coreRoot"];
+        customCoreRootPath = dotnetInsightsSettings["coreRoot"];
         outputPath = dotnetInsightsSettings["outputPath"];
+
+        if (dotnetInsightsSettings["preferNetCoreThreeOne"] != undefined) {
+            insights.useNetCoreThree = true;
+        }
+
+        if (customCoreRootPath == undefined) {
+            customCoreRootPath = "";
+        }
+    }
+    else {
+        customCoreRootPath = "";
     }
 
     if (outputPath == undefined) {
@@ -700,18 +891,21 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
     }
 
     // ildasm comes with the core_root
-    if (ilDasmPath == undefined || coreRoot == undefined) {
+    if (ilDasmPath == undefined) {
         const coreRootPath = path.join(outputPath, "coreRoot");
 
-        const netCoreFivePath = path.join(coreRootPath, "net5.0", "Core_Root");
-        var ilDasmCoreRootPath = path.join(netCoreFivePath, "ildasm.exe");
+        netcoreFiveCoreRootPath = path.join(coreRootPath, "net5.0", "Core_Root");
+        netcoreThreeCoreRootPath = path.join(coreRootPath, "netcore3.1", "Core_Root");
+        var ilDasmCoreRootPath = path.join(netcoreFiveCoreRootPath, "ildasm.exe");
         if (os.platform() != "win32") {
-            ilDasmCoreRootPath = path.join(netCoreFivePath, "ildasm");
+            ilDasmCoreRootPath = path.join(netcoreFiveCoreRootPath, "ildasm");
         }
 
         var doDownload = false;
 
-        if (!fs.existsSync(netCoreFivePath) || !fs.existsSync(ilDasmCoreRootPath)) {
+        if (!fs.existsSync(netcoreFiveCoreRootPath) || 
+            !fs.existsSync(netcoreThreeCoreRootPath) ||
+            !fs.existsSync(ilDasmCoreRootPath)) {
             doDownload = true;
         }
 
@@ -721,12 +915,10 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
                     // We will expect to now have coreRootPath/net5.0/Core_Root and coreRootPath/netcoreapp3.1/Core_Root
                     var runtimeDownloadSucceeded = false;
     
-                    if (fs.existsSync(netCoreFivePath) && fs.existsSync(ilDasmCoreRootPath)) {
+                    if (fs.existsSync(netcoreFiveCoreRootPath) &&
+                        fs.existsSync(netcoreThreeCoreRootPath) &&
+                        fs.existsSync(ilDasmCoreRootPath)) {
                         runtimeDownloadSucceeded = true;
-                    }
-    
-                    if (coreRoot == undefined) {
-                        coreRoot = netCoreFivePath
                     }
     
                     if (ilDasmPath == undefined) {
@@ -737,8 +929,16 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
                         // If on !windows set chmod +x to corerun and ildasm
                         fs.chmodSync(ilDasmPath, "0755");
     
-                        const coreRunPath = path.join(coreRoot, "corerun");
+                        var coreRunPath = path.join(netcoreFiveCoreRootPath, "corerun");
                         fs.chmodSync(coreRunPath, "0755");
+
+                        coreRunPath = path.join(netcoreThreeCoreRootPath, "corerun");
+                        fs.chmodSync(coreRunPath, "0755");
+
+                        if (customCoreRootPath != "") {
+                            coreRunPath = path.join(customCoreRootPath, "corerun");
+                            fs.chmodSync(coreRunPath, "0755");
+                        }
                     }
     
                     if (!runtimeDownloadSucceeded) {
@@ -752,9 +952,9 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
             promises.push(promise);
         }
         else {
-            if (coreRoot == undefined) {
-                coreRoot = netCoreFivePath
-            }
+            const coreRootPath = path.join(outputPath, "coreRoot");
+            netcoreFiveCoreRootPath = path.join(coreRootPath, "net5.0", "Core_Root");
+            netcoreThreeCoreRootPath = path.join(coreRootPath, "netcore3.1", "Core_Root");
 
             if (ilDasmPath == undefined) {
                 ilDasmPath = ilDasmCoreRootPath;
@@ -765,10 +965,11 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
     if (pmiPath == undefined) {
         const pmiExePath = path.join(outputPath, "pmiExe");
 
-        const pmiPathDownloaded = path.join(pmiExePath, "net5.0", "net5.0", "pmi.dll");
+        const netcoreThreePmiPathDownload = path.join(pmiExePath, "netcore3.1", "netcoreapp3.1", "pmi.dll");
+        const netcoreFivePmiPathDownload = path.join(pmiExePath, "net5.0", "net5.0", "pmi.dll");
 
         var doDownload = false;
-        if (!fs.existsSync(pmiPathDownloaded)) {
+        if (!fs.existsSync(netcoreThreePmiPathDownload) || !fs.existsSync(netcoreFivePmiPathDownload)) {
             doDownload = true;
         }
 
@@ -777,12 +978,13 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
                 downloadPmiExe(insights, lastestVersionNumber, pmiExePath).then(() => {
                     // We will expect to now have net5.0/net5.0/pmi.dll and netcore/netcoreapp3.1/pmi.dll
                     var pmiDownloadSucceeded = false;
-                        
-                    if (fs.existsSync(pmiPathDownloaded)) {
+
+                    if (fs.existsSync(netcoreFivePmiPathDownload) && fs.existsSync(netcoreThreePmiPathDownload)) {
                         pmiDownloadSucceeded = true;
                     }
 
-                    pmiPath = pmiPathDownloaded;
+                    netcoreThreePmiPath = netcoreThreePmiPathDownload;
+                    netcoreFivePmiPath = netcoreFivePmiPathDownload;
 
                     if (!pmiDownloadSucceeded) {
                         vscode.window.showWarningMessage("Unable to download pmi successfully.");
@@ -795,7 +997,8 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
             promises.push(promise)
         }
         else {
-            pmiPath = pmiPathDownloaded;
+            netcoreFivePmiPath = netcoreFivePmiPathDownload;
+            netcoreThreePmiPath = netcoreThreePmiPathDownload;
         }
     }
 
@@ -812,18 +1015,18 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
                     resolve(false);
                 }
                 else {
-                    resolve(continueSetup(insights, ilDasmPath, pmiPath, coreRoot, outputPath, ilDasmOutputPath, pmiOutputPath, pmiTempDir));
+                    resolve(continueSetup(insights, ilDasmPath, netcoreFivePmiPath, netcoreThreePmiPath, pmiPath, netcoreFiveCoreRootPath, netcoreThreeCoreRootPath, customCoreRootPath, outputPath, ilDasmOutputPath, pmiOutputPath, pmiTempDir));
                 }
             });
         });
     }
     else {
-        return continueSetup(insights, ilDasmPath, pmiPath, coreRoot, outputPath, ilDasmOutputPath, pmiOutputPath, pmiTempDir);
+        return continueSetup(insights, ilDasmPath, netcoreFivePmiPath, netcoreThreePmiPath, pmiPath, netcoreFiveCoreRootPath, netcoreThreeCoreRootPath, customCoreRootPath, outputPath, ilDasmOutputPath, pmiOutputPath, pmiTempDir);
     }
 }
 
 
-function continueSetup(insights: DotnetInsights, ilDasmPath: any, pmiPath: any, coreRoot: any, outputPath: any, ilDasmOutputPath: string, pmiOutputPath: string, pmiTempDir: string) : Thenable<boolean> {
+function continueSetup(insights: DotnetInsights, ilDasmPath: any, netcoreFivePmiPath: any, netcoreThreePmiPath: any, customPmiPath: any, netcoreFiveCoreRoot: any, netcoreThreeCoreRootPath: any, customCoreRootPath: any, outputPath: any, ilDasmOutputPath: string, pmiOutputPath: string, pmiTempDir: string) : Thenable<boolean> {
     if (typeof(ilDasmPath) != "string") {
         if (os.platform() == "darwin") {
             ilDasmPath = ilDasmPath["osx"];
@@ -836,27 +1039,27 @@ function continueSetup(insights: DotnetInsights, ilDasmPath: any, pmiPath: any, 
         }
     }
 
-    if (typeof(pmiPath) != "string") {
+    if (typeof(customPmiPath) != "string" && customPmiPath != undefined) {
         if (os.platform() == "darwin") {
-            pmiPath = pmiPath["osx"];
+            customPmiPath = customPmiPath["osx"];
         }
         else if (os.platform() == "linux") {
-            pmiPath = pmiPath["linux"];
+            customPmiPath = customPmiPath["linux"];
         }
         else {
-            pmiPath = pmiPath["windows"];
+            customPmiPath = customPmiPath["windows"];
         }
     }
 
-    if (typeof(coreRoot) != "string") {
+    if (typeof(customCoreRootPath) != "string") {
         if (os.platform() == "darwin") {
-            coreRoot = coreRoot["osx"];
+            customCoreRootPath = customCoreRootPath["osx"];
         }
         else if (os.platform() == "linux") {
-            coreRoot = coreRoot["linux"];
+            customCoreRootPath = customCoreRootPath["linux"];
         }
         else {
-            coreRoot = coreRoot["windows"];
+            customCoreRootPath = customCoreRootPath["windows"];
         }
     }
 
@@ -873,8 +1076,12 @@ function continueSetup(insights: DotnetInsights, ilDasmPath: any, pmiPath: any, 
     }
 
     insights.ilDasmPath = ilDasmPath;
-    insights.pmiPath = pmiPath;
-    insights.coreRoot = coreRoot;
+
+    insights.netcoreThreeCoreRootPath = netcoreThreeCoreRootPath;
+    insights.netcoreFiveCoreRootPath = netcoreFiveCoreRoot;
+
+    insights.customCoreRootPath = customCoreRootPath;
+
     insights.ilDasmOutputPath = ilDasmOutputPath;
     insights.pmiOutputPath = pmiOutputPath;
 
@@ -882,6 +1089,58 @@ function continueSetup(insights: DotnetInsights, ilDasmPath: any, pmiPath: any, 
 
     // Setup mostly will involve making sure we have the dotnet tools required
     // to provide insights.
+
+    var coreRunExe = "";
+    if (os.platform() == "win32") {
+        coreRunExe = "CoreRun.exe";
+    }
+    else {
+        coreRunExe = "corerun";
+    }
+
+    insights.netcoreFiveCoreRunPath = path.join(insights.netcoreFiveCoreRootPath, coreRunExe);
+    insights.netcoreThreeCoreRunPath = path.join(insights.netcoreThreeCoreRootPath, coreRunExe);
+
+    if (!fs.existsSync(insights.netcoreFiveCoreRunPath) || 
+        !fs.existsSync(insights.netcoreThreeCoreRunPath)) {
+        vscode.window.showWarningMessage("Failed to set corerun path.");
+        Promise.resolve(false);
+    }
+
+    insights.netcoreThreePmiPath = netcoreThreePmiPath;
+    insights.netcoreFivePmiPath = netcoreFivePmiPath;
+
+    if (insights.useNetCoreThree) {
+        insights.pmiPath = netcoreThreePmiPath;
+    }
+    else {
+        insights.pmiPath = netcoreFivePmiPath;
+    }
+
+    if (customPmiPath != "" && customPmiPath != undefined) {
+        insights.pmiPath = customPmiPath;
+    }
+
+    if (insights.customCoreRootPath == "" || insights.customCoreRootPath == "") {
+        if (insights.useNetCoreThree) {
+            insights.coreRunPath = insights.netcoreThreeCoreRunPath;
+        }
+        else {
+            insights.coreRunPath = insights.netcoreFiveCoreRunPath;
+        }
+    }
+    else {
+        insights.customCoreRunPath = path.join(insights.customCoreRootPath, coreRunExe);
+        insights.coreRunPath = insights.customCoreRunPath;
+    }
+
+    if (os.platform() != "win32") {
+        fs.chmodSync(insights.ilDasmPath, "0755");
+        const coreRoot = path.basename(insights.ilDasmPath);
+
+        fs.chmodSync(insights.netcoreThreeCoreRunPath, "0755");
+        fs.chmodSync(insights.netcoreFiveCoreRunPath, "0755");
+    }
 
     return setupIlDasm(insights, checkForDotnetSdk);
 }

@@ -3,7 +3,7 @@
   "displayName": ".NET Insights",
   "publisher": "jashoo",
   "description": "Drill into .NET DLLs by viewing the IL and compiled code. Relies on ildasm and a public .NET JIT tool PMI.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "preview": true,
   "icon": "media/dep.png",
   "repository": {
@@ -72,6 +72,14 @@
       {
         "command": "dotnetInsights.diff",
         "title": "Diff"
+      },
+      {
+        "command": "dotnetInsights.diffThreeVsFiveTier0",
+        "title": "Diff - 3.1 / 5.0 - Tier 0"
+      },
+      {
+        "command": "dotnetInsights.diffThreeVsFiveTier1",
+        "title": "Diff - 3.1 / 5.0 - Tier 1"
       }
     ],
     "menus": {
@@ -94,6 +102,14 @@
         },
         {
           "command": "dotnetInsights.diff",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffThreeVsFiveTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffThreeVsFiveTier1",
           "when": "view == dotnetInsights && viewItem == dependency"
         }
       ]
