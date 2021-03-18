@@ -9,11 +9,13 @@ import * as vscode from 'vscode';
 import * as os from "os" 
 
 import * as request from 'request';
-import * as unzipper from 'unzipper';
 import * as crypto from "crypto";
+
+import * as targz from "targz";
 
 import { DotnetInsightsTreeDataProvider, Dependency, DotnetInsights } from './dotnetInsights';
 import { DotnetInsightsTextEditorProvider } from "./DotnetInightsTextEditor";
+import { read } from 'node:fs';
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -36,7 +38,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     var insights = new DotnetInsights(outputChannel);
-    const lastestVersionNumber = "0.2.0";
+    const lastestVersionNumber = "0.2.1";
 
     // Setup
     setup(lastestVersionNumber, context, insights).then((success: boolean) => {
@@ -705,7 +707,7 @@ function checkForDotnetSdk(insights: DotnetInsights) : Thenable<boolean> {
 }
 
 function downloadAnUnzip(insights: DotnetInsights, url: string, unzipFolder: string, outputPath: string) : Thenable<void> {
-    const unzipName = path.join(unzipFolder, crypto.randomBytes(16).toString("hex") + ".zip");
+    const unzipName = path.join(unzipFolder, crypto.randomBytes(16).toString("hex") + ".tar.gz");
 
     try {
         const fileStream = fs.createWriteStream(unzipName);
@@ -719,26 +721,17 @@ function downloadAnUnzip(insights: DotnetInsights, url: string, unzipFolder: str
                 insights.outputChannel.appendLine(`Download completed: ${unzipName}`);
                 insights.outputChannel.appendLine(`unzip ${unzipName}`);
 
-                var unzipStream = fs.createReadStream(unzipName).pipe(unzipper.Extract({ path: outputPath }));
-
-                unzipStream.on("error", () => {
-                    if (fs.existsSync(unzipName)) {
-                        fs.unlinkSync(unzipName);
+                targz.decompress({
+                    src: unzipName,
+                    dest: outputPath
+                }, function(err){
+                    if(err) {
+                        insights.outputChannel.appendLine(`unzip failed: ${unzipName}`);
+                        reject();
+                    } else {
+                        insights.outputChannel.appendLine(`unzip completed: ${unzipName}`);
+                        resolve();
                     }
-
-                    insights.outputChannel.appendLine(`unzip failed: ${unzipName}`);
-
-                    reject();
-                });
-
-                unzipStream.on("close", () => {
-                    if (fs.existsSync(unzipName)) {
-                        fs.unlinkSync(unzipName);
-                    }
-
-                    insights.outputChannel.appendLine(`unzip completed: ${unzipName}`);
-
-                    resolve();
                 });
             });
         });
@@ -783,7 +776,7 @@ function downloadRuntimes(insights: DotnetInsights, versionNumber: string, unzip
 
         const outputPath = path.join(coreRootFolder, runtimes[index]);
 
-        const runtimeUrl = baseRuntimeUrl + `${osName}-${arch}-${runtimes[index]}.zip`;
+        const runtimeUrl = baseRuntimeUrl + `${osName}-${arch}-${runtimes[index]}.tar.gz`;
         promises.push(downloadAnUnzip(insights, runtimeUrl, unzipFolder, outputPath));
     }
 
@@ -815,7 +808,7 @@ function downloadPmiExe(insights: DotnetInsights, versionNumber: string, unzipFo
 
         const outputPath = path.join(pmiExeFolder, runtimes[index]);
 
-        const pmiUrl = baseUrl + `${osName}-${arch}-${runtimes[index]}-pmi.zip`;
+        const pmiUrl = baseUrl + `${osName}-${arch}-${runtimes[index]}-pmi.tar.gz`;
         promises.push(downloadAnUnzip(insights, pmiUrl, unzipFolder, outputPath));
     }
 
