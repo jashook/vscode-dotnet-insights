@@ -36,7 +36,7 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     var insights = new DotnetInsights(outputChannel);
-    const lastestVersionNumber = "0.1.1";
+    const lastestVersionNumber = "0.2.0";
 
     // Setup
     setup(lastestVersionNumber, context, insights).then((success: boolean) => {
@@ -836,7 +836,7 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
         customCoreRootPath = dotnetInsightsSettings["coreRoot"];
         outputPath = dotnetInsightsSettings["outputPath"];
 
-        if (dotnetInsightsSettings["preferNetCoreThreeOne"] != undefined) {
+        if (dotnetInsightsSettings["preferNetCoreThreeOne"] != undefined && dotnetInsightsSettings["preferNetCoreThreeOne"] == true) {
             insights.useNetCoreThree = true;
         }
 
@@ -890,6 +890,13 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
         osVer = "linux";
     }
 
+    const latestToolFile = path.join(outputPath, lastestVersionNumber + ".txt");
+
+    var forceDownload = false;
+    if (!fs.existsSync(latestToolFile) || fs.readFileSync(latestToolFile).toString() != lastestVersionNumber) {
+        forceDownload = true;
+    }
+
     // ildasm comes with the core_root
     if (ilDasmPath == undefined) {
         const coreRootPath = path.join(outputPath, "coreRoot");
@@ -903,7 +910,8 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
 
         var doDownload = false;
 
-        if (!fs.existsSync(netcoreFiveCoreRootPath) || 
+        if (forceDownload ||
+            !fs.existsSync(netcoreFiveCoreRootPath) || 
             !fs.existsSync(netcoreThreeCoreRootPath) ||
             !fs.existsSync(ilDasmCoreRootPath)) {
             doDownload = true;
@@ -969,7 +977,7 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
         const netcoreFivePmiPathDownload = path.join(pmiExePath, "net5.0", "net5.0", "pmi.dll");
 
         var doDownload = false;
-        if (!fs.existsSync(netcoreThreePmiPathDownload) || !fs.existsSync(netcoreFivePmiPathDownload)) {
+        if (forceDownload || !fs.existsSync(netcoreThreePmiPathDownload) || !fs.existsSync(netcoreFivePmiPathDownload)) {
             doDownload = true;
         }
 
@@ -1006,6 +1014,7 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
         return new Promise((resolve, reject) => {
             Promise.all(promises).then((successes) => {
                 var didSucceed = true;
+                fs.writeFileSync(latestToolFile, lastestVersionNumber);
 
                 for (var index = 0; index < successes.length; ++index) {
                     didSucceed = didSucceed && successes[index];
