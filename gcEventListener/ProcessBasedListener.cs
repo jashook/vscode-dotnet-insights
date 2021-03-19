@@ -35,9 +35,16 @@ public class ProcessBasedListener
 
     public static TraceEventSession Session { get; private set; }
 
-    public ProcessBasedListener(long processId)
+    public ProcessBasedListener(long processId = -1)
     {
-        this.ProcessId = processId;
+        if (processId <= 0)
+        {
+            this.ProcessId = -1;
+        }
+        else
+        {
+            this.ProcessId = processId;
+        }
 
         this.SessionName = "DotnetInsightsEventListener";
 
@@ -65,7 +72,7 @@ public class ProcessBasedListener
     {
         if (!TraceEventSession.IsElevated() ?? false)
         {
-            Console.WriteLine("ETW Event listening required Privilidged Access. Please run as Administrator.");
+            Console.WriteLine("ETW Event listening required Elevated Access. Please run as Administrator.");
             return;
         }
 
@@ -73,16 +80,16 @@ public class ProcessBasedListener
         {
             ProcessBasedListener.Session = session;
 
-            Console.CancelKeyPress += delegate (object sender, ConsoleCancelEventArgs e) { session.Dispose(); };
+            Console.CancelKeyPress += delegate (object sender, ConsoleCancelEventArgs e) { Console.WriteLine("Successfully torn down."); session.Dispose(); };
             session.EnableProvider(ClrTraceEventParser.ProviderGuid, TraceEventLevel.Verbose, (ulong)ClrTraceEventParser.Keywords.GC);
 
             IObservable<GCAllocationTickTraceData> gcAllocStream = session.Source.Clr.Observe<GCAllocationTickTraceData>();
 
             gcAllocStream.Subscribe(allocData =>
             {
-                if (allocData.ProcessID == this.ProcessId)
+                if (this.ProcessId == -1 || allocData.ProcessID == this.ProcessId)
                 {
-                    Console.WriteLine($"[{this.ProcessName} - {this.ProcessId}] Allocated: {allocData.TypeName} - {allocData.AllocationKind} - {allocData.AllocationAmount64}");
+                    Console.WriteLine($"[{allocData.ProcessID}] Allocated: {allocData.TypeName} - {allocData.AllocationKind} - {allocData.AllocationAmount64}");
                 }
             });
 
@@ -90,9 +97,9 @@ public class ProcessBasedListener
 
             gcCollectStream.Subscribe(collectData =>
             {
-                if (collectData.ProcessID == this.ProcessId)
+                if (this.ProcessId == -1 || collectData.ProcessID == this.ProcessId)
                 {
-                    Console.WriteLine($"[{this.ProcessName} - {this.ProcessId}]: Gen0Size: {collectData.GenerationSize0}, Gen0Promoted: {collectData.TotalPromotedSize0}, Gen1Size: {collectData.GenerationSize1}, Gen1Promoted: {collectData.TotalPromotedSize1}, Gen2Size: {collectData.GenerationSize2}, Gen2Survived: {collectData.TotalPromotedSize2}, LOHSize: {collectData.GenerationSize3}, LOHSurvived: {collectData.TotalPromotedSize3}");
+                    Console.WriteLine($"[{collectData.ProcessID}]: Type:  Gen0Size: {collectData.GenerationSize0}, Gen0Promoted: {collectData.TotalPromotedSize0}, Gen1Size: {collectData.GenerationSize1}, Gen1Promoted: {collectData.TotalPromotedSize1}, Gen2Size: {collectData.GenerationSize2}, Gen2Survived: {collectData.TotalPromotedSize2}, LOHSize: {collectData.GenerationSize3}, LOHSurvived: {collectData.TotalPromotedSize3}");
                 }
             });
 

@@ -16,7 +16,7 @@ public class EventListener
 {
     public static void Main()
     {
-        var listener = new ProcessBasedListener(29388);
+        var listener = new ProcessBasedListener();
 
         listener.Listen();
     }
