@@ -47,36 +47,38 @@ export class GcListener {
     ) {
         this.treeView = undefined;
         this.processes = new Map<number, ProcessInfo>();
+        // For now only support windows.
+        if (os.platform() == "win32") {
+            const httpServer = createServer((request: IncomingMessage, response: ServerResponse) => {
+                if (request.method == "POST") {
+                    var data = "";
+                    request.on("data", (chunk) => {
+                        data += chunk;
+                    });
 
-        const httpServer = createServer((request: IncomingMessage, response: ServerResponse) => {
-            if (request.method == "POST") {
-                var data = "";
-                request.on("data", (chunk) => {
-                    data += chunk;
-                });
+                    request.on("end", () => {
+                        const jsonData = JSON.parse(data);
+                        var processById: ProcessInfo | undefined = this.processes.get(jsonData["ProcessID"]);
 
-                request.on("end", () => {
-                    const jsonData = JSON.parse(data);
-                    var processById: ProcessInfo | undefined = this.processes.get(jsonData["ProcessID"]);
+                        if (processById != undefined) {
+                            processById.addData(jsonData);
+                        }
+                        else {
+                            const processReturned = new ProcessInfo(jsonData);
+                            this.processes.set(jsonData["ProcessID"], processReturned);
+                        }
 
-                    if (processById != undefined) {
-                        processById.addData(jsonData);
-                    }
-                    else {
-                        const processReturned = new ProcessInfo(jsonData);
-                        this.processes.set(jsonData["ProcessID"], processReturned);
-                    }
+                        this.treeView?.refresh();
 
-                    this.treeView?.refresh();
+                        console.log(`Add: ${jsonData['ProcessID']}`);
+                        response.end("eol");
+                    });
 
-                    console.log(`Add: ${jsonData['ProcessID']}`);
-                    response.end("eol");
-                });
+                }
+            });
 
-            }
-        });
-
-        const port = 2143;
-        httpServer.listen(port);
+            const port = 2143;
+            httpServer.listen(port);
+        }
     }
 }

@@ -16,8 +16,8 @@
     "Other"
   ],
   "activationEvents": [
-    "*",
-    "onCustomEditor:dotnetInsights.edit"
+    "onCustomEditor:dotnetInsights.edit",
+    "onCustomEditor:dotnetInsightsGc.edit"
   ],
   "main": "./out/extension.js",
   "contributes": {
