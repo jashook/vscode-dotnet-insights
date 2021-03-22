@@ -31,6 +31,16 @@
             "priority": "default"
           }
         ]
+      },
+      {
+        "viewType": "dotnetInsightsGc.edit",
+        "displayName": "Dotnet Insights GC Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.gcstats",
+            "priority": "default"
+          }
+        ]
       }
     ],
     "viewsContainers": {
@@ -38,6 +48,11 @@
         {
           "id": "dotnet-insights",
           "title": "Dotnet Insights",
+          "icon": "media/dep.svg"
+        },
+        {
+          "id": "dotnet-insights-gc",
+          "title": "Dotnet Insights GC",
           "icon": "media/dep.svg"
         }
       ]
@@ -49,6 +64,14 @@
           "name": "Dotnet Insights",
           "icon": "media/dep.svg",
           "contextualTitle": "Dotnet Insights"
+        }
+      ],
+      "dotnet-insights-gc": [
+        {
+          "id": "dotnetInsightsGc",
+          "name": "Dotnet Insights GC",
+          "icon": "media/dep.svg",
+          "contextualTitle": "Dotnet Insights GC"
         }
       ]
     },
@@ -181,6 +204,8 @@
   "devDependencies": {
     "@types/node": "^12.11.7",
     "@types/request": "^2.48.5",
+    "@types/socket.io": "^2.1.13",
+    "@types/socket.io-client": "^1.4.36",
     "@types/unzipper": "^0.10.3",
     "@types/vscode": "^1.54.0",
     "@typescript-eslint/eslint-plugin": "^4.14.1",
@@ -193,9 +218,15 @@
     "vscode-test": "^1.5.0"
   },
   "dependencies": {
+    "@types/chart.js": "^2.9.31",
     "@types/request": "^2.48.5",
     "@types/unzipper": "^0.10.3",
+    "@types/websocket": "^1.0.2",
+    "chart.js": "^2.9.4",
+    "i": "^0.3.6",
     "request": "^2.88.2",
+    "socket.io": "^4.0.0",
+    "socket.io-client": "^4.0.0",
     "unzipper": "^0.10.11",
     "uuid": "^8.3.2"
   }

@@ -14,14 +14,13 @@ namespace DotnetInsights {
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading.Tasks;
 using System.IO;
 
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Parsers.Clr;
 using Microsoft.Diagnostics.Tracing.Session;
-
-using System.Reactive.Linq;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -49,7 +48,7 @@ public class ProcessBasedListener
 
         public string ToJsonString()
         {
-            return $"{{'Id':{Id},'SizeBefore':{SizeBefore},'SizeAfter':{SizeAfter},'ObjSpaceBefore':{ObjSpaceBefore},'Fragmentation':{Fragmentation},'FreeListSpaceBefore':{FreeListSpaceBefore},'FreeListSpaceAfter':{FreeListSpaceAfter},'FreeObjSpaceBefore':{FreeObjSpaceBefore},'FreeObjSpaceAfter':{FreeObjSpaceAfter},'ObjSizeAfter':{ObjSizeAfter},'In':{In},'Out':{Out},'NewAllocation':{NewAllocation},'SurvRate':{SurvRate},'PinnedSurv':{PinnedSurv},'NonePinnedSurv':{NonePinnedSurv}}}";
+            return $"{{\"Id\":{Id},\"SizeBefore\":{SizeBefore},\"SizeAfter\":{SizeAfter},\"ObjSpaceBefore\":{ObjSpaceBefore},\"Fragmentation\":{Fragmentation},\"FreeListSpaceBefore\":{FreeListSpaceBefore},\"FreeListSpaceAfter\":{FreeListSpaceAfter},\"FreeObjSpaceBefore\":{FreeObjSpaceBefore},\"FreeObjSpaceAfter\":{FreeObjSpaceAfter},\"ObjSizeAfter\":{ObjSizeAfter},\"In\":{In},\"Out\":{Out},\"NewAllocation\":{NewAllocation},\"SurvRate\":{SurvRate},\"PinnedSurv\":{PinnedSurv},\"NonePinnedSurv\":{NonePinnedSurv}}}";
         }
     }
 
@@ -73,7 +72,7 @@ public class ProcessBasedListener
             }
             
 
-            return $"{{'Index':'{HeapIndex}','Generations':[{string.Join(',', strings)}]}}";
+            return $"{{\"Index\":\"{HeapIndex}\",\"Generations\":[{string.Join(',', strings)}]}}";
         }
     }
 
@@ -181,7 +180,7 @@ public class ProcessBasedListener
 
             string heapString = $"[{string.Join(',', heaps)}]";
 
-            return $"{{'kind':'{kind}','generation':'{Generation}','Gen0MinSize':'{Gen0MinSize}','GenerationSizeLOH':'{GenerationSizeLOH}','GenerationSize0':'{GenerationSize0}','GenerationSize1':'{GenerationSize1}','GenerationSize2':'{GenerationSize2}','Id':'{Id}','NumHeaps':'{NumHeaps}','PauseEndRelativeMSec':'{PauseEndRelativeMSec}','PauseStartRelativeMSec':'{PauseStartRelativeMSec}','PauseDurationMSec':'{PauseDurationMSec}','Reason':'{reason}','TotalHeapSize':'{TotalHeapSize}','TotalPromoted':'{TotalPromoted}','TotalPromotedLOH':'{TotalPromotedLOH}','TotalPromotedSize0':'{TotalPromotedSize0}','TotalPromotedSize1':'{TotalPromotedSize1}','TotalPromotedSize2':'{TotalPromotedSize2}','Type':'{Type}','Heaps':{heapString}}}";
+            return $"{{\"kind\":\"{kind}\",\"generation\":\"{Generation}\",\"Gen0MinSize\":\"{Gen0MinSize}\",\"GenerationSizeLOH\":\"{GenerationSizeLOH}\",\"GenerationSize0\":\"{GenerationSize0}\",\"GenerationSize1\":\"{GenerationSize1}\",\"GenerationSize2\":\"{GenerationSize2}\",\"Id\":\"{Id}\",\"NumHeaps\":\"{NumHeaps}\",\"PauseEndRelativeMSec\":\"{PauseEndRelativeMSec}\",\"PauseStartRelativeMSec\":\"{PauseStartRelativeMSec}\",\"PauseDurationMSec\":\"{PauseDurationMSec}\",\"Reason\":\"{reason}\",\"TotalHeapSize\":\"{TotalHeapSize}\",\"TotalPromoted\":\"{TotalPromoted}\",\"TotalPromotedLOH\":\"{TotalPromotedLOH}\",\"TotalPromotedSize0\":\"{TotalPromotedSize0}\",\"TotalPromotedSize1\":\"{TotalPromotedSize1}\",\"TotalPromotedSize2\":\"{TotalPromotedSize2}\",\"Type\":\"{Type}\",\"Heaps\":{heapString}}}";
         }
     }
 
@@ -244,7 +243,7 @@ public class ProcessBasedListener
         Processes = new Dictionary<int, ProcessInfo>();
     }
 
-    public void Listen()
+    public void Listen(Action<string> cb)
     {
         if (!TraceEventSession.IsElevated() ?? false)
         {
@@ -288,7 +287,9 @@ public class ProcessBasedListener
                 info.TotalPromotedSize2 = data.TotalPromotedSize2;
                 info.TotalPromotedLOH = data.TotalPromotedSize3;
 
-                Console.WriteLine(info.ToJsonString());
+                string returnData = $"{{\"ProcessID\": {data.ProcessID}, \"data\": {info.ToJsonString()}}}";
+
+                cb(returnData);
             };
 
             session.Source.Clr.GCGlobalHeapHistory += (GCGlobalHeapHistoryTraceData data) => 
@@ -341,7 +342,8 @@ public class ProcessBasedListener
                             Debug.Assert(key == "Name");
 
                             int genId = 0;
-                            if (value == "Gen1") genId = 1;
+                            if (value == "Gen0") genId = 0;
+                            else if (value == "Gen1") genId = 1;
                             else if (value == "Gen2") genId = 2;
                             else if (value == "GenLargeObj") genId = 3;
                             else genId = 4;
@@ -460,7 +462,19 @@ public class ProcessBasedListener
                 info.Kind = info.Generation <= 1 ? GCKind.Ephemeral : GCKind.FullBlocking;
 
                 var processInfo = this.GetGcForProcess(data.ProcessID);
-                processInfo.GCs.Add(info.Id, info);
+
+                try
+                {
+                    processInfo.GCs.Add(info.Id, info);
+                }
+                catch(Exception e)
+                {
+                    // Most likely the existing process died, and another managed process
+                    // took its place.
+                    processInfo.GCs = new Dictionary<int, GcInfo>();
+                    
+                    processInfo.GCs.Add(info.Id, info);
+                }
 
                 processInfo.CurrentGC = info;
             };

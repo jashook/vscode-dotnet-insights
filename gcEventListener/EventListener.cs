@@ -6,6 +6,9 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Net.Http;
+using System.Text;
+using System.Net.WebSockets;
 
 using DotnetInsights;
 
@@ -18,6 +21,17 @@ public class EventListener
     {
         var listener = new ProcessBasedListener();
 
-        listener.Listen();
+        HttpClient client = new HttpClient();
+        listener.Listen(data => {
+            try
+            {
+                HttpContent content = new StringContent(data, Encoding.UTF8, "application/json");
+                var response = client.PostAsync("http://localhost:2143", content).Result;
+            }
+            catch (Exception e)
+            {
+                ProcessBasedListener.Session.Dispose();
+            }
+        });
     }
 }
