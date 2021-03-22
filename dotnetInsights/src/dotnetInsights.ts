@@ -3,10 +3,9 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as os from "os";
 import * as path from 'path';
-import * as assert from "assert"
+import * as assert from "assert";
 
-import { Method } from "./DotnetInightsTextEditor"
-import { type } from 'node:os';
+import { Method } from "./DotnetInightsTextEditor";
 
 export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<Dependency> {
     private _onDidChangeTreeData: vscode.EventEmitter<Dependency | undefined | void> = new vscode.EventEmitter<Dependency | undefined | void>();

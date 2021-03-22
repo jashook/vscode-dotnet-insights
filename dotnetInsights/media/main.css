@@ -1,10 +1,39 @@
 /*
     All divs are assumed to a line.
 */
-div {
+
+#gcDataContainer {
+    width: 70%;
 }
 
-.comment {
-    color: gray;
-    font: italic;
+#gcData {
+    width: 67%;
+    position: fixed;
+    bottom: 0;
+    background-color: white;
+    height: 30%;
+    overflow-y: auto;
+    overflow-x: hidden;
+    border-radius: 12.5px;
+}
+
+table {
+    border-radius: 5px;
+}
+
+.tableHeader {
+    background-color: blue;
+}
+
+th {
+    color: white;
+    font-size: 15px;
+}
+
+tr:hover {
+    background-color: lightblue;
+}
+
+td {
+    text-align: center;
 }

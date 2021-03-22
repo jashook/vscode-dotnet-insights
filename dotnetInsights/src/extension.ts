@@ -15,7 +15,11 @@ import * as targz from "targz";
 
 import { DotnetInsightsTreeDataProvider, Dependency, DotnetInsights } from './dotnetInsights';
 import { DotnetInsightsTextEditorProvider } from "./DotnetInightsTextEditor";
-import { read } from 'node:fs';
+import { DotnetInsightsGcTreeDataProvider, GcDependency } from "./dotnetInsightsGc";
+import { DotnetInsightsGcEditor } from "./DotnetInsightsGcEditor";
+
+import { GcListener } from "./GcListener";
+import { pid } from 'node:process';
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -58,8 +62,15 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.window.showInformationMessage(".NET Insights is setup. To surpress this message add \"dotnet-insights.surpressStartupMessage\" : true to settings.json.");
         }
 
+        var listener = new GcListener();
+
         const dotnetInsightsTreeDataProvider = new DotnetInsightsTreeDataProvider(insights);
+        const dotnetInsightsGcTreeDataProvider = new DotnetInsightsGcTreeDataProvider(listener);
+
+        listener.treeView = dotnetInsightsGcTreeDataProvider;
+
         vscode.window.registerTreeDataProvider('dotnetInsights', dotnetInsightsTreeDataProvider);
+        vscode.window.registerTreeDataProvider('dotnetInsightsGc', dotnetInsightsGcTreeDataProvider);
 
         vscode.commands.registerCommand("dotnetInsights.diffThreeVsFiveTier0", (treeItem: Dependency) => {
             if (treeItem.label != undefined) {
@@ -560,7 +571,24 @@ export function activate(context: vscode.ExtensionContext) {
             }
         });
 
+        vscode.commands.registerCommand("dotnetInsightsGc.selectPid", (item: GcDependency) => {
+            if (item.label != undefined) {
+                const outputPath = path.dirname(insights.pmiOutputPath);
+                const gcStats = path.join(outputPath, "gcStats");
+
+                if (!fs.existsSync(gcStats)) {
+                    fs.mkdirSync(gcStats);
+                }
+
+                const pidPath = path.join(gcStats, item.label + ".gcstats");
+                fs.writeFileSync(pidPath, "eol");
+
+                vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(pidPath), DotnetInsightsGcEditor.viewType);
+            }
+        });
+
         context.subscriptions.push(DotnetInsightsTextEditorProvider.register(context, insights));
+        context.subscriptions.push(DotnetInsightsGcEditor.register(context, insights, listener));
     });
 }
 
