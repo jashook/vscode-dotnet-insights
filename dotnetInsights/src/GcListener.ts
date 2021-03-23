@@ -54,7 +54,9 @@ export class GcListener {
         this.processes = new Map<number, ProcessInfo>();
         this.sendShutdown = false;
         this.httpServer = undefined;
+    }
 
+    start() {
         // For now only support windows.
         if (os.platform() == "win32") {
             this.httpServer = createServer((request: IncomingMessage, response: ServerResponse) => {
@@ -72,7 +74,14 @@ export class GcListener {
                     });
 
                     request.on("end", () => {
-                        const jsonData = JSON.parse(data);
+                        var jsonData:any = undefined;
+                        try {
+                            jsonData = JSON.parse(data);
+                        }
+                        catch(e) {
+                            response.end("eol");
+                        }
+
                         var processById: ProcessInfo | undefined = this.processes.get(jsonData["ProcessID"]);
 
                         if (processById != undefined) {

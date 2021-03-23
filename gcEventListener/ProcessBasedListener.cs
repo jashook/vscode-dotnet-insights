@@ -302,6 +302,11 @@ public class ProcessBasedListener
                     processName = "";
                     Console.WriteLine($"Unable to get info for {data.ProcessID}");
                 }
+                else
+                {
+                    processName = processName.Replace("\"", "");
+                    processName = processName.Replace("\\", "\\\\");
+                }
 
                 string returnData = $"{{\"ProcessID\": {data.ProcessID}, \"ProcessName\": \"{processName}\", \"data\": {info.ToJsonString()}}}";
 

@@ -42,14 +42,35 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     var insights = new DotnetInsights(outputChannel);
-    const lastestVersionNumber = "0.2.1";
+    const lastestVersionNumber = "0.2.2";
 
     var childProcess: child.ChildProcess | undefined = undefined;
+    var startupCallback: any = undefined;
 
     var startGcMonitor = vscode.commands.registerCommand("dotnetInsights.startGCMonitor", () => {
         if (insights.listener != undefined) {
             insights.listener.sendShutdown = false;
         }
+
+        if (insights.listener == undefined) {
+            startupCallback = () => {
+                if (insights.listener == undefined) return;
+
+                insights.listener.start();
+
+                // Check if we are able to run to application
+                childProcess = child.exec(insights.gcEventListenerPath, (stdout, stderr) => {
+                    if (stderr.indexOf("ETW Event listening required Privilidged Access. Please run as Administrator") != 1) {
+                        vscode.window.showInformationMessage(`To automatically launch VSCode must be run elevated. In an elevated command prompt run: ${insights.gcEventListenerPath}`);
+                        childProcess = undefined;
+                    }
+                });
+            };
+
+            return;
+        }
+
+        insights.listener.start();
 
         // Check if we are able to run to application
         childProcess = child.exec(insights.gcEventListenerPath, (stdout, stderr) => {
@@ -65,6 +86,7 @@ export function activate(context: vscode.ExtensionContext) {
     var stopGCMonitor = vscode.commands.registerCommand("dotnetInsights.stopGCMonitor", () => {
         if (insights.listener != undefined) {
             insights.listener.sendShutdown = true;
+            insights.listener.httpServer.close();
         }
     }); 
 
@@ -90,6 +112,10 @@ export function activate(context: vscode.ExtensionContext) {
 
         var listener = new GcListener();
         insights.listener = listener;
+
+        if (startupCallback != undefined) {
+            startupCallback();
+        }
 
         const dotnetInsightsTreeDataProvider = new DotnetInsightsTreeDataProvider(insights);
         const dotnetInsightsGcTreeDataProvider = new DotnetInsightsGcTreeDataProvider(listener);
@@ -607,7 +633,7 @@ export function activate(context: vscode.ExtensionContext) {
                     fs.mkdirSync(gcStats);
                 }
 
-                const pidPath = path.join(gcStats, item.label + ".gcstats");
+                const pidPath = path.join(gcStats, item.pid + ".gcstats");
                 fs.writeFileSync(pidPath, "eol");
 
                 vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(pidPath), DotnetInsightsGcEditor.viewType);
