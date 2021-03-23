@@ -14,7 +14,7 @@ Note that currently only x64 assembly will be generated. Future support will com
 
 <br></br>
 
-![.NET Insights Example Usage](media/dotnet-insights-overview.gif)
+![.NET Insights Example Usage](https://github.com/jashook/vscode-dotnet-insights/blob/master/dotnetInsights/media/dotnet-insights-overview.gif?raw=true)
 
 <br></br>
 
