@@ -14,6 +14,8 @@ namespace DotnetInsights {
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
+using System.Management;
 using System.Threading.Tasks;
 using System.IO;
 
@@ -257,16 +259,6 @@ public class ProcessBasedListener
 
             Console.CancelKeyPress += delegate (object sender, ConsoleCancelEventArgs e) { session.Dispose(); };
             session.EnableProvider(ClrTraceEventParser.ProviderGuid, TraceEventLevel.Verbose, (ulong)ClrTraceEventParser.Keywords.GC);
-
-            // IObservable<GCAllocationTickTraceData> gcAllocStream = session.Source.Clr.Observe<GCAllocationTickTraceData>();
-
-            // gcAllocStream.Subscribe(allocData =>
-            // {
-            //     if (this.ProcessId == -1 || allocData.ProcessID == this.ProcessId)
-            //     {
-            //         Console.WriteLine($"[{allocData.ProcessID}] Allocated: {allocData.TypeName} - {allocData.AllocationKind} - {allocData.AllocationAmount64}");
-            //     }
-            // });
             
             session.Source.Clr.GCHeapStats += (GCHeapStatsTraceData data) =>
             {
@@ -287,7 +279,31 @@ public class ProcessBasedListener
                 info.TotalPromotedSize2 = data.TotalPromotedSize2;
                 info.TotalPromotedLOH = data.TotalPromotedSize3;
 
-                string returnData = $"{{\"ProcessID\": {data.ProcessID}, \"data\": {info.ToJsonString()}}}";
+                string processName = null;
+
+                try
+                {
+                    Process proc = Process.GetProcessById((int)data.ProcessID);
+
+                    using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT CommandLine FROM Win32_Process WHERE ProcessId = " + proc.Id))
+                    using (ManagementObjectCollection objects = searcher.Get())
+                    {
+                        processName = objects.Cast<ManagementBaseObject>().SingleOrDefault()?["CommandLine"]?.ToString();
+                    }
+
+                }
+                catch(Exception e)
+                {
+
+                }
+
+                if (string.IsNullOrWhiteSpace(processName))
+                {
+                    processName = "";
+                    Console.WriteLine($"Unable to get info for {data.ProcessID}");
+                }
+
+                string returnData = $"{{\"ProcessID\": {data.ProcessID}, \"ProcessName\": \"{processName}\", \"data\": {info.ToJsonString()}}}";
 
                 cb(returnData);
             };

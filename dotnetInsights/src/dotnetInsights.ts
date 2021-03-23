@@ -6,6 +6,7 @@ import * as path from 'path';
 import * as assert from "assert";
 
 import { Method } from "./DotnetInightsTextEditor";
+import { GcListener } from "./GcListener";
 
 export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<Dependency> {
     private _onDidChangeTreeData: vscode.EventEmitter<Dependency | undefined | void> = new vscode.EventEmitter<Dependency | undefined | void>();
@@ -267,6 +268,8 @@ export class DotnetInsights {
 
     public gcEventListenerPath: string;
 
+    public listener: GcListener | undefined;
+
     constructor(outputChannel: vscode.OutputChannel) {
         this.ilDasmPath = "";
         this.ilDasmVersion = "";
@@ -312,6 +315,8 @@ export class DotnetInsights {
 
         this.sdkVersions = [] as string[];
         this.gcEventListenerPath = "";
+
+        this.listener = undefined;
     }
 
     public setUseIldasm() {

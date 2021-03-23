@@ -9,6 +9,13 @@
     const vscode = acquireVsCodeApi();
 
     var gcs = JSON.parse(document.getElementById("hiddenData").innerHTML);
+
+    const maxLength = 100;
+
+    // Take the last 100 to avoid performance issues
+    if (gcs.length >= maxLength) {
+        gcs = gcs.slice(gcs.length - maxLength, gcs.length);
+    }
     
     var timestamps = [];
     for (var index = 0; index < gcs.length; ++index) {
@@ -194,6 +201,19 @@
             rows.appendChild(tableRow);
         }
 
+        if (gcs.length >= maxLength) {
+            gcs = gcs.slice(gcs.length - maxLength, gcs.length);
+
+            const minusOne = maxLength - 1;
+
+            myChart.data.labels = myChart.data.labels.slice(gcs.length - minusOne, gcs.length);
+
+            for (var index = 0; index < myChart.data.datasets.length; ++index) {
+                const currentDataset = myChart.data.datasets[index];
+                currentDataset.data = currentDataset.data.slice(gcs.length - minusOne, gcs.length);
+            }
+        }
+
         var newTimestamps = [];
         for (var index = 0; index < gcs.length; ++index) {
             newTimestamps.push(gcs[index]["timestamp"]);
@@ -229,9 +249,9 @@
 
         var doUpdate = false;
 
-        if (newGen0DataSet.length != gen0DataSet.length) {
+        if (newGen0DataSet.length != gen0DataSet.length || newGen0DataSet.length == maxLength) {
             // Check if the process has been torn down
-            if (newGen0DataSet.length != gen0DataSet.length + 1) {
+            if (newGen0DataSet.length != gen0DataSet.length + 1 && newGen0DataSet.length != maxLength) {
                 // The process has ben cycled. Delete the old chart and create a
                 // new one.
 

@@ -44,6 +44,32 @@ export function activate(context: vscode.ExtensionContext) {
     var insights = new DotnetInsights(outputChannel);
     const lastestVersionNumber = "0.2.1";
 
+    var childProcess: child.ChildProcess | undefined = undefined;
+
+    var startGcMonitor = vscode.commands.registerCommand("dotnetInsights.startGCMonitor", () => {
+        if (insights.listener != undefined) {
+            insights.listener.sendShutdown = false;
+        }
+
+        // Check if we are able to run to application
+        childProcess = child.exec(insights.gcEventListenerPath, (stdout, stderr) => {
+            if (stderr.indexOf("ETW Event listening required Privilidged Access. Please run as Administrator") != 1) {
+                vscode.window.showInformationMessage(`To automatically launch VSCode must be run elevated. In an elevated command prompt run: ${insights.gcEventListenerPath}`);
+                childProcess = undefined;
+            }
+        });
+    });
+
+    context.subscriptions.push(startGcMonitor);
+
+    var stopGCMonitor = vscode.commands.registerCommand("dotnetInsights.stopGCMonitor", () => {
+        if (insights.listener != undefined) {
+            insights.listener.sendShutdown = true;
+        }
+    }); 
+
+    context.subscriptions.push(stopGCMonitor);
+
     // Setup
     setup(lastestVersionNumber, context, insights).then((success: boolean) => {
         if (!success) {
@@ -63,6 +89,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         var listener = new GcListener();
+        insights.listener = listener;
 
         const dotnetInsightsTreeDataProvider = new DotnetInsightsTreeDataProvider(insights);
         const dotnetInsightsGcTreeDataProvider = new DotnetInsightsGcTreeDataProvider(listener);
@@ -71,26 +98,6 @@ export function activate(context: vscode.ExtensionContext) {
 
         vscode.window.registerTreeDataProvider('dotnetInsights', dotnetInsightsTreeDataProvider);
         vscode.window.registerTreeDataProvider('dotnetInsightsGc', dotnetInsightsGcTreeDataProvider);
-
-        var childProcess: child.ChildProcess | undefined = undefined;
-
-        var disposable = vscode.commands.registerCommand("dotnetInsights.startGCMonitor", () => {
-            // Check if we are able to run to application
-            childProcess = child.exec(insights.gcEventListenerPath, (stdout, stderr) => {
-                if (stderr.indexOf("ETW Event listening required Privilidged Access. Please run as Administrator") != 1) {
-                    vscode.window.showInformationMessage(`To automatically launch VSCode must be run elevated. In an elevated command prompt run: ${insights.gcEventListenerPath}`);
-                    childProcess = undefined;
-                }
-            });
-        });
-
-        context.subscriptions.push(disposable);
-
-        disposable = vscode.commands.registerCommand("dotnetInsights.stopGCMonitor", () => {
-            childProcess?.kill();
-        }); 
-
-        context.subscriptions.push(disposable);
 
         vscode.commands.registerCommand("dotnetInsights.diffThreeVsFiveTier0", (treeItem: Dependency) => {
             if (treeItem.label != undefined) {

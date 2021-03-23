@@ -23,11 +23,13 @@ export class GcData {
 export class ProcessInfo { 
     public data: GcData[];
     public processId: number;
+    public processName: string;
 
     constructor(data: any) {
         const parsedJson = data;
         
         this.processId = parsedJson["ProcessID"];
+        this.processName = parsedJson["ProcessName"];
         this.data = [] as GcData[];
 
         this.addData(parsedJson);
@@ -42,15 +44,28 @@ export class GcListener {
 
     public treeView: DotnetInsightsGcTreeDataProvider | undefined;
     public processes: Map<number, ProcessInfo>;
+    public httpServer: any;
+
+    public sendShutdown: boolean;
     
     constructor(
     ) {
         this.treeView = undefined;
         this.processes = new Map<number, ProcessInfo>();
+        this.sendShutdown = false;
+        this.httpServer = undefined;
+
         // For now only support windows.
         if (os.platform() == "win32") {
-            const httpServer = createServer((request: IncomingMessage, response: ServerResponse) => {
-                if (request.method == "POST") {
+            this.httpServer = createServer((request: IncomingMessage, response: ServerResponse) => {
+                if (request.method == "GET") {
+                    if (this.sendShutdown) {
+                        response.statusCode = 400;
+                    }
+
+                    response.end("eol");
+                }
+                else if (request.method == "POST") {
                     var data = "";
                     request.on("data", (chunk) => {
                         data += chunk;
@@ -71,6 +86,11 @@ export class GcListener {
                         this.treeView?.refresh();
 
                         console.log(`Add: ${jsonData['ProcessID']}`);
+
+                        if (this.sendShutdown) {
+                            response.statusCode = 400;
+                        }
+
                         response.end("eol");
                     });
 
@@ -78,7 +98,7 @@ export class GcListener {
             });
 
             const port = 2143;
-            httpServer.listen(port);
+            this.httpServer.listen(port);
         }
     }
 }

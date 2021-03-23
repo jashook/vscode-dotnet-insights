@@ -38,7 +38,8 @@ export class DotnetInsightsGcTreeDataProvider implements vscode.TreeDataProvider
             var deps = [] as GcDependency[];
             for (var index = 0; index < keys.length; ++index)
             {
-                const gcDep = new GcDependency(keys[index].toString(), vscode.TreeItemCollapsibleState.None, undefined, this.listener);
+                const label = `${keys[index].toString()} - ${this.listener.processes.get(keys[index])?.processName}`;
+                const gcDep = new GcDependency(label, vscode.TreeItemCollapsibleState.None, undefined, this.listener);
                 gcDep.command = {
                     command: "dotnetInsightsGc.selectPid",
                     title: "View Type",
