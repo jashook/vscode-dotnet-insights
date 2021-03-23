@@ -265,6 +265,8 @@ export class DotnetInsights {
 
     public treeView: DotnetInsightsTreeDataProvider | undefined;
 
+    public gcEventListenerPath: string;
+
     constructor(outputChannel: vscode.OutputChannel) {
         this.ilDasmPath = "";
         this.ilDasmVersion = "";
@@ -309,6 +311,7 @@ export class DotnetInsights {
         this.dllPath = undefined;
 
         this.sdkVersions = [] as string[];
+        this.gcEventListenerPath = "";
     }
 
     public setUseIldasm() {

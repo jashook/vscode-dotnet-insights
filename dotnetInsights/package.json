@@ -3,7 +3,7 @@
   "displayName": ".NET Insights",
   "publisher": "jashoo",
   "description": "Drill into .NET DLLs by viewing the IL and compiled code. Relies on ildasm and a public .NET JIT tool PMI.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "preview": true,
   "icon": "media/dep.png",
   "repository": {
@@ -17,7 +17,8 @@
   ],
   "activationEvents": [
     "onCustomEditor:dotnetInsights.edit",
-    "onCustomEditor:dotnetInsightsGc.edit"
+    "onCustomEditor:dotnetInsightsGc.edit",
+    "onCommand:dotnetInsights.startGCMonitor"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -103,6 +104,14 @@
       {
         "command": "dotnetInsights.diffThreeVsFiveTier1",
         "title": "Diff - 3.1 / 5.0 - Tier 1"
+      },
+      {
+        "command": "dotnetInsights.startGCMonitor",
+        "title": "Start GC Monitoring"
+      },
+      {
+        "command": "dotnetInsights.stopGCMonitor",
+        "title": "Stop GC Monitoring"
       }
     ],
     "menus": {

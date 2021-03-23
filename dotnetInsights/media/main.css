@@ -7,7 +7,6 @@
 }
 
 #gcData {
-    width: 67%;
     position: fixed;
     bottom: 0;
     background-color: white;
@@ -22,7 +21,7 @@ table {
 }
 
 .tableHeader {
-    background-color: blue;
+    background-color: rgba(87, 93, 182, 0.808);
 }
 
 th {

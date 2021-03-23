@@ -20,6 +20,9 @@
     var gen2DataSet = [];
     var lohDataSet = [];
 
+    var kb = 1024 * 1024
+    var mb = 1024 * mb;
+
     for (var index = 0; index < gcs.length; ++index) {
         var gcData = gcs[index]["data"];
 
@@ -29,16 +32,16 @@
             var currentHeap = firstHeap[heapIndex];
 
             if (currentHeap["Id"] == 0) {
-                gen0DataSet.push(currentHeap["SizeAfter"]);
+                gen0DataSet.push(currentHeap["SizeBefore"] / kb);
             }
             else if(currentHeap["Id"] == 1) {
-                gen1DataSet.push(currentHeap["SizeAfter"]);
+                gen1DataSet.push(currentHeap["SizeBefore"] / kb);
             }
             else if(currentHeap["Id"] == 2) {
-                gen2DataSet.push(currentHeap["SizeAfter"]);
+                gen2DataSet.push(currentHeap["SizeBefore"] / kb);
             }
             else if(currentHeap["Id"] == 3) {
-                lohDataSet.push(currentHeap["SizeAfter"]);
+                lohDataSet.push(currentHeap["SizeBefore"] / kb);
             }
         }
     }
@@ -87,10 +90,14 @@
                 yAxes: [{
                     ticks: {
                         beginAtZero: true
+                    },
+                    scaleLabel: {
+                        display: true,
+                        labelString: "Memory Usage in KB"
                     }
-                }]
+                }],
             },
-            "maintainAspectRatio": false
+            "maintainAspectRatio": false,
         }
     });
 
@@ -206,16 +213,16 @@
                 var currentHeap = firstHeap[heapIndex];
 
                 if (currentHeap["Id"] == 0) {
-                    newGen0DataSet.push(currentHeap["SizeAfter"]);
+                    newGen0DataSet.push(currentHeap["SizeBefore"] / kb);
                 }
                 else if(currentHeap["Id"] == 1) {
-                    newGen1DataSet.push(currentHeap["SizeAfter"]);
+                    newGen1DataSet.push(currentHeap["SizeBefore"] / kb);
                 }
                 else if(currentHeap["Id"] == 2) {
-                    newGen2DataSet.push(currentHeap["SizeAfter"]);
+                    newGen2DataSet.push(currentHeap["SizeBefore"] / kb);
                 }
                 else if(currentHeap["Id"] == 3) {
-                    newLohDataSet.push(currentHeap["SizeAfter"]);
+                    newLohDataSet.push(currentHeap["SizeBefore"] / kb);
                 }
             }
         }
