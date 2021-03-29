@@ -101,11 +101,14 @@ public class ProcessBasedListener
         public long TotalPromotedSize2 { get; set; }
         public GCType Type { get; set; }
 
+        public bool Processed { get; set; }
+
         public List<HeapInfo> Heaps { get; set; }
 
         public GcInfo()
         {
             Heaps = new List<HeapInfo>();
+            Processed = false;
         }
 
         public string ToJsonString()
@@ -201,7 +204,6 @@ public class ProcessBasedListener
         }
     }
 
-    private string ProcessName { get; set; }
     private string SessionName { get; set; }
 
     private Dictionary<int, ProcessInfo> Processes { get; set; }
@@ -222,25 +224,6 @@ public class ProcessBasedListener
         }
 
         this.SessionName = "DotnetInsightsEventListener";
-
-        try
-        {
-            Process proc = Process.GetProcessById((int)this.ProcessId);
-
-            if (proc != null)
-            {
-                this.ProcessName = proc.ProcessName;
-            }
-
-            if (string.IsNullOrWhiteSpace(this.ProcessName))
-            {
-                this.ProcessName = proc.ProcessName.ToString();
-            }
-        }
-        catch(Exception e)
-        {
-
-        }
 
         Processes = new Dictionary<int, ProcessInfo>();
     }
@@ -279,38 +262,10 @@ public class ProcessBasedListener
                 info.TotalPromotedSize2 = data.TotalPromotedSize2;
                 info.TotalPromotedLOH = data.TotalPromotedSize3;
 
-                string processName = null;
-
-                try
+                if (info.Heaps.Count == info.NumHeaps && !info.Processed)
                 {
-                    Process proc = Process.GetProcessById((int)data.ProcessID);
-
-                    using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT CommandLine FROM Win32_Process WHERE ProcessId = " + proc.Id))
-                    using (ManagementObjectCollection objects = searcher.Get())
-                    {
-                        processName = objects.Cast<ManagementBaseObject>().SingleOrDefault()?["CommandLine"]?.ToString();
-                    }
-
+                    this.ProcessCurrentGc(data.ProcessID, info, cb);
                 }
-                catch(Exception e)
-                {
-
-                }
-
-                if (string.IsNullOrWhiteSpace(processName))
-                {
-                    processName = "";
-                    Console.WriteLine($"Unable to get info for {data.ProcessID}");
-                }
-                else
-                {
-                    processName = processName.Replace("\"", "");
-                    processName = processName.Replace("\\", "\\\\");
-                }
-
-                string returnData = $"{{\"ProcessID\": {data.ProcessID}, \"ProcessName\": \"{processName}\", \"data\": {info.ToJsonString()}}}";
-
-                cb(returnData);
             };
 
             session.Source.Clr.GCGlobalHeapHistory += (GCGlobalHeapHistoryTraceData data) => 
@@ -467,10 +422,16 @@ public class ProcessBasedListener
                 }
 
                 processInfo.CurrentGC.Heaps.Add(currentHeap);
+
+                if (processInfo.CurrentGC.Heaps.Count == processInfo.CurrentGC.NumHeaps && !processInfo.CurrentGC.Processed)
+                {
+                    this.ProcessCurrentGc(data.ProcessID, processInfo.CurrentGC, cb);
+                }
             };
 
             session.Source.Clr.GCStart += (GCStartTraceData data) =>
             {
+                Console.WriteLine(data.ProcessID);
                 GcInfo info = new GcInfo();
                 info.Generation = data.Depth;
                 info.Id = data.Count;
@@ -495,6 +456,13 @@ public class ProcessBasedListener
                     processInfo.GCs = new Dictionary<int, GcInfo>();
                     
                     processInfo.GCs.Add(info.Id, info);
+                }
+
+                if (processInfo.CurrentGC != null && processInfo.CurrentGC.NumHeaps != processInfo.CurrentGC.Heaps.Count)
+                {
+                    // We have started processing another gc before finishing the first on
+                    Debug.Assert(!processInfo.CurrentGC.Processed);
+                    Debug.Assert(false);
                 }
 
                 processInfo.CurrentGC = info;
@@ -536,6 +504,51 @@ public class ProcessBasedListener
 
             return info;
         }
+    }
+
+    private void ProcessCurrentGc(int processId, GcInfo info, Action<string> cb)
+    {
+        string processName = null;
+
+        try
+        {
+            Process proc = Process.GetProcessById(processId);
+
+            using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT CommandLine FROM Win32_Process WHERE ProcessId = " + proc.Id))
+            using (ManagementObjectCollection objects = searcher.Get())
+            {
+                processName = objects.Cast<ManagementBaseObject>().SingleOrDefault()?["CommandLine"]?.ToString();
+            }
+
+            if (string.IsNullOrWhiteSpace(processName))
+            {
+                int i = 0;
+            }
+
+        }
+        catch(Exception e)
+        {
+
+        }
+
+        if (string.IsNullOrWhiteSpace(processName))
+        {
+            processName = "";
+            Console.WriteLine($"Unable to get info for {processId}");
+        }
+        else
+        {
+            processName = processName.Replace("\"", "");
+            processName = processName.Replace("\\", "\\\\");
+        }
+
+        string returnData = $"{{\"ProcessID\": {processId}, \"ProcessName\": \"{processName}\", \"data\": {info.ToJsonString()}}}";
+
+        Console.WriteLine(processId);
+
+        cb(returnData);
+
+        info.Processed = true;
     }
 
 }
