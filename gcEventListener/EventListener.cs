@@ -20,13 +20,8 @@ public class EventListener
 {
     public static void Main()
     {
-        var listener = new ProcessBasedListener();
-
-        var thread = new Thread(PingServer);
-        thread.Start();
-
         HttpClient client = new HttpClient();
-        listener.Listen(data => {
+        var listener = new EventPipeBasedListener(data => {
             try
             {
                 HttpContent content = new StringContent(data, Encoding.UTF8, "application/json");
@@ -42,6 +37,11 @@ public class EventListener
                 ProcessBasedListener.Session.Dispose();
             }
         });
+
+        var thread = new Thread(PingServer);
+        thread.Start();
+
+        listener.Listen();
     }
 
     public static void PingServer()

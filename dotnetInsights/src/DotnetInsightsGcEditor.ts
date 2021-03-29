@@ -57,17 +57,24 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
 
         var listener = this.listener;
 
-        function updateWebview() {
-            var data = listener.processes.get(pid)?.data;
+        var lastDataCount = listener.processes.get(pid)?.data.length;
 
-            if (data != undefined) {
-                const jsonData = JSON.stringify(data);
-                
-                webviewPanel.webview.postMessage({
-                    type: 'update',
-                    text: jsonData
-                });
+        function updateWebview() {
+            var currentData = listener.processes.get(pid)?.data;
+
+            if (currentData == undefined) return;
+            if (currentData?.length == lastDataCount) {
+                return;
             }
+
+            lastDataCount = currentData.length;
+
+            const jsonData = JSON.stringify(currentData);
+                
+            webviewPanel.webview.postMessage({
+                type: 'update',
+                text: jsonData
+            });
         }
 
         webviewPanel.webview.html = this.getHtmlForWebview(gcDocument, webviewPanel.webview);
@@ -79,21 +86,6 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
         webviewPanel.onDidDispose(() => {
             callBackTreeListener?.dispose();
         });
-
-        // Receive message from the webview.
-        webviewPanel.webview.onDidReceiveMessage(e => {
-            // switch (e.type) {
-            //     case 'add':
-            //         this.addNewScratch(document);
-            //         return;
-
-            //     case 'delete':
-            //         this.deleteScratch(document, e.id);
-            //         return;
-            // }
-        });
-
-        //updateWebview();
     }
 
     private getHtmlForWebview(document: DotnetInsightsGcDocument, webview: vscode.Webview): string {
@@ -104,28 +96,43 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
 
         var data = "";
         var hiddenData = JSON.stringify(gcs);
+        
+        var canvasData = "";
 
         if (gcs != undefined) {
 
             data += `<table>`;
-            data += `<tr class="tableHeader"><th>GC Number</th><th>Collection Generation</th><th>Type</th><th>Reason</th><th>Generation 0 Size</th><th>Generation 1 Size</th><th>Generation 2 Size</th><th>LOH Size</th><th>POH Size</th><th>Pause Time</th><th>Total Heap Size</th><th>Gen 0 Min Budget</th></tr>`;
+            data += `<tr class="tableHeader"><th>GC Number</th><th>Collection Generation</th><th>Type</th><th>Reason</th><th>Generation 0 Size</th><th>Generation 1 Size</th><th>Generation 2 Size</th><th>LOH Size</th><th>POH Size</th><th>Pause Time</th><th>Total Heap Size</th><th>Gen 0 Min Budget</th><th>Promoted Gen0</th><th>Promoted Gen1</th><th>Promoted Gen2</th></tr>`;
             for (var index = 0; index < gcs.length; ++index) {
                 const gcData = gcs[index].data;
 
-                data += `<tr><td>${gcData["Id"]}</td><td>${gcData["generation"]}</td><td>${gcData["Type"]}</td><td>${gcData["kind"]}</td><td>${gcData["GenerationSize0"]}</td><td>${gcData["GenerationSize1"]}</td><td>${gcData["GenerationSize2"]}</td><td>${gcData["GenerationSizeLOH"]}</td><td>NYI</td><td>${gcData["PauseDurationMSec"]}</td><td>${gcData["TotalHeapSize"]}</td><td>${gcData["Gen0MinSize"]}</td></tr>`;
-
-                // for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
-                //     const heap = gcData["Heaps"][innerIndex];
-                //     data += `<div>HeapIndex: ${heap["Index"]}</div>`;
-
-                //     for (var genIndex = 0; genIndex < heap["Generations"].length; ++genIndex) {
-                //         const generation = heap["Generations"][genIndex];
-                //         data += `<div>Gen ID: ${generation["Id"]} Size Before: ${generation["SizeBefore"]} SizeAfter: ${generation["SizeAfter"]} NewAllocation: ${generation["NewAllocation"]}</div>`
-                //     }
-                // }
+                data += `<tr><td>${gcData["Id"]}</td><td>${gcData["generation"]}</td><td>${gcData["Type"]}</td><td>${gcData["Reason"]}</td><td>${gcData["GenerationSize0"]}</td><td>${gcData["GenerationSize1"]}</td><td>${gcData["GenerationSize2"]}</td><td>${gcData["GenerationSizeLOH"]}</td><td>NYI</td><td>${gcData["PauseDurationMSec"]}</td><td>${gcData["TotalHeapSize"]}</td><td>${gcData["Gen0MinSize"]}</td><td>${gcData["TotalPromotedSize0"]}</td><td>${gcData["TotalPromotedSize1"]}</td><td>${gcData["TotalPromotedSize2"]}</td></tr>`;
             }
 
             data += `</table>`;
+
+            if (gcs.length > 0) {
+                const gcData = gcs[0].data;
+
+                if (gcData["Heaps"].length > 1) {
+                    for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
+                        const heap = gcData["Heaps"][innerIndex];
+
+                        if (innerIndex % 2 == 0) {
+                            canvasData += `<div class="heapChartParentMultiple heapChartNextLine"><canvas class="heapChart"></canvas></div>`;
+                        }
+                        else {
+                            canvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
+                        }
+                    }
+                    
+                    canvasData += `<div id="heapCharPadding"></div>`;
+                }
+                else {
+                    canvasData += `<div class="heapChartParent"><canvas class="heapChart"></canvas></div>`;
+                }
+                
+            }
         }
 
         const nonce = this.getNonce();
@@ -166,7 +173,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
             <body>
                 <span style="display:none" id="hiddenData">${hiddenData}</span>
                 <div id=gcDataContainer>
-                    <canvas id="myChart" width="400" height="400"></canvas>
+                    ${canvasData}
                     <script src="${chartjs}"></script>
                     <div id="gcData">
                         ${data}

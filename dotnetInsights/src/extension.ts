@@ -19,7 +19,6 @@ import { DotnetInsightsGcTreeDataProvider, GcDependency } from "./dotnetInsights
 import { DotnetInsightsGcEditor } from "./DotnetInsightsGcEditor";
 
 import { GcListener } from "./GcListener";
-import { pid, stderr, stdout } from 'node:process';
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -43,57 +42,55 @@ export function activate(context: vscode.ExtensionContext) {
 
     var insights = new DotnetInsights(outputChannel);
     const lastestVersionNumber = "0.4.0";
+    const latestListenerVersionNumber = "0.4.1";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;
 
     var startGcMonitor = vscode.commands.registerCommand("dotnetInsights.startGCMonitor", () => {
-        if (insights.listener != undefined) {
-            insights.listener.sendShutdown = false;
-        }
-
-        if (insights.listener == undefined) {
+        if (startupCallback == undefined) {
             startupCallback = () => {
                 if (insights.listener == undefined) return;
 
+                insights.listener.sendShutdown = false;
                 insights.listener.start();
 
                 // Check if we are able to run to application
                 childProcess = child.exec(insights.gcEventListenerPath, (stdout, stderr) => {
-                    if (stderr.indexOf("ETW Event listening required Privilidged Access. Please run as Administrator") != 1) {
+                    if (stderr.indexOf("ETW Event listening required Privilidged Access. Please run as Administrator") != -1) {
                         vscode.window.showInformationMessage(`To automatically launch VSCode must be run elevated. In an elevated command prompt run: ${insights.gcEventListenerPath}`);
                         childProcess = undefined;
                     }
                 });
+
+                insights.outputChannel.appendLine("Starting monitoring GCs.");
             };
 
             return;
         }
 
-        insights.listener.start();
+        startupCallback();
+    });
 
-        // Check if we are able to run to application
-        childProcess = child.exec(insights.gcEventListenerPath, (stdout, stderr) => {
-            if (stderr.indexOf("ETW Event listening required Privilidged Access. Please run as Administrator") != 1) {
-                vscode.window.showInformationMessage(`To automatically launch VSCode must be run elevated. In an elevated command prompt run: ${insights.gcEventListenerPath}`);
-                childProcess = undefined;
-            }
-        });
+    var setupExtension = vscode.commands.registerCommand("dotnetInsights.loadExtension", () => {
+        // no op
     });
 
     context.subscriptions.push(startGcMonitor);
+    context.subscriptions.push(setupExtension);
 
     var stopGCMonitor = vscode.commands.registerCommand("dotnetInsights.stopGCMonitor", () => {
         if (insights.listener != undefined) {
             insights.listener.sendShutdown = true;
             insights.listener.httpServer.close();
+            insights.outputChannel.appendLine("Stopped monitoring GCs.");
         }
     }); 
 
     context.subscriptions.push(stopGCMonitor);
 
     // Setup
-    setup(lastestVersionNumber, context, insights).then((success: boolean) => {
+    setup(lastestVersionNumber, latestListenerVersionNumber, context, insights).then((success: boolean) => {
         if (!success) {
             vscode.window.showWarningMessage(".NET Insights failed to start.");
             return;
@@ -911,14 +908,22 @@ function downloadGcMonitorExe(insights: DotnetInsights, versionNumber: string, u
 
     var promises = [];
 
+    var osName = "osx";
+    if (os.platform() == "win32") {
+        osName = "win";
+    }
+    else if (os.platform() != "darwin") {
+        osName = "linux";
+    }
+
     const arch = "x64";
-    const baseUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/gcEventListener.tar.gz`;
+    const baseUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/gcEventListener-${osName}.tar.gz`;
 
     promises.push(downloadAnUnzip(insights, baseUrl, unzipFolder, exeFolder));
     return Promise.all(promises);
 }
 
-function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, insights: DotnetInsights) : Thenable<boolean>  {
+function setup(lastestVersionNumber: string, latestListenerVersionNumber: string, context: vscode.ExtensionContext, insights: DotnetInsights) : Thenable<boolean>  {
     insights.outputChannel.appendLine("Setting up dotnetInsights.");
 
     const config = vscode.workspace.getConfiguration();
@@ -1001,10 +1006,16 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
     }
 
     const latestToolFile = path.join(outputPath, lastestVersionNumber + ".txt");
+    const latestListenerFile = path.join(outputPath, latestListenerVersionNumber + ".txt");
 
     var forceDownload = false;
     if (!fs.existsSync(latestToolFile) || fs.readFileSync(latestToolFile).toString() != lastestVersionNumber) {
         forceDownload = true;
+    }
+
+    var forceListenerDownload = false;
+    if (!fs.existsSync(latestListenerFile) || fs.readFileSync(latestToolFile).toString() != latestListenerVersionNumber) {
+        forceListenerDownload = true;
     }
 
     // ildasm comes with the core_root
@@ -1127,13 +1138,13 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
         insights.gcEventListenerPath = gcEventListenerPath;
 
         var doDownload = false;
-        if (forceDownload || !fs.existsSync(gcEventListenerTempDir) || !fs.existsSync(gcEventListenerPath)) {
+        if (forceDownload || forceListenerDownload || !fs.existsSync(gcEventListenerTempDir) || !fs.existsSync(gcEventListenerPath)) {
             doDownload = true;
         }
 
         if (doDownload) {
             var promise: Thenable<boolean> = new Promise((resolve, reject) => {
-                downloadGcMonitorExe(insights, lastestVersionNumber, gcEventListenerTempDir).then(() => {
+                downloadGcMonitorExe(insights, latestListenerVersionNumber, gcEventListenerTempDir).then(() => {
                     
                     var downloadSucceeded = false;
 
@@ -1152,12 +1163,17 @@ function setup(lastestVersionNumber: string, context: vscode.ExtensionContext, i
             promises.push(promise)
         }
     }
+    else {
+        insights.outputChannel.appendLine(`gcEventListenerPath: ${gcEventListenerPath}`);
+        insights.gcEventListenerPath = gcEventListenerPath;
+    }
 
     if (promises.length > 0) {
         return new Promise((resolve, reject) => {
             Promise.all(promises).then((successes) => {
                 var didSucceed = true;
                 fs.writeFileSync(latestToolFile, lastestVersionNumber);
+                fs.writeFileSync(latestListenerFile, latestListenerVersionNumber);
 
                 for (var index = 0; index < successes.length; ++index) {
                     didSucceed = didSucceed && successes[index];

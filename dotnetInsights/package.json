@@ -3,7 +3,7 @@
   "displayName": ".NET Insights",
   "publisher": "jashoo",
   "description": "Drill into .NET DLLs by viewing the IL and compiled code. Relies on ildasm and a public .NET JIT tool PMI.",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "preview": true,
   "icon": "media/dep.png",
   "repository": {
@@ -18,10 +18,51 @@
   "activationEvents": [
     "onCommand:dotnetInsights.startGCMonitor",
     "onCustomEditor:dotnetInsights.edit",
-    "onCustomEditor:dotnetInsightsGc.edit"
+    "onCustomEditor:dotnetInsightsGc.edit",
+    "onCommand:dotnetInsights.loadExtension"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "dotnet-insights",
+      "properties": {
+        "dotnet-insights.ildasmPath": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Path to a local ildasm executable. This will override the ildasm executable setup by the extension."
+        },
+        "dotnet-insights.pmiPath": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Path to a local pmi executable. This will override the pmi executable setup by the extension."
+        },
+        "dotnet-insights.coreRoot": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Path to a local coreRoot. This will override the coreRoot setup by the extension."
+        },
+        "dotnet-insights.outputPath": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Path to a temporary output directory. This will override the outputPath used by the extension."
+        },
+        "dotnet-insights.gcEventListenerPath": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Path to a local gcEventListener executable. This will override the gcEventListener executable setup by the extension."
+        },
+        "dotnet-insights.preferNetCoreThreeOne": {
+          "type": ["string", "null"],
+          "default": null,
+          "description": "Prefer using .NET Core 3.1 in place of 5.0 when using JIT Dasm and Jit Dump."
+        },
+        "dotnet-insights.surpressStartupMessage": {
+          "type": "boolean",
+          "default": false,
+          "description": "Turn off the verbose message that is given automatically on extension startup."
+        }
+      }
+    },
     "customEditors": [
       {
         "viewType": "dotnetInsights.edit",
@@ -108,6 +149,10 @@
       {
         "command": "dotnetInsights.startGCMonitor",
         "title": "Start GC Monitoring"
+      },
+      {
+        "command": "dotnetInsights.loadExtension",
+        "title": "Setup Dotnet Insights"
       },
       {
         "command": "dotnetInsights.stopGCMonitor",
