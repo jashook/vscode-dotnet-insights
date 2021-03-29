@@ -10,7 +10,7 @@
 
     var gcs = JSON.parse(document.getElementById("hiddenData").innerHTML);
 
-    const maxLength = 100;
+    const maxLength = 30;
 
     // Take the last 100 to avoid performance issues
     if (gcs.length >= maxLength) {
@@ -22,93 +22,113 @@
         timestamps.push(gcs[index]["timestamp"]);
     }
 
-    var gen0DataSet = [];
-    var gen1DataSet = [];
-    var gen2DataSet = [];
-    var lohDataSet = [];
+    var heapCharts = document.getElementsByClassName("heapChart");
+    var savedHeapCharts = [];
 
-    var kb = 1024 * 1024
-    var mb = 1024 * mb;
+    const setChart = (passedHeapIndex) => {
+        var gen0DataSet = [];
+        var gen1DataSet = [];
+        var gen2DataSet = [];
+        var lohDataSet = [];
 
-    for (var index = 0; index < gcs.length; ++index) {
-        var gcData = gcs[index]["data"];
+        var kb = 1024 * 1024
+        var mb = 1024 * mb;
 
-        // TODO, do per heap
-        var firstHeap = gcData["Heaps"][0]["Generations"];
-        for (var heapIndex = 0; heapIndex < firstHeap.length; ++heapIndex) {
-            var currentHeap = firstHeap[heapIndex];
+        for (var index = 0; index < gcs.length; ++index) {
+            var gcData = gcs[index]["data"];
+            
+            console.log(gcs);
+            console.log(passedHeapIndex);
+            console.log(gcData["Heaps"]);
+            console.log(gcData["Heaps"][passedHeapIndex]);
 
-            if (currentHeap["Id"] == 0) {
-                gen0DataSet.push(currentHeap["SizeBefore"] / kb);
-            }
-            else if(currentHeap["Id"] == 1) {
-                gen1DataSet.push(currentHeap["SizeBefore"] / kb);
-            }
-            else if(currentHeap["Id"] == 2) {
-                gen2DataSet.push(currentHeap["SizeBefore"] / kb);
-            }
-            else if(currentHeap["Id"] == 3) {
-                lohDataSet.push(currentHeap["SizeBefore"] / kb);
+            var currentHeap = gcData["Heaps"][passedHeapIndex]["Generations"];
+            for (var heapIndex = 0; heapIndex < currentHeap.length; ++heapIndex) {
+                var currentGeneration = currentHeap[heapIndex];
+
+                if (currentGeneration["Id"] == 0) {
+                    gen0DataSet.push(currentGeneration["SizeBefore"] / kb);
+                }
+                else if(currentGeneration["Id"] == 1) {
+                    gen1DataSet.push(currentGeneration["SizeBefore"] / kb);
+                }
+                else if(currentGeneration["Id"] == 2) {
+                    gen2DataSet.push(currentGeneration["SizeBefore"] / kb);
+                }
+                else if(currentGeneration["Id"] == 3) {
+                    lohDataSet.push(currentGeneration["SizeBefore"] / kb);
+                }
             }
         }
+
+        var ctx = heapCharts[passedHeapIndex];
+        console.log(heapCharts);
+        console.log(ctx);
+        ctx = ctx.getContext('2d');
+        var heapChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: timestamps,
+                datasets: [{
+                    label: 'Gen 0',
+                    data: gen0DataSet,
+                    backgroundColor: [
+                        'rgba(54, 162, 235, 0.2)',
+                    ],
+                    borderWidth: 1
+                }, 
+                {
+                    label: "Gen 1",
+                    data: gen1DataSet,
+                    backgroundColor: [
+                        'rgba(75, 192, 192, 0.2)'
+                    ],
+                    borderWidth: 1
+                },
+                {
+                    label: "Gen 2",
+                    data: gen2DataSet,
+                    backgroundColor: [
+                        'rgba(153, 102, 255, 0.2)'
+                    ],
+                    borderWidth: 1
+                },
+                {
+                    label: "LOH",
+                    data: lohDataSet,
+                    backgroundColor: [
+                        'rgba(255, 206, 86, 0.2)'
+                    ],
+                    borderWidth: 1
+                }
+            ]},
+            options: {
+                title: {
+                    display: true,
+                    text: `Heap: ${passedHeapIndex}`
+                },
+                scales: {
+                    yAxes: [{
+                        ticks: {
+                            beginAtZero: true
+                        },
+                        scaleLabel: {
+                            display: true,
+                            labelString: "Memory Usage in KB"
+                        }
+                    }],
+                },
+                "maintainAspectRatio": false,
+            }
+        });
+
+        savedHeapCharts.push(heapChart);
+    };
+    
+    for (var index = 0; index < heapCharts.length; ++index) {
+        console.log(index);
+        setChart(index);
     }
-
-    var ctx = document.getElementById('myChart');
-    ctx = ctx.getContext('2d');
-    var myChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels: timestamps,
-            datasets: [{
-                label: 'Gen 0',
-                data: gen0DataSet,
-                backgroundColor: [
-                    'rgba(54, 162, 235, 0.2)',
-                ],
-                borderWidth: 1
-            }, 
-            {
-                label: "Gen 1",
-                data: gen1DataSet,
-                backgroundColor: [
-                    'rgba(75, 192, 192, 0.2)'
-                ],
-                borderWidth: 1
-            },
-            {
-                label: "Gen 2",
-                data: gen2DataSet,
-                backgroundColor: [
-                    'rgba(153, 102, 255, 0.2)'
-                ],
-                borderWidth: 1
-            },
-            {
-                label: "LOH",
-                data: lohDataSet,
-                backgroundColor: [
-                    'rgba(255, 206, 86, 0.2)'
-                ],
-                borderWidth: 1
-            }
-        ]},
-        options: {
-            scales: {
-                yAxes: [{
-                    ticks: {
-                        beginAtZero: true
-                    },
-                    scaleLabel: {
-                        display: true,
-                        labelString: "Memory Usage in KB"
-                    }
-                }],
-            },
-            "maintainAspectRatio": false,
-        }
-    });
-
-    const notesContainer = /** @type {HTMLElement} */ (document.querySelector('.notes'));
 
     /**
      * Render the document in the webview.
@@ -201,16 +221,23 @@
             rows.appendChild(tableRow);
         }
 
+        console.assert(heapCharts.length == savedHeapCharts.length);
+
         if (gcs.length >= maxLength) {
             gcs = gcs.slice(gcs.length - maxLength, gcs.length);
 
             const minusOne = maxLength - 1;
 
-            myChart.data.labels = myChart.data.labels.slice(gcs.length - minusOne, gcs.length);
+            for (var index = 0; index < savedHeapCharts.length; ++index)
+            {
+                var heapChart = savedHeapCharts[index];
 
-            for (var index = 0; index < myChart.data.datasets.length; ++index) {
-                const currentDataset = myChart.data.datasets[index];
-                currentDataset.data = currentDataset.data.slice(gcs.length - minusOne, gcs.length);
+                heapChart.data.labels = heapChart.data.labels.slice(gcs.length - minusOne, gcs.length);
+
+                for (var datasetIndex = 0; datasetIndex < heapChart.data.datasets.length; ++datasetIndex) {
+                    const currentDataset = heapChart.data.datasets[datasetIndex];
+                    currentDataset.data = currentDataset.data.slice(gcs.length - minusOne, gcs.length);
+                }
             }
         }
 
@@ -219,75 +246,62 @@
             newTimestamps.push(gcs[index]["timestamp"]);
         }
 
-        var newGen0DataSet = [];
-        var newGen1DataSet = [];
-        var newGen2DataSet = [];
-        var newLohDataSet = [];
+        var newTimestamp = newTimestamps[newTimestamps.length - 1];
+        savedHeapCharts[0].data.labels.push(newTimestamp);
 
-        for (var index = 0; index < gcs.length; ++index) {
-            var gcData = gcs[index]["data"];
+        for (var heapIndex = 0; heapIndex < savedHeapCharts.length; ++heapIndex)
+        {
+            var heapChart = savedHeapCharts[heapIndex];
 
-            // TODO, do per heap
-            var firstHeap = gcData["Heaps"][0]["Generations"];
-            for (var heapIndex = 0; heapIndex < firstHeap.length; ++heapIndex) {
-                var currentHeap = firstHeap[heapIndex];
+            var newGen0DataSet = [];
+            var newGen1DataSet = [];
+            var newGen2DataSet = [];
+            var newLohDataSet = [];
 
-                if (currentHeap["Id"] == 0) {
-                    newGen0DataSet.push(currentHeap["SizeBefore"] / kb);
-                }
-                else if(currentHeap["Id"] == 1) {
-                    newGen1DataSet.push(currentHeap["SizeBefore"] / kb);
-                }
-                else if(currentHeap["Id"] == 2) {
-                    newGen2DataSet.push(currentHeap["SizeBefore"] / kb);
-                }
-                else if(currentHeap["Id"] == 3) {
-                    newLohDataSet.push(currentHeap["SizeBefore"] / kb);
+            var kb = 1024 * 1024
+            var mb = 1024 * mb;
+
+            for (var index = 0; index < gcs.length; ++index) {
+                var gcData = gcs[index]["data"];
+
+                var currentHeap = gcData["Heaps"][heapIndex]["Generations"];
+                for (var generationIndex = 0; generationIndex < currentHeap.length; ++generationIndex) {
+                    var currentGeneration = currentHeap[generationIndex];
+
+                    if (currentGeneration["Id"] == 0) {
+                        newGen0DataSet.push(currentGeneration["SizeBefore"] / kb);
+                    }
+                    else if(currentGeneration["Id"] == 1) {
+                        newGen1DataSet.push(currentGeneration["SizeBefore"] / kb);
+                    }
+                    else if(currentGeneration["Id"] == 2) {
+                        newGen2DataSet.push(currentGeneration["SizeBefore"] / kb);
+                    }
+                    else if(currentGeneration["Id"] == 3) {
+                        newLohDataSet.push(currentGeneration["SizeBefore"] / kb);
+                    }
                 }
             }
-        }
 
-        var doUpdate = false;
-
-        if (newGen0DataSet.length != gen0DataSet.length || newGen0DataSet.length == maxLength) {
-            // Check if the process has been torn down
-            if (newGen0DataSet.length != gen0DataSet.length + 1 && newGen0DataSet.length != maxLength) {
-                // The process has ben cycled. Delete the old chart and create a
-                // new one.
-
-                throw exception("NYI.");
-            }
-
-            gen0DataSet = newGen0DataSet;
-            gen1DataSet = newGen1DataSet;
-            gen2DataSet = newGen2DataSet;
-            lohDataSet = newLohDataSet;
-
-            timestamps = newTimestamps;
-
-            var newTimestamp = newTimestamps[newTimestamps.length - 1];
-
-            myChart.data.labels.push(newTimestamp);
-
-            for (var index = 0; index < myChart.data.datasets.length; ++index) {
-                var currentDataSet = myChart.data.datasets[index];
+            for (var index = 0; index < heapChart.data.datasets.length; ++index) {
+                var currentDataSet = heapChart.data.datasets[index];
 
                 if (index == 0) {
-                    currentDataSet.data.push(gen0DataSet[gen0DataSet.length - 1]);
+                    currentDataSet.data.push(newGen0DataSet[newGen0DataSet.length - 1]);
                 }
                 if (index == 1) {
-                    currentDataSet.data.push(gen1DataSet[gen1DataSet.length - 1]);
+                    currentDataSet.data.push(newGen1DataSet[newGen1DataSet.length - 1]);
                 }
                 if (index == 2) {
-                    currentDataSet.data.push(gen2DataSet[gen2DataSet.length - 1]);
+                    currentDataSet.data.push(newGen2DataSet[newGen2DataSet.length - 1]);
                 }
                 if (index == 3) {
-                    currentDataSet.data.push(lohDataSet[lohDataSet.length - 1]);
+                    currentDataSet.data.push(newLohDataSet[newLohDataSet.length - 1]);
                 }
             }
 
-            myChart.update();
-            console.log("Updated.");
+            heapChart.update();
+            console.log(`Updated Heap: ${heapIndex}`);
         }
     }
 

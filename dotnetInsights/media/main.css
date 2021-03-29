@@ -3,17 +3,20 @@
 */
 
 #gcDataContainer {
-    width: 70%;
+    width: 85%;
+    margin-left: 2%;
 }
 
 #gcData {
     position: fixed;
     bottom: 0;
     background-color: white;
-    height: 30%;
+    height: 15em;
     overflow-y: auto;
     overflow-x: hidden;
     border-radius: 12.5px;
+    width: 90%;
+    margin-left: 2%;
 }
 
 table {
@@ -35,4 +38,24 @@ tr:hover {
 
 td {
     text-align: center;
+}
+
+.heapChartParent {
+    width: 100%;
+    height: 600px;
+}
+
+.heapChartParentMultiple {
+    width: 50%;
+    height: 600px;
+    display: inline-block;
+}
+
+.heapChartNextLine {
+    width: 50%;
+    height: 600px;
+}
+
+#heapCharPadding {
+    margin-bottom: 16em;
 }
