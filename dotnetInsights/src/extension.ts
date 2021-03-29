@@ -1134,7 +1134,13 @@ function setup(lastestVersionNumber: string, latestListenerVersionNumber: string
     if (gcEventListenerPath == undefined) {
         const gcEventListenerTempDir = path.join(outputPath, "gcEventListener");
 
-        gcEventListenerPath = path.join(gcEventListenerTempDir, "gcEventListener", "gcEventListener.exe");
+        if (os.platform() == "win32") {
+            gcEventListenerPath = path.join(gcEventListenerTempDir, "gcEventListener", "gcEventListener.exe");
+        }
+        else {
+            gcEventListenerPath = path.join(gcEventListenerTempDir, "gcEventListener", "gcEventListener");
+        }
+
         insights.gcEventListenerPath = gcEventListenerPath;
 
         var doDownload = false;
