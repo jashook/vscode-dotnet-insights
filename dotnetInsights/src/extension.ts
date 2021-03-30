@@ -46,9 +46,10 @@ export function activate(context: vscode.ExtensionContext) {
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;
+    var didFinishStartup = false;
 
     var startGcMonitor = vscode.commands.registerCommand("dotnetInsights.startGCMonitor", () => {
-        if (startupCallback == undefined) {
+        if (startupCallback == undefined && !didFinishStartup) {
             startupCallback = () => {
                 if (insights.listener == undefined) return;
 
@@ -56,7 +57,11 @@ export function activate(context: vscode.ExtensionContext) {
                 insights.listener.start();
 
                 // Check if we are able to run to application
-                childProcess = child.exec(insights.gcEventListenerPath, (stdout, stderr) => {
+                childProcess = child.exec(`"${insights.gcEventListenerPath}"`, (exception: child.ExecException | null, stdout: string, stderr: string) => {
+                    if (stdout.indexOf("ETW Event listening required Privilidged Access. Please run as Administrator") != -1) {
+                        vscode.window.showInformationMessage(`To automatically launch VSCode must be run elevated. In an elevated command prompt run: ${insights.gcEventListenerPath}`);
+                        childProcess = undefined;
+                    }
                     if (stderr.indexOf("ETW Event listening required Privilidged Access. Please run as Administrator") != -1) {
                         vscode.window.showInformationMessage(`To automatically launch VSCode must be run elevated. In an elevated command prompt run: ${insights.gcEventListenerPath}`);
                         childProcess = undefined;
@@ -89,6 +94,13 @@ export function activate(context: vscode.ExtensionContext) {
             catch(e) {
                 
             }
+
+            try {
+                childProcess?.kill();
+            }
+            catch(e) {
+                
+            }
             
             insights.outputChannel.appendLine("Stopped monitoring GCs.");
         }
@@ -116,10 +128,6 @@ export function activate(context: vscode.ExtensionContext) {
 
         var listener = new GcListener();
         insights.listener = listener;
-
-        if (startupCallback != undefined) {
-            startupCallback();
-        }
 
         const dotnetInsightsTreeDataProvider = new DotnetInsightsTreeDataProvider(insights);
         const dotnetInsightsGcTreeDataProvider = new DotnetInsightsGcTreeDataProvider(listener);
@@ -646,6 +654,12 @@ export function activate(context: vscode.ExtensionContext) {
 
         context.subscriptions.push(DotnetInsightsTextEditorProvider.register(context, insights));
         context.subscriptions.push(DotnetInsightsGcEditor.register(context, insights, listener));
+
+        if (startupCallback != undefined) {
+            startupCallback();
+        }
+
+        didFinishStartup = true;
     });
 }
 
@@ -1021,7 +1035,7 @@ function setup(lastestVersionNumber: string, latestListenerVersionNumber: string
     }
 
     var forceListenerDownload = false;
-    if (!fs.existsSync(latestListenerFile) || fs.readFileSync(latestToolFile).toString() != latestListenerVersionNumber) {
+    if (!fs.existsSync(latestListenerFile) || fs.readFileSync(latestListenerFile).toString() != latestListenerVersionNumber) {
         forceListenerDownload = true;
     }
 
@@ -1174,6 +1188,10 @@ function setup(lastestVersionNumber: string, latestListenerVersionNumber: string
             });
 
             promises.push(promise)
+        }
+        else {
+            insights.outputChannel.appendLine(`gcEventListenerPath: ${gcEventListenerPath}`);
+            insights.gcEventListenerPath = gcEventListenerPath;
         }
     }
     else {
