@@ -89,14 +89,17 @@ internal class GcInfo
     public long TotalPromotedSize2 { get; set; }
     public GCType Type { get; set; }
 
-    public bool Processed { get; set; }
+    public bool ProcessedPerHeap { get; set; }
+
+    public bool ProcessedGcHeapInfo { get; set; }
 
     public List<HeapInfo> Heaps { get; set; }
 
     public GcInfo()
     {
         this.Heaps = new List<HeapInfo>();
-        this.Processed = false;
+        this.ProcessedPerHeap = false;
+        this.ProcessedGcHeapInfo = false;
     }
 
     public string ToJsonString()
