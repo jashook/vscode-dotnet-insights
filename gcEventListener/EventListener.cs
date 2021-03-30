@@ -29,12 +29,12 @@ public class EventListener
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    ProcessBasedListener.Session.Dispose();
+                    Environment.Exit(0);
                 }
             }
             catch (Exception e)
             {
-                ProcessBasedListener.Session.Dispose();
+                Environment.Exit(0);
             }
         });
 
@@ -58,13 +58,13 @@ public class EventListener
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    ProcessBasedListener.Session.Dispose();
+                    Environment.Exit(0);
                     break;
                 }
             }
             catch (Exception e)
             {
-                ProcessBasedListener.Session.Dispose();
+                Environment.Exit(0);
                 break;
             }
 

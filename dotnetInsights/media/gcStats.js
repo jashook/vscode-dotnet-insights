@@ -218,6 +218,21 @@
 
             tableRow.appendChild(tdElement);
 
+            tdElement = document.createElement("td");
+            tdElement.innerHTML = gcData["TotalPromotedSize0"];
+
+            tableRow.appendChild(tdElement);
+
+            tdElement = document.createElement("td");
+            tdElement.innerHTML = gcData["TotalPromotedSize1"];
+
+            tableRow.appendChild(tdElement);
+
+            tdElement = document.createElement("td");
+            tdElement.innerHTML = gcData["TotalPromotedSize2"];
+
+            tableRow.appendChild(tdElement);
+
             rows.appendChild(tableRow);
         }
 

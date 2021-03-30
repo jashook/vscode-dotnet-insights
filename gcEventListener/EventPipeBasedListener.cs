@@ -14,6 +14,7 @@ namespace DotnetInsights {
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 
 using Microsoft.Diagnostics.NETCore.Client;
@@ -103,7 +104,14 @@ public class EventPipeBasedListener
             var heapInfo = processInfo.CurrentGC.Heaps;
 
             string heapData = data.ToString();
-            var xmlSplit = heapData.Split("\r\n");
+
+            string newline = "\n";
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                newline = "\r\n";
+            }
+
+            var xmlSplit = heapData.Split(newline);
 
             HeapInfo currentHeap = new HeapInfo();
             for (int index = 0; index < xmlSplit.Length; ++index)
@@ -350,29 +358,39 @@ public class EventPipeBasedListener
                 new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, (long)ClrTraceEventParser.Keywords.GC)
             };
 
-            using (EventPipeSession session = client.StartEventPipeSession(providers, false))
+            try
             {
-                EventPipeEventSource source = new EventPipeEventSource(session.EventStream);
-
-                publishClient.Session = session;
-                
-                source.Clr.GCHeapStats += publishClient.OnGCHeapStats;
-                source.Clr.GCGlobalHeapHistory += publishClient.OnGCGlobalHeapHistory;
-                source.Clr.GCPerHeapHistory += publishClient.OnGCPerHeapHistory;
-                source.Clr.GCStart += publishClient.OnGCStart;
-                source.Clr.GCStop += publishClient.OnGCStop;
-
-                Console.WriteLine($"Started listening for: {publishClient.ProcessCommandLine}");
-
-                try
+                using (EventPipeSession session = client.StartEventPipeSession(providers, false))
                 {
-                    source.Process();
-                }
-                catch (Exception e)
-                {
-                    source.Dispose();
+                    EventPipeEventSource source = new EventPipeEventSource(session.EventStream);
+
+                    publishClient.Session = session;
+                    
+                    source.Clr.GCHeapStats += publishClient.OnGCHeapStats;
+                    source.Clr.GCGlobalHeapHistory += publishClient.OnGCGlobalHeapHistory;
+                    source.Clr.GCPerHeapHistory += publishClient.OnGCPerHeapHistory;
+                    source.Clr.GCStart += publishClient.OnGCStart;
+                    source.Clr.GCStop += publishClient.OnGCStop;
+
+                    Console.WriteLine($"Started listening for: {publishClient.ProcessCommandLine}");
+
+                    try
+                    {
+                        source.Process();
+                    }
+                    catch (Exception e)
+                    {
+                        source.Dispose();
+                    }
                 }
             }
+            catch (Exception e)
+            {
+                // The process most likely died in between setting up the event
+                // pipe.s
+                return;
+            }
+            
         });
     }
 

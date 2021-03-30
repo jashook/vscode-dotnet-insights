@@ -82,7 +82,14 @@ export function activate(context: vscode.ExtensionContext) {
     var stopGCMonitor = vscode.commands.registerCommand("dotnetInsights.stopGCMonitor", () => {
         if (insights.listener != undefined) {
             insights.listener.sendShutdown = true;
-            insights.listener.httpServer.close();
+
+            try {
+                insights.listener.httpServer.close();
+            }
+            catch(e) {
+                
+            }
+            
             insights.outputChannel.appendLine("Stopped monitoring GCs.");
         }
     }); 
@@ -1134,7 +1141,13 @@ function setup(lastestVersionNumber: string, latestListenerVersionNumber: string
     if (gcEventListenerPath == undefined) {
         const gcEventListenerTempDir = path.join(outputPath, "gcEventListener");
 
-        gcEventListenerPath = path.join(gcEventListenerTempDir, "gcEventListener", "gcEventListener.exe");
+        if (os.platform() == "win32") {
+            gcEventListenerPath = path.join(gcEventListenerTempDir, "gcEventListener", "gcEventListener.exe");
+        }
+        else {
+            gcEventListenerPath = path.join(gcEventListenerTempDir, "gcEventListener", "gcEventListener");
+        }
+
         insights.gcEventListenerPath = gcEventListenerPath;
 
         var doDownload = false;
