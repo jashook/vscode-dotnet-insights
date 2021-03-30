@@ -3,7 +3,7 @@
 */
 
 #gcDataContainer {
-    width: 85%;
+    width: 90%;
     margin-left: 2%;
 }
 
@@ -13,10 +13,19 @@
     background-color: white;
     height: 15em;
     overflow-y: auto;
-    overflow-x: hidden;
+    overflow-x: auto;
     border-radius: 12.5px;
     width: 90%;
     margin-left: 2%;
+}
+
+.expensiveGc {
+    background-color: rgba(212, 36, 65, 0.808);
+    color: white;
+}
+
+.warnGc {
+    background-color: rgb(217, 255, 46);
 }
 
 table {
@@ -30,6 +39,10 @@ table {
 th {
     color: white;
     font-size: 15px;
+    padding: 10px;
+    padding-left: 40px;
+    padding-right: 40px;
+    border-radius: 5px;
 }
 
 tr:hover {

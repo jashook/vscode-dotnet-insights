@@ -99,14 +99,41 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
         
         var canvasData = "";
 
+        const kb = 1024 * 1024;
+
         if (gcs != undefined) {
 
             data += `<table>`;
-            data += `<tr class="tableHeader"><th>GC Number</th><th>Collection Generation</th><th>Type</th><th>Reason</th><th>Generation 0 Size</th><th>Generation 1 Size</th><th>Generation 2 Size</th><th>LOH Size</th><th>POH Size</th><th>Pause Time</th><th>Total Heap Size</th><th>Gen 0 Min Budget</th><th>Promoted Gen0</th><th>Promoted Gen1</th><th>Promoted Gen2</th></tr>`;
+            data += `<tr class="tableHeader"><th>GC Number</th><th>Collection Generation</th><th>Type</th><th>Pause Time (mSec)</th><th>Reason</th><th>Generation 0 Size (kb)</th><th>Generation 1 Size (kb)</th><th>Generation 2 Size (kb)</th><th>LOH Size (kb)</th><th>POH Size (kb)</th><th>Total Heap Size (kb)</th><th>Gen 0 Min Budget (kb)</th><th>Promoted Gen0 (kb)</th><th>Promoted Gen1 (kb)</th><th>Promoted Gen2 (kb)</th></tr>`;
             for (var index = 0; index < gcs.length; ++index) {
                 const gcData = gcs[index].data;
 
-                data += `<tr><td>${gcData["Id"]}</td><td>${gcData["generation"]}</td><td>${gcData["Type"]}</td><td>${gcData["Reason"]}</td><td>${gcData["GenerationSize0"]}</td><td>${gcData["GenerationSize1"]}</td><td>${gcData["GenerationSize2"]}</td><td>${gcData["GenerationSizeLOH"]}</td><td>NYI</td><td>${gcData["PauseDurationMSec"]}</td><td>${gcData["TotalHeapSize"]}</td><td>${gcData["Gen0MinSize"]}</td><td>${gcData["TotalPromotedSize0"]}</td><td>${gcData["TotalPromotedSize1"]}</td><td>${gcData["TotalPromotedSize2"]}</td></tr>`;
+                let pauseTime = parseFloat(gcData["PauseDurationMSec"]);
+
+                let tdId = gcData["Id"];
+                let tdGen = gcData["generation"];
+                let tdType = gcData["Type"];
+                let tdPauseTime = pauseTime.toFixed(2);
+                let tdReason = gcData["Reason"];
+                let tdGen0Size = (parseInt(gcData["GenerationSize0"]) / kb).toFixed(2);
+                let tdGen1Size = (parseInt(gcData["GenerationSize1"]) / kb).toFixed(2);
+                let tdGen2Size = (parseInt(gcData["GenerationSize2"]) / kb).toFixed(2);
+                let tdLohSize = (parseInt(gcData["GenerationSizeLOH"]) / kb).toFixed(2);
+                let tdTotalHeapSize = (parseInt(gcData["TotalHeapSize"]) / kb).toFixed(2);
+                let tdGen0MinSize = (parseInt(gcData["Gen0MinSize"]) / kb).toFixed(2);
+                let tdTotalPromotedSize0 = (parseInt(gcData["TotalPromotedSize0"]) / kb).toFixed(2);
+                let tdTotalPromotedSize1 = (parseInt(gcData["TotalPromotedSize1"]) / kb).toFixed(2);
+                let tdTotalPromotedSize2 = (parseInt(gcData["TotalPromotedSize2"]) / kb).toFixed(2);
+
+                var expensiveGc = "";
+                if (pauseTime > 200.0) {
+                    expensiveGc = ` class="expensiveGc"`;
+                }
+                else if (pauseTime > 100.0) {
+                    expensiveGc = ` class="warnGc"`;
+                }
+
+                data += `<tr${expensiveGc}><td>${tdId}</td><td>${tdGen}</td><td>${tdType}</td><td>${tdPauseTime}</td><td>${tdReason}</td><td>${tdGen0Size}</td><td>${tdGen1Size}</td><td>${tdGen2Size}</td><td>${tdLohSize}</td><td>NYI</td><td>${tdTotalHeapSize}</td><td>${tdGen0MinSize}</td><td>${tdTotalPromotedSize0}</td><td>${tdTotalPromotedSize1}</td><td>${tdTotalPromotedSize2}</td></tr>`;
             }
 
             data += `</table>`;

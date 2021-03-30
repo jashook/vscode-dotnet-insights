@@ -42,14 +42,14 @@ export function activate(context: vscode.ExtensionContext) {
 
     var insights = new DotnetInsights(outputChannel);
     const lastestVersionNumber = "0.4.0";
-    const latestListenerVersionNumber = "0.4.1";
+    const latestListenerVersionNumber = "0.4.2";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;
     var didFinishStartup = false;
 
     var startGcMonitor = vscode.commands.registerCommand("dotnetInsights.startGCMonitor", () => {
-        if (startupCallback == undefined && !didFinishStartup) {
+        if (startupCallback == undefined) {
             startupCallback = () => {
                 if (insights.listener == undefined) return;
 
@@ -70,7 +70,9 @@ export function activate(context: vscode.ExtensionContext) {
 
                 insights.outputChannel.appendLine("Starting monitoring GCs.");
             };
+        }
 
+        if (!didFinishStartup) {
             return;
         }
 

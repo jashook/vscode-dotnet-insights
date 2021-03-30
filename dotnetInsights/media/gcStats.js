@@ -152,49 +152,72 @@
                 rows.removeChild(rowsCopy[index]);
             }
         }
+        
+        var kb = 1024 * 1024
+        var mb = 1024 * mb;
 
         for (var index = 0; index < gcs.length; ++index) {
             const gcData = gcs[index].data;
 
+            let tdId = gcData["Id"];
+            let tdGen = gcData["generation"];
+            let tdType = gcData["Type"];
+            let tdPauseTime = parseFloat(gcData["PauseDurationMSec"]).toFixed(2);
+            let tdReason = gcData["Reason"];
+            let tdGen0Size = (parseInt(gcData["GenerationSize0"]) / kb).toFixed(2);
+            let tdGen1Size = (parseInt(gcData["GenerationSize1"]) / kb).toFixed(2);
+            let tdGen2Size = (parseInt(gcData["GenerationSize2"]) / kb).toFixed(2);
+            let tdLohSize = (parseInt(gcData["GenerationSizeLOH"]) / kb).toFixed(2);
+            let tdTotalHeapSize = (parseInt(gcData["TotalHeapSize"]) / kb).toFixed(2);
+            let tdGen0MinSize = (parseInt(gcData["Gen0MinSize"]) / kb).toFixed(2);
+            let tdTotalPromotedSize0 = (parseInt(gcData["TotalPromotedSize0"]) / kb).toFixed(2);
+            let tdTotalPromotedSize1 = (parseInt(gcData["TotalPromotedSize1"]) / kb).toFixed(2);
+            let tdTotalPromotedSize2 = (parseInt(gcData["TotalPromotedSize2"]) / kb).toFixed(2);
+
             var tableRow = document.createElement("tr");
 
             var tdElement = document.createElement("td");
-            tdElement.innerHTML = gcData["Id"];
+            tdElement.innerHTML = tdId;
 
             tableRow.appendChild(tdElement);
 
             tdElement = document.createElement("td");
-            tdElement.innerHTML = gcData["generation"]
+            tdElement.innerHTML = tdGen;
 
             tableRow.appendChild(tdElement);
 
             tdElement = document.createElement("td");
-            tdElement.innerHTML = gcData["kind"]
+            tdElement.innerHTML = tdType;
 
             tableRow.appendChild(tdElement);
 
             tdElement = document.createElement("td");
-            tdElement.innerHTML = gcData["Reason"]
+            tdElement.innerHTML = tdPauseTime;
 
             tableRow.appendChild(tdElement);
 
             tdElement = document.createElement("td");
-            tdElement.innerHTML = gcData["GenerationSize0"]
+            tdElement.innerHTML = tdReason;
 
             tableRow.appendChild(tdElement);
 
             tdElement = document.createElement("td");
-            tdElement.innerHTML = gcData["GenerationSize1"]
+            tdElement.innerHTML = tdGen0Size;
 
             tableRow.appendChild(tdElement);
 
             tdElement = document.createElement("td");
-            tdElement.innerHTML = gcData["GenerationSize2"]
+            tdElement.innerHTML = tdGen1Size;
 
             tableRow.appendChild(tdElement);
 
             tdElement = document.createElement("td");
-            tdElement.innerHTML = gcData["GenerationSizeLOH"]
+            tdElement.innerHTML = tdGen2Size;
+
+            tableRow.appendChild(tdElement);
+
+            tdElement = document.createElement("td");
+            tdElement.innerHTML = tdLohSize;
 
             tableRow.appendChild(tdElement);
 
@@ -204,32 +227,27 @@
             tableRow.appendChild(tdElement);
 
             tdElement = document.createElement("td");
-            tdElement.innerHTML = gcData["PauseDurationMSec"];
+            tdElement.innerHTML = tdTotalHeapSize;
 
             tableRow.appendChild(tdElement);
 
             tdElement = document.createElement("td");
-            tdElement.innerHTML = gcData["TotalHeapSize"];
+            tdElement.innerHTML = tdGen0MinSize;
 
             tableRow.appendChild(tdElement);
 
             tdElement = document.createElement("td");
-            tdElement.innerHTML = gcData["Gen0MinSize"];
+            tdElement.innerHTML = tdTotalPromotedSize0;
 
             tableRow.appendChild(tdElement);
 
             tdElement = document.createElement("td");
-            tdElement.innerHTML = gcData["TotalPromotedSize0"];
+            tdElement.innerHTML = tdTotalPromotedSize1;
 
             tableRow.appendChild(tdElement);
 
             tdElement = document.createElement("td");
-            tdElement.innerHTML = gcData["TotalPromotedSize1"];
-
-            tableRow.appendChild(tdElement);
-
-            tdElement = document.createElement("td");
-            tdElement.innerHTML = gcData["TotalPromotedSize2"];
+            tdElement.innerHTML = tdTotalPromotedSize2;
 
             tableRow.appendChild(tdElement);
 
@@ -272,9 +290,6 @@
             var newGen1DataSet = [];
             var newGen2DataSet = [];
             var newLohDataSet = [];
-
-            var kb = 1024 * 1024
-            var mb = 1024 * mb;
 
             for (var index = 0; index < gcs.length; ++index) {
                 var gcData = gcs[index]["data"];

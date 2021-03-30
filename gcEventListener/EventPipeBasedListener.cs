@@ -78,10 +78,12 @@ public class EventPipeBasedListener
             info.TotalPromotedSize2 = data.TotalPromotedSize2;
             info.TotalPromotedLOH = data.TotalPromotedSize3;
 
-            if (info.Heaps.Count > 0 && info.Heaps.Count == info.NumHeaps && !info.Processed)
+            if (info.Heaps.Count > 0 && info.Heaps.Count == info.NumHeaps && info.ProcessedPerHeap)
             {
                 this.ProcessCurrentGc(info);
             }
+
+            info.ProcessedGcHeapInfo = true;
         }
 
         // <summary>
@@ -247,10 +249,12 @@ public class EventPipeBasedListener
 
             processInfo.CurrentGC.Heaps.Add(currentHeap);
 
-            if (processInfo.CurrentGC.Heaps.Count == processInfo.CurrentGC.NumHeaps && !processInfo.CurrentGC.Processed)
+            if (processInfo.CurrentGC.Heaps.Count == processInfo.CurrentGC.NumHeaps && processInfo.CurrentGC.ProcessedGcHeapInfo)
             {
                 this.ProcessCurrentGc(processInfo.CurrentGC);
             }
+
+            processInfo.CurrentGC.ProcessedPerHeap = true;
         }
 
         public void OnGCStart(GCStartTraceData data)
@@ -284,7 +288,7 @@ public class EventPipeBasedListener
             if (processInfo.CurrentGC != null && processInfo.CurrentGC.NumHeaps != processInfo.CurrentGC.Heaps.Count)
             {
                 // We have started processing another gc before finishing the first on
-                Debug.Assert(!processInfo.CurrentGC.Processed);
+                Debug.Assert(!processInfo.CurrentGC.ProcessedGcHeapInfo);
                 Debug.Assert(false);
             }
 
@@ -313,7 +317,8 @@ public class EventPipeBasedListener
             string returnData = $"{{\"ProcessID\": {this.ProcessID}, \"ProcessName\": \"{this.ProcessCommandLine}\", \"data\": {info.ToJsonString()}}}";
 
             this.GcFinishedCallback(returnData);
-            info.Processed = true;
+            info.ProcessedGcHeapInfo = true;
+            info.ProcessedPerHeap = true;
         }
     }
 
