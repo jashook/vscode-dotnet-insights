@@ -82,7 +82,14 @@ export function activate(context: vscode.ExtensionContext) {
     var stopGCMonitor = vscode.commands.registerCommand("dotnetInsights.stopGCMonitor", () => {
         if (insights.listener != undefined) {
             insights.listener.sendShutdown = true;
-            insights.listener.httpServer.close();
+
+            try {
+                insights.listener.httpServer.close();
+            }
+            catch(e) {
+                
+            }
+            
             insights.outputChannel.appendLine("Stopped monitoring GCs.");
         }
     }); 

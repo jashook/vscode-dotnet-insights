@@ -58,56 +58,54 @@ export class GcListener {
 
     start() {
         // For now only support windows.
-        if (os.platform() == "win32") {
-            this.httpServer = createServer((request: IncomingMessage, response: ServerResponse) => {
-                if (request.method == "GET") {
-                    if (this.sendShutdown) {
-                        response.statusCode = 400;
-                    }
+        this.httpServer = createServer((request: IncomingMessage, response: ServerResponse) => {
+        if (request.method == "GET") {
+            if (this.sendShutdown) {
+                response.statusCode = 400;
+            }
 
-                    response.end("eol");
-                }
-                else if (request.method == "POST") {
-                    var data = "";
-                    request.on("data", (chunk) => {
-                        data += chunk;
-                    });
-
-                    request.on("end", () => {
-                        var jsonData:any = undefined;
-                        try {
-                            jsonData = JSON.parse(data);
-                        }
-                        catch(e) {
-                            response.end("eol");
-                        }
-
-                        var processById: ProcessInfo | undefined = this.processes.get(jsonData["ProcessID"]);
-
-                        if (processById != undefined) {
-                            processById.addData(jsonData);
-                        }
-                        else {
-                            const processReturned = new ProcessInfo(jsonData);
-                            this.processes.set(jsonData["ProcessID"], processReturned);
-                        }
-
-                        this.treeView?.refresh();
-
-                        console.log(`Add: ${jsonData['ProcessID']}`);
-
-                        if (this.sendShutdown) {
-                            response.statusCode = 400;
-                        }
-
-                        response.end("eol");
-                    });
-
-                }
+            response.end("eol");
+        }
+        else if (request.method == "POST") {
+            var data = "";
+            request.on("data", (chunk) => {
+                data += chunk;
             });
 
-            const port = 2143;
-            this.httpServer.listen(port);
+            request.on("end", () => {
+                var jsonData:any = undefined;
+                try {
+                    jsonData = JSON.parse(data);
+                }
+                catch(e) {
+                    response.end("eol");
+                }
+
+                var processById: ProcessInfo | undefined = this.processes.get(jsonData["ProcessID"]);
+
+                if (processById != undefined) {
+                    processById.addData(jsonData);
+                }
+                else {
+                    const processReturned = new ProcessInfo(jsonData);
+                    this.processes.set(jsonData["ProcessID"], processReturned);
+                }
+
+                this.treeView?.refresh();
+
+                console.log(`Add: ${jsonData['ProcessID']}`);
+
+                if (this.sendShutdown) {
+                    response.statusCode = 400;
+                }
+
+                response.end("eol");
+            });
+
         }
+    });
+
+    const port = 2143;
+    this.httpServer.listen(port);
     }
 }
