@@ -21,25 +21,28 @@ public class EventListener
     public static void Main()
     {
         HttpClient client = new HttpClient();
-        var listener = new EventPipeBasedListener(data => {
-            try
-            {
-                HttpContent content = new StringContent(data, Encoding.UTF8, "application/json");
-                HttpResponseMessage response = client.PostAsync("http://localhost:2143", content).Result;
+        var listener = new EventPipeBasedListener(listenForGcData: true, 
+                                                  listenForAllocations: true,
+                                                  (type, data) => {
+            Console.WriteLine(data);
+            // try
+            // {
+            //     HttpContent content = new StringContent(data, Encoding.UTF8, "application/json");
+            //     HttpResponseMessage response = client.PostAsync("http://localhost:2143", content).Result;
 
-                if (!response.IsSuccessStatusCode)
-                {
-                    Environment.Exit(0);
-                }
-            }
-            catch (Exception e)
-            {
-                Environment.Exit(0);
-            }
+            //     if (!response.IsSuccessStatusCode)
+            //     {
+            //         Environment.Exit(0);
+            //     }
+            // }
+            // catch (Exception e)
+            // {
+            //     Environment.Exit(0);
+            // }
         });
 
-        var thread = new Thread(PingServer);
-        thread.Start();
+        // var thread = new Thread(PingServer);
+        // thread.Start();
 
         listener.Listen();
     }

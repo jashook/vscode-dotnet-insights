@@ -27,6 +27,12 @@ using Microsoft.Diagnostics.Tracing.Session;
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+public enum EventType
+{
+    GcAlloc,
+    GcCollection
+}
+
 public class EventPipeBasedListener
 {
     public class PublishClient
@@ -36,7 +42,7 @@ public class EventPipeBasedListener
         public EventPipeSession Session { get; set; }
 
         internal ProcessInfo ProcessInfo { get; set; }
-        public Action<string> GcFinishedCallback { get; set; }
+        public Action<EventType, string> EventFinishedCallback { get; set; }
 
         // <summary>
         // There is one PublishClient per process. Unlike the TraceEvent based
@@ -44,13 +50,13 @@ public class EventPipeBasedListener
         // all the bookkeeping done via the instance call. We only need to add
         // the GC data for this particular process.
         // </summary>
-        public PublishClient(int processId, Action<string> callback)
+        public PublishClient(int processId, Action<EventType, string> callback)
         {
             this.ProcessID = processId;
             this.Session = null;
             this.ProcessCommandLine = ProcessNameHelper.GetProcessNameForPid(processId);
 
-            this.GcFinishedCallback = callback;
+            this.EventFinishedCallback = callback;
             this.ProcessInfo = new ProcessInfo(this.ProcessID);
         }
 
@@ -310,13 +316,24 @@ public class EventPipeBasedListener
             }
         }
 
+        public void OnAllocationTick(GCAllocationTickTraceData data)
+        {
+            AllocationInfo info = new AllocationInfo();
+            info.AllocSizeBytes = data.AllocationAmount64;
+            info.HeapIndex = data.HeapIndex;
+            info.Kind = data.AllocationKind;
+            info.TypeName = data.TypeName;
+
+            this.EventFinishedCallback(EventType.GcAlloc, info.ToJsonString());
+        }
+
         private void ProcessCurrentGc(GcInfo info)
         {
             Debug.Assert(info.Heaps.Count != 0);
 
             string returnData = $"{{\"ProcessID\": {this.ProcessID}, \"ProcessName\": \"{this.ProcessCommandLine}\", \"data\": {info.ToJsonString()}}}";
 
-            this.GcFinishedCallback(returnData);
+            this.EventFinishedCallback(EventType.GcCollection, returnData);
             info.ProcessedGcHeapInfo = true;
             info.ProcessedPerHeap = true;
         }
@@ -324,12 +341,14 @@ public class EventPipeBasedListener
 
     private string ProcessName { get; set; }
     private string SessionName { get; set; }
+    private bool ListenForGcData { get; set; }
+    private bool ListenForAllocations { get; set; }
     private Dictionary<int, ProcessInfo> Processes { get; set; }
     public long ProcessId { get; set; }
     public Dictionary<int, PublishClient> PublishingClients { get; set; }
-    public Action<string> GcFinishedCallback { get; set; }
+    public Action<EventType, string> EventFinishedCallback { get; set; }
 
-    public EventPipeBasedListener(Action<string> callback, long scopedProcessId = -1)
+    public EventPipeBasedListener(bool listenForGcData, bool listenForAllocations, Action<EventType, string> callback, long scopedProcessId = -1)
     {
         this.PublishingClients = new Dictionary<int, PublishClient>();
 
@@ -340,7 +359,10 @@ public class EventPipeBasedListener
             this.PublishingClients.Add(processId, new PublishClient(processId, callback));
         }
 
-        this.GcFinishedCallback = callback;
+        this.EventFinishedCallback = callback;
+
+        this.ListenForAllocations = listenForAllocations;
+        this.ListenForGcData = listenForGcData;
     }
 
     public void Listen()
@@ -360,7 +382,8 @@ public class EventPipeBasedListener
 
             List<EventPipeProvider> providers = new List<EventPipeProvider>()
             {
-                new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, (long)ClrTraceEventParser.Keywords.GC)
+                new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, (long)ClrTraceEventParser.Keywords.GC),
+                new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, (long)ClrTraceEventParser.Keywords.Stack)
             };
 
             try
@@ -371,11 +394,19 @@ public class EventPipeBasedListener
 
                     publishClient.Session = session;
                     
-                    source.Clr.GCHeapStats += publishClient.OnGCHeapStats;
-                    source.Clr.GCGlobalHeapHistory += publishClient.OnGCGlobalHeapHistory;
-                    source.Clr.GCPerHeapHistory += publishClient.OnGCPerHeapHistory;
-                    source.Clr.GCStart += publishClient.OnGCStart;
-                    source.Clr.GCStop += publishClient.OnGCStop;
+                    if (this.ListenForGcData)
+                    {
+                        source.Clr.GCHeapStats += publishClient.OnGCHeapStats;
+                        source.Clr.GCGlobalHeapHistory += publishClient.OnGCGlobalHeapHistory;
+                        source.Clr.GCPerHeapHistory += publishClient.OnGCPerHeapHistory;
+                        source.Clr.GCStart += publishClient.OnGCStart;
+                        source.Clr.GCStop += publishClient.OnGCStop;
+                    }
+                    
+                    if (this.ListenForAllocations)
+                    {
+                        source.Clr.GCAllocationTick += publishClient.OnAllocationTick;
+                    }
 
                     Console.WriteLine($"Started listening for: {publishClient.ProcessCommandLine}");
 
@@ -408,7 +439,7 @@ public class EventPipeBasedListener
         {
             if (!this.PublishingClients.TryGetValue(processId, out PublishClient unused))
             {
-                PublishClient publishClient = new PublishClient(processId, this.GcFinishedCallback);
+                PublishClient publishClient = new PublishClient(processId, this.EventFinishedCallback);
                 this.PublishingClients.Add(processId, publishClient);
                 newClients.Add(publishClient);
             }
