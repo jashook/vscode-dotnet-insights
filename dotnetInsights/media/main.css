@@ -19,6 +19,10 @@
     margin-left: 2%;
 }
 
+#gcData>table {
+    width: 100%;
+}
+
 .expensiveGc {
     background-color: rgba(212, 36, 65, 0.808);
     color: white;
@@ -40,8 +44,6 @@ th {
     color: white;
     font-size: 15px;
     padding: 10px;
-    padding-left: 40px;
-    padding-right: 40px;
     border-radius: 5px;
 }
 
@@ -71,4 +73,12 @@ td {
 
 #heapCharPadding {
     margin-bottom: 16em;
+}
+
+#processCommandLine {
+    text-align: center;
+    font-size: 2em;
+    padding-bottom: 1%;
+    color: rgb(75, 65, 161);
+    word-break: break-word;
 }

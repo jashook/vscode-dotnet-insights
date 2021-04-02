@@ -180,6 +180,19 @@ internal class GcInfo
     }
 }
 
+internal class AllocationInfo
+{
+    public int HeapIndex { get; set; }
+    public GCAllocationKind Kind { get; set; }
+    public long AllocSizeBytes { get; set; }
+    public string TypeName { get; set; }
+
+    public string ToJsonString()
+    {
+        return $"{{\"heapIndex\":\"{this.HeapIndex}\",\"kind\":\"{this.Kind}\",\"allocSizeBytes\":\"{this.AllocSizeBytes}\",\"typeName\":\"{this.TypeName}\"}}";
+    }
+}
+
 internal class ProcessInfo
 {
     public int ProcessId { get; set; }

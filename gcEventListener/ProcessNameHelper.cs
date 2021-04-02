@@ -25,15 +25,29 @@ internal static class ProcessNameHelper
 {
     public static string GetProcessNameForPid(int processId)
     {
+        string returnValue = null;
+        try
+        {
+            Process proc = Process.GetProcessById(processId);
+            returnValue = proc.ProcessName;
+        }
+        catch (Exception e)
+        {
+
+        }
+
+        return returnValue;
+    }
+
+    public static string GetProcessCommandLineForPid(int processId)
+    {
         string processName = "";
 
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             try
             {
-                Process proc = Process.GetProcessById(processId);
-
-                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT CommandLine FROM Win32_Process WHERE ProcessId = " + proc.Id))
+                using (ManagementObjectSearcher searcher = new ManagementObjectSearcher("SELECT CommandLine FROM Win32_Process WHERE ProcessId = " + processId))
                 using (ManagementObjectCollection objects = searcher.Get())
                 {
                     processName = objects.Cast<ManagementBaseObject>().SingleOrDefault()?["CommandLine"]?.ToString();
