@@ -280,7 +280,11 @@
         }
 
         var newTimestamp = newTimestamps[newTimestamps.length - 1];
-        savedHeapCharts[0].data.labels.push(newTimestamp);
+
+        for (var heapIndex = 0; heapIndex < savedHeapCharts.length; ++heapIndex) {
+            savedHeapCharts[heapIndex].data.labels.push(newTimestamp);
+
+        }
 
         for (var heapIndex = 0; heapIndex < savedHeapCharts.length; ++heapIndex)
         {

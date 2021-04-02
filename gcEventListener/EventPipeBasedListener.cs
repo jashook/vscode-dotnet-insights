@@ -44,6 +44,8 @@ public class EventPipeBasedListener
         public int ProcessID { get; set; }
         public EventPipeSession Session { get; set; }
 
+        public DateTime StartTime { get; set; }
+
         internal ProcessInfo ProcessInfo { get; set; }
         public Action<EventType, string> EventFinishedCallback { get; set; }
 
@@ -66,6 +68,16 @@ public class EventPipeBasedListener
                 // Process died.
                 this.ProcessDied = true;
                 return;
+            }
+
+            try
+            {
+                Process proc = Process.GetProcessById(processId);
+                this.StartTime = proc.StartTime;
+            }
+            catch
+            {
+                this.ProcessDied = true;
             }
 
             this.ProcessName = ProcessNameHelper.GetProcessNameForPid(processId);
@@ -360,8 +372,7 @@ public class EventPipeBasedListener
             }
 
             string commandLine = this.ProcessCommandLine;
-
-            return $"{{\"ProcessID\": {this.ProcessID}, \"ProcessName\": \"{processName}\", \"processCommandLine\":\"{commandLine}\",\"data\": {jsonInfoString}}}";
+            return $"{{\"ProcessID\": {this.ProcessID}, \"ProcessName\": \"{processName}\", \"processStartTime\":\"{this.StartTime}\",\"currentTime\":\"{DateTime.Now}\",\"processCommandLine\":\"{commandLine}\",\"data\": {jsonInfoString}}}";
         }
 
         public void OnAllocationTick(GCAllocationTickTraceData data)
