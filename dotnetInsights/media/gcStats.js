@@ -22,6 +22,124 @@
         timestamps.push(gcs[index]["timestamp"]);
     }
 
+    var processMemoryChartDom = document.getElementsByClassName("processMemory")[0];
+
+    const processMemoryChartContext = processMemoryChartDom;
+    const context = processMemoryChartContext.getContext('2d');
+
+    var privateBytesDataSet = [];
+    var workingSetdataSet = [];
+    var pagedMemoryDataSet = [];
+    var virtualMemorySet = [];
+    var nonPagedSystemMemoryDataSet = [];
+    var pagedSystemMemoryDataSet = [];
+    var totalHeapSizeDataSet = [];
+
+    var kb = 1024 * 1024
+    var mb = 1024 * mb;
+
+    for (var index = 0; index < gcs.length; ++index) {
+        var gcData = gcs[index]["data"];
+
+        privateBytesDataSet.push(gcs[index]["privateBytes"] / kb);
+        workingSetdataSet.push(gcs[index]["workingSet"] / kb);
+        pagedMemoryDataSet.push(gcs[index]["pagedMemory"] / kb);
+        virtualMemorySet.push(gcs[index]["virtualMemory"] / kb);
+        nonPagedSystemMemoryDataSet.push(gcs[index]["nonPagedSystemMemory"] / kb);
+        pagedSystemMemoryDataSet.push(gcs[index]["pagedSystemMemory"] / kb);
+        totalHeapSizeDataSet.push(gcs[index]["TotalHeapSize"]/ kb);
+    }
+    console.log(gcs);
+
+    console.log(privateBytesDataSet);
+    console.log(workingSetdataSet);
+    console.log(pagedMemoryDataSet);
+    console.log(virtualMemorySet);
+    console.log(nonPagedSystemMemoryDataSet);
+    console.log(pagedSystemMemoryDataSet);
+    console.log(totalHeapSizeDataSet);
+
+    var processMemoryChart = new Chart(context, {
+        type: 'line',
+        data: {
+            labels: timestamps,
+            datasets: [{
+                label: 'Private Bytes',
+                data: privateBytesDataSet,
+                backgroundColor: [
+                    'rgb(85, 142, 248)',
+                ],
+                borderWidth: 1
+            }, 
+            {
+                label: "Working Set",
+                data: workingSetdataSet,
+                backgroundColor: [
+                    'rgb(255, 52, 52)'
+                ],
+                borderWidth: 1
+            },
+            {
+                label: "Paged Memory",
+                data: pagedMemoryDataSet,
+                backgroundColor: [
+                    'rgb(31, 40, 58)'
+                ],
+                borderWidth: 1
+            },
+            {
+                label: "Virtual Memory",
+                data: virtualMemorySet,
+                backgroundColor: [
+                    'rgba(248, 250, 151, 0.808)'
+                ],
+                borderWidth: 1
+            },
+            {
+                label: "Non Paged System Memory",
+                data: nonPagedSystemMemoryDataSet,
+                backgroundColor: [
+                    'rgb(138, 138, 138)'
+                ],
+                borderWidth: 1
+            },
+            {
+                label: "Paged System Memory",
+                data: pagedSystemMemoryDataSet,
+                backgroundColor: [
+                    'rgb(105, 4, 4)'
+                ],
+                borderWidth: 1
+            },
+            {
+                label: "Total Heap Size",
+                data: totalHeapSizeDataSet,
+                backgroundColor: [
+                    'rgb(17, 126, 111)'
+                ],
+                borderWidth: 1
+            },
+        ]},
+        options: {
+            title: {
+                display: true,
+                text: `Process Memory Statistics`
+            },
+            scales: {
+                yAxes: [{
+                    ticks: {
+                        beginAtZero: true
+                    },
+                    scaleLabel: {
+                        display: true,
+                        labelString: "Memory Usage in KB"
+                    }
+                }],
+            },
+            "maintainAspectRatio": false,
+        }
+    });
+
     var heapCharts = document.getElementsByClassName("heapChart");
     var savedHeapCharts = [];
 
@@ -36,11 +154,6 @@
 
         for (var index = 0; index < gcs.length; ++index) {
             var gcData = gcs[index]["data"];
-            
-            console.log(gcs);
-            console.log(passedHeapIndex);
-            console.log(gcData["Heaps"]);
-            console.log(gcData["Heaps"][passedHeapIndex]);
 
             var currentHeap = gcData["Heaps"][passedHeapIndex]["Generations"];
             for (var heapIndex = 0; heapIndex < currentHeap.length; ++heapIndex) {
@@ -62,8 +175,6 @@
         }
 
         var ctx = heapCharts[passedHeapIndex];
-        console.log(heapCharts);
-        console.log(ctx);
         ctx = ctx.getContext('2d');
         var heapChart = new Chart(ctx, {
             type: 'line',
@@ -126,7 +237,6 @@
     };
     
     for (var index = 0; index < heapCharts.length; ++index) {
-        console.log(index);
         setChart(index);
     }
 
@@ -135,23 +245,11 @@
      */
     function updateContent(/** @type {string} */ text) {
         var gcs = JSON.parse(text);
+        console.assert(gcs.length == 1);
 
         var gcDataTable = document.getElementById("gcData");
 
         var rows = gcDataTable.children[0].children[0];
-
-        var rowsCopy = [];
-        for (var index = 1; index < rows.children.length; ++index) {
-            rowsCopy.push(rows.children[index]);
-        }
-
-        if (rows.children.length > 1) {
-            for (var index = 0; index < rowsCopy.length; ++index) {
-                var currentRow = rowsCopy[index];
-
-                rows.removeChild(rowsCopy[index]);
-            }
-        }
         
         var kb = 1024 * 1024
         var mb = 1024 * mb;
@@ -256,8 +354,13 @@
 
         console.assert(heapCharts.length == savedHeapCharts.length);
 
-        if (gcs.length >= maxLength) {
-            gcs = gcs.slice(gcs.length - maxLength, gcs.length);
+        // Change gc percent to reflect new data
+        var perecentInGcNode = document.getElementById("percentInGc").children[1];
+        console.assert(perecentInGcNode.innerHTML.indexOf("%") != -1);
+
+        perecentInGcNode.innerHTML = gcs[0]["percentInGc"] + " %";
+
+        if (savedHeapCharts[0].data.labels.length >= maxLength) {
 
             const minusOne = maxLength - 1;
 
@@ -265,11 +368,11 @@
             {
                 var heapChart = savedHeapCharts[index];
 
-                heapChart.data.labels = heapChart.data.labels.slice(gcs.length - minusOne, gcs.length);
+                heapChart.data.labels = heapChart.data.labels.slice(heapChart.data.labels.length - minusOne, heapChart.data.labels.length);
 
                 for (var datasetIndex = 0; datasetIndex < heapChart.data.datasets.length; ++datasetIndex) {
                     const currentDataset = heapChart.data.datasets[datasetIndex];
-                    currentDataset.data = currentDataset.data.slice(gcs.length - minusOne, gcs.length);
+                    currentDataset.data = currentDataset.data.slice(currentDataset.data.length - minusOne, currentDataset.data.length);
                 }
             }
         }
@@ -335,7 +438,6 @@
             }
 
             heapChart.update();
-            console.log(`Updated Heap: ${heapIndex}`);
         }
     }
 

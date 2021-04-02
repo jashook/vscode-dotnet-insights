@@ -7,21 +7,27 @@ import * as assert from "assert";
 
 import { DotnetInsights } from "./dotnetInsights";
 import { GcListener, ProcessInfo, GcData } from "./GcListener";
+import { start } from 'node:repl';
 
 export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvider {
     public static register(context: vscode.ExtensionContext, insights: DotnetInsights, listener: GcListener): vscode.Disposable {
-        const provider = new DotnetInsightsGcEditor(context, insights, listener);
+        const provider = new DotnetInsightsGcEditor(context, insights, listener, null);
         const providerRegistration = vscode.window.registerCustomEditorProvider(DotnetInsightsGcEditor.viewType, provider);
         return providerRegistration;
     }
 
     public static readonly viewType = 'dotnetInsightsGc.edit';
+
+    private timeInGc: number;
     
     constructor(
         private readonly context: vscode.ExtensionContext,
         private readonly insights: DotnetInsights,
-        private readonly listener: GcListener
-    ) { }
+        private readonly listener: GcListener,
+        private gcData: any
+    ) {
+        this.timeInGc = 0;
+    }
 
     openCustomDocument(uri: vscode.Uri, openContext: vscode.CustomDocumentOpenContext, token: vscode.CancellationToken): vscode.CustomDocument | Thenable<vscode.CustomDocument> {
         var filename = path.basename(uri.path);
@@ -56,6 +62,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
         const pid = gcDocument.processId;
 
         var listener = this.listener;
+        var gcEditor = this;
 
         var lastDataCount = listener.processes.get(pid)?.data.length;
 
@@ -66,6 +73,34 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
             if (currentData?.length == lastDataCount) {
                 return;
             }
+
+            // Reconcile the last data with the current data.
+            // We will only send the differnece of the two for performance
+            // reasons.
+
+            // No update needed.
+            if (gcEditor.gcData.length == currentData.length) {
+                return;
+            }
+
+            if (gcEditor.gcData.length + 1 != currentData.length) {
+                console.assert(gcEditor.gcData.length + 1 == currentData.length);
+                console.log(gcEditor.gcData.length);
+                console.log(currentData.length);
+            }
+
+            const startTime = parseFloat(gcEditor.gcData[0].data["PauseStartRelativeMSec"]);
+            const currentTime = parseFloat(gcEditor.gcData[gcEditor.gcData.length - 1].data["PauseEndRelativeMSec"]);
+
+            // Make sure we only pass the latest update.
+            currentData = currentData.slice(currentData.length - 1);
+
+            gcEditor.timeInGc += parseFloat(currentData[0].data["PauseDurationMSec"]);
+            let percentOfTimeInGc = ((gcEditor.timeInGc / (currentTime - startTime)) * 100).toFixed(2);
+
+            currentData[0].percentInGc = percentOfTimeInGc;
+
+            gcEditor.gcData.push(currentData[0]);
 
             lastDataCount = currentData.length;
 
@@ -94,14 +129,25 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
         const processInfo: ProcessInfo | undefined = this.listener.processes.get(document.processId);
         const gcs: GcData[] | undefined = processInfo?.data;
 
+        this.gcData = [] as GcData[];
+        if (gcs != undefined) {
+            for (var index = 0; index < gcs?.length; ++index) {
+                this.gcData.push(gcs[index]);
+            }
+        }
+
         var data = "";
         var hiddenData = JSON.stringify(gcs);
         
         var canvasData = "";
+        this.timeInGc = 0;
 
         const kb = 1024 * 1024;
+        var percentInGcNumber: any;
 
-        if (gcs != undefined && gcs?.length > 0) {
+        if (gcs != undefined && gcs?.length > 0 && processInfo != undefined) {
+            const startTime = gcs[0].data["PauseStartRelativeMSec"];
+            const currentTime = gcs[gcs.length - 1].data["PauseEndRelativeMSec"];
 
             data += `<table>`;
             data += `<tr class="tableHeader"><th>GC Number</th><th>Collection Generation</th><th>Type</th><th>Pause Time (mSec)</th><th>Reason</th><th>Generation 0 Size (kb)</th><th>Generation 1 Size (kb)</th><th>Generation 2 Size (kb)</th><th>LOH Size (kb)</th><th>POH Size (kb)</th><th>Total Heap Size (kb)</th><th>Gen 0 Min Budget (kb)</th><th>Promoted Gen0 (kb)</th><th>Promoted Gen1 (kb)</th><th>Promoted Gen2 (kb)</th></tr>`;
@@ -109,6 +155,8 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
                 const gcData = gcs[index].data;
 
                 let pauseTime = parseFloat(gcData["PauseDurationMSec"]);
+
+                this.timeInGc += pauseTime;
 
                 let tdId = gcData["Id"];
                 let tdGen = gcData["generation"];
@@ -138,8 +186,13 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
 
             data += `</table>`;
 
+            let elapsedTimeInMs = (currentTime - startTime);
+            percentInGcNumber = (this.timeInGc / elapsedTimeInMs) * 100;
+
             if (gcs.length > 0) {
                 const gcData = gcs[0].data;
+
+                canvasData += `<div id="processMemoryStatistics"><canvas class="processMemory"></canvas></div>`;
 
                 if (gcData["Heaps"].length > 1) {
                     for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
@@ -152,12 +205,11 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
                             canvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
                         }
                     }
-                    
-                    canvasData += `<div id="heapCharPadding"></div>`;
                 }
                 else {
                     canvasData += `<div class="heapChartParent"><canvas class="heapChart"></canvas></div>`;
                 }
+                canvasData += `<div id="heapCharPadding"></div>`;
                 
             }
         }
@@ -200,6 +252,8 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
         
         const chartjs = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', 'chart.js', 'dist', 'Chart.min.js'));
 
+        let percentInGc = percentInGcNumber.toFixed(2);
+
         var returnValue = /* html */`
             <!DOCTYPE html>
             <html lang="en">
@@ -228,6 +282,10 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
             <body>
                 <span style="display:none" id="hiddenData">${hiddenData}</span>
                 <div id="processCommandLine">${processInfo?.processCommandLine}</div>
+                <div id="percentInGc">
+                    <div>Time in GC</div>
+                    <div>${percentInGc}%</div>
+                </div>
                 <div id="gcDataContainer">
                     ${canvasData}
                     <script src="${chartjs}"></script>

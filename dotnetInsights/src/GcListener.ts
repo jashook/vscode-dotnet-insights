@@ -7,10 +7,25 @@ import { parse } from 'node:path';
 export class GcData {
     public data: any;
     public timestamp: Date;
+    public percentInGc: string | undefined;
+    public privateBytes: number;
+    public pagedMemory: number;
+    public nonPagedSystemMemory: number;
+    public pagedSystemMemory: number;
+    public virtualMemory: number;
+    public workingSet: number;
 
     constructor(data: any) {
-        this.data = data;
+        this.data = data["data"];
         this.timestamp = new Date();
+        this.percentInGc = undefined;
+
+        this.privateBytes = parseInt(data["privateBytes"]);
+        this.pagedMemory = parseInt(data["pagedMemory"]);
+        this.nonPagedSystemMemory = parseInt(data["nonPagedSystemMemory"]);
+        this.pagedSystemMemory = parseInt(data["pagedSystemMemory"]);
+        this.virtualMemory = parseInt(data["virtualMemory"]);
+        this.workingSet = parseInt(data["workingSet"]);
     }
 }
 
@@ -30,6 +45,7 @@ export class ProcessInfo {
     public processId: number;
     public processName: string;
     public processCommandLine: string;
+    public processStartTime: Date;
 
     constructor(data: any, isAllocData: boolean) {
         const parsedJson = data;
@@ -39,16 +55,17 @@ export class ProcessInfo {
         this.processCommandLine = parsedJson["processCommandLine"];
         this.data = [] as GcData[];
         this.allocData = [] as AllocData[];
+        this.processStartTime = new Date(parsedJson["processStartTime"]);
 
         this.addData(parsedJson, isAllocData);
     }
 
     addData(parsedJson: any, isAllocData: boolean) {
         if (isAllocData) {
-            this.allocData.push(new AllocData(parsedJson["data"]));
+            this.allocData.push(new AllocData(parsedJson));
         }
         else {
-            this.data.push(new GcData(parsedJson["data"]));
+            this.data.push(new GcData(parsedJson));
         }
     }
 }
@@ -115,7 +132,6 @@ export class GcListener {
                     }
 
                     this.requests += 1;
-
                     this.treeView?.refresh();
 
                     console.log(`Add: ${jsonData['ProcessID']}, ${jsonData["ProcessName"]}`);

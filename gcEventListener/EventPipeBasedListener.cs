@@ -49,6 +49,8 @@ public class EventPipeBasedListener
         internal ProcessInfo ProcessInfo { get; set; }
         public Action<EventType, string> EventFinishedCallback { get; set; }
 
+        private Process Process { get; set; }
+
         // <summary>
         // There is one PublishClient per process. Unlike the TraceEvent based
         // provider when there is an instance level call, we will already have
@@ -72,8 +74,8 @@ public class EventPipeBasedListener
 
             try
             {
-                Process proc = Process.GetProcessById(processId);
-                this.StartTime = proc.StartTime;
+                this.Process = Process.GetProcessById(processId);
+                this.StartTime = this.Process.StartTime;
             }
             catch
             {
@@ -371,8 +373,17 @@ public class EventPipeBasedListener
                 throw new NotImplementedException();
             }
 
+            this.Process = Process.GetProcessById(this.ProcessID);
+
+            long workingSet = this.Process.WorkingSet64;
+            long pagedMemory = this.Process.PagedMemorySize64;
+            long privateBytes = this.Process.PrivateMemorySize64;
+            long virtualMemory = this.Process.VirtualMemorySize64;
+            long nonPagedSystemMemory = this.Process.NonpagedSystemMemorySize64;
+            long pagedSystemMemory = this.Process.PagedSystemMemorySize64;
+
             string commandLine = this.ProcessCommandLine;
-            return $"{{\"ProcessID\": {this.ProcessID}, \"ProcessName\": \"{processName}\", \"processStartTime\":\"{this.StartTime}\",\"currentTime\":\"{DateTime.Now}\",\"processCommandLine\":\"{commandLine}\",\"data\": {jsonInfoString}}}";
+            return $"{{\"ProcessID\": {this.ProcessID}, \"ProcessName\": \"{processName}\",\"workingSet\":\"{workingSet}\",\"pagedMemory\":\"{pagedMemory}\",\"privateBytes\":\"{privateBytes}\",\"virtualMemory\":\"{virtualMemory}\",\"processStartTime\":\"{this.StartTime}\",\"nonPagedSystemMemory\":\"{nonPagedSystemMemory}\",\"pagedSystemMemory\":\"{pagedSystemMemory}\",\"currentTime\":\"{DateTime.Now}\",\"processCommandLine\":\"{commandLine}\",\"data\": {jsonInfoString}}}";
         }
 
         public void OnAllocationTick(GCAllocationTickTraceData data)
