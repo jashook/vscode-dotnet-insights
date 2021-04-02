@@ -1,14 +1,8 @@
-import * as child from 'child_process';
-import * as fs from 'fs';
-import * as os from "os";
-import * as path from 'path';
-import * as vscode from 'vscode';
-import * as assert from "assert"
-
 import { DotnetInsightsGcTreeDataProvider } from "./dotnetInsightsGc";
 
 import { createServer } from "http";
 import { IncomingMessage, ServerResponse } from 'node:http';
+import { parse } from 'node:path';
 
 export class GcData {
     public data: any;
@@ -20,23 +14,42 @@ export class GcData {
     }
 }
 
-export class ProcessInfo { 
-    public data: GcData[];
-    public processId: number;
-    public processName: string;
+export class AllocData {
+    public data: any;
+    public timestamp: Date;
 
     constructor(data: any) {
+        this.data = data;
+        this.timestamp = new Date();
+    }
+}
+
+export class ProcessInfo { 
+    public data: GcData[];
+    public allocData: AllocData[];
+    public processId: number;
+    public processName: string;
+    public processCommandLine: string;
+
+    constructor(data: any, isAllocData: boolean) {
         const parsedJson = data;
         
         this.processId = parsedJson["ProcessID"];
         this.processName = parsedJson["ProcessName"];
+        this.processCommandLine = parsedJson["processCommandLine"];
         this.data = [] as GcData[];
+        this.allocData = [] as AllocData[];
 
-        this.addData(parsedJson);
+        this.addData(parsedJson, isAllocData);
     }
 
-    addData(parsedJson: any) {
-        this.data.push(new GcData(parsedJson["data"]));
+    addData(parsedJson: any, isAllocData: boolean) {
+        if (isAllocData) {
+            this.allocData.push(new AllocData(parsedJson["data"]));
+        }
+        else {
+            this.data.push(new GcData(parsedJson["data"]));
+        }
     }
 }
 
@@ -47,6 +60,9 @@ export class GcListener {
     public httpServer: any;
 
     public sendShutdown: boolean;
+
+    public requests: number;
+    public secondTimer: any;
     
     constructor(
     ) {
@@ -54,6 +70,12 @@ export class GcListener {
         this.processes = new Map<number, ProcessInfo>();
         this.sendShutdown = false;
         this.httpServer = undefined;
+
+        this.requests = 0;
+        setInterval(() => {
+            console.log(`Requests per second: ${this.requests}`);
+            this.requests = 0;
+        }, 1000);
     }
 
     start() {
@@ -82,17 +104,21 @@ export class GcListener {
 
                     var processById: ProcessInfo | undefined = this.processes.get(jsonData["ProcessID"]);
 
+                    const isAllocData = request.url == "/gcAllocation";
+
                     if (processById != undefined) {
-                        processById.addData(jsonData);
+                        processById.addData(jsonData, isAllocData);
                     }
                     else {
-                        const processReturned = new ProcessInfo(jsonData);
-                        this.processes.set(jsonData["ProcessID"], processReturned);
+                        processById = new ProcessInfo(jsonData, isAllocData);
+                        this.processes.set(jsonData["ProcessID"], processById);
                     }
+
+                    this.requests += 1;
 
                     this.treeView?.refresh();
 
-                    console.log(`Add: ${jsonData['ProcessID']}`);
+                    console.log(`Add: ${jsonData['ProcessID']}, ${jsonData["ProcessName"]}`);
 
                     if (this.sendShutdown) {
                         response.statusCode = 400;

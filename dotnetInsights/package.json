@@ -3,7 +3,7 @@
   "displayName": ".NET Insights",
   "publisher": "jashoo",
   "description": "Drill into .NET DLLs by viewing the IL and compiled code. Relies on ildasm and a public .NET JIT tool PMI.",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "preview": true,
   "icon": "media/dep.png",
   "repository": {

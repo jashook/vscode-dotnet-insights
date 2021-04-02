@@ -14,6 +14,7 @@ namespace DotnetInsights {
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 
@@ -37,6 +38,8 @@ public class EventPipeBasedListener
 {
     public class PublishClient
     {
+        public bool ProcessDied { get; set; }
+        public string ProcessName { get; set; }
         public string ProcessCommandLine { get; set; }
         public int ProcessID { get; set; }
         public EventPipeSession Session { get; set; }
@@ -54,7 +57,18 @@ public class EventPipeBasedListener
         {
             this.ProcessID = processId;
             this.Session = null;
-            this.ProcessCommandLine = ProcessNameHelper.GetProcessNameForPid(processId);
+            this.ProcessCommandLine = ProcessNameHelper.GetProcessCommandLineForPid(processId);
+
+            this.ProcessDied = false;
+
+            if (string.IsNullOrWhiteSpace(this.ProcessCommandLine))
+            {
+                // Process died.
+                this.ProcessDied = true;
+                return;
+            }
+
+            this.ProcessName = ProcessNameHelper.GetProcessNameForPid(processId);
 
             this.EventFinishedCallback = callback;
             this.ProcessInfo = new ProcessInfo(this.ProcessID);
@@ -294,6 +308,8 @@ public class EventPipeBasedListener
             if (processInfo.CurrentGC != null && processInfo.CurrentGC.NumHeaps != processInfo.CurrentGC.Heaps.Count)
             {
                 // We have started processing another gc before finishing the first on
+                // This is almost certainly because we are not able to keep up with the amount
+                // of incoming events
                 Debug.Assert(!processInfo.CurrentGC.ProcessedGcHeapInfo);
                 Debug.Assert(false);
             }
@@ -316,6 +332,38 @@ public class EventPipeBasedListener
             }
         }
 
+        private string getReturnData(string jsonInfoString)
+        {
+            string processName = this.ProcessName;
+
+            if (processName.IndexOf("dotnet") != -1)
+            {
+                // Change the process name to the first arugment of the command line.
+                string[] split = this.ProcessCommandLine.Split(' ');
+                Debug.Assert(split.Length > 1);
+
+                // This is a dotnet run command
+                if (split[1] == "exec")
+                {
+                    Debug.Assert(split.Length > 2);
+                    processName = Path.GetFileName(split[2]);
+                }
+                else 
+                {
+                    processName = Path.GetFileName(split[1]);
+                }
+            }
+            
+            if (string.IsNullOrWhiteSpace(processName))
+            {
+                throw new NotImplementedException();
+            }
+
+            string commandLine = this.ProcessCommandLine;
+
+            return $"{{\"ProcessID\": {this.ProcessID}, \"ProcessName\": \"{processName}\", \"processCommandLine\":\"{commandLine}\",\"data\": {jsonInfoString}}}";
+        }
+
         public void OnAllocationTick(GCAllocationTickTraceData data)
         {
             AllocationInfo info = new AllocationInfo();
@@ -324,14 +372,16 @@ public class EventPipeBasedListener
             info.Kind = data.AllocationKind;
             info.TypeName = data.TypeName;
 
-            this.EventFinishedCallback(EventType.GcAlloc, info.ToJsonString());
+            string returnData = this.getReturnData(info.ToJsonString());
+
+            this.EventFinishedCallback(EventType.GcAlloc, returnData);
         }
 
         private void ProcessCurrentGc(GcInfo info)
         {
             Debug.Assert(info.Heaps.Count != 0);
 
-            string returnData = $"{{\"ProcessID\": {this.ProcessID}, \"ProcessName\": \"{this.ProcessCommandLine}\", \"data\": {info.ToJsonString()}}}";
+            string returnData = this.getReturnData(info.ToJsonString());
 
             this.EventFinishedCallback(EventType.GcCollection, returnData);
             info.ProcessedGcHeapInfo = true;
@@ -369,7 +419,10 @@ public class EventPipeBasedListener
     {
         foreach (KeyValuePair<int, PublishClient> clientPair in this.PublishingClients)
         {
-            this.StartListener(clientPair.Value);
+            if (!clientPair.Value.ProcessDied)
+            {
+                this.StartListener(clientPair.Value);
+            }
         }
 
         ParkMainThread().Wait();

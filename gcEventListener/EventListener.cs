@@ -18,31 +18,50 @@ using DotnetInsights;
 
 public class EventListener
 {
+    private static string[] Paths { get; set; }
+    private static string LocalHostPath { get; set; }
+    private static HttpClient Client { get; set; }
+
+    private static void PostEventData(EventType type, string data)
+    {
+        Span<char> workingPath = stackalloc char[256];
+        LocalHostPath.AsSpan().CopyTo(workingPath);
+
+        int endPathIndex = LocalHostPath.Length;
+        Span<char> endSpan = workingPath.Slice(endPathIndex);
+        
+        try
+        {
+            string endPath = type == EventType.GcAlloc ? Paths[0] : Paths[1];
+            endPath.AsSpan().CopyTo(endSpan);
+
+            Span<char> exactPath = workingPath.Slice(0, LocalHostPath.Length + endPath.Length);
+            string path = exactPath.ToString();
+
+            HttpContent content = new StringContent(data, Encoding.UTF8, "application/json");
+            HttpResponseMessage response = Client.PostAsync(path, content).Result;
+
+            if (!response.IsSuccessStatusCode)
+            {
+                Environment.Exit(0);
+            }
+        }
+        catch (Exception e)
+        {
+            Environment.Exit(0);
+        }
+    }
+
     public static void Main()
     {
-        HttpClient client = new HttpClient();
-        var listener = new EventPipeBasedListener(listenForGcData: true, 
-                                                  listenForAllocations: true,
-                                                  (type, data) => {
-            Console.WriteLine(data);
-            // try
-            // {
-            //     HttpContent content = new StringContent(data, Encoding.UTF8, "application/json");
-            //     HttpResponseMessage response = client.PostAsync("http://localhost:2143", content).Result;
+        Paths = new string[] { "gcAllocation", "gcCollection" };
+        LocalHostPath = "http://localhost:2143/";
+        Client = new HttpClient();
 
-            //     if (!response.IsSuccessStatusCode)
-            //     {
-            //         Environment.Exit(0);
-            //     }
-            // }
-            // catch (Exception e)
-            // {
-            //     Environment.Exit(0);
-            // }
-        });
+        var listener = new EventPipeBasedListener(listenForGcData: true, listenForAllocations: false, PostEventData);
 
-        // var thread = new Thread(PingServer);
-        // thread.Start();
+        var thread = new Thread(PingServer);
+        thread.Start();
 
         listener.Listen();
     }

@@ -101,7 +101,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
 
         const kb = 1024 * 1024;
 
-        if (gcs != undefined) {
+        if (gcs != undefined && gcs?.length > 0) {
 
             data += `<table>`;
             data += `<tr class="tableHeader"><th>GC Number</th><th>Collection Generation</th><th>Type</th><th>Pause Time (mSec)</th><th>Reason</th><th>Generation 0 Size (kb)</th><th>Generation 1 Size (kb)</th><th>Generation 2 Size (kb)</th><th>LOH Size (kb)</th><th>POH Size (kb)</th><th>Total Heap Size (kb)</th><th>Gen 0 Min Budget (kb)</th><th>Promoted Gen0 (kb)</th><th>Promoted Gen1 (kb)</th><th>Promoted Gen2 (kb)</th></tr>`;
@@ -161,6 +161,34 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
                 
             }
         }
+        else {
+            const htmlReturn = /* html */`
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <!--
+                Use a content security policy to only allow loading images from https or from our extension directory,
+                and only allow scripts that have a specific nonce.
+                -->
+                
+                <meta http-equiv="Content-Security-Policy" 
+                content="default-src * vscode-resource: https: 'unsafe-inline' 'unsafe-eval';
+                script-src vscode-webview-resource: https: 'unsafe-inline' 'unsafe-eval';
+                style-src vscode-webview-resource: https: 'unsafe-inline';
+                img-src vscode-resource: https:;
+                connect-src vscode-resource: https: http:;">
+
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>${fileName}</title>
+            </head>
+            <body>
+                
+            </body>
+            </html>`;
+
+            return htmlReturn;
+        }
 
         const nonce = this.getNonce();
         const nonce2 = this.getNonce();
@@ -199,7 +227,8 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
             </head>
             <body>
                 <span style="display:none" id="hiddenData">${hiddenData}</span>
-                <div id=gcDataContainer>
+                <div id="processCommandLine">${processInfo?.processCommandLine}</div>
+                <div id="gcDataContainer">
                     ${canvasData}
                     <script src="${chartjs}"></script>
                     <div id="gcData">
