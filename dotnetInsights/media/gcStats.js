@@ -187,7 +187,7 @@
         var heapChart = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: timestamps,
+                labels: timestamps.slice(),
                 datasets: [{
                     label: 'Gen 0',
                     data: gen0DataSet,
@@ -410,7 +410,8 @@
         var newTimestampCopy = newTimestamps[newTimestamps.length - 1].slice();
 
         for (var heapIndex = 0; heapIndex < savedHeapCharts.length; ++heapIndex) {
-            savedHeapCharts[heapIndex].data.labels.push(newTimestamp);
+            var newTimestampTemp = newTimestamp.slice();
+            savedHeapCharts[heapIndex].data.labels.push(newTimestampTemp);
 
         }
 
@@ -423,7 +424,6 @@
         processMemoryChart.data.datasets[5].data.push(totalHeapSizeDataSet[totalHeapSizeDataSet.length - 1]);
 
         processMemoryChart.data.labels.push(newTimestampCopy);
-        processMemoryChart.update();
 
         for (var heapIndex = 0; heapIndex < savedHeapCharts.length; ++heapIndex)
         {
@@ -475,6 +475,8 @@
 
             heapChart.update();
         }
+
+        processMemoryChart.update();
     }
 
     // Handle messages sent from the extension to the webview
