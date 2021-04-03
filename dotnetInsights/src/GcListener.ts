@@ -62,7 +62,9 @@ export class ProcessInfo {
 
     addData(parsedJson: any, isAllocData: boolean) {
         if (isAllocData) {
-            this.allocData.push(new AllocData(parsedJson));
+            for (var index = 0; index < parsedJson.length; ++index) {
+                this.allocData.push(new AllocData(parsedJson[index]));
+            }
         }
         else {
             this.data.push(new GcData(parsedJson));
@@ -119,9 +121,14 @@ export class GcListener {
                         response.end("eol");
                     }
 
+                    const isAllocData = request.url == "/gcAllocation";
+
                     var processById: ProcessInfo | undefined = this.processes.get(jsonData["ProcessID"]);
 
-                    const isAllocData = request.url == "/gcAllocation";
+                    if (isAllocData) {
+                        processById = this.processes.get(jsonData[0]["ProcessID"]);
+                        console.assert(processById != undefined);
+                    }
 
                     if (processById != undefined) {
                         processById.addData(jsonData, isAllocData);
@@ -132,9 +139,13 @@ export class GcListener {
                     }
 
                     this.requests += 1;
-                    this.treeView?.refresh();
 
-                    console.log(`Add: ${jsonData['ProcessID']}, ${jsonData["ProcessName"]}`);
+                    if (!isAllocData) {
+                        this.treeView?.refresh();
+                    }
+                    else {
+                        console.log(`Add: ${jsonData['ProcessID']}, ${jsonData["ProcessName"]}`);
+                    }
 
                     if (this.sendShutdown) {
                         response.statusCode = 400;

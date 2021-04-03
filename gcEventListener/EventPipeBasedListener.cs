@@ -46,6 +46,8 @@ public class EventPipeBasedListener
 
         public DateTime StartTime { get; set; }
 
+        public List<string> Allocations { get; set; }
+
         internal ProcessInfo ProcessInfo { get; set; }
         public Action<EventType, string> EventFinishedCallback { get; set; }
 
@@ -64,6 +66,7 @@ public class EventPipeBasedListener
             this.ProcessCommandLine = ProcessNameHelper.GetProcessCommandLineForPid(processId);
 
             this.ProcessDied = false;
+            this.Allocations = new List<string>();
 
             if (string.IsNullOrWhiteSpace(this.ProcessCommandLine))
             {
@@ -395,8 +398,7 @@ public class EventPipeBasedListener
             info.TypeName = data.TypeName;
 
             string returnData = this.getReturnData(info.ToJsonString());
-
-            this.EventFinishedCallback(EventType.GcAlloc, returnData);
+            this.Allocations.Add(returnData);
         }
 
         private void ProcessCurrentGc(GcInfo info)
@@ -408,6 +410,15 @@ public class EventPipeBasedListener
             this.EventFinishedCallback(EventType.GcCollection, returnData);
             info.ProcessedGcHeapInfo = true;
             info.ProcessedPerHeap = true;
+
+            if (this.Allocations.Count > 0)
+            {
+                string allocReturnData = null;
+
+                allocReturnData = $"[{string.Join(",", this.Allocations)}]";
+                this.Allocations.Clear();
+                this.EventFinishedCallback(EventType.GcAlloc, allocReturnData);
+            }
         }
     }
 

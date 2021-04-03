@@ -70,9 +70,6 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
             var currentData = listener.processes.get(pid)?.data;
 
             if (currentData == undefined) return;
-            if (currentData?.length == lastDataCount) {
-                return;
-            }
 
             // Reconcile the last data with the current data.
             // We will only send the differnece of the two for performance
@@ -101,9 +98,6 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
             currentData[0].percentInGc = percentOfTimeInGc;
 
             gcEditor.gcData.push(currentData[0]);
-
-            lastDataCount = currentData.length;
-
             const jsonData = JSON.stringify(currentData);
                 
             webviewPanel.webview.postMessage({
@@ -286,6 +280,11 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
                     <div>Time in GC</div>
                     <div>${percentInGc}%</div>
                 </div>
+                <label class="switch">
+                    <div>Allocations</div>
+                    <input type="checkbox">
+                    <span class="slider round"></span>
+                </label>
                 <div id="gcDataContainer">
                     ${canvasData}
                     <script src="${chartjs}"></script>

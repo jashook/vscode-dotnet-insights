@@ -22,6 +22,21 @@
         timestamps.push(gcs[index]["timestamp"]);
     }
 
+    var timestampCopy = [];
+    for (var index = 0; index < timestamps.length; ++index) {
+        timestampCopy.push(timestamps[index]);
+    }
+
+    var allocSwitch = document.getElementsByTagName("input")[0];
+
+    var toggled = false;
+
+    allocSwitch.addEventListener("click", () => {
+        console.log(toggled);
+
+        toggled = !toggled;
+    });
+
     var processMemoryChartDom = document.getElementsByClassName("processMemory")[0];
 
     const processMemoryChartContext = processMemoryChartDom;
@@ -30,7 +45,7 @@
     var privateBytesDataSet = [];
     var workingSetdataSet = [];
     var pagedMemoryDataSet = [];
-    var virtualMemorySet = [];
+    //var virtualMemorySet = [];
     var nonPagedSystemMemoryDataSet = [];
     var pagedSystemMemoryDataSet = [];
     var totalHeapSizeDataSet = [];
@@ -44,30 +59,23 @@
         privateBytesDataSet.push(gcs[index]["privateBytes"] / kb);
         workingSetdataSet.push(gcs[index]["workingSet"] / kb);
         pagedMemoryDataSet.push(gcs[index]["pagedMemory"] / kb);
-        virtualMemorySet.push(gcs[index]["virtualMemory"] / kb);
+        //virtualMemorySet.push(gcs[index]["virtualMemory"] / kb);
         nonPagedSystemMemoryDataSet.push(gcs[index]["nonPagedSystemMemory"] / kb);
         pagedSystemMemoryDataSet.push(gcs[index]["pagedSystemMemory"] / kb);
         totalHeapSizeDataSet.push(gcs[index]["TotalHeapSize"]/ kb);
     }
-    console.log(gcs);
 
-    console.log(privateBytesDataSet);
-    console.log(workingSetdataSet);
-    console.log(pagedMemoryDataSet);
-    console.log(virtualMemorySet);
-    console.log(nonPagedSystemMemoryDataSet);
-    console.log(pagedSystemMemoryDataSet);
-    console.log(totalHeapSizeDataSet);
+    console.log(timestampCopy);
 
     var processMemoryChart = new Chart(context, {
         type: 'line',
         data: {
-            labels: timestamps,
+            labels: timestampCopy,
             datasets: [{
                 label: 'Private Bytes',
                 data: privateBytesDataSet,
                 backgroundColor: [
-                    'rgb(85, 142, 248)',
+                    'rgba(85, 142, 248, 0.2)',
                 ],
                 borderWidth: 1
             }, 
@@ -75,7 +83,7 @@
                 label: "Working Set",
                 data: workingSetdataSet,
                 backgroundColor: [
-                    'rgb(255, 52, 52)'
+                    'rgba(255, 52, 52, 0.2)'
                 ],
                 borderWidth: 1
             },
@@ -83,23 +91,23 @@
                 label: "Paged Memory",
                 data: pagedMemoryDataSet,
                 backgroundColor: [
-                    'rgb(31, 40, 58)'
+                    'rgba(31, 40, 58, 0.2)'
                 ],
                 borderWidth: 1
             },
-            {
-                label: "Virtual Memory",
-                data: virtualMemorySet,
-                backgroundColor: [
-                    'rgba(248, 250, 151, 0.808)'
-                ],
-                borderWidth: 1
-            },
+            // {
+            //     label: "Virtual Memory",
+            //     data: virtualMemorySet,
+            //     backgroundColor: [
+            //         'rgba(248, 250, 151, 0.808)'
+            //     ],
+            //     borderWidth: 1
+            // },
             {
                 label: "Non Paged System Memory",
                 data: nonPagedSystemMemoryDataSet,
                 backgroundColor: [
-                    'rgb(138, 138, 138)'
+                    'rgba(138, 138, 138, 0.2)'
                 ],
                 borderWidth: 1
             },
@@ -107,7 +115,7 @@
                 label: "Paged System Memory",
                 data: pagedSystemMemoryDataSet,
                 backgroundColor: [
-                    'rgb(105, 4, 4)'
+                    'rgba(105, 4, 4, 0.2)'
                 ],
                 borderWidth: 1
             },
@@ -115,7 +123,7 @@
                 label: "Total Heap Size",
                 data: totalHeapSizeDataSet,
                 backgroundColor: [
-                    'rgb(17, 126, 111)'
+                    'rgba(17, 126, 111, 0.2)'
                 ],
                 borderWidth: 1
             },
@@ -360,10 +368,26 @@
 
         perecentInGcNode.innerHTML = gcs[0]["percentInGc"] + " %";
 
+        privateBytesDataSet.push(gcs[0]["privateBytes"] / kb);
+        workingSetdataSet.push(gcs[0]["workingSet"] / kb);
+        pagedMemoryDataSet.push(gcs[0]["pagedMemory"] / kb);
+        //virtualMemorySet.push(gcs[0]["virtualMemory"] / kb);
+        nonPagedSystemMemoryDataSet.push(gcs[0]["nonPagedSystemMemory"] / kb);
+        pagedSystemMemoryDataSet.push(gcs[0]["pagedSystemMemory"] / kb);
+        totalHeapSizeDataSet.push(gcs[0]["TotalHeapSize"]/ kb);
+
+        const minusOne = maxLength - 1;
+        
+        if (processMemoryChart.data.labels.length >= maxLength) {
+            processMemoryChart.data.labels = processMemoryChart.data.labels.slice(processMemoryChart.data.labels.length - minusOne, processMemoryChart.data.labels.length);
+
+            for (var datasetIndex = 0; datasetIndex < processMemoryChart.data.datasets.length; ++datasetIndex) {
+                const currentDataSet = processMemoryChart.data.datasets[datasetIndex];
+                currentDataSet.data = currentDataSet.data.slice(currentDataSet.data.length - minusOne, currentDataSet.data.length);
+            }
+        }
+
         if (savedHeapCharts[0].data.labels.length >= maxLength) {
-
-            const minusOne = maxLength - 1;
-
             for (var index = 0; index < savedHeapCharts.length; ++index)
             {
                 var heapChart = savedHeapCharts[index];
@@ -383,11 +407,23 @@
         }
 
         var newTimestamp = newTimestamps[newTimestamps.length - 1];
+        var newTimestampCopy = newTimestamps[newTimestamps.length - 1].slice();
 
         for (var heapIndex = 0; heapIndex < savedHeapCharts.length; ++heapIndex) {
             savedHeapCharts[heapIndex].data.labels.push(newTimestamp);
 
         }
+
+        processMemoryChart.data.datasets[0].data.push(privateBytesDataSet[privateBytesDataSet.length - 1]);
+        processMemoryChart.data.datasets[1].data.push(workingSetdataSet[workingSetdataSet.length - 1]);
+        processMemoryChart.data.datasets[2].data.push(pagedMemoryDataSet[pagedMemoryDataSet.length - 1]);
+        //processMemoryChart.data.datasets[3].data.push(virtualMemorySet[virtualMemorySet.length - 1]);
+        processMemoryChart.data.datasets[3].data.push(nonPagedSystemMemoryDataSet[nonPagedSystemMemoryDataSet.length - 1]);
+        processMemoryChart.data.datasets[4].data.push(pagedSystemMemoryDataSet[pagedSystemMemoryDataSet.length - 1]);
+        processMemoryChart.data.datasets[5].data.push(totalHeapSizeDataSet[totalHeapSizeDataSet.length - 1]);
+
+        processMemoryChart.data.labels.push(newTimestampCopy);
+        processMemoryChart.update();
 
         for (var heapIndex = 0; heapIndex < savedHeapCharts.length; ++heapIndex)
         {
