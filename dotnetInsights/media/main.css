@@ -35,6 +35,18 @@
     background-color: rgb(217, 255, 46);
 }
 
+.interstingGc {
+    background-color: rgba(0, 0, 0, 0.493);
+}
+
+.somewhatInterestingGc {
+    background-color: rgba(0, 0, 0, 0.247);
+}
+
+.notSomewhatInterestingGc {
+    background-color: rgba(192, 192, 192, 0.247);
+}
+
 table {
     border-radius: 5px;
 }
@@ -69,6 +81,12 @@ td {
 }
 
 .heapChartParentMultiple {
+    width: 50%;
+    height: 600px;
+    display: inline-block;
+}
+
+.allocChartParent {
     width: 50%;
     height: 600px;
     display: inline-block;

@@ -2,7 +2,6 @@ import { DotnetInsightsGcTreeDataProvider } from "./dotnetInsightsGc";
 
 import { createServer } from "http";
 import { IncomingMessage, ServerResponse } from 'node:http';
-import { parse } from 'node:path';
 
 export class GcData {
     public data: any;
@@ -14,8 +13,30 @@ export class GcData {
     public pagedSystemMemory: number;
     public virtualMemory: number;
     public workingSet: number;
+    public allocData: AllocData[];
+    public filteredAllocData: any;
 
     constructor(data: any) {
+        if (data["workingSet"] != undefined) {
+            this.data = data.data;
+            this.timestamp = data.timestamp;
+            this.percentInGc = data.percentInGc;
+            this.privateBytes = data.privateBytes;
+            this.pagedMemory = data.pagedMemory;
+            this.nonPagedSystemMemory = data.nonPagedSystemMemory;
+            this.pagedSystemMemory = data.pagedSystemMemory;
+            this.virtualMemory = data.virtualMemory;
+            this.workingSet = data.workingSet;
+            this.filteredAllocData = data.filteredAllocData;
+            this.allocData = [];
+
+            if (this.timestamp == undefined) {
+                this.timestamp = new Date();
+            }
+
+            return;
+        }
+
         this.data = data["data"];
         this.timestamp = new Date();
         this.percentInGc = undefined;
@@ -26,6 +47,8 @@ export class GcData {
         this.pagedSystemMemory = parseInt(data["pagedSystemMemory"]);
         this.virtualMemory = parseInt(data["virtualMemory"]);
         this.workingSet = parseInt(data["workingSet"]);
+
+        this.allocData = [];
     }
 }
 
@@ -41,7 +64,6 @@ export class AllocData {
 
 export class ProcessInfo { 
     public data: GcData[];
-    public allocData: AllocData[];
     public processId: number;
     public processName: string;
     public processCommandLine: string;
@@ -54,7 +76,6 @@ export class ProcessInfo {
         this.processName = parsedJson["ProcessName"];
         this.processCommandLine = parsedJson["processCommandLine"];
         this.data = [] as GcData[];
-        this.allocData = [] as AllocData[];
         this.processStartTime = new Date(parsedJson["processStartTime"]);
 
         this.addData(parsedJson, isAllocData);
@@ -63,7 +84,7 @@ export class ProcessInfo {
     addData(parsedJson: any, isAllocData: boolean) {
         if (isAllocData) {
             for (var index = 0; index < parsedJson.length; ++index) {
-                this.allocData.push(new AllocData(parsedJson[index]));
+                this.data[this.data.length - 1].allocData.push(new AllocData(parsedJson[index]));
             }
         }
         else {
@@ -121,6 +142,7 @@ export class GcListener {
                         response.end("eol");
                     }
 
+                    console.log(request.url);
                     const isAllocData = request.url == "/gcAllocation";
 
                     var processById: ProcessInfo | undefined = this.processes.get(jsonData["ProcessID"]);
@@ -142,8 +164,6 @@ export class GcListener {
 
                     if (!isAllocData) {
                         this.treeView?.refresh();
-                    }
-                    else {
                         console.log(`Add: ${jsonData['ProcessID']}, ${jsonData["ProcessName"]}`);
                     }
 

@@ -58,7 +58,7 @@ public class EventListener
         LocalHostPath = "http://localhost:2143/";
         Client = new HttpClient();
 
-        var listener = new EventPipeBasedListener(listenForGcData: true, listenForAllocations: false, PostEventData);
+        var listener = new EventPipeBasedListener(listenForGcData: true, listenForAllocations: true, PostEventData);
 
         var thread = new Thread(PingServer);
         thread.Start();

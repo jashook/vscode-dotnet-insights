@@ -63,6 +63,9 @@ export function activate(context: vscode.ExtensionContext) {
 
                 isRunningGcMonitor = true;
 
+                dotnetInsightsGcTreeDataProvider?.listener.processes.clear();
+                dotnetInsightsGcTreeDataProvider?.refresh();
+
                 // Check if we are able to run to application
                 childProcess = child.exec(`"${insights.gcEventListenerPath}"`, (exception: child.ExecException | null, stdout: string, stderr: string) => {
                     if (stdout.indexOf("ETW Event listening required Privilidged Access. Please run as Administrator") != -1) {
@@ -113,9 +116,6 @@ export function activate(context: vscode.ExtensionContext) {
 
             isRunningGcMonitor = false;
             console.assert(dotnetInsightsGcTreeDataProvider != undefined);
-
-            dotnetInsightsGcTreeDataProvider?.listener.processes.clear();
-            dotnetInsightsGcTreeDataProvider?.refresh();
 
             insights.outputChannel.appendLine("Stopped monitoring GCs.");
         }

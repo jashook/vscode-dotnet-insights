@@ -6,7 +6,7 @@ import * as vscode from 'vscode';
 import * as assert from "assert";
 
 import { DotnetInsights } from "./dotnetInsights";
-import { GcListener, ProcessInfo, GcData } from "./GcListener";
+import { GcListener, ProcessInfo, GcData, AllocData } from "./GcListener";
 import { start } from 'node:repl';
 
 export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvider {
@@ -19,6 +19,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
     public static readonly viewType = 'dotnetInsightsGc.edit';
 
     private timeInGc: number;
+    private allocData: AllocData[] | undefined;
     
     constructor(
         private readonly context: vscode.ExtensionContext,
@@ -27,6 +28,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
         private gcData: any
     ) {
         this.timeInGc = 0;
+        this.allocData = undefined;
     }
 
     openCustomDocument(uri: vscode.Uri, openContext: vscode.CustomDocumentOpenContext, token: vscode.CancellationToken): vscode.CustomDocument | Thenable<vscode.CustomDocument> {
@@ -122,22 +124,33 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
 
         const processInfo: ProcessInfo | undefined = this.listener.processes.get(document.processId);
         const gcs: GcData[] | undefined = processInfo?.data;
+        const allocations: AllocData[] | undefined = [];
 
         this.gcData = [] as GcData[];
         if (gcs != undefined) {
             for (var index = 0; index < gcs?.length; ++index) {
                 this.gcData.push(gcs[index]);
             }
+
+            for (var index = 0; index < gcs?.length; ++index) {
+                const allocDataForGc = gcs[index].allocData;
+
+                for (var innerIndex = 0; innerIndex < allocDataForGc.length; ++innerIndex) {
+                    allocations.push(allocDataForGc[innerIndex]);
+                }
+            }
         }
 
         var data = "";
-        var hiddenData = JSON.stringify(gcs);
         
         var canvasData = "";
         this.timeInGc = 0;
 
         const kb = 1024 * 1024;
         var percentInGcNumber: any;
+        var totalAllocationsByType: any = {};
+        totalAllocationsByType["totalAllocations"] = 0;
+        totalAllocationsByType["types"] = {};
 
         if (gcs != undefined && gcs?.length > 0 && processInfo != undefined) {
             const startTime = gcs[0].data["PauseStartRelativeMSec"];
@@ -174,6 +187,49 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
                 else if (pauseTime > 100.0) {
                     expensiveGc = ` class="warnGc"`;
                 }
+                else if (pauseTime > 50.0) {
+                    expensiveGc = ` class="interstingGc"`;
+                }
+                else if (pauseTime > 20.0) {
+                    expensiveGc = ` class="somewhatInterestingGc"`;
+                }
+                else if (pauseTime > 10.0) {
+                    expensiveGc = ` class="notSomewhatInterestingGc"`;
+                }
+
+                var allocationsByType: any = {};
+                allocationsByType["totalAllocations"] = 0;
+                allocationsByType["types"] = {};
+
+                if (allocations != undefined) {
+                    for (var allocIndex = 0; allocIndex < gcs[index].allocData.length; ++allocIndex) {
+                        const currentAllocData = gcs[index].allocData[allocIndex];
+
+                        const heapIndex = parseInt(currentAllocData.data.data["heapIndex"]);
+                        const allocType = currentAllocData.data.data["typeName"];
+                        const allocSizeInBytes = parseInt(currentAllocData.data.data["allocSizeBytes"]);
+
+                        if (totalAllocationsByType["types"][allocType] == undefined) {
+                            totalAllocationsByType["types"][allocType] = [] as string[];
+                        }
+
+                        totalAllocationsByType["types"][allocType].push({heapIndex: heapIndex, allocSizeInBytes: allocSizeInBytes});
+
+                        if (allocationsByType["types"][heapIndex] == undefined) {
+                            allocationsByType["types"][heapIndex] = {};
+                        }
+
+                        if (allocationsByType["types"][heapIndex][allocType] == undefined) {
+                            allocationsByType["types"][heapIndex][allocType] = [] as string[];
+                        }
+                        
+                        allocationsByType["types"][heapIndex][allocType].push(allocSizeInBytes);
+                        allocationsByType["totalAllocations"] += allocSizeInBytes;
+                        totalAllocationsByType["totalAllocations"] += allocSizeInBytes;
+                    }
+
+                    gcs[index].filteredAllocData = allocationsByType;
+                }
 
                 data += `<tr${expensiveGc}><td>${tdId}</td><td>${tdGen}</td><td>${tdType}</td><td>${tdPauseTime}</td><td>${tdReason}</td><td>${tdGen0Size}</td><td>${tdGen1Size}</td><td>${tdGen2Size}</td><td>${tdLohSize}</td><td>NYI</td><td>${tdTotalHeapSize}</td><td>${tdGen0MinSize}</td><td>${tdTotalPromotedSize0}</td><td>${tdTotalPromotedSize1}</td><td>${tdTotalPromotedSize2}</td></tr>`;
             }
@@ -188,23 +244,28 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
 
                 canvasData += `<div id="processMemoryStatistics"><canvas class="processMemory"></canvas></div>`;
 
-                if (gcData["Heaps"].length > 1) {
-                    for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
-                        const heap = gcData["Heaps"][innerIndex];
+                // if (gcData["Heaps"].length > 1) {
+                //     for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
+                //         const heap = gcData["Heaps"][innerIndex];
 
-                        if (innerIndex % 2 == 0) {
-                            canvasData += `<div class="heapChartParentMultiple heapChartNextLine"><canvas class="heapChart"></canvas></div>`;
-                        }
-                        else {
-                            canvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
-                        }
-                    }
+                //         if (innerIndex % 2 == 0) {
+                //             canvasData += `<div class="heapChartParentMultiple heapChartNextLine"><canvas class="heapChart"></canvas></div>`;
+                //         }
+                //         else {
+                //             canvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
+                //         }
+                //     }
+                // }
+                // else {
+                //     canvasData += `<div class="heapChartParent"><canvas class="heapChart"></canvas></div>`;
+                // }
+
+                for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
+                    canvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
+                    canvasData += `<div class="allocChartParent heapChartNextLine"><canvas class="allocChart"></canvas></div>`;
                 }
-                else {
-                    canvasData += `<div class="heapChartParent"><canvas class="heapChart"></canvas></div>`;
-                }
+
                 canvasData += `<div id="heapCharPadding"></div>`;
-                
             }
         }
         else {
@@ -235,6 +296,15 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
 
             return htmlReturn;
         }
+        
+        var gcsToSerialize = [] as GcData[];
+        for (var index = 0; index < gcs.length; ++index) {
+            var gcDataNew = new GcData(gcs[index]);
+
+            gcsToSerialize.push(gcDataNew);
+        }
+
+        var hiddenData = JSON.stringify(gcsToSerialize);
 
         const nonce = this.getNonce();
         const nonce2 = this.getNonce();
@@ -274,7 +344,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
                 <title>${fileName}</title>
             </head>
             <body>
-                <span style="display:none" id="hiddenData">${hiddenData}</span>
+                <span style="display:none" id="hiddenData"><!--${hiddenData}--></span>
                 <div id="processCommandLine">${processInfo?.processCommandLine}</div>
                 <div id="percentInGc">
                     <div>Time in GC</div>

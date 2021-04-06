@@ -8,7 +8,8 @@
     // @ts-ignore
     const vscode = acquireVsCodeApi();
 
-    var gcs = JSON.parse(document.getElementById("hiddenData").innerHTML);
+    var gcs = JSON.parse(document.getElementById("hiddenData").innerHTML.slice(4, document.getElementById("hiddenData").innerHTML.length - 3));
+    //console.log(gcs);
 
     const maxLength = 30;
 
@@ -65,7 +66,7 @@
         totalHeapSizeDataSet.push(gcs[index]["TotalHeapSize"]/ kb);
     }
 
-    console.log(timestampCopy);
+    //console.log(timestampCopy);
 
     var processMemoryChart = new Chart(context, {
         type: 'line',
@@ -150,6 +151,9 @@
 
     var heapCharts = document.getElementsByClassName("heapChart");
     var savedHeapCharts = [];
+
+    var allocCharts = document.getElementsByClassName("allocChart");
+    var savedAllocCharts = [];
 
     const setChart = (passedHeapIndex) => {
         var gen0DataSet = [];
@@ -243,9 +247,239 @@
 
         savedHeapCharts.push(heapChart);
     };
+
+    const setAllocChartVerbose = (passedHeapIndex) => {
+        var typeLabels = [];
+
+        var numberOfDataSets = 0;
+
+        var kb = 1024 * 1024
+        var mb = 1024 * mb;
+
+        var allocationsByType = {};
+        var allocationDatasets = [];
+
+        for (var index = 0; index < gcs.length; ++index) {
+            var allocsByType = gcs[index]["filteredAllocData"]["types"][passedHeapIndex];
+
+            if (allocsByType == undefined) {
+                continue;
+            }
+
+            //console.log(gcs[index]);
+            var allocTypes = Object.keys(allocsByType);
+            //console.log("Alloc Types: " + allocTypes);
+
+            for (var allocIndex = 0; allocIndex < allocTypes.length; ++allocIndex) {
+                const type = allocTypes[allocIndex];
+                const typeAllocation = allocsByType[type];
+
+                if (allocationsByType[type] == undefined) {
+                    allocationsByType[type] = [];
+                }
+
+                for (var typeAllocIndex = 0; typeAllocIndex < typeAllocation.length; ++typeAllocIndex) {
+                    allocationsByType[type].push(typeAllocation[typeAllocIndex]);
+                }
+            }
+        }
+
+        var typeKeys = Object.keys(allocationsByType);
+        for (var index = 0; index < typeKeys.length; ++index) {
+            numberOfDataSets = allocationsByType[typeKeys[index]].length > numberOfDataSets ? allocationsByType[typeKeys[index]].length : numberOfDataSets;
+        }
+
+        // console.log(allocationsByType);
+        // console.log(numberOfDataSets);
+
+        var typeKeys = Object.keys(allocationsByType);
+        for (var index = 0; index < numberOfDataSets; ++index) {
+            allocationDatasets.push([]);
+        }
+
+        // Build the datasets
+        for (var index = 0; index < typeKeys.length; ++index) {
+            const type = typeKeys[index];
+            typeLabels.push(type);
+            const typeAllocation = allocationsByType[type];
+
+            var allocationCount = 0;
+
+            while (allocationCount < numberOfDataSets) {
+                const dataset = allocationDatasets[allocationCount];
+                if (allocationCount < typeAllocation.length) {
+                    dataset.push(typeAllocation[allocationCount]);
+                }
+                else {
+                    dataset.push(0);
+                }
+
+                ++allocationCount;
+            }
+        }
+
+        console.log("Labels: " + typeLabels);
+        console.log(allocationDatasets);
+
+        var backgroundColors = ['rgba(54, 162, 235, 0.2)', 'rgba(75, 192, 192, 0.2)', 'rgba(153, 102, 255, 0.2)', 'rgba(255, 206, 86, 0.2)'];
+        var datasetsToPass = [];
+
+        for (var index = 0; index < allocationDatasets.length; ++index) {
+            const allocDataset = allocationDatasets[index];
+            const bkg = backgroundColors[index % backgroundColors.length];
+
+            const dataset = {
+                label: `alloc ${index}`,
+                data: allocDataset,
+                backgroundColor: bkg
+            };
+
+            datasetsToPass.push(dataset);
+        }
+
+        console.log(allocationDatasets);
+        console.log(datasetsToPass);
+
+        const dataToPass = {
+            labels: typeLabels,
+            datasets: datasetsToPass
+        };
+
+        var ctx = allocCharts[passedHeapIndex];
+        ctx = ctx.getContext('2d');
+        var allocChart = new Chart(ctx, {
+            type: 'bar',
+            data: dataToPass,
+            options: {
+                title: {
+                    display: true,
+                    text: `Heap: ${passedHeapIndex}`
+                },
+                interaction: {
+                    intersect: true,
+                },
+                scales: {
+                    x: {
+                        stacked: true,
+                    },
+                    y: {
+                        stacked: true
+                    }
+                },
+                "maintainAspectRatio": false,
+            }
+        });
+
+        savedAllocCharts.push(allocChart);
+    };
+
+    const setAllocChart = (passedHeapIndex) => {
+        var typeLabels = [];
+
+        var numberOfDataSets = 0;
+
+        var kb = 1024 * 1024
+        var mb = 1024 * mb;
+
+        var allocationsByType = {};
+        var allocationDatasets = [];
+
+        for (var index = 0; index < gcs.length; ++index) {
+            var allocsByType = gcs[index]["filteredAllocData"]["types"][passedHeapIndex];
+
+            if (allocsByType == undefined) {
+                continue;
+            }
+
+            var allocTypes = Object.keys(allocsByType);
+
+            for (var allocIndex = 0; allocIndex < allocTypes.length; ++allocIndex) {
+                const type = allocTypes[allocIndex];
+                const typeAllocation = allocsByType[type];
+
+                if (allocationsByType[type] == undefined) {
+                    allocationsByType[type] = 0;
+                }
+
+                for (var typeAllocIndex = 0; typeAllocIndex < typeAllocation.length; ++typeAllocIndex) {
+                    allocationsByType[type] += typeAllocation[typeAllocIndex];
+                }
+            }
+        }
+
+        var typeKeys = Object.keys(allocationsByType);
+
+        var largestValue = 0;
+
+         // Build the datasets
+         for (var index = 0; index < typeKeys.length; ++index) {
+            const type = typeKeys[index];
+            allocationsByType[type] /= kb;
+
+            largestValue = allocationsByType[type] > largestValue ? allocationsByType[type] : largestValue;
+        }
+
+        // Build the datasets
+        for (var index = 0; index < typeKeys.length; ++index) {
+            const type = typeKeys[index];
+            const typeAllocation = allocationsByType[type];
+
+            if ((typeAllocation / largestValue) > .05) {
+                allocationDatasets.push(typeAllocation);
+                typeLabels.push(type);
+            }
+        }
+
+        console.log("Labels: " + typeLabels + typeLabels.length);
+        console.log(allocationDatasets);
+
+        var backgroundColors = ['rgba(54, 162, 235, 0.2)', 'rgba(75, 192, 192, 0.2)', 'rgba(153, 102, 255, 0.2)', 'rgba(255, 206, 86, 0.2)'];
+
+        var colors = [];
+        for (var index = 0; index < typeKeys.length; ++index) {
+            colors.push(backgroundColors[index % backgroundColors.length]);
+        }
+
+        var datasetsToPass = [
+            {
+                label: `Allocation`,
+                data: allocationDatasets,
+                backgroundColor: Object.values(colors)
+            }
+        ];
+
+        console.log(allocationDatasets);
+        console.log(datasetsToPass);
+
+        const dataToPass = {
+            labels: typeLabels,
+            datasets: datasetsToPass
+        };
+
+        var ctx = allocCharts[passedHeapIndex];
+        ctx = ctx.getContext('2d');
+        var allocChart = new Chart(ctx, {
+            type: 'pie',
+            data: dataToPass,
+            options: {
+                title: {
+                    display: true,
+                    text: `Allocations by type Heap: ${passedHeapIndex}`
+                },
+                
+                "maintainAspectRatio": false,
+            }
+        });
+
+        savedAllocCharts.push(allocChart);
+    };
     
     for (var index = 0; index < heapCharts.length; ++index) {
         setChart(index);
+    }
+
+    for (var index = 0; index < allocCharts.length; ++index) {
+        setAllocChart(index);
     }
 
     /**
