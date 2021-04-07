@@ -491,6 +491,25 @@ var allocationDatasets = {};
 
             var tableRow = document.createElement("tr");
 
+            var expensiveGc = "";
+            if (tdPauseTime > 200.0) {
+                expensiveGc = "expensiveGc";
+            }
+            else if (tdPauseTime > 100.0) {
+                expensiveGc = "warnGc";
+            }
+            else if (tdPauseTime > 50.0) {
+                expensiveGc = "interstingGc";
+            }
+            else if (tdPauseTime > 20.0) {
+                expensiveGc = "somewhatInterestingGc";
+            }
+            else if (tdPauseTime > 10.0) {
+                expensiveGc = `notSomewhatInterestingGc`;
+            }
+
+            tableRow.className = expensiveGc;
+
             var tdElement = document.createElement("td");
             tdElement.innerHTML = tdId;
 
