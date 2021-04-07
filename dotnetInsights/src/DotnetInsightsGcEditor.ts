@@ -99,6 +99,41 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
 
             currentData[0].percentInGc = percentOfTimeInGc;
 
+            const allocations: AllocData[] | undefined = [];
+            
+            const allocDataForGc = currentData[0].allocData;
+
+            for (var innerIndex = 0; innerIndex < allocDataForGc.length; ++innerIndex) {
+                allocations.push(allocDataForGc[innerIndex]);
+            }
+
+            var allocationsByType: any = {};
+            allocationsByType["totalAllocations"] = 0;
+            allocationsByType["types"] = {};
+
+            if (allocations != undefined) {
+                for (var allocIndex = 0; allocIndex < currentData[0].allocData.length; ++allocIndex) {
+                    const currentAllocData = currentData[0].allocData[allocIndex];
+
+                    const heapIndex = parseInt(currentAllocData.data.data["heapIndex"]);
+                    const allocType = currentAllocData.data.data["typeName"];
+                    const allocSizeInBytes = parseInt(currentAllocData.data.data["allocSizeBytes"]);
+
+                    if (allocationsByType["types"][heapIndex] == undefined) {
+                        allocationsByType["types"][heapIndex] = {};
+                    }
+
+                    if (allocationsByType["types"][heapIndex][allocType] == undefined) {
+                        allocationsByType["types"][heapIndex][allocType] = [] as string[];
+                    }
+                    
+                    allocationsByType["types"][heapIndex][allocType].push(allocSizeInBytes);
+                    allocationsByType["totalAllocations"] += allocSizeInBytes;
+                }
+
+                currentData[0].filteredAllocData = allocationsByType;
+            }
+
             gcEditor.gcData.push(currentData[0]);
             const jsonData = JSON.stringify(currentData);
                 
