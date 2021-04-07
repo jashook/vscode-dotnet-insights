@@ -232,6 +232,10 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
                     expensiveGc = ` class="notSomewhatInterestingGc"`;
                 }
 
+                var blockingGc = "";
+
+               // if (tdType == "NonBlocking")
+
                 var allocationsByType: any = {};
                 allocationsByType["totalAllocations"] = 0;
                 allocationsByType["types"] = {};
@@ -266,7 +270,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
                     gcs[index].filteredAllocData = allocationsByType;
                 }
 
-                data += `<tr${expensiveGc}><td>${tdId}</td><td>${tdGen}</td><td>${tdType}</td><td>${tdPauseTime}</td><td>${tdReason}</td><td>${tdGen0Size}</td><td>${tdGen1Size}</td><td>${tdGen2Size}</td><td>${tdLohSize}</td><td>NYI</td><td>${tdTotalHeapSize}</td><td>${tdGen0MinSize}</td><td>${tdTotalPromotedSize0}</td><td>${tdTotalPromotedSize1}</td><td>${tdTotalPromotedSize2}</td></tr>`;
+                data += `<tr${expensiveGc}><td${blockingGc}>${tdId}</td><td>${tdGen}</td><td>${tdType}</td><td>${tdPauseTime}</td><td>${tdReason}</td><td>${tdGen0Size}</td><td>${tdGen1Size}</td><td>${tdGen2Size}</td><td>${tdLohSize}</td><td>NYI</td><td>${tdTotalHeapSize}</td><td>${tdGen0MinSize}</td><td>${tdTotalPromotedSize0}</td><td>${tdTotalPromotedSize1}</td><td>${tdTotalPromotedSize2}</td></tr>`;
             }
 
             data += `</table>`;
