@@ -4,9 +4,28 @@ An extension for drilling into .NET MSIL and Jitted ASM for managed executables 
 
 Note that currently only x64 assembly will be generated. Future support will come around for cross architectures like arm64, arm and x86.
 
+In addition to interspection into Managed PE Files, the extension allows performance monitoring of .NET applications currenlty running on the machine. The extension will use TraceEvent to connect to all .NET Core applications 3.x+ to receive GC allocation, start and stop events. It will then compile the information per heap and display it by process.
+
 # Overview
 
-## Usage
+## GC Monitoring Usage
+
+1. `ctrl (cmd) + shift + p` to get to enter a command
+2. Start GC Monitoring
+
+At this point you have started a background server which will monitor and communicate back to the .NET Insights extension. **This is expensive both for VScode and ALL running .NET Applications on the machine.** 
+
+### **After monitoring the Stop GC Monitoring Command via ctrl (cmd) + shift + p!**
+
+Navigate to the `---` icon on the activity bar. Each managed .NET Core process which has GCs will propogate in this view.
+
+When a process is selected a custom view will come up with the GC Statistics for the process during the monitor window. *Please remember that the GCs display are **only** post the monitor command, and pre the stop monitoring command. This is defined to be the monitoring window.* While selected, real time information about GCs will continue to update in realtime.
+
+![GC Monitoring](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/media/gcMonitoring.png)
+
+---------------------------------
+
+## IL Introspection Usage
 
 1. Select a managed PE file. This is generally a .NET DLL under the `${workspaceFolder}/bin/Release/application.dll`
 2. By default the .NET MSIL will be dumped and opened. Once this is done, the IL+ view on the side will have a list of types and methods for the DLL.
