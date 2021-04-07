@@ -6,22 +6,30 @@ import * as vscode from 'vscode';
 import * as assert from "assert";
 
 import { DotnetInsights } from "./dotnetInsights";
-import { GcListener, ProcessInfo, GcData } from "./GcListener";
+import { GcListener, ProcessInfo, GcData, AllocData } from "./GcListener";
+import { start } from 'node:repl';
 
 export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvider {
     public static register(context: vscode.ExtensionContext, insights: DotnetInsights, listener: GcListener): vscode.Disposable {
-        const provider = new DotnetInsightsGcEditor(context, insights, listener);
+        const provider = new DotnetInsightsGcEditor(context, insights, listener, null);
         const providerRegistration = vscode.window.registerCustomEditorProvider(DotnetInsightsGcEditor.viewType, provider);
         return providerRegistration;
     }
 
     public static readonly viewType = 'dotnetInsightsGc.edit';
+
+    private timeInGc: number;
+    private allocData: AllocData[] | undefined;
     
     constructor(
         private readonly context: vscode.ExtensionContext,
         private readonly insights: DotnetInsights,
-        private readonly listener: GcListener
-    ) { }
+        private readonly listener: GcListener,
+        private gcData: any
+    ) {
+        this.timeInGc = 0;
+        this.allocData = undefined;
+    }
 
     openCustomDocument(uri: vscode.Uri, openContext: vscode.CustomDocumentOpenContext, token: vscode.CancellationToken): vscode.CustomDocument | Thenable<vscode.CustomDocument> {
         var filename = path.basename(uri.path);
@@ -56,6 +64,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
         const pid = gcDocument.processId;
 
         var listener = this.listener;
+        var gcEditor = this;
 
         var lastDataCount = listener.processes.get(pid)?.data.length;
 
@@ -63,12 +72,69 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
             var currentData = listener.processes.get(pid)?.data;
 
             if (currentData == undefined) return;
-            if (currentData?.length == lastDataCount) {
+
+            // Reconcile the last data with the current data.
+            // We will only send the differnece of the two for performance
+            // reasons.
+
+            // No update needed.
+            if (gcEditor.gcData.length == currentData.length) {
                 return;
             }
 
-            lastDataCount = currentData.length;
+            if (gcEditor.gcData.length + 1 != currentData.length) {
+                console.assert(gcEditor.gcData.length + 1 == currentData.length);
+                console.log(gcEditor.gcData.length);
+                console.log(currentData.length);
+            }
 
+            const startTime = parseFloat(gcEditor.gcData[0].data["PauseStartRelativeMSec"]);
+            const currentTime = parseFloat(gcEditor.gcData[gcEditor.gcData.length - 1].data["PauseEndRelativeMSec"]);
+
+            // Make sure we only pass the latest update.
+            currentData = currentData.slice(currentData.length - 1);
+
+            gcEditor.timeInGc += parseFloat(currentData[0].data["PauseDurationMSec"]);
+            let percentOfTimeInGc = ((gcEditor.timeInGc / (currentTime - startTime)) * 100).toFixed(2);
+
+            currentData[0].percentInGc = percentOfTimeInGc;
+
+            const allocations: AllocData[] | undefined = [];
+            
+            const allocDataForGc = currentData[0].allocData;
+
+            for (var innerIndex = 0; innerIndex < allocDataForGc.length; ++innerIndex) {
+                allocations.push(allocDataForGc[innerIndex]);
+            }
+
+            var allocationsByType: any = {};
+            allocationsByType["totalAllocations"] = 0;
+            allocationsByType["types"] = {};
+
+            if (allocations != undefined) {
+                for (var allocIndex = 0; allocIndex < currentData[0].allocData.length; ++allocIndex) {
+                    const currentAllocData = currentData[0].allocData[allocIndex];
+
+                    const heapIndex = parseInt(currentAllocData.data.data["heapIndex"]);
+                    const allocType = currentAllocData.data.data["typeName"];
+                    const allocSizeInBytes = parseInt(currentAllocData.data.data["allocSizeBytes"]);
+
+                    if (allocationsByType["types"][heapIndex] == undefined) {
+                        allocationsByType["types"][heapIndex] = {};
+                    }
+
+                    if (allocationsByType["types"][heapIndex][allocType] == undefined) {
+                        allocationsByType["types"][heapIndex][allocType] = [] as string[];
+                    }
+                    
+                    allocationsByType["types"][heapIndex][allocType].push(allocSizeInBytes);
+                    allocationsByType["totalAllocations"] += allocSizeInBytes;
+                }
+
+                currentData[0].filteredAllocData = allocationsByType;
+            }
+
+            gcEditor.gcData.push(currentData[0]);
             const jsonData = JSON.stringify(currentData);
                 
             webviewPanel.webview.postMessage({
@@ -93,15 +159,37 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
 
         const processInfo: ProcessInfo | undefined = this.listener.processes.get(document.processId);
         const gcs: GcData[] | undefined = processInfo?.data;
+        const allocations: AllocData[] | undefined = [];
+
+        this.gcData = [] as GcData[];
+        if (gcs != undefined) {
+            for (var index = 0; index < gcs?.length; ++index) {
+                this.gcData.push(gcs[index]);
+            }
+
+            for (var index = 0; index < gcs?.length; ++index) {
+                const allocDataForGc = gcs[index].allocData;
+
+                for (var innerIndex = 0; innerIndex < allocDataForGc.length; ++innerIndex) {
+                    allocations.push(allocDataForGc[innerIndex]);
+                }
+            }
+        }
 
         var data = "";
-        var hiddenData = JSON.stringify(gcs);
         
         var canvasData = "";
+        this.timeInGc = 0;
 
         const kb = 1024 * 1024;
+        var percentInGcNumber: any;
+        var totalAllocationsByType: any = {};
+        totalAllocationsByType["totalAllocations"] = 0;
+        totalAllocationsByType["types"] = {};
 
-        if (gcs != undefined && gcs?.length > 0) {
+        if (gcs != undefined && gcs?.length > 0 && processInfo != undefined) {
+            const startTime = gcs[0].data["PauseStartRelativeMSec"];
+            const currentTime = gcs[gcs.length - 1].data["PauseEndRelativeMSec"];
 
             data += `<table>`;
             data += `<tr class="tableHeader"><th>GC Number</th><th>Collection Generation</th><th>Type</th><th>Pause Time (mSec)</th><th>Reason</th><th>Generation 0 Size (kb)</th><th>Generation 1 Size (kb)</th><th>Generation 2 Size (kb)</th><th>LOH Size (kb)</th><th>POH Size (kb)</th><th>Total Heap Size (kb)</th><th>Gen 0 Min Budget (kb)</th><th>Promoted Gen0 (kb)</th><th>Promoted Gen1 (kb)</th><th>Promoted Gen2 (kb)</th></tr>`;
@@ -109,6 +197,8 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
                 const gcData = gcs[index].data;
 
                 let pauseTime = parseFloat(gcData["PauseDurationMSec"]);
+
+                this.timeInGc += pauseTime;
 
                 let tdId = gcData["Id"];
                 let tdGen = gcData["generation"];
@@ -132,33 +222,85 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
                 else if (pauseTime > 100.0) {
                     expensiveGc = ` class="warnGc"`;
                 }
+                else if (pauseTime > 50.0) {
+                    expensiveGc = ` class="interstingGc"`;
+                }
+                else if (pauseTime > 20.0) {
+                    expensiveGc = ` class="somewhatInterestingGc"`;
+                }
+                else if (pauseTime > 10.0) {
+                    expensiveGc = ` class="notSomewhatInterestingGc"`;
+                }
+
+                var allocationsByType: any = {};
+                allocationsByType["totalAllocations"] = 0;
+                allocationsByType["types"] = {};
+
+                if (allocations != undefined) {
+                    for (var allocIndex = 0; allocIndex < gcs[index].allocData.length; ++allocIndex) {
+                        const currentAllocData = gcs[index].allocData[allocIndex];
+
+                        const heapIndex = parseInt(currentAllocData.data.data["heapIndex"]);
+                        const allocType = currentAllocData.data.data["typeName"];
+                        const allocSizeInBytes = parseInt(currentAllocData.data.data["allocSizeBytes"]);
+
+                        if (totalAllocationsByType["types"][allocType] == undefined) {
+                            totalAllocationsByType["types"][allocType] = [] as string[];
+                        }
+
+                        totalAllocationsByType["types"][allocType].push({heapIndex: heapIndex, allocSizeInBytes: allocSizeInBytes});
+
+                        if (allocationsByType["types"][heapIndex] == undefined) {
+                            allocationsByType["types"][heapIndex] = {};
+                        }
+
+                        if (allocationsByType["types"][heapIndex][allocType] == undefined) {
+                            allocationsByType["types"][heapIndex][allocType] = [] as string[];
+                        }
+                        
+                        allocationsByType["types"][heapIndex][allocType].push(allocSizeInBytes);
+                        allocationsByType["totalAllocations"] += allocSizeInBytes;
+                        totalAllocationsByType["totalAllocations"] += allocSizeInBytes;
+                    }
+
+                    gcs[index].filteredAllocData = allocationsByType;
+                }
 
                 data += `<tr${expensiveGc}><td>${tdId}</td><td>${tdGen}</td><td>${tdType}</td><td>${tdPauseTime}</td><td>${tdReason}</td><td>${tdGen0Size}</td><td>${tdGen1Size}</td><td>${tdGen2Size}</td><td>${tdLohSize}</td><td>NYI</td><td>${tdTotalHeapSize}</td><td>${tdGen0MinSize}</td><td>${tdTotalPromotedSize0}</td><td>${tdTotalPromotedSize1}</td><td>${tdTotalPromotedSize2}</td></tr>`;
             }
 
             data += `</table>`;
 
+            let elapsedTimeInMs = (currentTime - startTime);
+            percentInGcNumber = (this.timeInGc / elapsedTimeInMs) * 100;
+
             if (gcs.length > 0) {
                 const gcData = gcs[0].data;
 
-                if (gcData["Heaps"].length > 1) {
-                    for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
-                        const heap = gcData["Heaps"][innerIndex];
+                canvasData += `<div id="processMemoryStatistics"><canvas class="processMemory"></canvas></div>`;
 
-                        if (innerIndex % 2 == 0) {
-                            canvasData += `<div class="heapChartParentMultiple heapChartNextLine"><canvas class="heapChart"></canvas></div>`;
-                        }
-                        else {
-                            canvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
-                        }
-                    }
-                    
-                    canvasData += `<div id="heapCharPadding"></div>`;
+                // if (gcData["Heaps"].length > 1) {
+                //     for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
+                //         const heap = gcData["Heaps"][innerIndex];
+
+                //         if (innerIndex % 2 == 0) {
+                //             canvasData += `<div class="heapChartParentMultiple heapChartNextLine"><canvas class="heapChart"></canvas></div>`;
+                //         }
+                //         else {
+                //             canvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
+                //         }
+                //     }
+                // }
+                // else {
+                //     canvasData += `<div class="heapChartParent"><canvas class="heapChart"></canvas></div>`;
+                // }
+
+                for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
+                    canvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
+                    canvasData += `<div class="allocChartParent heapChartNextLine"><canvas class="allocChart"></canvas></div>`;
                 }
-                else {
-                    canvasData += `<div class="heapChartParent"><canvas class="heapChart"></canvas></div>`;
-                }
-                
+
+                canvasData += `<div id="heapCharPadding"></div>`;
             }
         }
         else {
@@ -189,6 +331,15 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
 
             return htmlReturn;
         }
+        
+        var gcsToSerialize = [] as GcData[];
+        for (var index = 0; index < gcs.length; ++index) {
+            var gcDataNew = new GcData(gcs[index]);
+
+            gcsToSerialize.push(gcDataNew);
+        }
+
+        var hiddenData = JSON.stringify(gcsToSerialize);
 
         const nonce = this.getNonce();
         const nonce2 = this.getNonce();
@@ -199,6 +350,8 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
         const styleVSCodeUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'vscode.css'));
         
         const chartjs = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', 'chart.js', 'dist', 'Chart.min.js'));
+
+        let percentInGc = percentInGcNumber.toFixed(2);
 
         var returnValue = /* html */`
             <!DOCTYPE html>
@@ -226,8 +379,17 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
                 <title>${fileName}</title>
             </head>
             <body>
-                <span style="display:none" id="hiddenData">${hiddenData}</span>
+                <span style="display:none" id="hiddenData"><!--${hiddenData}--></span>
                 <div id="processCommandLine">${processInfo?.processCommandLine}</div>
+                <div id="percentInGc">
+                    <div>Time in GC</div>
+                    <div>${percentInGc}%</div>
+                </div>
+                <label class="switch">
+                    <div>Allocations</div>
+                    <input type="checkbox">
+                    <span class="slider round"></span>
+                </label>
                 <div id="gcDataContainer">
                     ${canvasData}
                     <script src="${chartjs}"></script>

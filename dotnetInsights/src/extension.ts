@@ -31,6 +31,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     outputChannel.appendLine('dotnetInsights: started');
 
+    var dotnetInsightsGcTreeDataProvider: DotnetInsightsGcTreeDataProvider | undefined = undefined;
+
     if (dotnetInsightsSettings != undefined) {
         if (!dotnetInsightsSettings["surpressStartupMessage"]) {
             vscode.window.showInformationMessage(".NET Insights is starting");
@@ -42,19 +44,27 @@ export function activate(context: vscode.ExtensionContext) {
 
     var insights = new DotnetInsights(outputChannel);
     const lastestVersionNumber = "0.4.0";
-    const latestListenerVersionNumber = "0.4.3";
+    const latestListenerVersionNumber = "0.6.0";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;
     var didFinishStartup = false;
 
+    var isRunningGcMonitor: boolean = false;
+
     var startGcMonitor = vscode.commands.registerCommand("dotnetInsights.startGCMonitor", () => {
         if (startupCallback == undefined) {
             startupCallback = () => {
                 if (insights.listener == undefined) return;
+                if (isRunningGcMonitor) return;
 
                 insights.listener.sendShutdown = false;
                 insights.listener.start();
+
+                isRunningGcMonitor = true;
+
+                dotnetInsightsGcTreeDataProvider?.listener.processes.clear();
+                dotnetInsightsGcTreeDataProvider?.refresh();
 
                 // Check if we are able to run to application
                 childProcess = child.exec(`"${insights.gcEventListenerPath}"`, (exception: child.ExecException | null, stdout: string, stderr: string) => {
@@ -103,7 +113,10 @@ export function activate(context: vscode.ExtensionContext) {
             catch(e) {
                 
             }
-            
+
+            isRunningGcMonitor = false;
+            console.assert(dotnetInsightsGcTreeDataProvider != undefined);
+
             insights.outputChannel.appendLine("Stopped monitoring GCs.");
         }
     }); 
@@ -132,7 +145,7 @@ export function activate(context: vscode.ExtensionContext) {
         insights.listener = listener;
 
         const dotnetInsightsTreeDataProvider = new DotnetInsightsTreeDataProvider(insights);
-        const dotnetInsightsGcTreeDataProvider = new DotnetInsightsGcTreeDataProvider(listener);
+        dotnetInsightsGcTreeDataProvider = new DotnetInsightsGcTreeDataProvider(listener);
 
         listener.treeView = dotnetInsightsGcTreeDataProvider;
 

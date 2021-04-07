@@ -44,8 +44,14 @@ public class EventPipeBasedListener
         public int ProcessID { get; set; }
         public EventPipeSession Session { get; set; }
 
+        public DateTime StartTime { get; set; }
+
+        public List<string> Allocations { get; set; }
+
         internal ProcessInfo ProcessInfo { get; set; }
         public Action<EventType, string> EventFinishedCallback { get; set; }
+
+        private Process Process { get; set; }
 
         // <summary>
         // There is one PublishClient per process. Unlike the TraceEvent based
@@ -60,12 +66,23 @@ public class EventPipeBasedListener
             this.ProcessCommandLine = ProcessNameHelper.GetProcessCommandLineForPid(processId);
 
             this.ProcessDied = false;
+            this.Allocations = new List<string>();
 
             if (string.IsNullOrWhiteSpace(this.ProcessCommandLine))
             {
                 // Process died.
                 this.ProcessDied = true;
                 return;
+            }
+
+            try
+            {
+                this.Process = Process.GetProcessById(processId);
+                this.StartTime = this.Process.StartTime;
+            }
+            catch
+            {
+                this.ProcessDied = true;
             }
 
             this.ProcessName = ProcessNameHelper.GetProcessNameForPid(processId);
@@ -359,9 +376,17 @@ public class EventPipeBasedListener
                 throw new NotImplementedException();
             }
 
-            string commandLine = this.ProcessCommandLine;
+            this.Process = Process.GetProcessById(this.ProcessID);
 
-            return $"{{\"ProcessID\": {this.ProcessID}, \"ProcessName\": \"{processName}\", \"processCommandLine\":\"{commandLine}\",\"data\": {jsonInfoString}}}";
+            long workingSet = this.Process.WorkingSet64;
+            long pagedMemory = this.Process.PagedMemorySize64;
+            long privateBytes = this.Process.PrivateMemorySize64;
+            long virtualMemory = this.Process.VirtualMemorySize64;
+            long nonPagedSystemMemory = this.Process.NonpagedSystemMemorySize64;
+            long pagedSystemMemory = this.Process.PagedSystemMemorySize64;
+
+            string commandLine = this.ProcessCommandLine;
+            return $"{{\"ProcessID\": {this.ProcessID}, \"ProcessName\": \"{processName}\",\"workingSet\":\"{workingSet}\",\"pagedMemory\":\"{pagedMemory}\",\"privateBytes\":\"{privateBytes}\",\"virtualMemory\":\"{virtualMemory}\",\"processStartTime\":\"{this.StartTime}\",\"nonPagedSystemMemory\":\"{nonPagedSystemMemory}\",\"pagedSystemMemory\":\"{pagedSystemMemory}\",\"currentTime\":\"{DateTime.Now}\",\"processCommandLine\":\"{commandLine}\",\"data\": {jsonInfoString}}}";
         }
 
         public void OnAllocationTick(GCAllocationTickTraceData data)
@@ -373,8 +398,7 @@ public class EventPipeBasedListener
             info.TypeName = data.TypeName;
 
             string returnData = this.getReturnData(info.ToJsonString());
-
-            this.EventFinishedCallback(EventType.GcAlloc, returnData);
+            this.Allocations.Add(returnData);
         }
 
         private void ProcessCurrentGc(GcInfo info)
@@ -386,6 +410,15 @@ public class EventPipeBasedListener
             this.EventFinishedCallback(EventType.GcCollection, returnData);
             info.ProcessedGcHeapInfo = true;
             info.ProcessedPerHeap = true;
+
+            if (this.Allocations.Count > 0)
+            {
+                string allocReturnData = null;
+
+                allocReturnData = $"[{string.Join(",", this.Allocations)}]";
+                this.Allocations.Clear();
+                this.EventFinishedCallback(EventType.GcAlloc, allocReturnData);
+            }
         }
     }
 
