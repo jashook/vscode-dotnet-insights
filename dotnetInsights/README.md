@@ -1,10 +1,19 @@
 # .NET Insights
 
-An extension for drilling into .NET MSIL and Jitted ASM for managed executables (PE Files). This is a cross platform extension that works on OSX and Windows. Future support will come around for Linux.
+An extension for drilling into .NET MSIL and Jitted ASM for managed executables (PE Files). This is a cross platform extension that works on Linux (Ubuntu) OSX and Windows x64.
+
+Future work to include Windows arm64 and Linux arm64. Currently 32 bit support is not expected to be worked on; however, feel free to contribute.
 
 Note that currently only x64 assembly will be generated. Future support will come around for cross architectures like arm64, arm and x86.
 
 In addition to interspection into Managed PE Files, the extension allows performance monitoring of .NET applications currenlty running on the machine. The extension will use TraceEvent to connect to all .NET Core applications 3.x+ to receive GC allocation, start and stop events. It will then compile the information per heap and display it by process.
+
+# Issues
+
+There are known issues with the extension. See [Bugs](https://github.com/jashook/vscode-dotnet-insights/issues?q=is%3Aissue+is%3Aopen+label%3Abug) for more information.
+
+1. [PMI is slow to dump ASM for large files](https://github.com/jashook/vscode-dotnet-insights/issues/18)
+2. [Older versions of the extension are not cleaned up on newer install](https://github.com/jashook/vscode-dotnet-insights/issues/19)
 
 # Overview
 
@@ -42,3 +51,8 @@ When a process is selected a custom view will come up with the GC Statistics for
 Dumping the ASM for a Debug built DLL will **always** dump debuggable code (Tier 0).
 
 The first startup of the extension will download two private builds of the .NET runtime 3.1 and 5.0. This is expected to take ~5 minutes to setup.
+
+## Future planned work
+
+1. [Add thread metrics](https://github.com/jashook/vscode-dotnet-insights/issues/20)
+2. [Add JIT Metrics](https://github.com/jashook/vscode-dotnet-insights/issues/21)
