@@ -13,6 +13,8 @@ import * as crypto from "crypto";
 
 import * as targz from "targz";
 
+import * as rimraf from "rimraf";
+
 import { DotnetInsightsTreeDataProvider, Dependency, DotnetInsights } from './dotnetInsights';
 import { DotnetInsightsTextEditorProvider } from "./DotnetInightsTextEditor";
 import { DotnetInsightsGcTreeDataProvider, GcDependency } from "./dotnetInsightsGc";
@@ -328,7 +330,7 @@ export function activate(context: vscode.ExtensionContext) {
                                 outputChannel.appendLine("Tier 0 file path: " + threeOnefilePath);
                                 outputChannel.appendLine("Tier 1 file path: " + outputFileName);
 
-                                vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(threeOnefilePath), vscode.Uri.file(outputFileName), ".Net Core 3.1/.Net Core 5.0 Tier 0 Diff");
+                                vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(threeOnefilePath), vscode.Uri.file(outputFileName), ".Net Core 3.1/.Net Core 5.0 Tier 1 Diff");
                             });
                         });
                     });
@@ -820,7 +822,7 @@ function checkForDotnetSdk(insights: DotnetInsights) : Thenable<boolean> {
     });
 }
 
-function downloadAnUnzip(insights: DotnetInsights, url: string, unzipFolder: string, outputPath: string) : Thenable<void> {
+function downloadAnUnzip(insights: DotnetInsights, url: string, unzipFolder: string, outputPath: string, isCoreRoot: boolean) : Thenable<void> {
     const unzipName = path.join(unzipFolder, crypto.randomBytes(16).toString("hex") + ".tar.gz");
 
     try {
@@ -835,15 +837,49 @@ function downloadAnUnzip(insights: DotnetInsights, url: string, unzipFolder: str
                 insights.outputChannel.appendLine(`Download completed: ${unzipName}`);
                 insights.outputChannel.appendLine(`unzip ${unzipName}`);
 
+                var filesInOutputPath = fs.readdirSync(outputPath);
+                if (filesInOutputPath.length > 0) {
+                    for (var index = 0; index < filesInOutputPath.length; ++index) {
+                        if (filesInOutputPath[index] == "temp") {
+                            continue;
+                        }
+
+                        try {
+                            var folderToDelete = path.join(outputPath, filesInOutputPath[index]);
+                            insights.outputChannel.appendLine(`rm -r ${folderToDelete}`);
+                            rimraf.sync(folderToDelete);
+
+                            insights.outputChannel.appendLine(`[COMPLETED]: rm -r ${folderToDelete}`);
+                        }
+                        catch (e) {
+                            console.log(e);
+                        }
+                    }
+                }
+
                 targz.decompress({
                     src: unzipName,
                     dest: outputPath
                 }, function(err){
                     if(err) {
-                        insights.outputChannel.appendLine(`unzip failed: ${unzipName}`);
+                        insights.outputChannel.appendLine(`unzip failed: ${unzipName}, ${err}`);
                         reject();
                     } else {
-                        insights.outputChannel.appendLine(`unzip completed: ${unzipName}`);
+                        var files = fs.readdirSync(outputPath);
+
+                        if (isCoreRoot) {
+                            console.assert(files.length == 1);
+
+                            if (files.length != 1) {
+                                var i = 0;
+                            }
+                        }
+
+                        if (isCoreRoot && files[0] != "Core_Root") {
+                            // Rename the folder to Core_Root
+
+                            fs.renameSync(path.join(outputPath, files[0]), path.join(outputPath, "Core_Root"));
+                        }
                         resolve();
                     }
                 });
@@ -891,7 +927,7 @@ function downloadRuntimes(insights: DotnetInsights, versionNumber: string, unzip
         const outputPath = path.join(coreRootFolder, runtimes[index]);
 
         const runtimeUrl = baseRuntimeUrl + `${osName}-${arch}-${runtimes[index]}.tar.gz`;
-        promises.push(downloadAnUnzip(insights, runtimeUrl, unzipFolder, outputPath));
+        promises.push(downloadAnUnzip(insights, runtimeUrl, unzipFolder, outputPath, true));
     }
 
     return Promise.all(promises);
@@ -923,7 +959,7 @@ function downloadPmiExe(insights: DotnetInsights, versionNumber: string, unzipFo
         const outputPath = path.join(pmiExeFolder, runtimes[index]);
 
         const pmiUrl = baseUrl + `${osName}-${arch}-${runtimes[index]}-pmi.tar.gz`;
-        promises.push(downloadAnUnzip(insights, pmiUrl, unzipFolder, outputPath));
+        promises.push(downloadAnUnzip(insights, pmiUrl, unzipFolder, outputPath, false));
     }
 
     return Promise.all(promises);
@@ -955,7 +991,7 @@ function downloadGcMonitorExe(insights: DotnetInsights, versionNumber: string, u
     const arch = "x64";
     const baseUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/gcEventListener-${osName}.tar.gz`;
 
-    promises.push(downloadAnUnzip(insights, baseUrl, unzipFolder, exeFolder));
+    promises.push(downloadAnUnzip(insights, baseUrl, unzipFolder, exeFolder, false));
     return Promise.all(promises);
 }
 
@@ -1085,6 +1121,13 @@ function setup(lastestVersionNumber: string, latestListenerVersionNumber: string
                         fs.existsSync(ilDasmCoreRootPath)) {
                         runtimeDownloadSucceeded = true;
                     }
+
+                    if (!runtimeDownloadSucceeded) {
+                        vscode.window.showWarningMessage("Unable to download runtime successfully.");
+
+                        console.assert(!runtimeDownloadSucceeded);
+                        resolve(runtimeDownloadSucceeded);
+                    }
     
                     if (ilDasmPath == undefined) {
                         ilDasmPath = ilDasmCoreRootPath;
@@ -1104,10 +1147,6 @@ function setup(lastestVersionNumber: string, latestListenerVersionNumber: string
                             coreRunPath = path.join(customCoreRootPath, "corerun");
                             fs.chmodSync(coreRunPath, "0755");
                         }
-                    }
-    
-                    if (!runtimeDownloadSucceeded) {
-                        vscode.window.showWarningMessage("Unable to download runtime successfully.");
                     }
 
                     resolve(runtimeDownloadSucceeded);

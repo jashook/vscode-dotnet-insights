@@ -32,32 +32,50 @@
       "title": "dotnet-insights",
       "properties": {
         "dotnet-insights.ildasmPath": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "default": null,
           "description": "Path to a local ildasm executable. This will override the ildasm executable setup by the extension."
         },
         "dotnet-insights.pmiPath": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "default": null,
           "description": "Path to a local pmi executable. This will override the pmi executable setup by the extension."
         },
         "dotnet-insights.coreRoot": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "default": null,
           "description": "Path to a local coreRoot. This will override the coreRoot setup by the extension."
         },
         "dotnet-insights.outputPath": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "default": null,
           "description": "Path to a temporary output directory. This will override the outputPath used by the extension."
         },
         "dotnet-insights.gcEventListenerPath": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "default": null,
           "description": "Path to a local gcEventListener executable. This will override the gcEventListener executable setup by the extension."
         },
         "dotnet-insights.preferNetCoreThreeOne": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "default": null,
           "description": "Prefer using .NET Core 3.1 in place of 5.0 when using JIT Dasm and Jit Dump."
         },
@@ -263,6 +281,7 @@
   "devDependencies": {
     "@types/node": "^12.11.7",
     "@types/request": "^2.48.5",
+    "@types/rimraf": "^3.0.0",
     "@types/targz": "^1.0.0",
     "@types/unzipper": "^0.10.3",
     "@types/vscode": "^1.54.0",
@@ -281,6 +300,7 @@
     "chart.js": "^2.9.4",
     "i": "^0.3.6",
     "request": "^2.88.2",
+    "rimraf": "^3.0.2",
     "targz": "^1.0.1",
     "unzipper": "^0.10.11",
     "uuid": "^8.3.2"
