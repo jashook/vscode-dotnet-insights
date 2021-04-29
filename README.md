@@ -2,11 +2,11 @@
 
 An extension for drilling into .NET MSIL and Jitted ASM for managed executables (PE Files). This is a cross platform extension that works on Linux (Ubuntu) OSX and Windows x64.
 
-Future work to include Windows arm64 and Linux arm64. Currently 32 bit support is not expected to be worked on; however, feel free to contribute.
+Future work to include Windows arm64 and Linux arm64. Currently 32-bit support is not expected to be worked on; however, feel free to contribute.
 
 Note that currently only x64 assembly will be generated. Future support will come around for cross architectures like arm64, arm and x86.
 
-In addition to interspection into Managed PE Files, the extension allows performance monitoring of .NET applications currenlty running on the machine. The extension will use TraceEvent to connect to all .NET Core applications 3.x+ to receive GC allocation, start and stop events. It will then compile the information per heap and display it by process.
+In addition to inspection into Managed PE Files, the extension allows performance monitoring of .NET applications currently running on the machine. The extension will use TraceEvent to connect to all .NET Core applications 3.x+ to receive GC allocation, start and stop events. It will then compile the information per heap and display it by process.
 
 # Issues
 
