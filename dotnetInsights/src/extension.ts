@@ -21,9 +21,47 @@ import { DotnetInsightsGcTreeDataProvider, GcDependency } from "./dotnetInsights
 import { DotnetInsightsGcEditor } from "./DotnetInsightsGcEditor";
 
 import { GcListener } from "./GcListener";
+import { ChildProcess } from 'node:child_process';
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
+
+function getLeafNodesWithType(symbols: vscode.DocumentSymbol[], parent: vscode.DocumentSymbol | undefined, leafNodes: [vscode.DocumentSymbol, vscode.DocumentSymbol][] | undefined): [vscode.DocumentSymbol, vscode.DocumentSymbol][] {
+    if (leafNodes == undefined) {
+        leafNodes = [] as [vscode.DocumentSymbol, vscode.DocumentSymbol][];
+    }
+
+    for (var index = 0; index < symbols.length; ++index) {
+        if (symbols[index].children.length > 0) {
+            getLeafNodesWithType(symbols[index].children, symbols[index], leafNodes);
+        }
+        else {
+            leafNodes.push([parent!, symbols[index]]);
+        }
+    }
+
+    return leafNodes;
+}
+
+function findSymbol(symbols: vscode.DocumentSymbol[], position: vscode.Position | undefined): [vscode.DocumentSymbol, vscode.DocumentSymbol] | undefined {
+    // Get all the leaf nodes into one list
+    if (position == undefined) return undefined;
+
+    var leafNodes:  [vscode.DocumentSymbol, vscode.DocumentSymbol][] = getLeafNodesWithType(symbols, undefined, undefined);
+
+    var returnValue : [vscode.DocumentSymbol, vscode.DocumentSymbol] | undefined;
+    var found = false;
+    for (var index = 0; index < leafNodes.length; ++index) {
+        if (position?.line > leafNodes[index][1].range.start.line && position?.line < leafNodes[index][1].range.end.line) {
+            returnValue = leafNodes[index];
+            found = true;
+            break;
+        }
+    }
+
+    console.assert(found);
+    return returnValue;
+}
 
 export function activate(context: vscode.ExtensionContext) {
     const outputChannel = vscode.window.createOutputChannel(`.NET Insights`);
@@ -533,12 +571,6 @@ export function activate(context: vscode.ExtensionContext) {
             }
         });
 
-        vscode.commands.registerCommand("dotnetInsights.realtimeIL", () => {
-            // We have been asked to show realtime asm of the current file.
-
-            var i = 0;
-        });
-
         vscode.commands.registerCommand('dotnetInsights.jitDumpTier0', (treeItem: Dependency) => {
             if (treeItem.label != undefined) {
                 var pmiCommand = `"${insights.coreRunPath}"` + " " + `"${insights.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${treeItem.dllPath}"`;
@@ -640,6 +672,130 @@ export function activate(context: vscode.ExtensionContext) {
                             vscode.window.showTextDocument(doc, 1);
                         });
                     });
+                });
+            }
+        });
+
+        var roslynHelper: child.ChildProcess | undefined = undefined;
+        let roslynHelperPath = "/home/jashoo/projects/vscode-dotnet-insights/roslynHelper/bin/Release/net5.0/linux-x64/publish/roslynHelper";
+
+        let roslynHelperTempDir = insights.pmiTempDir;
+        let roslynHelperIlFile = path.join(roslynHelperTempDir, "in_memory.dll");
+        let realtimeDasmFile = path.join(roslynHelperTempDir, "in_memory.asm");
+        let roslynHelperCommand = `${roslynHelperPath} ${roslynHelperIlFile}`;
+
+        vscode.commands.registerCommand("dotnetInsights.realtimeIL", () => {
+            // We have been asked to show realtime asm of the current file.
+
+            var activeFile  = vscode.window.activeTextEditor?.document.uri.fsPath;
+
+            var activeEditor = vscode.window.activeTextEditor;
+            if (activeEditor !== undefined) {
+                vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', activeEditor.document.uri).then(symbols => {
+                    var cursorLocation = vscode.window.activeTextEditor?.selection.active;
+
+                    // We will need the active method.
+                    var activeMethod: any = undefined;
+
+                    if (symbols !== undefined) {
+                        var symbol = findSymbol(symbols, cursorLocation);
+
+                        if (symbol != undefined) {
+                            var typeNameWithoutAssembly = symbol[0].name.split(".")[1];
+
+                            if (symbol[1].kind == vscode.SymbolKind.Constructor) {
+                                activeMethod = `${typeNameWithoutAssembly}:.ctor`;
+                            }
+                            else {
+                                activeMethod = `${typeNameWithoutAssembly}:${symbol[1].name}`;
+                            }
+                        }
+                    }
+
+                    insights.outputChannel.appendLine(`pmi for method: ${activeMethod}`);
+
+                    if (roslynHelper == undefined) {
+                        roslynHelper = child.exec(roslynHelperCommand, (error: any, stdout: string, stderr: string) => {
+                            // No op, should not finish
+                        });
+
+                        roslynHelper.stdout?.on('data', data => {
+                            let response = data != null ? data.toString().trim() : "";
+                            insights.outputChannel.appendLine(response);
+
+                            if (response == "Compilation succeeded") {
+                                // We have written IL to roslynHelperIlFile
+
+                                vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(roslynHelperIlFile), DotnetInsightsTextEditorProvider.viewType, vscode.ViewColumn.Beside);
+
+                                // In the meantime also pmi the file
+                                var pmiCommand = `"${insights.coreRunPath}"` + " " + `"${insights.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${roslynHelperIlFile}"`;
+                                outputChannel.appendLine(pmiCommand);
+
+                                var mb = 1024 * 1024;
+                                var maxBufferSize = 512 * mb;
+
+                                const selectMethodCwd = path.join(insights.pmiOutputPath, "selectMethod");
+
+                                if  (!fs.existsSync(selectMethodCwd)) {
+                                    fs.mkdirSync(selectMethodCwd);
+                                }
+
+                                const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+
+                                const id = crypto.randomBytes(16).toString("hex");
+
+                                const outputFileName = path.join(insights.pmiOutputPath, id + ".asm");
+                                
+                                var childProcess = child.exec(pmiCommand, {
+                                    maxBuffer: maxBufferSize,
+                                    "cwd": selectMethodCwd,
+                                    "env": {
+                                        "COMPlus_JitDisasm": `${activeMethod}`,
+                                        "COMPlus_TieredCompilation": "0",
+                                        "COMPlus_TC_QuickJit": "0",
+                                        "COMPlus_JitGCDump": `${activeMethod}`
+                                    }
+                                }, (error: any, output: string, stderr: string) => {
+                                    if (error) {
+                                        console.error("Failed to execute pmi.");
+                                        console.error(error);
+                                    }
+
+                                    var replaceRegex = /completed assembly.*\n/i;
+                                    if (os.platform() == "win32") {
+                                        replaceRegex = /completed assembly.*\r\n/i;
+                                    }
+
+                                    output = output.replace(replaceRegex, "");
+
+                                    fs.writeFile(outputFileName, output, (error) => {
+                                        if (error) {
+                                            return;
+                                        }
+                                        vscode.workspace.openTextDocument(outputFileName).then(doc => {
+                                            vscode.window.showTextDocument(doc, 2);
+                                        });
+                                    });
+                                });
+                            } else {
+                                // Failed. TODO, most likely references.
+                            }
+                        });
+                    }
+
+                    var success = false;
+
+                    while (!success) {
+                        try {
+                            roslynHelper?.stdin?.write(activeFile);
+                            roslynHelper?.stdin?.write("\r\n");
+                            success = true;
+                        }
+                        catch {
+            
+                        }
+                    }
                 });
             }
         });

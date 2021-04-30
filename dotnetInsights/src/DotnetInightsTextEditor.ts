@@ -16,7 +16,7 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
         return providerRegistration;
     }
 
-    private static readonly viewType = 'dotnetInsights.edit';
+    public static readonly viewType = 'dotnetInsights.edit';
     
     constructor(
         private readonly context: vscode.ExtensionContext,
@@ -96,11 +96,23 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
 
         var openPath = vscode.Uri.file(outputFilePath);
 
-        vscode.commands.executeCommand('workbench.action.closeActiveEditor').then(() => {
-            vscode.workspace.openTextDocument(openPath).then(doc => {
-                vscode.window.showTextDocument(doc)
+        if (vscode.window.visibleTextEditors.length == 1) {
+            vscode.commands.executeCommand('workbench.action.closeActiveEditor').then(() => {
+                vscode.workspace.openTextDocument(openPath).then(doc => {
+                    vscode.window.showTextDocument(doc)
+                });
             });
-        });
+        }
+        else {
+            this.insights.outputChannel.appendLine("closeEditorsAndGroup");
+            vscode.commands.executeCommand('workbench.action.closeEditorsAndGroup').then(() => {
+                vscode.workspace.openTextDocument(openPath).then(doc => {
+                    vscode.window.showTextDocument(doc, {
+                        viewColumn: vscode.ViewColumn.Beside
+                    })
+                });
+            });
+        }
 
         // After the text editor has loaded we will want to update the tree view
         if (this.insights.useIldasm) {
