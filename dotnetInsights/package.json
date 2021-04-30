@@ -78,6 +78,14 @@
           "default": null,
           "description": "Path to a local gcEventListener executable. This will override the gcEventListener executable setup by the extension."
         },
+        "dotnet-insights.roslynHelperPath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Path to a local roslynPath executable. This will override the roslynPath executable setup by the extension."
+        },
         "dotnet-insights.preferNetCoreThreeOne": {
           "type": [
             "string",

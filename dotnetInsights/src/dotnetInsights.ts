@@ -267,8 +267,14 @@ export class DotnetInsights {
     public treeView: DotnetInsightsTreeDataProvider | undefined;
 
     public gcEventListenerPath: string;
+    public roslynHelperPath: string;
 
     public listener: GcListener | undefined;
+
+    public isInlineIL: boolean;
+    public inlineIlCallback: any;
+
+    public ilDasmOutput: any;
 
     constructor(outputChannel: vscode.OutputChannel) {
         this.ilDasmPath = "";
@@ -315,8 +321,11 @@ export class DotnetInsights {
 
         this.sdkVersions = [] as string[];
         this.gcEventListenerPath = "";
+        this.roslynHelperPath = "";
 
         this.listener = undefined;
+
+        this.isInlineIL = false;
     }
 
     public setUseIldasm() {
