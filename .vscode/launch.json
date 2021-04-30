@@ -1,0 +1,38 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "gcEventListener",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/gcEventListener/bin/Debug/net5.0/gcEventListener.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/gcEventListener",
+            "console": "internalConsole",
+            "stopAtEntry": false
+        },
+        {
+            "name": "roslynHelper",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "buildRoslynHelper",
+            "program": "${workspaceFolder}/roslynHelper/bin/Debug/net5.0/roslynHelper.dll",
+            "args": [
+                "/Users/jashoo/temp/output.dll"
+            ],
+            "cwd": "${workspaceFolder}/roslynHelper",
+            "console": "integratedTerminal",
+            "stopAtEntry": false
+        },
+        {
+            "name": ".NET Core Attach",
+            "type": "coreclr",
+            "request": "attach",
+            "processId": "${command:pickProcess}"
+        }
+    ]
+}

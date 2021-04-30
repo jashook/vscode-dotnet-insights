@@ -16,7 +16,7 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
         return providerRegistration;
     }
 
-    private static readonly viewType = 'dotnetInsights.edit';
+    public static readonly viewType = 'dotnetInsights.edit';
     
     constructor(
         private readonly context: vscode.ExtensionContext,
@@ -38,72 +38,65 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
         const cwd: string =  this.insights.pmiTempDir;
         const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
 
-        if (this.insights.useIldasm) {
-            // We will run ildasm then render those contents
-            var ildasmCommand = `\"${this.insights.ilDasmPath}\"` + " " + `\"${uri.fsPath}\"`;
-            this.insights.outputChannel.appendLine(ildasmCommand);
+        // We will run ildasm then render those contents
+        var ildasmCommand = `\"${this.insights.ilDasmPath}\"` + " " + `\"${uri.fsPath}\"`;
+        this.insights.outputChannel.appendLine(ildasmCommand);
 
-            var output = child.execSync(ildasmCommand, {
-                maxBuffer: maxBufferSize
-            }).toString();
+        var output = child.execSync(ildasmCommand, {
+            maxBuffer: maxBufferSize
+        }).toString();
 
-            var filename = path.basename(uri.fsPath);
+        var filename = path.basename(uri.fsPath);
 
-            var extensionOutputPath = this.insights.ilDasmOutputPath;
-            assert(fs.existsSync(extensionOutputPath));
+        var extensionOutputPath = this.insights.ilDasmOutputPath;
+        assert(fs.existsSync(extensionOutputPath));
 
-            // Hijack the URI by saving the created file to a temporary location
-            var filename = path.basename(uri.fsPath);
+        // Hijack the URI by saving the created file to a temporary location
+        var filename = path.basename(uri.fsPath);
 
-            // This must be a managed .dll file
-            assert (path.extname(filename) == ".dll");
+        // This must be a managed .dll file
+        assert (path.extname(filename) == ".dll");
 
-            var filenameWithoutExt = filename.split(".dll")[0]
-            filename = filenameWithoutExt + ".ildasm";
+        var filenameWithoutExt = filename.split(".dll")[0]
+        filename = filenameWithoutExt + ".ildasm";
+        outputFilePath = path.join(extensionOutputPath, filename);
 
-            outputFilePath = path.join(extensionOutputPath, filename);
-        }
-        else {
-            // We will run pmi then render those contents
-            var pmiCommand = `"${this.insights.coreRunPath}"` + " " + `"${this.insights.pmiPath}"` + " " + "PREPALL" + " " + `"${uri.fsPath}"`;
-            this.insights.outputChannel.appendLine(pmiCommand);
-
-            var output = child.execSync(pmiCommand, {
-                maxBuffer: maxBufferSize,
-                "env": {
-                    "COMPlus_JitDisasm": "*"
-                }
-            }).toString();
-
-            var filename = path.basename(uri.fsPath);
-
-            var extensionOutputPath = this.insights.pmiOutputPath;
-            assert(fs.existsSync(extensionOutputPath));
-
-            // Hijack the URI by saving the created file to a temporary location
-            var filename = path.basename(uri.fsPath);
-
-            // This must be a managed .dll file
-            assert (path.extname(filename) == ".dll");
-
-            var filenameWithoutExt = filename.split(".dll")[0]
-            filename = filenameWithoutExt + ".asm";
-
-            outputFilePath = path.join(extensionOutputPath, filename);
-        }
+        this.insights.ilDasmOutput = output;
 
         fs.writeFileSync(outputFilePath, output);
 
         var openPath = vscode.Uri.file(outputFilePath);
 
-        vscode.commands.executeCommand('workbench.action.closeActiveEditor').then(() => {
-            vscode.workspace.openTextDocument(openPath).then(doc => {
-                vscode.window.showTextDocument(doc)
+        if (vscode.window.visibleTextEditors.length == 1 && !this.insights.isInlineIL) {
+            vscode.commands.executeCommand('workbench.action.closeActiveEditor').then(() => {
+                vscode.workspace.openTextDocument(openPath).then(doc => {
+                    this.insights.isInlineIL = false;
+                    vscode.window.showTextDocument(doc)
+                });
             });
-        });
+        }
+        else {
+            this.insights.outputChannel.appendLine("closeEditorsAndGroup");
+            vscode.commands.executeCommand('workbench.action.closeEditorsAndGroup').then(() => {
+                vscode.workspace.openTextDocument(openPath).then(doc => {
+                    if (this.insights.inlineIlCallback != undefined) {
+                        vscode.window.showTextDocument(doc, {
+                            viewColumn: vscode.ViewColumn.Beside
+                        }).then(this.insights.inlineIlCallback);
+                    }
+                    else {
+                        vscode.window.showTextDocument(doc, {
+                            viewColumn: vscode.ViewColumn.Beside
+                        });
+                    }
+
+                    this.insights.inlineIlCallback = false;
+                });
+            });
+        }
 
         // After the text editor has loaded we will want to update the tree view
-        if (this.insights.useIldasm) {
+        if (this.insights.useIldasm && !this.insights.isInlineIL) {
             this.insights.updateForPath(outputFilePath, uri.fsPath, output);
         }
         

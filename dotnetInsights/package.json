@@ -3,8 +3,8 @@
   "displayName": ".NET Insights",
   "publisher": "jashoo",
   "description": "Monitor .NET Processes for GC information in real time, or drill into .NET DLLs by viewing the IL and compiled code. Relies on ildasm and a public .NET JIT tool PMI.",
-  "version": "0.7.2",
-  "preview": true,
+  "version": "1.0.0",
+  "preview": false,
   "icon": "media/dep.png",
   "repository": {
     "url": "https://github.com/jashook/vscode-dotnet-insights"
@@ -12,6 +12,11 @@
   "engines": {
     "vscode": "^1.54.0"
   },
+  "bugs": {
+    "url": "https://github.com/jashook/vscode-dotnet-insights/issues?q=is%3Aissue+is%3Aopen+label%3Abug",
+    "email": "jarret_shook@outlook.com"
+  },
+  "homepage": "https://github.com/jashook/vscode-dotnet-insights#readme",
   "categories": [
     "Other"
   ],
@@ -21,10 +26,12 @@
     ".NET JIT"
   ],
   "activationEvents": [
+    "onLanguage:csharp",
     "onCommand:dotnetInsights.startGCMonitor",
     "onCustomEditor:dotnetInsights.edit",
     "onCustomEditor:dotnetInsightsGc.edit",
-    "onCommand:dotnetInsights.loadExtension"
+    "onCommand:dotnetInsights.loadExtension",
+    "onCommand:dotnetInsights.realtimeIl"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -70,6 +77,14 @@
           ],
           "default": null,
           "description": "Path to a local gcEventListener executable. This will override the gcEventListener executable setup by the extension."
+        },
+        "dotnet-insights.roslynHelperPath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Path to a local roslynPath executable. This will override the roslynPath executable setup by the extension."
         },
         "dotnet-insights.preferNetCoreThreeOne": {
           "type": [
@@ -178,11 +193,26 @@
         "title": "Setup Dotnet Insights"
       },
       {
+        "command": "dotnetInsights.realtimeIL",
+        "title": "Show IL/Asm on save"
+      },
+      {
+        "command": "dotnetInsights.stopShowIlOnSave",
+        "title": "Stop generating IL/Asm on save"
+      },
+      {
         "command": "dotnetInsights.stopGCMonitor",
         "title": "Stop GC Monitoring"
       }
     ],
     "menus": {
+      "editor/context": [
+        {
+          "command": "dotnetInsights.realtimeIL",
+          "when": "editorTextFocus && editorLangId == csharp",
+          "group": "dotnetInsightsGroup"
+        }
+      ],
       "view/item/context": [
         {
           "command": "dotnetInsights.minOpts",
