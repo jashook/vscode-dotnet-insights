@@ -1,5 +1,7 @@
 # .NET Insights
 
+**This extension uses Unsigned tools. This extension is not meant to be used in a production environment**
+
 An extension for drilling into .NET MSIL and Jitted ASM for managed executables (PE Files). This is a cross platform extension that works on Linux (Ubuntu) OSX and Windows x64.
 
 Future work to include Windows arm64 and Linux arm64. Currently 32-bit support is not expected to be worked on; however, feel free to contribute.
