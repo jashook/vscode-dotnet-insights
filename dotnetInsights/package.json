@@ -12,6 +12,11 @@
   "engines": {
     "vscode": "^1.54.0"
   },
+  "bugs": {
+    "url": "https://github.com/jashook/vscode-dotnet-insights/issues?q=is%3Aissue+is%3Aopen+label%3Abug",
+    "email": "jarret_shook@outlook.com"
+  },
+  "homepage": "https://github.com/jashook/vscode-dotnet-insights#readme",
   "categories": [
     "Other"
   ],
@@ -21,10 +26,12 @@
     ".NET JIT"
   ],
   "activationEvents": [
+    "onLanguage:csharp",
     "onCommand:dotnetInsights.startGCMonitor",
     "onCustomEditor:dotnetInsights.edit",
     "onCustomEditor:dotnetInsightsGc.edit",
-    "onCommand:dotnetInsights.loadExtension"
+    "onCommand:dotnetInsights.loadExtension",
+    "onCommand:dotnetInsights.realtimeIl"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -178,11 +185,22 @@
         "title": "Setup Dotnet Insights"
       },
       {
+        "command": "dotnetInsights.realtimeIL",
+        "title": "Show realtime IL/Asm"
+      },
+      {
         "command": "dotnetInsights.stopGCMonitor",
         "title": "Stop GC Monitoring"
       }
     ],
     "menus": {
+      "editor/context": [
+        {
+          "command": "dotnetInsights.realtimeIL",
+          "when": "editorTextFocus && editorLangId == csharp",
+          "group": "dotnetInsightsGroup"
+        }
+      ],
       "view/item/context": [
         {
           "command": "dotnetInsights.minOpts",

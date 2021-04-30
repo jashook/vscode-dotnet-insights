@@ -533,6 +533,12 @@ export function activate(context: vscode.ExtensionContext) {
             }
         });
 
+        vscode.commands.registerCommand("dotnetInsights.realtimeIL", () => {
+            // We have been asked to show realtime asm of the current file.
+
+            var i = 0;
+        });
+
         vscode.commands.registerCommand('dotnetInsights.jitDumpTier0', (treeItem: Dependency) => {
             if (treeItem.label != undefined) {
                 var pmiCommand = `"${insights.coreRunPath}"` + " " + `"${insights.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${treeItem.dllPath}"`;
