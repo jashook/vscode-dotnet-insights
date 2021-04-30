@@ -194,11 +194,11 @@
       },
       {
         "command": "dotnetInsights.realtimeIL",
-        "title": "Show realtime IL/Asm"
+        "title": "Show IL/Asm on save"
       },
       {
         "command": "dotnetInsights.stopShowIlOnSave",
-        "title": "Stop generating IL/Asm on save."
+        "title": "Stop generating IL/Asm on save"
       },
       {
         "command": "dotnetInsights.stopGCMonitor",
