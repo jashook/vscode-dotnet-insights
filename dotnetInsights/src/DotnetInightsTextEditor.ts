@@ -67,7 +67,7 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
 
         var openPath = vscode.Uri.file(outputFilePath);
 
-        if (vscode.window.visibleTextEditors.length == 1) {
+        if (vscode.window.visibleTextEditors.length == 1 && !this.insights.isInlineIL) {
             vscode.commands.executeCommand('workbench.action.closeActiveEditor').then(() => {
                 vscode.workspace.openTextDocument(openPath).then(doc => {
                     this.insights.isInlineIL = false;

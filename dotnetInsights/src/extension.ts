@@ -688,10 +688,42 @@ export function activate(context: vscode.ExtensionContext) {
         let realtimeDasmFile = path.join(roslynHelperTempDir, "generated.asm");
         let roslynHelperCommand = `"${roslynHelperPath}" "${roslynHelperIlFile}"`;
 
-        vscode.commands.registerCommand("dotnetInsights.realtimeIL", () => {
+        var stopShowIlOnSave = vscode.commands.registerCommand("dotnetInsights.stopShowIlOnSave", () => {
+            insights.listeningToAllSaveEvents = false;
+        });
+
+        context.subscriptions.push(stopShowIlOnSave);
+
+        vscode.commands.registerCommand("dotnetInsights.realtimeIL", (reWriteFile?: boolean) => {
             // We have been asked to show realtime asm of the current file.
 
             var activeFile  = vscode.window.activeTextEditor?.document.uri.fsPath;
+            insights.currentFile = activeFile;
+
+            if (!insights.listenerSetup) {
+                insights.listenerSetup = true;
+                insights.listeningToAllSaveEvents = true;
+                vscode.workspace.onDidSaveTextDocument(e => {
+                    if (e.fileName == insights.currentFile) {
+                        if (insights.listeningToAllSaveEvents) {
+                            vscode.commands.executeCommand("dotnetInsights.realtimeIL", false)
+                        }
+                    }
+                });
+
+                vscode.workspace.onDidCloseTextDocument(e => {
+                    if (e.fileName == insights.currentFile) {
+                        insights.listeningToAllSaveEvents = false;
+                    }
+                })
+            }
+            else {
+                insights.listeningToAllSaveEvents = true;
+            }
+
+            if (!insights.listeningToAllSaveEvents) {
+                insights.listeningToAllSaveEvents = true;
+            }
 
             var activeEditor = vscode.window.activeTextEditor;
             if (activeEditor !== undefined) {
@@ -700,7 +732,6 @@ export function activate(context: vscode.ExtensionContext) {
 
                     // We will need the active method.
                     var activeMethod: any = undefined;
-                    var methodNameForActiveMethod: string = "";
 
                     if (symbols !== undefined) {
                         var symbol = findSymbol(symbols, cursorLocation);
@@ -709,7 +740,10 @@ export function activate(context: vscode.ExtensionContext) {
                             var typeNameWithoutAssembly = symbol[0].name.split(".")[1];
                             var methodNameWithoutArgs = symbol[1].name.split("\(")[0];
 
-                            methodNameForActiveMethod = methodNameWithoutArgs;
+                            insights.methodNameForActiveMethod = methodNameWithoutArgs;
+                            if (symbol[1].kind == vscode.SymbolKind.Constructor) {
+                                insights.methodNameForActiveMethod = ".ctor";
+                            }
 
                             if (symbol[1].kind == vscode.SymbolKind.Constructor) {
                                 activeMethod = `${typeNameWithoutAssembly}:.ctor`;
@@ -749,7 +783,7 @@ export function activate(context: vscode.ExtensionContext) {
                                     let ildasmParser = new ILDasmParser(insights.ilDasmOutput);
                                     ildasmParser.parse();
 
-                                    let lineNumber = ildasmParser.methodMap.get(methodNameForActiveMethod);
+                                    let lineNumber = ildasmParser.methodMap.get(insights.methodNameForActiveMethod);
 
                                     if (lineNumber == undefined) {
                                         // Name does not directly match. Look for a loose match
@@ -758,7 +792,7 @@ export function activate(context: vscode.ExtensionContext) {
                                         let current = it.next();
                                         while(current.value != undefined) {
                                             let key = current.value;
-                                            if (key.indexOf(methodNameForActiveMethod) != -1) {
+                                            if (key.indexOf(insights.methodNameForActiveMethod) != -1) {
                                                 lineNumber = ildasmParser.methodMap.get(key);
                                                 break;
                                             }
@@ -826,6 +860,7 @@ export function activate(context: vscode.ExtensionContext) {
                                 });
                             } else {
                                 // Failed. TODO, most likely references.
+                                vscode.window.showWarningMessage(`Failed to compile: ${response}`);
                             }
                         });
                     }

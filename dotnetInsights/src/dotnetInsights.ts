@@ -276,6 +276,13 @@ export class DotnetInsights {
 
     public ilDasmOutput: any;
 
+    public methodNameForActiveMethod: string;
+
+    public listenerSetup: boolean;
+    public listeningToAllSaveEvents: boolean;
+
+    public currentFile: any;
+
     constructor(outputChannel: vscode.OutputChannel) {
         this.ilDasmPath = "";
         this.ilDasmVersion = "";
@@ -326,6 +333,10 @@ export class DotnetInsights {
         this.listener = undefined;
 
         this.isInlineIL = false;
+        this.methodNameForActiveMethod = "";
+
+        this.listenerSetup = false;
+        this.listeningToAllSaveEvents = false;
     }
 
     public setUseIldasm() {
