@@ -44,7 +44,7 @@ From C# source file right click `Show IL/Asm on save`. From this point on each t
 
 There is hopeful work to fix this in the future. To stop generating the IL/Dasm on save you can run the command: `>Stop generating IL/Asm on save` via `<ctrl/cmd><shift><p>`.
 
-[Example IL/ASM](https://github.com/jashook/vscode-dotnet-insights/blob/master/dotnetInsights/media/il_and_asm.png?raw=true)
+![Example IL/ASM](https://github.com/jashook/vscode-dotnet-insights/blob/master/dotnetInsights/media/il_and_asm.png?raw=true)
 
 ### Inspect PE File
 
