@@ -746,10 +746,10 @@ export function activate(context: vscode.ExtensionContext) {
                             }
 
                             if (symbol[1].kind == vscode.SymbolKind.Constructor) {
-                                activeMethod = `${typeNameWithoutAssembly}:.ctor`;
+                                insights.methodNameForActiveMethod = `${typeNameWithoutAssembly}:.ctor`;
                             }
                             else {
-                                activeMethod = `${typeNameWithoutAssembly}:${methodNameWithoutArgs}`;
+                                insights.methodNameForActiveMethod = `${typeNameWithoutAssembly}:${methodNameWithoutArgs}`;
                             }
                         }
                     }
@@ -760,7 +760,7 @@ export function activate(context: vscode.ExtensionContext) {
 
                     insights.isInlineIL = true;
 
-                    insights.outputChannel.appendLine(`pmi for method: ${activeMethod}`);
+                    insights.outputChannel.appendLine(`pmi for method: ${insights.methodNameForActiveMethod}`);
 
                     if (roslynHelper == undefined) {
                         roslynHelper = child.exec(roslynHelperCommand, (error: any, stdout: string, stderr: string) => {
@@ -828,7 +828,7 @@ export function activate(context: vscode.ExtensionContext) {
                                     var lines = output.split(newLine);
                                     var matchedMethod: any = undefined;
                                     for (var index = 0; index < lines.length; ++index) {
-                                        if (lines[index].indexOf(activeMethod) != -1) {
+                                        if (lines[index].indexOf(insights.methodNameForActiveMethod) != -1) {
                                             let methodSplit = lines[index].split(' | ');
 
                                             matchedMethod = methodSplit[methodSplit.length - 1].trim();

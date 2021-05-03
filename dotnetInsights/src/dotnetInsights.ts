@@ -277,6 +277,7 @@ export class DotnetInsights {
     public ilDasmOutput: any;
 
     public methodNameForActiveMethod: string;
+    public methodNameForIlDasm: string;
 
     public listenerSetup: boolean;
     public listeningToAllSaveEvents: boolean;
@@ -334,6 +335,7 @@ export class DotnetInsights {
 
         this.isInlineIL = false;
         this.methodNameForActiveMethod = "";
+        this.methodNameForIlDasm = "";
 
         this.listenerSetup = false;
         this.listeningToAllSaveEvents = false;
