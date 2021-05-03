@@ -75,8 +75,15 @@ export class ILDasmParser {
             }
             else if (currentLine.indexOf(".method") != -1) {
                 // Split out the class name
-                const methodLine = lines[index + 1];
-                const methodNameSplit = methodLine.split(" ");
+
+                // Try the current line.
+                var methodLine = lines[index];
+                var methodNameSplit = methodLine.split(" ");
+
+                if (methodNameSplit[methodNameSplit.length - 1] != "managed") {
+                    methodLine = lines[index + 1];
+                    methodNameSplit = methodLine.split(" ");
+                }
     
                 var methodName = "";
                 for (var innerIndex = 0; innerIndex < methodNameSplit.length; ++innerIndex) {
