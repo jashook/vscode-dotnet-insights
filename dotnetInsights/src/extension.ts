@@ -690,6 +690,10 @@ export function activate(context: vscode.ExtensionContext) {
                         return;
                     }
 
+                    if (e.document.languageId == "Log") {
+                        return;
+                    }
+
                     insights.listeningToAllSaveEvents = false;
                 })
             }

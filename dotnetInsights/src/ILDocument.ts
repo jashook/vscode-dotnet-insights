@@ -15,6 +15,8 @@ export class ILDocument {
     private path: string;
     private text: string;
 
+    private window: vscode.TextEditor | undefined;
+
     ////////////////////////////////////////////////////////////////////////////
     // Constructor
     ////////////////////////////////////////////////////////////////////////////
@@ -38,5 +40,37 @@ export class ILDocument {
     ////////////////////////////////////////////////////////////////////////////
     // Member methods
     ////////////////////////////////////////////////////////////////////////////
+
+    public change(contents: string) : Thenable<boolean> {
+        let boundObject = this;
+        let promise = new Promise<boolean>((resolve, reject) => {
+            fs.writeFile(boundObject.path, contents, (err) => {
+                if (err != null) {
+                    reject(false);
+                }
+
+                resolve(true);
+            });
+        });
+
+        return promise;
+    }
+
+    public getPath(): string {
+        return this.path;
+    }
+
+    public getWindow(): vscode.TextEditor {
+        return this.window!;
+    }
+
+    public setWindow(window: vscode.TextEditor) {
+        this.window = window;
+    }
+
+    public updateForPath(filePath: string) {
+        this.path = filePath;
+        this.text = fs.readFileSync(filePath).toString();
+    }
 
 }

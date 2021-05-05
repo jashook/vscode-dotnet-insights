@@ -14,6 +14,8 @@ import { AsmDocument } from "./AsmDocument";
 import { ILDasmParser } from "./ilDamParser";
 import { JitOrder } from "./JitOrder";
 import { PmiCommand } from "./PmiCommand";
+import { ILDasm } from './IlDasm';
+import { throws } from 'node:assert';
 
 export class OnSaveIlDasm {
     ////////////////////////////////////////////////////////////////////////////
@@ -35,11 +37,15 @@ export class OnSaveIlDasm {
     private realtimeDasmFile: string;
     private roslynHelperCommand: string;
 
+    private hasDocumentsOpen: boolean;
+
     ////////////////////////////////////////////////////////////////////////////
     // Constructor
     ////////////////////////////////////////////////////////////////////////////
 
     constructor(insights: DotnetInsights, cursorLocation: vscode.Position | undefined, symbols: vscode.DocumentSymbol[] | undefined) {
+        this.hasDocumentsOpen = false;
+
         this.method = "";
         this.methodNoArgs = "";
         this.insights = insights;
@@ -53,13 +59,10 @@ export class OnSaveIlDasm {
         this.realtimeDasmFile = path.join(this.roslynHelperTempDir, "generated.asm");
         this.roslynHelperCommand = `"${this.roslynHelperPath}" "${this.roslynHelperIlFile}"`;
 
-        let setupSuccess = this.setupActiveMethod(cursorLocation, symbols);
-        if (!setupSuccess) {
-            return;
-        }
-
         this.ilShown = new ILDocument();
         this.asmShown = new AsmDocument();
+
+        let setupSuccess = this.setupActiveMethod(cursorLocation, symbols);
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -142,6 +145,38 @@ export class OnSaveIlDasm {
     ////////////////////////////////////////////////////////////////////////////
     // Helper methods
     ////////////////////////////////////////////////////////////////////////////
+
+    private areDocumentsOpen(): boolean {
+        let editorsShown = vscode.window.visibleTextEditors;
+
+        var documentsAreOpen = false;
+
+        // TODO yes/no
+        if (editorsShown.length >= 3) {
+            // The last two editors should be the ildasm and asm files.
+            var skipCount = 0;
+            if (editorsShown[editorsShown.length - 1].document.fileName.indexOf("extension-output") != -1) {
+                skipCount = 1;
+            }
+
+            let secondToLast = editorsShown.length - 2 - skipCount;
+            let last = editorsShown.length - 1 - skipCount;
+
+            console.assert(secondToLast > 0 && last > 0);
+
+            if (editorsShown[secondToLast].document.fileName.indexOf(".ildasm") != -1 && editorsShown[last].document.fileName.indexOf(".asm") != -1) {
+                documentsAreOpen = true;
+
+                this.ilShown?.updateForPath(editorsShown[secondToLast].document.fileName);
+                this.asmShown?.updateForPath(editorsShown[last].document.fileName);
+
+                this.ilShown!.setWindow(editorsShown[secondToLast]);
+                this.asmShown!.setWindow(editorsShown[last]);
+            }
+        }
+
+        return documentsAreOpen;
+    }
 
     private findSymbol(symbols: vscode.DocumentSymbol[], position: vscode.Position | undefined): [vscode.DocumentSymbol, vscode.DocumentSymbol] | undefined {
         // Get all the leaf nodes into one list
@@ -258,6 +293,31 @@ export class OnSaveIlDasm {
         const size = currentVisibleRange.end.line - currentVisibleRange.start.line;
 
         e.revealRange(new vscode.Range(lineNumber, 0, lineNumber + size, 0));
+
+        if (!this.hasDocumentsOpen) {
+            this.ilShown?.updateForPath(this.roslynHelperIlFile);
+        }
+    }
+
+    private inPlaceIlDasm() {
+        let ilDasm = new ILDasm(this.insights);
+        let output = ilDasm.execute(vscode.Uri.file(this.roslynHelperIlFile));
+
+        this.insights.ilDasmOutput = output;
+
+        let boundObject = this;
+        this.ilShown?.change(output).then(success => {
+            if (success) {
+                this.inLineIlCallback(boundObject.ilShown?.getWindow());
+            }
+        });
+    }
+
+    private newEditorIlDasm() {
+        let boundObject = this;
+        this.insights.inlineIlCallback = (e: any) => { boundObject.inLineIlCallback(e); };
+
+        vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(this.roslynHelperIlFile), DotnetInsightsTextEditorProvider.viewType, vscode.ViewColumn.Beside);
     }
 
     private onRoslynStdOut(data: string) {
@@ -269,13 +329,22 @@ export class OnSaveIlDasm {
 
             // TODO: change decision based on whether documents are open.
 
-            let boundObject = this;
-            this.insights.inlineIlCallback = (e: any) => { boundObject.inLineIlCallback(e); };
+            let haveIlAndAsmDocumentsOpen = this.areDocumentsOpen();
+            this.hasDocumentsOpen = haveIlAndAsmDocumentsOpen;
 
-            vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(this.roslynHelperIlFile), DotnetInsightsTextEditorProvider.viewType, vscode.ViewColumn.Beside);
+            if (haveIlAndAsmDocumentsOpen) {
+                // Do a manual call to ildasm and pmi instead of opening a new editor
+                // for each.
+                this.inPlaceIlDasm();
+            }
+            else {
+                this.newEditorIlDasm();
+            }
 
             // Also pmi the file.
             var jitOrder = new JitOrder(this.insights.coreRunPath, this.insights, this.roslynHelperIlFile);
+
+            let boundObject = this;
             jitOrder.execute().then(output => {
                 // Determine the method from the output
 
@@ -288,7 +357,7 @@ export class OnSaveIlDasm {
                 var lines = output.split(newLine);
                 var matchedMethod: any = undefined;
                 for (var index = 0; index < lines.length; ++index) {
-                    if (lines[index].indexOf(this.method) != -1) {
+                    if (lines[index].indexOf(boundObject.method) != -1) {
                         let methodSplit = lines[index].split(' | ');
 
                         matchedMethod = methodSplit[methodSplit.length - 1].trim();
@@ -298,12 +367,12 @@ export class OnSaveIlDasm {
 
                 console.assert(matchedMethod != undefined);
                 
-                var pmiMethod = new PmiCommand(this.insights.coreRunPath, this.insights, this.roslynHelperIlFile);
+                var pmiMethod = new PmiCommand(boundObject.insights.coreRunPath, boundObject.insights, boundObject.roslynHelperIlFile);
                 pmiMethod.execute(matchedMethod).then(value => {
                     let unique_id = value[0];
                     let output = value[1];
 
-                    const outputFileName = path.join(this.insights.pmiOutputPath, unique_id + ".asm");
+                    const outputFileName = path.join(boundObject.insights.pmiOutputPath, unique_id + ".asm");
 
                     fs.writeFile(outputFileName, output, (error) => {
                         if (error) {
@@ -312,12 +381,20 @@ export class OnSaveIlDasm {
                         
                         let splitIndex = vscode.window.visibleTextEditors.length + 1;
 
-                        vscode.workspace.openTextDocument(outputFileName).then(doc => {
-                            vscode.window.showTextDocument(doc, splitIndex);
-                        });
+                        if (!boundObject.hasDocumentsOpen) {
+                            this.asmShown?.updateForPath(outputFileName);
+
+                            vscode.workspace.openTextDocument(outputFileName).then(doc => {
+                                vscode.window.showTextDocument(doc, splitIndex);
+                            });
+                        }
+                        else {
+                            this.asmShown?.change(output);
+                        }
                     });
                 });
             });
+
         } else {
             // Failed. TODO, most likely references.
             vscode.window.showWarningMessage(`Failed to compile: ${response}`);
