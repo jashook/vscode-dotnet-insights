@@ -8,6 +8,7 @@ import * as assert from "assert"
 import { Uri } from 'vscode'
 
 import { DotnetInsights } from './dotnetInsights';
+import { ILDasm } from './IlDasm';
 
 export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEditorProvider {
     public static register(context: vscode.ExtensionContext, insights: DotnetInsights): vscode.Disposable {
@@ -24,38 +25,21 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
     ) { }
 
     openCustomDocument(uri: vscode.Uri, openContext: vscode.CustomDocumentOpenContext, token: vscode.CancellationToken): vscode.CustomDocument | Thenable<vscode.CustomDocument> {
-        if (this.insights.ilDasmPath == "") {
-            throw new Error("DotnetInsights not setup correctly.");
-        }
+        var ilDasmCommand = new ILDasm(this.insights);
+        var output = ilDasmCommand.execute(uri);
 
-        var output: string;
         var outputFilePath: string;
 
-        var mb = 1024 * 1024;
-        var maxBufferSize = 512 * mb;
-        
         // Used by pmi as it need FS access
         const cwd: string =  this.insights.pmiTempDir;
         const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
-
-        // We will run ildasm then render those contents
-        var ildasmCommand = `\"${this.insights.ilDasmPath}\"` + " " + `\"${uri.fsPath}\"`;
-        this.insights.outputChannel.appendLine(ildasmCommand);
-
-        var output = child.execSync(ildasmCommand, {
-            maxBuffer: maxBufferSize
-        }).toString();
-
+        
         var filename = path.basename(uri.fsPath);
 
         var extensionOutputPath = this.insights.ilDasmOutputPath;
-        assert(fs.existsSync(extensionOutputPath));
 
         // Hijack the URI by saving the created file to a temporary location
         var filename = path.basename(uri.fsPath);
-
-        // This must be a managed .dll file
-        assert (path.extname(filename) == ".dll");
 
         var filenameWithoutExt = filename.split(".dll")[0]
         filename = filenameWithoutExt + ".ildasm";

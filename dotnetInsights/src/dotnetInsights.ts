@@ -8,6 +8,8 @@ import * as assert from "assert";
 import { Method } from "./DotnetInightsTextEditor";
 import { GcListener } from "./GcListener";
 
+import { OnSaveIlDasm } from "./onSaveIlDasm";
+
 export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<Dependency> {
     private _onDidChangeTreeData: vscode.EventEmitter<Dependency | undefined | void> = new vscode.EventEmitter<Dependency | undefined | void>();
     readonly onDidChangeTreeData: vscode.Event<Dependency | undefined | void> = this._onDidChangeTreeData.event;
@@ -276,13 +278,12 @@ export class DotnetInsights {
 
     public ilDasmOutput: any;
 
-    public methodNameForActiveMethod: string;
-    public methodNameForIlDasm: string;
-
     public listenerSetup: boolean;
     public listeningToAllSaveEvents: boolean;
 
     public currentFile: any;
+
+    public onSaveIlDasm: OnSaveIlDasm | undefined;
 
     constructor(outputChannel: vscode.OutputChannel) {
         this.ilDasmPath = "";
@@ -334,8 +335,6 @@ export class DotnetInsights {
         this.listener = undefined;
 
         this.isInlineIL = false;
-        this.methodNameForActiveMethod = "";
-        this.methodNameForIlDasm = "";
 
         this.listenerSetup = false;
         this.listeningToAllSaveEvents = false;
@@ -494,6 +493,11 @@ export class DotnetInsights {
 
             if (currentLine.indexOf("- CHILD") == -1 && currentLine.indexOf("Completed assembly ") == -1) {
                 var splitLine = regex.exec(currentLine);
+
+                if (currentLine.indexOf("BadImageFormatException") != -1) {
+                    // Not a managed assembly.
+                    return undefined;
+                }
 
                 if (splitLine?.length != 6) {
                     throw new Error("Unable to parse type");

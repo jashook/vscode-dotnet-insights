@@ -23,46 +23,10 @@ import { GcListener } from "./GcListener";
 import { PmiCommand } from "./PmiCommand";
 import { JitOrder } from "./JitOrder";
 import { ILDasmParser } from './ilDamParser';
+import { OnSaveIlDasm } from './onSaveIlDasm';
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
-
-function getLeafNodesWithType(symbols: vscode.DocumentSymbol[], parent: vscode.DocumentSymbol | undefined, leafNodes: [vscode.DocumentSymbol, vscode.DocumentSymbol][] | undefined): [vscode.DocumentSymbol, vscode.DocumentSymbol][] {
-    if (leafNodes == undefined) {
-        leafNodes = [] as [vscode.DocumentSymbol, vscode.DocumentSymbol][];
-    }
-
-    for (var index = 0; index < symbols.length; ++index) {
-        if (symbols[index].children.length > 0) {
-            getLeafNodesWithType(symbols[index].children, symbols[index], leafNodes);
-        }
-        else {
-            leafNodes.push([parent!, symbols[index]]);
-        }
-    }
-
-    return leafNodes;
-}
-
-function findSymbol(symbols: vscode.DocumentSymbol[], position: vscode.Position | undefined): [vscode.DocumentSymbol, vscode.DocumentSymbol] | undefined {
-    // Get all the leaf nodes into one list
-    if (position == undefined) return undefined;
-
-    var leafNodes:  [vscode.DocumentSymbol, vscode.DocumentSymbol][] = getLeafNodesWithType(symbols, undefined, undefined);
-
-    var returnValue : [vscode.DocumentSymbol, vscode.DocumentSymbol] | undefined;
-    var found = false;
-    for (var index = 0; index < leafNodes.length; ++index) {
-        if (position?.line > leafNodes[index][1].range.start.line && position?.line < leafNodes[index][1].range.end.line) {
-            returnValue = leafNodes[index];
-            found = true;
-            break;
-        }
-    }
-
-    console.assert(found);
-    return returnValue;
-}
 
 export function activate(context: vscode.ExtensionContext) {
     const outputChannel = vscode.window.createOutputChannel(`.NET Insights`);
@@ -680,14 +644,6 @@ export function activate(context: vscode.ExtensionContext) {
             }
         });
 
-        var roslynHelper: child.ChildProcess | undefined = undefined;
-        let roslynHelperPath = insights.roslynHelperPath;
-
-        let roslynHelperTempDir = insights.pmiTempDir;
-        let roslynHelperIlFile = path.join(roslynHelperTempDir, "generated.dll");
-        let realtimeDasmFile = path.join(roslynHelperTempDir, "generated.asm");
-        let roslynHelperCommand = `"${roslynHelperPath}" "${roslynHelperIlFile}"`;
-
         var stopShowIlOnSave = vscode.commands.registerCommand("dotnetInsights.stopShowIlOnSave", () => {
             insights.listeningToAllSaveEvents = false;
         });
@@ -716,6 +672,30 @@ export function activate(context: vscode.ExtensionContext) {
                         insights.listeningToAllSaveEvents = false;
                     }
                 })
+
+                vscode.window.onDidChangeActiveTextEditor(e => {
+                    if (e?.document.fileName.indexOf("generated") != -1) {
+                        return;
+                    }
+
+                    if (e?.document.fileName.indexOf("extension-output") != -1) {
+                        return;
+                    }
+
+                    if (e.document.fileName == insights.currentFile) {
+                        return;
+                    }
+                    
+                    if (e.document.fileName.indexOf(".asm") != -1) {
+                        return;
+                    }
+
+                    if (e.document.languageId == "Log") {
+                        return;
+                    }
+
+                    insights.listeningToAllSaveEvents = false;
+                })
             }
             else {
                 insights.listeningToAllSaveEvents = true;
@@ -729,160 +709,15 @@ export function activate(context: vscode.ExtensionContext) {
             if (activeEditor !== undefined) {
                 vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', activeEditor.document.uri).then(symbols => {
                     var cursorLocation = vscode.window.activeTextEditor?.selection.active;
-
-                    // We will need the active method.
-                    var activeMethod: any = undefined;
-
-                    if (symbols !== undefined) {
-                        var symbol = findSymbol(symbols, cursorLocation);
-
-                        if (symbol != undefined) {
-                            var typeNameWithoutAssembly = symbol[0].name.split(".")[1];
-                            var methodNameWithoutArgs = symbol[1].name.split("\(")[0];
-
-                            insights.methodNameForActiveMethod = methodNameWithoutArgs;
-                            if (symbol[1].kind == vscode.SymbolKind.Constructor) {
-                                insights.methodNameForActiveMethod = ".ctor";
-                            }
-
-                            if (symbol[1].kind == vscode.SymbolKind.Constructor) {
-                                insights.methodNameForActiveMethod = `${typeNameWithoutAssembly}:.ctor`;
-                            }
-                            else {
-                                insights.methodNameForActiveMethod = `${typeNameWithoutAssembly}:${methodNameWithoutArgs}`;
-                            }
-                        }
-                    }
-                    else {
-                        vscode.window.showWarningMessage("Unable to determine method. Check that the C# extension is installed and Omnisharp has loaded this project.");
-                        return;
+                    if (ilAsmDocuments == undefined) {
+                        // Create a new one.
+                        insights.onSaveIlDasm = new OnSaveIlDasm(insights, cursorLocation, symbols);
                     }
 
-                    insights.isInlineIL = true;
+                    var ilAsmDocuments = insights.onSaveIlDasm;
 
-                    insights.outputChannel.appendLine(`pmi for method: ${insights.methodNameForActiveMethod}`);
-
-                    if (roslynHelper == undefined) {
-                        roslynHelper = child.exec(roslynHelperCommand, (error: any, stdout: string, stderr: string) => {
-                            // No op, should not finish
-
-                            console.log(error);
-                            console.log(stdout);
-                        });
-
-                        roslynHelper.stdout?.on('data', data => {
-                            let response = data != null ? data.toString().trim() : "";
-                            insights.outputChannel.appendLine(response);
-
-                            if (response == "Compilation succeeded") {
-                                // We have written IL to roslynHelperIlFile
-
-                                insights.inlineIlCallback = (e: any) => {
-                                    console.assert(insights.ilDasmOutput != undefined);
-
-                                    let ildasmParser = new ILDasmParser(insights.ilDasmOutput);
-                                    ildasmParser.parse();
-
-                                    let lineNumber = ildasmParser.methodMap.get(insights.methodNameForActiveMethod);
-
-                                    if (lineNumber == undefined) {
-                                        // Name does not directly match. Look for a loose match
-
-                                        let it = ildasmParser.methodMap.keys()
-                                        let current = it.next();
-                                        while(current.value != undefined) {
-                                            let key = current.value;
-                                            if (key.indexOf(insights.methodNameForActiveMethod) != -1) {
-                                                lineNumber = ildasmParser.methodMap.get(key);
-                                                break;
-                                            }
-
-                                            current = it.next();
-                                        }
-                                    }
-
-                                    if (lineNumber == undefined) {
-                                        vscode.window.showWarningMessage("Unable to determine method. Check that the C# extension is installed and Omnisharp has loaded this project.");
-                                        return;
-                                    }
-
-                                    const currentVisibleRange = e.visibleRanges[0];
-                                    const size = currentVisibleRange.end.line - currentVisibleRange.start.line;
-
-                                    e.revealRange(new vscode.Range(lineNumber, 0, lineNumber + size, 0));
-                                };
-
-                                vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(roslynHelperIlFile), DotnetInsightsTextEditorProvider.viewType, vscode.ViewColumn.Beside);
-
-                                // Also pmi the file.
-                                var jitOrder = new JitOrder(insights.coreRunPath, insights, roslynHelperIlFile);
-                                jitOrder.execute().then(output => {
-                                    // Determine the method from the output
-
-                                    // Split the output by newline
-                                    var newLine = "\n";
-                                    if (os.platform() == "win32") {
-                                        newLine = "\r\n";
-                                    }
-
-                                    var lines = output.split(newLine);
-                                    var matchedMethod: any = undefined;
-                                    for (var index = 0; index < lines.length; ++index) {
-                                        if (lines[index].indexOf(insights.methodNameForActiveMethod) != -1) {
-                                            let methodSplit = lines[index].split(' | ');
-
-                                            matchedMethod = methodSplit[methodSplit.length - 1].trim();
-                                            break;
-                                        }
-                                    }
-
-                                    console.assert(matchedMethod != undefined);
-                                    
-                                    var pmiMethod = new PmiCommand(insights.coreRunPath, insights, roslynHelperIlFile);
-                                    pmiMethod.execute(matchedMethod).then(value => {
-                                        let unique_id = value[0];
-                                        let output = value[1];
-
-                                        const outputFileName = path.join(insights.pmiOutputPath, unique_id + ".asm");
-
-                                        fs.writeFile(outputFileName, output, (error) => {
-                                            if (error) {
-                                                return;
-                                            }
-                                            
-                                            let splitIndex = vscode.window.visibleTextEditors.length + 1;
-
-                                            vscode.workspace.openTextDocument(outputFileName).then(doc => {
-                                                vscode.window.showTextDocument(doc, splitIndex);
-                                            });
-                                        });
-                                    });
-                                });
-                            } else {
-                                // Failed. TODO, most likely references.
-                                vscode.window.showWarningMessage(`Failed to compile: ${response}`);
-                            }
-                        });
-                    }
-
-                    var success = false;
-
-                    while (!success) {
-                        try {
-                            roslynHelper?.stdin?.write(activeFile);
-
-                            if (os.platform() == "win32") {
-                                roslynHelper?.stdin?.write("\r\n");
-                            }
-                            else {
-                                roslynHelper?.stdin?.write("\n");
-                            }
-                            success = true;
-                        }
-                        catch (e) {
-                            console.log(e);
-                        }
-                    }
+                    ilAsmDocuments?.setupActiveMethod(cursorLocation, symbols);
+                    ilAsmDocuments?.runRoslynHelperForFile(activeFile);
                 });
             }
         });
