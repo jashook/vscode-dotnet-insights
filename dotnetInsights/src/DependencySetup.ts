@@ -196,6 +196,10 @@ export class DependencySetup {
                             }
                         }
 
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreThreeCoreRootPath: ${netcoreThreeCoreRootPath}`);
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreFiveCoreRootPath: ${netcoreFiveCoreRootPath}`);
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: ilDasmCoreRootPath: ${ilDasmCoreRootPath}`);
+
                         resolve(runtimeDownloadSucceeded);
                     });
                 });
@@ -241,6 +245,8 @@ export class DependencySetup {
                             vscode.window.showWarningMessage("Unable to download pmi successfully.");
                         }
 
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreThreePmiPathDownload: ${netcoreThreePmiPathDownload}`);
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreFivePmiPathDownload: ${netcoreFivePmiPathDownload}`);
                         resolve(pmiDownloadSucceeded);
                     });
                 });
@@ -284,6 +290,7 @@ export class DependencySetup {
                             vscode.window.showWarningMessage("Unable to download gcEventListenerPath successfully.");
                         }
 
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: gcEventListenerPath: ${gcEventListenerPath}`);
                         resolve(downloadSucceeded);
                     });
                 });
@@ -331,6 +338,7 @@ export class DependencySetup {
                             vscode.window.showWarningMessage("Unable to download roslynHelper successfully.");
                         }
 
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: roslynHelperPath: ${roslynHelperPath}`);
                         resolve(downloadSucceeded);
                     });
                 });
@@ -390,53 +398,76 @@ export class DependencySetup {
             return new Promise((resolve, reject) => {
                 req.on("close", (response: any) => {
                     insights.outputChannel.appendLine(`Download completed: ${unzipName}`);
-                    insights.outputChannel.appendLine(`unzip ${unzipName}`);
 
-                    var filesInOutputPath = fs.readdirSync(outputPath);
-                    if (filesInOutputPath.length > 0) {
-                        for (var index = 0; index < filesInOutputPath.length; ++index) {
-                            if (filesInOutputPath[index] == "temp") {
-                                continue;
-                            }
+                    insights.outputChannel.appendLine(`mkdir ${outputPath}`);
+                    fs.mkdir(outputPath, (err) => {
+                        insights.outputChannel.appendLine(`[COMPLETE]: mkdir ${outputPath}`);
 
-                            try {
-                                var folderToDelete = path.join(outputPath, filesInOutputPath[index]);
-                                insights.outputChannel.appendLine(`rm -r ${folderToDelete}`);
-                                rimraf.sync(folderToDelete);
+                        insights.outputChannel.appendLine(`readDir ${outputPath}`);
+                        fs.readdir(outputPath, (err, filesInOutputPath) => {
+                            insights.outputChannel.appendLine(`[COMPLETE]: readDir ${outputPath}`);
+                            var deletePromises = [] as Promise<Error>[];
 
-                                insights.outputChannel.appendLine(`[COMPLETED]: rm -r ${folderToDelete}`);
-                            }
-                            catch (e) {
-                                console.log(e);
-                            }
-                        }
-                    }
-
-                    targz.decompress({
-                        src: unzipName,
-                        dest: outputPath
-                    }, function(err){
-                        if(err) {
-                            insights.outputChannel.appendLine(`unzip failed: ${unzipName}, ${err}`);
-                            reject();
-                        } else {
-                            var files = fs.readdirSync(outputPath);
-
-                            if (isCoreRoot) {
-                                console.assert(files.length == 1);
-
-                                if (files.length != 1) {
-                                    var i = 0;
+                            if (filesInOutputPath.length > 0) {
+                                for (var index = 0; index < filesInOutputPath.length; ++index) {
+                                    if (filesInOutputPath[index] == "temp") {
+                                        continue;
+                                    }
+        
+                                    try {
+                                        var folderToDelete = path.join(outputPath, filesInOutputPath[index]);
+                                        insights.outputChannel.appendLine(`rm -r ${folderToDelete}`);
+                                        deletePromises.push(new Promise((deleteResolve, deleteReject) => {
+                                            rimraf(folderToDelete, (err) => {
+                                                insights.outputChannel.appendLine(`[COMPLETED]: rm -r ${folderToDelete}`);
+                                                deleteResolve(err);
+                                            })
+                                        }));
+                                    }
+                                    catch (e) {
+                                        console.log(e);
+                                    }
                                 }
                             }
 
-                            if (isCoreRoot && files[0] != "Core_Root") {
-                                // Rename the folder to Core_Root
+                            let allPromise = Promise.all(deletePromises);
 
-                                fs.renameSync(path.join(outputPath, files[0]), path.join(outputPath, "Core_Root"));
-                            }
-                            resolve();
-                        }
+                            allPromise.then(() =>{
+                                insights.outputChannel.appendLine(`untar ${unzipName} ${outputPath}`);
+                                targz.decompress({
+                                    src: unzipName,
+                                    dest: outputPath
+                                }, function(err){
+                                    if(err) {
+                                        insights.outputChannel.appendLine(`untar failed: ${unzipName}, ${err}`);
+                                        reject();
+                                    } else {
+                                        fs.readdir(outputPath, (err, files) => {
+                                            if (isCoreRoot) {
+                                                console.assert(files.length == 1);
+                
+                                                if (files.length != 1) {
+                                                    var i = 0;
+                                                }
+                                            }
+
+                                            insights.outputChannel.appendLine(`[COMPLETE]: untar ${unzipName}`);
+                
+                                            if (isCoreRoot && files[0] != "Core_Root") {
+                                                // Rename the folder to Core_Root
+                
+                                                fs.rename(path.join(outputPath, files[0]), path.join(outputPath, "Core_Root"), (err) => {
+                                                    resolve();
+                                                });
+                                            }
+                                            else {
+                                                resolve();
+                                            }
+                                        });
+                                    }
+                                });
+                            });
+                        });
                     });
                 });
             });

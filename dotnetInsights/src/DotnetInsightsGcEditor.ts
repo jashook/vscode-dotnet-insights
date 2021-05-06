@@ -7,7 +7,6 @@ import * as assert from "assert";
 
 import { DotnetInsights } from "./dotnetInsights";
 import { GcListener, ProcessInfo, GcData, AllocData } from "./GcListener";
-import { start } from 'node:repl';
 
 export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvider {
     public static register(context: vscode.ExtensionContext, insights: DotnetInsights, listener: GcListener): vscode.Disposable {
