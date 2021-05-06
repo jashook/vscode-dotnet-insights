@@ -1,7 +1,7 @@
 import { DotnetInsightsGcTreeDataProvider } from "./dotnetInsightsGc";
 
 import { createServer } from "http";
-import { IncomingMessage, ServerResponse } from 'node:http';
+import { IncomingMessage, ServerResponse } from 'http';
 
 export class GcData {
     public data: any;
@@ -129,7 +129,7 @@ export class GcListener {
             }
             else if (request.method == "POST") {
                 var data = "";
-                request.on("data", (chunk) => {
+                request.on("data", (chunk: any) => {
                     data += chunk;
                 });
 
