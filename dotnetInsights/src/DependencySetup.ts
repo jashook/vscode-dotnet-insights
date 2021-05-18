@@ -59,12 +59,15 @@ export class DependencySetup {
         var netcoreFiveCoreRootPath: any = undefined;
         var netcoreThreeCoreRootPath: any = undefined;
 
+        var gcStatsLocation: any = undefined;
+
         var outputPath: any = undefined;
 
         if (dotnetInsightsSettings != undefined) {
             ilDasmPath = dotnetInsightsSettings["ildasmPath"];
             pmiPath = dotnetInsightsSettings["pmiPath"];
             customCoreRootPath = dotnetInsightsSettings["coreRoot"];
+            gcStatsLocation = dotnetInsightsSettings["gcDataPath"];
             outputPath = dotnetInsightsSettings["outputPath"];
 
             gcEventListenerPath = dotnetInsightsSettings["gcEventListenerPath"];
@@ -76,6 +79,10 @@ export class DependencySetup {
 
             if (customCoreRootPath == undefined) {
                 customCoreRootPath = "";
+            }
+
+            if (gcStatsLocation == undefined) {
+                gcStatsLocation = "";
             }
         }
         else {
@@ -93,6 +100,19 @@ export class DependencySetup {
         if (!fs.existsSync(outputPath)) {
             // Create the folder
             fs.mkdirSync(outputPath);
+        }
+
+        if (gcStatsLocation == "") {
+            // Setup the gcData location. This will store all of the saved gc dumps
+            // with a .gcstats expension.
+
+            gcStatsLocation = path.join(outputPath, "gcInfo");
+
+            if (!fs.existsSync(gcStatsLocation)) {
+                fs.mkdirSync(gcStatsLocation);
+            }
+
+            this.insights.gcDataSaveLocation = gcStatsLocation;
         }
 
         var ilDasmOutputPath = path.join(outputPath, "ilDasm");
