@@ -15,7 +15,6 @@ import { ILDasmParser } from "./ilDamParser";
 import { JitOrder } from "./JitOrder";
 import { PmiCommand } from "./PmiCommand";
 import { ILDasm } from './IlDasm';
-import { throws } from 'node:assert';
 
 export class OnSaveIlDasm {
     ////////////////////////////////////////////////////////////////////////////

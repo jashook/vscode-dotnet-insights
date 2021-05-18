@@ -8,7 +8,7 @@ import * as assert from "assert";
 import { DotnetInsights } from "./dotnetInsights";
 import { GcListener, ProcessInfo, GcData, AllocData } from "./GcListener";
 
-export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvider {
+export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
     public static register(context: vscode.ExtensionContext, insights: DotnetInsights, listener: GcListener): vscode.Disposable {
         const provider = new DotnetInsightsGcEditor(context, insights, listener, null);
         const providerRegistration = vscode.window.registerCustomEditorProvider(DotnetInsightsGcEditor.viewType, provider);
@@ -30,6 +30,17 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
         this.allocData = undefined;
     }
 
+    onDidChangeCustomDocument() : any {
+
+    }
+
+    revertCustomDocument(document: vscode.CustomDocument, cancellation: vscode.CancellationToken): Thenable<void> {
+        throw new Error('Method not implemented.');
+    }
+    backupCustomDocument(document: vscode.CustomDocument, context: vscode.CustomDocumentBackupContext, cancellation: vscode.CancellationToken): Thenable<vscode.CustomDocumentBackup> {
+        throw new Error('Method not implemented.');
+    }
+
     openCustomDocument(uri: vscode.Uri, openContext: vscode.CustomDocumentOpenContext, token: vscode.CancellationToken): vscode.CustomDocument | Thenable<vscode.CustomDocument> {
         var filename = path.basename(uri.path);
         var endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
@@ -45,7 +56,8 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
                                                     true,
                                                     endofLine,
                                                     0,
-                                                    processId);
+                                                    processId,
+                                                    this.listener);
 
         return document;
     }
@@ -416,8 +428,83 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
         }
         return text;
     }
-}
 
+    saveCustomDocument(document: DotnetInsightsGcDocument, cancellation: any): Thenable<void>
+    {
+        var promise = new Promise<void>((resolve, reject) => {
+            const processInfo: ProcessInfo | undefined = this.listener.processes.get(document.processId);
+            const gcs: GcData[] | undefined = processInfo?.data;
+            const allocations: AllocData[] | undefined = [];
+
+            var gcData = [] as GcData[];
+            if (gcs != undefined) {
+                for (var index = 0; index < gcs?.length; ++index) {
+                    gcData.push(gcs[index]);
+                }
+
+                for (var index = 0; index < gcs?.length; ++index) {
+                    const allocDataForGc = gcs[index].allocData;
+
+                    for (var innerIndex = 0; innerIndex < allocDataForGc.length; ++innerIndex) {
+                        allocations.push(allocDataForGc[innerIndex]);
+                    }
+                }
+            }
+
+            // At this point we will serialize the gc information and write to 
+            // disk.
+            if (!fs.existsSync(this.insights.gcDataSaveLocation)) {
+                vscode.window.showWarningMessage("GC stats location does not exist, please check the settings configuration for a valid path.");
+                return;
+            }
+
+            fs.readdir(this.insights.gcDataSaveLocation, (err, files) => {
+                // Calculate the save file name.
+                var fileName = document.processId.toString();
+                if (processInfo != undefined) {
+                    fileName = processInfo?.processName + "_" + document.processId.toString();
+                }
+
+                for(var index = 0; index < files.length; ++index) {
+                    const file = files[index];
+                    if (file.indexOf(fileName) != -1) {
+                        // This process already exists we will want to attach
+                        // the date to better distinguish
+                        fileName = fileName + "_" + new Date().toUTCString();
+
+                        break;
+                    }
+                }
+
+                var dataToWrite = {
+                    "gcData": gcData,
+                    "allocations": allocations
+                };
+
+                const jsonString = JSON.stringify(dataToWrite);
+
+                fileName += ".gcinfo";
+
+                const fullPath = path.join(this.insights.gcDataSaveLocation, fileName);
+
+                fs.writeFile(fullPath, jsonString, (err) => {
+                    if (err != null) {
+                        vscode.window.showWarningMessage("Failed to write file: " + err.toString());
+                    }
+                    else {
+                        this.insights.outputChannel.appendLine(`${fullPath} written to disk`);
+                    }
+                });
+            });
+        });
+
+        return promise;
+    }
+
+    saveCustomDocumentAs(document: vscode.CustomDocument, destination: vscode.Uri, cancellation: vscode.CancellationToken): Thenable<void> {
+        throw new Error('Method not implemented.');
+    }
+}
 
 class DotnetInsightsGcDocument extends vscode.Disposable implements vscode.TextDocument {
     uri: vscode.Uri;
@@ -430,6 +517,7 @@ class DotnetInsightsGcDocument extends vscode.Disposable implements vscode.TextD
     eol: vscode.EndOfLine;
     lineCount: number;
     processId: number;
+    listener: GcListener
 
     constructor(
         uri: vscode.Uri,
@@ -441,7 +529,8 @@ class DotnetInsightsGcDocument extends vscode.Disposable implements vscode.TextD
         isClosed: boolean,
         eol: vscode.EndOfLine,
         lineCount: number,
-        processId: number
+        processId: number,
+        listener: GcListener,
     ) {
         super(() => {
             console.log("Tearing down ILDasmDocument");
@@ -457,6 +546,7 @@ class DotnetInsightsGcDocument extends vscode.Disposable implements vscode.TextD
         this.eol = eol,
         this.lineCount = lineCount;
         this.processId = processId;
+        this.listener = listener;
     }
 
     lineAt(position: any): vscode.TextLine {
@@ -496,5 +586,33 @@ class DotnetInsightsGcDocument extends vscode.Disposable implements vscode.TextD
     
     validatePosition(position: vscode.Position): vscode.Position {
         throw new Error('Method not implemented.');
+    }
+
+    saveCustomDocument(document: DotnetInsightsGcDocument, cancellation: any): Thenable<void>
+    {
+        var promise = new Promise<void>((resolve, reject) => {
+            const processInfo: ProcessInfo | undefined = this.listener.processes.get(document.processId);
+            const gcs: GcData[] | undefined = processInfo?.data;
+            const allocations: AllocData[] | undefined = [];
+
+            var gcData = [] as GcData[];
+            if (gcs != undefined) {
+                for (var index = 0; index < gcs?.length; ++index) {
+                    gcData.push(gcs[index]);
+                }
+
+                for (var index = 0; index < gcs?.length; ++index) {
+                    const allocDataForGc = gcs[index].allocData;
+
+                    for (var innerIndex = 0; innerIndex < allocDataForGc.length; ++innerIndex) {
+                        allocations.push(allocDataForGc[innerIndex]);
+                    }
+                }
+            }
+
+            var i = 0;
+        });
+
+        return promise;
     }
 }

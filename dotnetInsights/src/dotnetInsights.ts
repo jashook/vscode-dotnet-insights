@@ -285,6 +285,8 @@ export class DotnetInsights {
 
     public onSaveIlDasm: OnSaveIlDasm | undefined;
 
+    public gcDataSaveLocation: string;
+
     constructor(outputChannel: vscode.OutputChannel) {
         this.ilDasmPath = "";
         this.ilDasmVersion = "";
@@ -338,6 +340,8 @@ export class DotnetInsights {
 
         this.listenerSetup = false;
         this.listeningToAllSaveEvents = false;
+
+        this.gcDataSaveLocation = "";
     }
 
     public setUseIldasm() {
