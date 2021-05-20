@@ -20,9 +20,6 @@ import { DotnetInsightsGcEditor } from "./DotnetInsightsGcEditor";
 import { DependencySetup } from "./DependencySetup";
 
 import { GcListener } from "./GcListener";
-import { PmiCommand } from "./PmiCommand";
-import { JitOrder } from "./JitOrder";
-import { ILDasmParser } from './ilDamParser';
 import { OnSaveIlDasm } from './onSaveIlDasm';
 
 ////////////////////////////////////////////////////////////////////////////////

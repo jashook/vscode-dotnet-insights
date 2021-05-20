@@ -1,9 +1,6 @@
-import * as child from 'child_process';
-import * as fs from 'fs';
 import * as os from "os";
 import * as path from 'path';
 import * as vscode from 'vscode';
-import * as assert from "assert";
 
 import { DotnetInsights } from "./dotnetInsights";
 import { GcListener, ProcessInfo, GcData, AllocData } from "./GcListener";
@@ -64,8 +61,6 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
 
         var listener = this.listener;
         var gcEditor = this;
-
-        var lastDataCount = listener.processes.get(pid)?.data.length;
 
         function updateWebview() {
             var currentData = listener.processes.get(pid)?.data;
@@ -345,7 +340,6 @@ export class DotnetInsightsGcEditor implements vscode.CustomReadonlyEditorProvid
         var hiddenData = JSON.stringify(gcsToSerialize);
 
         const nonce = this.getNonce();
-        const nonce2 = this.getNonce();
 
         const mainUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'main.css'));
         const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'gcStats.js'));
