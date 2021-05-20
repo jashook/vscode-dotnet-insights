@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as os from "os";
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -500,7 +501,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
     }
 }
 
-class DotnetInsightsGcDocument extends vscode.Disposable implements vscode.TextDocument {
+export class DotnetInsightsGcDocument extends vscode.Disposable implements vscode.TextDocument {
     uri: vscode.Uri;
     fileName: string;
     isUntitled: boolean;
@@ -511,7 +512,7 @@ class DotnetInsightsGcDocument extends vscode.Disposable implements vscode.TextD
     eol: vscode.EndOfLine;
     lineCount: number;
     processId: number;
-    listener: GcListener
+    listener: GcListener | null
 
     constructor(
         uri: vscode.Uri,
@@ -524,7 +525,7 @@ class DotnetInsightsGcDocument extends vscode.Disposable implements vscode.TextD
         eol: vscode.EndOfLine,
         lineCount: number,
         processId: number,
-        listener: GcListener,
+        listener: GcListener | null,
     ) {
         super(() => {
             console.log("Tearing down ILDasmDocument");
@@ -585,7 +586,7 @@ class DotnetInsightsGcDocument extends vscode.Disposable implements vscode.TextD
     saveCustomDocument(document: DotnetInsightsGcDocument, cancellation: any): Thenable<void>
     {
         var promise = new Promise<void>((resolve, reject) => {
-            const processInfo: ProcessInfo | undefined = this.listener.processes.get(document.processId);
+            const processInfo: ProcessInfo | undefined = this.listener?.processes.get(document.processId);
             const gcs: GcData[] | undefined = processInfo?.data;
             const allocations: AllocData[] | undefined = [];
 

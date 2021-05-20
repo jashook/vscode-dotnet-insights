@@ -17,6 +17,7 @@ import { DotnetInsightsTreeDataProvider, Dependency, DotnetInsights } from './do
 import { DotnetInsightsTextEditorProvider } from "./DotnetInightsTextEditor";
 import { DotnetInsightsGcTreeDataProvider, GcDependency } from "./dotnetInsightsGc";
 import { DotnetInsightsGcEditor } from "./DotnetInsightsGcEditor";
+import { DotnetInsightsGcSnapshotEditor } from "./DotnetInsightsGcSnapshotEditor";
 import { DependencySetup } from "./DependencySetup";
 
 import { GcListener } from "./GcListener";
@@ -752,6 +753,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         context.subscriptions.push(DotnetInsightsTextEditorProvider.register(context, insights));
         context.subscriptions.push(DotnetInsightsGcEditor.register(context, insights, listener));
+        context.subscriptions.push(DotnetInsightsGcSnapshotEditor.register(context, insights));
 
         if (startupCallback != undefined) {
             startupCallback();
