@@ -381,15 +381,18 @@ export class OnSaveIlDasm {
                         let splitIndex = vscode.window.visibleTextEditors.length + 1;
 
                         if (!boundObject.hasDocumentsOpen) {
-                            this.asmShown?.updateForPath(outputFileName);
+                            boundObject.asmShown?.updateForPath(outputFileName);
 
                             vscode.workspace.openTextDocument(outputFileName).then(doc => {
                                 vscode.window.showTextDocument(doc, splitIndex);
                             });
                         }
                         else {
-                            this.asmShown?.change(output);
+                            boundObject.asmShown?.change(output);
                         }
+
+                        // As a background task JITDump the method as well
+                        boundObject.jitDumpMethod(matchedMethod, unique_id);
                     });
                 });
             });
@@ -398,5 +401,22 @@ export class OnSaveIlDasm {
             // Failed. TODO, most likely references.
             vscode.window.showWarningMessage(`Failed to compile: ${response}`);
         }
+    }
+
+    private jitDumpMethod(matchedMethod: string, unique_id: string) {
+        const boundObject = this;
+        var pmiMethod = new PmiCommand(boundObject.insights.coreRunPath, boundObject.insights, boundObject.roslynHelperIlFile);
+
+        pmiMethod.execute(matchedMethod, {"COMPlus_JitDump": matchedMethod}).then(value => {
+            let output = value[1];
+
+            const outputFileName = path.join(boundObject.insights.pmiOutputPath, unique_id + ".jitDump");
+
+            fs.writeFile(outputFileName, output, (error) => {
+                if (error) {
+                    return;
+                }
+            });
+        });
     }
 }

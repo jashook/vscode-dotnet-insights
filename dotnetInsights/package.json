@@ -3,7 +3,7 @@
   "displayName": ".NET Insights",
   "publisher": "jashoo",
   "description": "Monitor .NET Processes for GC information in real time, or drill into .NET DLLs by viewing the IL and compiled code. Relies on ildasm and a public .NET JIT tool PMI.",
-  "version": "1.0.6",
+  "version": "1.1.0",
   "preview": false,
   "icon": "media/dep.png",
   "repository": {
@@ -213,6 +213,14 @@
         "title": "Show IL/Asm on save"
       },
       {
+        "command": "dotnetInsights.showJitDump",
+        "title": "Show jitdump for asm"
+      },
+      {
+        "command": "dotnetInsights.showAsm",
+        "title": "Show asm for Jit Dump"
+      },
+      {
         "command": "dotnetInsights.stopShowIlOnSave",
         "title": "Stop generating IL/Asm on save"
       },
@@ -226,6 +234,16 @@
         {
           "command": "dotnetInsights.realtimeIL",
           "when": "editorTextFocus && editorLangId == csharp",
+          "group": "dotnetInsightsGroup"
+        },
+        {
+          "command": "dotnetInsights.showJitDump",
+          "when": "editorTextFocus && editorLangId == asm",
+          "group": "dotnetInsightsGroup"
+        },
+        {
+          "command": "dotnetInsights.showAsm",
+          "when": "editorTextFocus && editorLangId == jitdump",
           "group": "dotnetInsightsGroup"
         }
       ],

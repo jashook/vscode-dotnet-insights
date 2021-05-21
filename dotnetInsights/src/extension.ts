@@ -9,10 +9,6 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import * as os from "os";
 
-import * as request from 'request';
-import * as targz from "targz";
-import * as rimraf from "rimraf";
-
 import { DotnetInsightsTreeDataProvider, Dependency, DotnetInsights } from './dotnetInsights';
 import { DotnetInsightsTextEditorProvider } from "./DotnetInightsTextEditor";
 import { DotnetInsightsGcTreeDataProvider, GcDependency } from "./dotnetInsightsGc";
@@ -647,6 +643,70 @@ export function activate(context: vscode.ExtensionContext) {
         });
 
         context.subscriptions.push(stopShowIlOnSave);
+
+        vscode.commands.registerCommand("dotnetInsights.showJitDump", () => {
+            var activeFile  = vscode.window.activeTextEditor?.document.uri.fsPath;
+
+            if (activeFile == undefined) {
+                return;
+            }
+
+            console.log(path.extname(activeFile) == ".asm");
+
+            // We have an asm file active, we have generated the jitdump side by
+            // side, just display that file
+
+            const visibleEditors = vscode.window.visibleTextEditors;
+            var index = 0;
+
+            for (index = 0; index < visibleEditors.length; ++index) {
+                if (visibleEditors[index].document.uri.fsPath == activeFile) {
+                    break;
+                }
+            }
+
+            const jitDumpFile = activeFile?.replace(".asm", ".jitDump");
+
+            if (!fs.existsSync(jitDumpFile)) {
+                return;
+            }
+
+            vscode.workspace.openTextDocument(jitDumpFile).then(doc => {
+                vscode.window.showTextDocument(doc, index);
+            });
+        });
+
+        vscode.commands.registerCommand("dotnetInsights.showAsm", () => {
+            var activeFile  = vscode.window.activeTextEditor?.document.uri.fsPath;
+
+            if (activeFile == undefined) {
+                return;
+            }
+
+            console.log(path.extname(activeFile) == ".jitdump" || path.extname(activeFile) == ".jitDump");
+
+            // We have an asm file active, we have generated the jitdump side by
+            // side, just display that file
+
+            const visibleEditors = vscode.window.visibleTextEditors;
+            var index = 0;
+
+            for (index = 0; index < visibleEditors.length; ++index) {
+                if (visibleEditors[index].document.uri.fsPath == activeFile) {
+                    break;
+                }
+            }
+
+            const asmFile = activeFile?.replace(".jitDump", ".asm");
+
+            if (!fs.existsSync(asmFile)) {
+                return;
+            }
+
+            vscode.workspace.openTextDocument(asmFile).then(doc => {
+                vscode.window.showTextDocument(doc, index);
+            });
+        });
 
         vscode.commands.registerCommand("dotnetInsights.realtimeIL", (reWriteFile?: boolean) => {
             // We have been asked to show realtime asm of the current file.
