@@ -62,7 +62,7 @@ export class PmiCommand {
             "COMPlus_TC_QuickJit": "0"
         }
 
-        if (methodName != undefined) {
+        if (methodName != undefined && (extraOptions == undefined || extraOptions == null)) {
             extraOptions = {
                 "COMPlus_JitDisasm": `${methodName}`,
                 "COMPlus_JitGCDump": `${methodName}`
