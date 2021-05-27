@@ -37,7 +37,7 @@ Navigate to the `---` icon on the activity bar. Each managed .NET Core process w
 
 When a process is selected a custom view will come up with the GC Statistics for the process during the monitor window. *Please remember that the GCs display are **only** post the monitor command, and pre the stop monitoring command. This is defined to be the monitoring window.* While selected, real time information about GCs will continue to update in realtime.
 
-![GC Monitoring](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/media/gcMonitoring.gif)
+![GC Monitoring](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/media/gcMonitoring.png)
 
 # IL / DASM on Save
 
