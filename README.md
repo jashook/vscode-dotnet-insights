@@ -2,22 +2,26 @@
 
 **This extension uses Unsigned tools. This extension is not meant to be used in a production environment**
 
-An extension for drilling into .NET MSIL and Jitted ASM for managed executables (PE Files). This is a cross platform extension that works on Linux (Ubuntu) OSX and Windows x64.
+An extension for drilling into .NET MSIL and Jitted ASM for managed executables (PE Files). This is a cross platform extension that works on Linux (Ubuntu) OSX and Windows x64. The extension has a few different quality of life improvements. It is intended as an extension to improve .NET development in general. Please see the full feature list below.
 
-Future work to include Windows arm64 and Linux arm64. Currently 32-bit support is not expected to be worked on; however, feel free to contribute.
-
-Note that currently only x64 assembly will be generated. Future support will come around for cross architectures like arm64, arm and x86.
-
-In addition to inspection into Managed PE Files, the extension allows performance monitoring of .NET applications currently running on the machine. The extension will use TraceEvent to connect to all .NET Core applications 3.x+ to receive GC allocation, start and stop events. It will then compile the information per heap and display it by process.
+Future work to include Linux arm64. Currently 32-bit support is not expected to be worked on; however, feel free to contribute.
 
 # Issues
 
 There are known issues with the extension. See [Bugs](https://github.com/jashook/vscode-dotnet-insights/issues?q=is%3Aissue+is%3Aopen+label%3Abug) for more information.
 
-1. [PMI is slow to dump ASM for large files](https://github.com/jashook/vscode-dotnet-insights/issues/18)
-2. [Older versions of the extension are not cleaned up on newer install](https://github.com/jashook/vscode-dotnet-insights/issues/19)
-
 # Overview
+
+## TOC
+
+1. [GC Monitoring](#GC_Monitoring)
+2. [IL / DASM on Save](#IL_/_DASM_on_Save)
+
+# GC Monitoring
+
+The extension allows for monitoring all .NET Core applications that are running on the target machine. The extension will use TraceEvent to connect to all .NET Core applications 3.x+ to receive GC allocation, start and stop events. It will then compile the information per heap and display it by process.
+
+![GC Monitoring Gif](https://github.com/jashook/vscode-dotnet-insights/blob/master/dotnetInsights/media/gcMonitoring.gif?raw=true)
 
 ## GC Monitoring Usage
 
@@ -32,11 +36,19 @@ Navigate to the `---` icon on the activity bar. Each managed .NET Core process w
 
 When a process is selected a custom view will come up with the GC Statistics for the process during the monitor window. *Please remember that the GCs display are **only** post the monitor command, and pre the stop monitoring command. This is defined to be the monitoring window.* While selected, real time information about GCs will continue to update in realtime.
 
-![GC Monitoring](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/media/gcMonitoring.png)
+![GC Monitoring](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/media/gcMonitoring.gif)
 
----------------------------------
+# IL / DASM on Save
 
-## IL Introspection Usage
+**C# Extension is required**.
+
+Showing IL/Dasm on save allows viewing the IL/ASM for a generated file quickly without inspecting the PE file. It specifically is useful when attempting to optimize a particular method. It is possible to view the IL as it is being changed, and then the optimized ASM that would be produced. Another slightly advanced feature is being able to view the JIT's output for the method JITTed. This advanced feature allows investigating what happened while JITTing the method, and allows understanding why a particular optimization may or may have not fired.
+
+![Example IL/ASM](https://github.com/jashook/vscode-dotnet-insights/blob/master/dotnetInsights/media/il_on_save_general.gif?raw=true)
+
+## Investigating optimization failure
+
+![Example IL/ASM Advanced](https://github.com/jashook/vscode-dotnet-insights/blob/master/dotnetInsights/media/il_on_save_advanced.gif?raw=true)
 
 ### Show IL/Dasm on save
 
@@ -45,8 +57,6 @@ When a process is selected a custom view will come up with the GC Statistics for
 From C# source file right click `Show IL/Asm on save`. From this point on each time the file is saved the IL will be shown along with the JITed code to the right. Note that this works by compiling the current file. There are current drawbacks that keep the compilation from succeeding with files that either reference other files or other projects/packages.
 
 There is hopeful work to fix this in the future. To stop generating the IL/Dasm on save you can run the command: `>Stop generating IL/Asm on save` via `<ctrl/cmd><shift><p>`.
-
-![Example IL/ASM](https://github.com/jashook/vscode-dotnet-insights/blob/master/dotnetInsights/media/il_and_asm.png?raw=true)
 
 ### Inspect PE File
 
