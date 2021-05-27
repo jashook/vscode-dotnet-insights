@@ -14,9 +14,9 @@ There are known issues with the extension. See [Bugs](https://github.com/jashook
 
 ## TOC
 
-1. [GC Monitoring](#GC_Monitoring)
-2. [IL / DASM on Save](#IL_/_DASM_on_Save)
-3. [Inspect PE File](#Inspect_PE_File)
+1. [GC Monitoring](#GC-Monitoring)
+2. [IL / DASM on Save](#IL-/-DASM-on-Save)
+3. [Inspect PE File](#Inspect-PE-File)
 
 # GC Monitoring
 

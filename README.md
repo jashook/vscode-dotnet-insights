@@ -14,8 +14,9 @@ There are known issues with the extension. See [Bugs](https://github.com/jashook
 
 ## TOC
 
-1. [GC Monitoring](#GC_Monitoring)
-2. [IL / DASM on Save](#IL_/_DASM_on_Save)
+1. [GC Monitoring](#GC-Monitoring)
+2. [IL / DASM on Save](#IL-/-DASM-on-Save)
+3. [Inspect PE File](#Inspect-PE-File)
 
 # GC Monitoring
 
@@ -58,7 +59,7 @@ From C# source file right click `Show IL/Asm on save`. From this point on each t
 
 There is hopeful work to fix this in the future. To stop generating the IL/Dasm on save you can run the command: `>Stop generating IL/Asm on save` via `<ctrl/cmd><shift><p>`.
 
-### Inspect PE File
+# Inspect PE File
 
 1. Select a managed PE file. This is generally a .NET DLL under the `${workspaceFolder}/bin/Release/application.dll`
 2. By default the .NET MSIL will be dumped and opened. Once this is done, the IL+ view on the side will have a list of types and methods for the DLL.
