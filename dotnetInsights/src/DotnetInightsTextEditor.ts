@@ -8,7 +8,7 @@ import * as assert from "assert"
 import { Uri } from 'vscode'
 
 import { DotnetInsights } from './dotnetInsights';
-import { ILDasm } from './IlDasm';
+import { ILDasm } from './ILDasm';
 
 export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEditorProvider {
     public static register(context: vscode.ExtensionContext, insights: DotnetInsights): vscode.Disposable {
@@ -82,6 +82,10 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
         // After the text editor has loaded we will want to update the tree view
         if (this.insights.useIldasm && !this.insights.isInlineIL) {
             this.insights.updateForPath(outputFilePath, uri.fsPath, output);
+        }
+        else if (this.insights.isInlineIL)
+        {
+            this.insights.isInlineIL = false;
         }
         
         var document = new DotnetInsightsDocument(uri,

@@ -14,7 +14,7 @@ import { AsmDocument } from "./AsmDocument";
 import { ILDasmParser } from "./ilDamParser";
 import { JitOrder } from "./JitOrder";
 import { PmiCommand } from "./PmiCommand";
-import { ILDasm } from './IlDasm';
+import { ILDasm } from './ILDasm';
 
 export class OnSaveIlDasm {
     ////////////////////////////////////////////////////////////////////////////
