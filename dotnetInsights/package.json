@@ -133,7 +133,7 @@
         "displayName": "Dotnet Insights GC Snapshot Editor",
         "selector": [
           {
-            "filenamePattern": "*.gcinfo",
+            "filenamePattern": "*.gc[iI]nfo",
             "priority": "default"
           }
         ]

@@ -77,6 +77,11 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
         updateWebview();
     }
 
+    private parseFromXml(fileContents: Buffer): any {
+        
+        return null;
+    }
+
     private getHtmlForWebview(document: DotnetInsightsGcDocument, webview: vscode.Webview): string {
         const fileContents = fs.readFileSync(document.uri.fsPath);
 
@@ -116,8 +121,14 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
             }
         }
         catch(e) {
-            vscode.window.showWarningMessage(`${document.uri.fsPath} is corrupted or a incorrect type.`);
-            return defaultHtmlReturn;
+            // Check to see if this is a valid xml file
+            gcData = this.parseFromXml(fileContents);
+            if (gcData == null) {
+                vscode.window.showWarningMessage(`${document.uri.fsPath} is corrupted or a incorrect type.`);
+                return defaultHtmlReturn;
+            }
+            
+            // Else we can recover
         }
 
         // gc data has all of the allocations and gc events that occurred in the
@@ -225,17 +236,26 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
         var canvasData = "";
         if (gcs.length > 0) {
-            const gcData = gcs[0].data;
-
             canvasData += `<div class="heapChartParentMultiple"><canvas class="gcStatsChart"></canvas></div>`;
             canvasData += `<div class="allocChartParent heapChartNextLine"><canvas class="gcStatsTimeChart"></canvas></div>`;
+        }
 
-            // for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
-            //     canvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
-            //     canvasData += `<div class="allocChartParent heapChartNextLine"><canvas class="allocChart"></canvas></div>`;
-            // }
+        var totalCanvasData = "";
+        if (gcs.length > 0) {
+            totalCanvasData += `<div class="gcStats"><canvas id="totalGcStatsOverTime"></canvas></div>`;
+        }
 
-            // canvasData += `<div id="heapCharPadding"></div>`;
+        var perHeapCanvasData = "";
+        if (gcs.length > 0) {
+            const gcData = gcs[0].data;
+
+            for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
+                perHeapCanvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
+
+                if (innerIndex + 1 != gcData["Heaps"].length) {
+                    perHeapCanvasData += `<div class="allocChartParent heapChartNextLine"><canvas class="heapChart"></canvas></div>`;
+                }
+            }
         }
 
         const gcCountsByGen = JSON.stringify([gen0TimesInEachGc.length, gen1TimesInEachGc.length, gen2TimesInEachGc.length, gen3TimesInEachGc.length]);
@@ -333,6 +353,20 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
                 <div class="gcDataContainer">
                     ${canvasData}
+                    <script src="${chartjs}"></script>
+                </div>
+
+                <h2 class="divider">GC Usage Over Time</h2>
+
+                <div class="gcDataContainer" id="nextSpacer">
+                    ${totalCanvasData}
+                    <script src="${chartjs}"></script>
+                </div>
+
+                <h2 class="divider">Per Heap GC Usage Over Time</h2>
+
+                <div class="gcDataContainer">
+                    ${perHeapCanvasData}
                     <script src="${chartjs}"></script>
                 </div>
 

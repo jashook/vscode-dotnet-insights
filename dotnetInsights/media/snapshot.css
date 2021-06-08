@@ -212,6 +212,10 @@
     width: 100%;
 }
 
+#nextSpacer
+{
+    margin-top: 3em;
+}
 
 .heapChartParent {
     width: 100%;
