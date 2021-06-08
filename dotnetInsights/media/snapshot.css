@@ -2,13 +2,19 @@
     All divs are assumed to a line.
 */
 
-#timeInGc
+.divider
 {
     border-bottom: 1px solid black;
     padding-bottom: 2em;
     padding-top: 1em;
     font-size: 30px;
     text-align: center;
+}
+
+#summaryGcDiv
+{
+    text-align: center;
+    width: 100%
 }
 
 #gen0 
@@ -199,7 +205,41 @@
     margin: 1em;
 }
 
-#processMemoryStatistics {
+.gcStats
+{
+    height: 400px;
+    margin-top:  3em;
+    width: 100%;
+}
+
+
+.heapChartParent {
     width: 100%;
     height: 600px;
+}
+
+.heapChartParentMultiple {
+    width: 50%;
+    height: 600px;
+    display: inline-block;
+}
+
+.allocChartParent {
+    width: 50%;
+    height: 600px;
+    display: inline-block;
+}
+
+.heapChartNextLine {
+    width: 50%;
+    height: 600px;
+}
+
+#heapCharPadding {
+    margin-bottom: 16em;
+}
+
+.spacer
+{
+    margin-top: 3em;
 }

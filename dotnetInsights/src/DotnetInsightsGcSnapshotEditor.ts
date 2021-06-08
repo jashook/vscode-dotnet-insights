@@ -66,9 +66,15 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
         function updateWebview() {
             // There are no updates possible for this view type.
+
+            webviewPanel.webview.postMessage({
+                type: 'update'
+            });
         }
 
         webviewPanel.webview.html = this.getHtmlForWebview(gcDocument, webviewPanel.webview);
+
+        updateWebview();
     }
 
     private getHtmlForWebview(document: DotnetInsightsGcDocument, webview: vscode.Webview): string {
@@ -213,13 +219,16 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
         const styleResetUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'reset.css'));
         const styleVSCodeUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'vscode.css'));
 
+        const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'snapshotGcStats.js'));
+
         const chartjs = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', 'chart.js', 'dist', 'Chart.min.js'));
 
         var canvasData = "";
         if (gcs.length > 0) {
             const gcData = gcs[0].data;
 
-            canvasData += `<div id="processMemoryStatistics"><canvas class="processMemory"></canvas></div>`;
+            canvasData += `<div class="heapChartParentMultiple"><canvas class="gcStatsChart"></canvas></div>`;
+            canvasData += `<div class="allocChartParent heapChartNextLine"><canvas class="gcStatsTimeChart"></canvas></div>`;
 
             // for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
             //     canvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
@@ -228,6 +237,8 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
             // canvasData += `<div id="heapCharPadding"></div>`;
         }
+
+        const gcCountsByGen = JSON.stringify([gen0TimesInEachGc.length, gen1TimesInEachGc.length, gen2TimesInEachGc.length, gen3TimesInEachGc.length]);
 
         var gcsToSerialize = [] as GcData[];
         for (var index = 0; index < gcs.length; ++index) {
@@ -238,78 +249,95 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
         var hiddenData = JSON.stringify(gcsToSerialize);
 
+        var totalTimeInEachGc = [
+            gen0TotalTimeInGc,
+            gen1TotalTimeInGc,
+            gen2TotalTimeInGc,
+            gen3TotalTimeInGc
+        ];
+
+        const totalTimeInEachGcJson = JSON.stringify(totalTimeInEachGc);
+
         // Allocations
 
         var htmlToReturn = /* html */`
         <!DOCTYPE html>
         <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <!--
-            Use a content security policy to only allow loading images from https or from our extension directory,
-            and only allow scripts that have a specific nonce.
-            -->
-            
-            <!--<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">-->
-            
-            <meta http-equiv="Content-Security-Policy" 
-            content="default-src * vscode-resource: https: 'unsafe-inline' 'unsafe-eval';
-            script-src vscode-webview-resource: https: 'unsafe-inline' 'unsafe-eval';
-            style-src vscode-webview-resource: https: 'unsafe-inline';
-            img-src vscode-resource: https:;
-            connect-src vscode-resource: https: http:;">
+            <head>
+                <meta charset="UTF-8">
+                <!--
+                Use a content security policy to only allow loading images from https or from our extension directory,
+                and only allow scripts that have a specific nonce.
+                -->
+                
+                <!--<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">-->
+                
+                <meta http-equiv="Content-Security-Policy" 
+                content="default-src * vscode-resource: https: 'unsafe-inline' 'unsafe-eval';
+                script-src vscode-webview-resource: https: 'unsafe-inline' 'unsafe-eval';
+                style-src vscode-webview-resource: https: 'unsafe-inline';
+                img-src vscode-resource: https:;
+                connect-src vscode-resource: https: http:;">
 
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <link href="${styleResetUri}" rel="stylesheet" />
-            <link href="${mainUri}" rel="stylesheet" />
-            <link href="${styleVSCodeUri}" rel="stylesheet" />
-        </head>
-        <body>
-            <span style="display:none" id="hiddenData"><!--${hiddenData}--></span>
-            <h2 id="timeInGc">Time in GC</h2>
-            <div id="gen0">
-                <div>Gen 0</div>
-                <div>Count<span>${gen0TimesInEachGc.length}</span></div>
-                <div>Total<span>${gen0TotalTimeInGc} ms</span></div>
-                <div>Largest<span>${gen0HighestTimeInGc} ms</span></div>
-                <div>Smallest<span>${gen0LowestTimeInGc} ms</span></div>
-                <div>Average<span>${gen0AverageTimeInGc} ms</span></div>
-                <div>Median<span>${gen0MedianTimeInGc} ms</span></div>
-            </div>
-            <div id="gen1">
-                <div>Gen 1</div>
-                <div>Count<span>${gen1TimesInEachGc.length}</span></div>
-                <div>Total<span>${gen1TotalTimeInGc} ms</span></div>
-                <div>Largest<span>${gen1HighestTimeInGc} ms</span></div>
-                <div>Smallest<span>${gen1LowestTimeInGc} ms</span></div>
-                <div>Average<span>${gen1AverageTimeInGc} ms</span></div>
-                <div>Median<span>${gen1MedianTimeInGc} ms</span></div>
-            </div>
-            <div id="gen2">
-                <div>Gen 2</div>
-                <div>Count<span>${gen2TimesInEachGc.length}</span></div>
-                <div>Total<span>${gen2TotalTimeInGc} ms</span></div>
-                <div>Largest<span>${gen2HighestTimeInGc} ms</span></div>
-                <div>Smallest<span>${gen2LowestTimeInGc} ms</span></div>
-                <div>Average<span>${gen2AverageTimeInGc} ms</span></div>
-                <div>Median<span>${gen2MedianTimeInGc} ms</span></div>
-            </div>
-            <div id="LOH">
-                <div>LOH</div>
-                <div>Count<span>${gen3TimesInEachGc.length}</span></div>
-                <div>Total<span>${gen3TotalTimeInGc} ms</span></div>
-                <div>Largest<span>${gen3HighestTimeInGc} ms</span></div>
-                <div>Smallest<span>${gen3LowestTimeInGc} ms</span></div>
-                <div>Average<span>${gen3AverageTimeInGc} ms</span></div>
-                <div>Median<span>${gen3MedianTimeInGc} ms</span></div>
-            </div>
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <link href="${styleResetUri}" rel="stylesheet" />
+                <link href="${mainUri}" rel="stylesheet" />
+                <link href="${styleVSCodeUri}" rel="stylesheet" />
+            </head>
+            <body>
+                <span style="display:none" id="hiddenData"><!--${hiddenData}--></span>
+                <span style="display:none" id="gcCountsByGen"><!--${gcCountsByGen}--></span>
+                <span style="display:none" id="totalTimeInEachGcJson"><!--${totalTimeInEachGcJson}--></span>
 
-            <div id="gcDataContainer">
-                ${canvasData}
-                <script src="${chartjs}"></script>
-            </div>
+                <h2 class="divider">GC Summary</h2>
+                <div id="summaryGcDiv">
+                    <div id="gen0">
+                        <div>Gen 0</div>
+                        <div>Count<span>${gen0TimesInEachGc.length}</span></div>
+                        <div>Total<span>${gen0TotalTimeInGc} ms</span></div>
+                        <div>Largest<span>${gen0HighestTimeInGc} ms</span></div>
+                        <div>Smallest<span>${gen0LowestTimeInGc} ms</span></div>
+                        <div>Average<span>${gen0AverageTimeInGc} ms</span></div>
+                        <div>Median<span>${gen0MedianTimeInGc} ms</span></div>
+                    </div>
+                    <div id="gen1">
+                        <div>Gen 1</div>
+                        <div>Count<span>${gen1TimesInEachGc.length}</span></div>
+                        <div>Total<span>${gen1TotalTimeInGc} ms</span></div>
+                        <div>Largest<span>${gen1HighestTimeInGc} ms</span></div>
+                        <div>Smallest<span>${gen1LowestTimeInGc} ms</span></div>
+                        <div>Average<span>${gen1AverageTimeInGc} ms</span></div>
+                        <div>Median<span>${gen1MedianTimeInGc} ms</span></div>
+                    </div>
+                    <div id="gen2">
+                        <div>Gen 2</div>
+                        <div>Count<span>${gen2TimesInEachGc.length}</span></div>
+                        <div>Total<span>${gen2TotalTimeInGc} ms</span></div>
+                        <div>Largest<span>${gen2HighestTimeInGc} ms</span></div>
+                        <div>Smallest<span>${gen2LowestTimeInGc} ms</span></div>
+                        <div>Average<span>${gen2AverageTimeInGc} ms</span></div>
+                        <div>Median<span>${gen2MedianTimeInGc} ms</span></div>
+                    </div>
+                    <div id="LOH">
+                        <div>LOH</div>
+                        <div>Count<span>${gen3TimesInEachGc.length}</span></div>
+                        <div>Total<span>${gen3TotalTimeInGc} ms</span></div>
+                        <div>Largest<span>${gen3HighestTimeInGc} ms</span></div>
+                        <div>Smallest<span>${gen3LowestTimeInGc} ms</span></div>
+                        <div>Average<span>${gen3AverageTimeInGc} ms</span></div>
+                        <div>Median<span>${gen3MedianTimeInGc} ms</span></div>
+                    </div>
+                </div>
 
-        </body>
+                <div class="spacer"></div>
+
+                <div class="gcDataContainer">
+                    ${canvasData}
+                    <script src="${chartjs}"></script>
+                </div>
+
+                <script nonce="${nonce}" src="${scriptUri}"></script>
+            </body>
         </html>`;
 
         return htmlToReturn;
