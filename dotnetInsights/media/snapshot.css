@@ -1,0 +1,205 @@
+/*
+    All divs are assumed to a line.
+*/
+
+#timeInGc
+{
+    border-bottom: 1px solid black;
+    padding-bottom: 2em;
+    padding-top: 1em;
+    font-size: 30px;
+    text-align: center;
+}
+
+#gen0 
+{
+    background-color: rgba(72, 83, 136, .8);
+    border-radius: 10px;
+    display: inline-block;
+    margin: auto;
+    margin-bottom: 2em;
+    margin-right: 1em;
+    margin-top: 2em;
+    padding-bottom: 1em;
+    padding-top: 1em;
+    text-align: center;
+    width: 20em;
+}
+
+#gen0>div
+{
+    display: inline-block;
+    width: 4em;
+    font-size: 16px;
+    margin: 5px;
+    color: white;
+}
+
+#gen0>div:first-child
+{
+    display: block;
+    font-size: 20px;
+    width: 98%;
+    border-bottom: 1px dashed black;
+    margin-bottom: .5em;
+    padding-bottom: 1em;
+}
+
+#gen0>div:nth-child(2)
+{
+    position: relative;
+    top: -.9em;
+}
+
+#gen0>div>span
+{
+    display: block;
+    font-size: 12px !important;
+    margin: 1em;
+}
+
+#gen1
+{
+    background-color: rgba(96, 165, 69, 0.8);
+    border-radius: 10px;
+    display: inline-block;
+    margin: auto;
+    margin-bottom: 2em;
+    margin-right: 1em;
+    margin-top: 2em;
+    padding-bottom: 1em;
+    padding-top: 1em;
+    text-align: center;
+    width: 20em;
+}
+
+#gen1>div
+{
+    display: inline-block;
+    width: 4em;
+    font-size: 16px;
+    margin: 5px;
+    color: white;
+}
+
+#gen1>div:first-child
+{
+    display: block;
+    font-size: 20px;
+    width: 98%;
+    border-bottom: 1px dashed black;
+    margin-bottom: .5em;
+    padding-bottom: 1em;
+}
+
+#gen1>div:nth-child(2)
+{
+    position: relative;
+    top: -.9em;
+}
+
+#gen1>div>span
+{
+    display: block;
+    font-size: 12px !important;
+    margin: 1em;
+}
+
+#gen2
+{
+    background-color: rgba(141, 31, 95, 0.8);
+    border-radius: 10px;
+    display: inline-block;
+    margin: auto;
+    margin-bottom: 2em;
+    margin-right: 1em;
+    margin-top: 2em;
+    padding-bottom: 1em;
+    padding-top: 1em;
+    text-align: center;
+    width: 20em;
+}
+
+#gen2>div
+{
+    display: inline-block;
+    width: 4em;
+    font-size: 16px;
+    margin: 5px;
+    color: white;
+}
+
+#gen2>div:first-child
+{
+    display: block;
+    font-size: 20px;
+    width: 98%;
+    border-bottom: 1px dashed black;
+    margin-bottom: .5em;
+    padding-bottom: 1em;
+}
+
+#gen2>div:nth-child(2)
+{
+    position: relative;
+    top: -.9em;
+}
+
+#gen2>div>span
+{
+    display: block;
+    font-size: 12px !important;
+    margin: 1em;
+}
+
+#LOH
+{
+    background-color: rgba(201, 221, 84, 0.8);
+    border-radius: 10px;
+    display: inline-block;
+    margin: auto;
+    margin-bottom: 2em;
+    margin-right: 1em;
+    margin-top: 2em;
+    padding-bottom: 1em;
+    padding-top: 1em;
+    text-align: center;
+    width: 20em;
+}
+
+#LOH>div
+{
+    display: inline-block;
+    width: 4em;
+    font-size: 16px;
+    margin: 5px;
+    color: black;
+}
+
+#LOH>div:first-child
+{
+    display: block;
+    font-size: 20px;
+    width: 98%;
+    border-bottom: 1px dashed black;
+    margin-bottom: .5em;
+    padding-bottom: 1em;
+}
+
+#LOH>div:nth-child(2)
+{
+    position: relative;
+    top: -.9em;
+}
+
+#LOH>div>span
+{
+    display: block;
+    font-size: 12px !important;
+    margin: 1em;
+}
+
+#processMemoryStatistics {
+    width: 100%;
+    height: 600px;
+}

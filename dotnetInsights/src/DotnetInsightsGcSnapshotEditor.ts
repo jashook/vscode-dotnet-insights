@@ -120,46 +120,207 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
         const gcs = gcData["gcData"];
 
+        let getValues = (generation: number) : [number[], number[]] => {
+            var totalTimeInGc: number = 0.0;
+            var timesInEachGc = [];
+            var averageTimeInGc: number = 0;
+            var medianTimeInGc = 0;
+            var highestTimeInGc = 0;
+            var lowestTimeInGc = 0;
+
+            for (var index = 0; index < gcs.length; ++index) {
+                if (gcs[index]["data"]["generation"] == generation) {
+                    timesInEachGc.push(parseFloat(gcs[index]["data"]["PauseDurationMSec"]));
+                }
+            }
+    
+            // Gcs over 50ms
+            var expensiveGcs = [];
+            for (var index = 0; index < timesInEachGc.length; ++index) {
+                if (timesInEachGc[index] > 50) {
+                    expensiveGcs.push(gcs[index]["data"]);
+                }
+            }
+    
+            lowestTimeInGc = timesInEachGc[0];
+            for (var index = 0; index < timesInEachGc.length; ++index) {
+                totalTimeInGc += timesInEachGc[index];
+    
+                if (timesInEachGc[index] < lowestTimeInGc) {
+                    lowestTimeInGc = timesInEachGc[index];
+                }
+    
+                if (timesInEachGc[index] > highestTimeInGc) {
+                    highestTimeInGc = timesInEachGc[index];
+                }
+            }
+    
+            timesInEachGc.sort();
+            var half = Math.floor(timesInEachGc.length / 2);
+            medianTimeInGc = timesInEachGc[half];
+    
+            averageTimeInGc = totalTimeInGc / timesInEachGc.length;
+
+            if (timesInEachGc.length == 0) {
+                totalTimeInGc = 0;
+                timesInEachGc = [];
+                averageTimeInGc = 0;
+                medianTimeInGc = 0;
+                highestTimeInGc = 0;
+                lowestTimeInGc = 0;
+            }
+
+            return [timesInEachGc, [totalTimeInGc, averageTimeInGc, medianTimeInGc, highestTimeInGc, lowestTimeInGc]];
+        };
+
+        let gen0Numbers = getValues(0);
+        let gen1Numbers = getValues(1);
+        let gen2Numbers = getValues(2);
+        let gen3Numbers = getValues(3);
+
         // Time in GC.
-        var totalTimeInGc: number = 0.0;
-        var timesInEachGc = [];
-        var averageTimeInGc = 0;
-        var medianTimeInGc = 0;
-        var highestTimeInGc = 0;
-        var lowestTimeInGc = 0;
+        var gen0TotalTimeInGc = gen0Numbers[1][0].toFixed(2);
+        var gen0TimesInEachGc = gen0Numbers[0];
+        var gen0AverageTimeInGc = gen0Numbers[1][1].toFixed(2);
+        var gen0MedianTimeInGc = gen0Numbers[1][2].toFixed(2);
+        var gen0HighestTimeInGc = gen0Numbers[1][3].toFixed(2);
+        var gen0LowestTimeInGc = gen0Numbers[1][4].toFixed(2);
+
+        var gen1TotalTimeInGc = gen1Numbers[1][0].toFixed(2);
+        var gen1TimesInEachGc = gen1Numbers[0];
+        var gen1AverageTimeInGc = gen1Numbers[1][1].toFixed(2);
+        var gen1MedianTimeInGc = gen1Numbers[1][2].toFixed(2);
+        var gen1HighestTimeInGc = gen1Numbers[1][3].toFixed(2);
+        var gen1LowestTimeInGc = gen1Numbers[1][4].toFixed(2);
+
+        var gen2TotalTimeInGc = gen2Numbers[1][0].toFixed(2);
+        var gen2TimesInEachGc = gen2Numbers[0];
+        var gen2AverageTimeInGc = gen2Numbers[1][1].toFixed(2);
+        var gen2MedianTimeInGc = gen2Numbers[1][2].toFixed(2);
+        var gen2HighestTimeInGc = gen2Numbers[1][3].toFixed(2);
+        var gen2LowestTimeInGc = gen2Numbers[1][4].toFixed(2);
+
+        var gen3TotalTimeInGc = gen3Numbers[1][0].toFixed(2);
+        var gen3TimesInEachGc = gen3Numbers[0];
+        var gen3AverageTimeInGc = gen3Numbers[1][1].toFixed(2);
+        var gen3MedianTimeInGc = gen3Numbers[1][2].toFixed(2);
+        var gen3HighestTimeInGc = gen3Numbers[1][3].toFixed(2);
+        var gen3LowestTimeInGc = gen3Numbers[1][4].toFixed(2);
+
+        const nonce = this.getNonce();
+
+        const mainUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'snapshot.css'));
+        const styleResetUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'reset.css'));
+        const styleVSCodeUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'vscode.css'));
+
+        const chartjs = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', 'chart.js', 'dist', 'Chart.min.js'));
+
+        var canvasData = "";
+        if (gcs.length > 0) {
+            const gcData = gcs[0].data;
+
+            canvasData += `<div id="processMemoryStatistics"><canvas class="processMemory"></canvas></div>`;
+
+            // for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
+            //     canvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
+            //     canvasData += `<div class="allocChartParent heapChartNextLine"><canvas class="allocChart"></canvas></div>`;
+            // }
+
+            // canvasData += `<div id="heapCharPadding"></div>`;
+        }
+
+        var gcsToSerialize = [] as GcData[];
         for (var index = 0; index < gcs.length; ++index) {
-            timesInEachGc.push(parseFloat(gcs[index]["data"]["PauseDurationMSec"]));
+            var gcDataNew = new GcData(gcs[index]);
+
+            gcsToSerialize.push(gcDataNew);
         }
 
-        // Gcs over 50ms
-        var expensiveGcs = [];
-        for (var index = 0; index < gcs.length; ++index) {
-            if (parseFloat(gcs[index]["data"]["PauseDurationMSec"]) > 50) {
-                expensiveGcs.push(gcs[index]["data"]);
-            }
-        }
-
-        lowestTimeInGc = timesInEachGc[0];
-        for (var index = 0; index < timesInEachGc.length; ++index) {
-            totalTimeInGc += timesInEachGc[index];
-
-            if (timesInEachGc[index] < lowestTimeInGc) {
-                lowestTimeInGc = timesInEachGc[index];
-            }
-
-            if (timesInEachGc[index] > highestTimeInGc) {
-                highestTimeInGc = timesInEachGc[index];
-            }
-        }
-
-        timesInEachGc.sort();
-        var half = Math.floor(timesInEachGc.length / 2);
-        medianTimeInGc = timesInEachGc[half];
-
-        averageTimeInGc = totalTimeInGc / timesInEachGc.length;
+        var hiddenData = JSON.stringify(gcsToSerialize);
 
         // Allocations
 
-        return defaultHtmlReturn;
+        var htmlToReturn = /* html */`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <!--
+            Use a content security policy to only allow loading images from https or from our extension directory,
+            and only allow scripts that have a specific nonce.
+            -->
+            
+            <!--<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src ${webview.cspSource}; style-src ${webview.cspSource}; script-src 'nonce-${nonce}';">-->
+            
+            <meta http-equiv="Content-Security-Policy" 
+            content="default-src * vscode-resource: https: 'unsafe-inline' 'unsafe-eval';
+            script-src vscode-webview-resource: https: 'unsafe-inline' 'unsafe-eval';
+            style-src vscode-webview-resource: https: 'unsafe-inline';
+            img-src vscode-resource: https:;
+            connect-src vscode-resource: https: http:;">
+
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <link href="${styleResetUri}" rel="stylesheet" />
+            <link href="${mainUri}" rel="stylesheet" />
+            <link href="${styleVSCodeUri}" rel="stylesheet" />
+        </head>
+        <body>
+            <span style="display:none" id="hiddenData"><!--${hiddenData}--></span>
+            <h2 id="timeInGc">Time in GC</h2>
+            <div id="gen0">
+                <div>Gen 0</div>
+                <div>Count<span>${gen0TimesInEachGc.length}</span></div>
+                <div>Total<span>${gen0TotalTimeInGc} ms</span></div>
+                <div>Largest<span>${gen0HighestTimeInGc} ms</span></div>
+                <div>Smallest<span>${gen0LowestTimeInGc} ms</span></div>
+                <div>Average<span>${gen0AverageTimeInGc} ms</span></div>
+                <div>Median<span>${gen0MedianTimeInGc} ms</span></div>
+            </div>
+            <div id="gen1">
+                <div>Gen 1</div>
+                <div>Count<span>${gen1TimesInEachGc.length}</span></div>
+                <div>Total<span>${gen1TotalTimeInGc} ms</span></div>
+                <div>Largest<span>${gen1HighestTimeInGc} ms</span></div>
+                <div>Smallest<span>${gen1LowestTimeInGc} ms</span></div>
+                <div>Average<span>${gen1AverageTimeInGc} ms</span></div>
+                <div>Median<span>${gen1MedianTimeInGc} ms</span></div>
+            </div>
+            <div id="gen2">
+                <div>Gen 2</div>
+                <div>Count<span>${gen2TimesInEachGc.length}</span></div>
+                <div>Total<span>${gen2TotalTimeInGc} ms</span></div>
+                <div>Largest<span>${gen2HighestTimeInGc} ms</span></div>
+                <div>Smallest<span>${gen2LowestTimeInGc} ms</span></div>
+                <div>Average<span>${gen2AverageTimeInGc} ms</span></div>
+                <div>Median<span>${gen2MedianTimeInGc} ms</span></div>
+            </div>
+            <div id="LOH">
+                <div>LOH</div>
+                <div>Count<span>${gen3TimesInEachGc.length}</span></div>
+                <div>Total<span>${gen3TotalTimeInGc} ms</span></div>
+                <div>Largest<span>${gen3HighestTimeInGc} ms</span></div>
+                <div>Smallest<span>${gen3LowestTimeInGc} ms</span></div>
+                <div>Average<span>${gen3AverageTimeInGc} ms</span></div>
+                <div>Median<span>${gen3MedianTimeInGc} ms</span></div>
+            </div>
+
+            <div id="gcDataContainer">
+                ${canvasData}
+                <script src="${chartjs}"></script>
+            </div>
+
+        </body>
+        </html>`;
+
+        return htmlToReturn;
+    }
+
+    getNonce() {
+        let text = '';
+        const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        for (let i = 0; i < 32; i++) {
+            text += possible.charAt(Math.floor(Math.random() * possible.length));
+        }
+        return text;
     }
 }

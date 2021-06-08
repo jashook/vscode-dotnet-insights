@@ -290,22 +290,6 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
 
                 canvasData += `<div id="processMemoryStatistics"><canvas class="processMemory"></canvas></div>`;
 
-                // if (gcData["Heaps"].length > 1) {
-                //     for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
-                //         const heap = gcData["Heaps"][innerIndex];
-
-                //         if (innerIndex % 2 == 0) {
-                //             canvasData += `<div class="heapChartParentMultiple heapChartNextLine"><canvas class="heapChart"></canvas></div>`;
-                //         }
-                //         else {
-                //             canvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
-                //         }
-                //     }
-                // }
-                // else {
-                //     canvasData += `<div class="heapChartParent"><canvas class="heapChart"></canvas></div>`;
-                // }
-
                 for (var innerIndex = 0; innerIndex < gcData["Heaps"].length; ++innerIndex) {
                     canvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
                     canvasData += `<div class="allocChartParent heapChartNextLine"><canvas class="allocChart"></canvas></div>`;
