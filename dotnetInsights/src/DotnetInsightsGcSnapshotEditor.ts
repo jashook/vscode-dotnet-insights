@@ -87,9 +87,15 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
     private gcDataFromXml(input: any): any {
         var gcData = [] as GcData[];
 
+        var processName = "";
+        var processCommandLine = "";
+
         try {
             const processInfo = input["GCProcess"];
             const gcEvents = processInfo["GCEvents"][0]["GCEvent"];
+
+            processName = processInfo["$"]["Process"];
+            processCommandLine = processInfo["$"]["CommandLine"];
 
             var gcDataToAdd = [] as any[];
             for (var index = 0; index < gcEvents.length; ++index) {
@@ -166,7 +172,12 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                 console.assert(currentGc["PerHeapHistories"][0]["PerHeapHistory"].length == numHeaps);
 
                 var currentHeapData : any = {
-                    "Generations": []
+                    "Generations": {
+                        0: null,
+                        1: null,
+                        2: null,
+                        3: null
+                    }
                 };
 
                 for (var heapIndex = 0; heapIndex < currentGc["PerHeapHistories"][0]["PerHeapHistory"].length; ++heapIndex) {
@@ -196,7 +207,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                         const sizeBefore = parseInt(currentGenData["SizeBefore"].replace(',',''));
                         const survRate = parseInt(currentGenData["SurvRate"].replace(',',''));
 
-                        currentHeapData["Generations"].push({
+                        currentHeapData["Generations"][generationIndex] = {
                             "Fragmentation": fragmentation,
                             "FreeListSpaceAfter": freeListSpaceAfter * kb,
                             "FreeListSpaceBefore" : freeListSpaceBefore * kb,
@@ -213,7 +224,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                             "SizeAfter" : sizeAfter * kb,
                             "SizeBefore" : sizeBefore * kb,
                             "SurvRate" : survRate * kb
-                        });
+                        };
                     }
 
                     data["Heaps"].push(currentHeapData);
@@ -223,7 +234,8 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
             }
 
             return {
-                "gcData": gcDataToAdd
+                "gcData": gcDataToAdd,
+                "processName": processName
             };
         }
         catch (e) {
@@ -295,6 +307,232 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
         // want from what we were provided.
 
         const gcs = gcData["gcData"];
+        
+        let getAllocationAmount = (generationToUse?: number | undefined) => {
+            try {
+                for (var index = 0; index < gcs.length; ++index) {
+
+                    if (generationToUse == undefined) {
+                        for (var heapIndex = 0; heapIndex < currentGc["Heaps"].length; ++heapIndex) {
+                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][0]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replace(',', ''));
+                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][1]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replace(',', ''));
+                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][2]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replace(',', ''));
+                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][3]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replace(',', ''));
+                        }
+                    }
+                    else {
+                        for (var heapIndex = 0; heapIndex < currentGc["Heaps"].length; ++heapIndex) {
+                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][generationToUse]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replace(',', ''));
+                        }
+                    }
+                }
+            }
+            catch (e) {
+
+            }
+
+            var kb = 1024 * 1024;
+            var totalAllocations = 0;
+            var allocationsBetweenGc = [];
+
+            for (var index = 0; index < gcs.length; ++index ){
+                var currentGc = gcs[index]["data"];
+
+                var newAllocAmount = 0;
+
+                if (generationToUse == undefined) {
+                    for (var heapIndex = 0; heapIndex < currentGc["Heaps"].length; ++heapIndex) {
+                        newAllocAmount += currentGc["Heaps"][heapIndex]["Generations"][0]["NewAllocation"] / kb;
+                        newAllocAmount += currentGc["Heaps"][heapIndex]["Generations"][1]["NewAllocation"] / kb;
+                        newAllocAmount += currentGc["Heaps"][heapIndex]["Generations"][2]["NewAllocation"] / kb;
+                        newAllocAmount += currentGc["Heaps"][heapIndex]["Generations"][3]["NewAllocation"] / kb;
+                    }
+                }
+                else {
+                    for (var heapIndex = 0; heapIndex < currentGc["Heaps"].length; ++heapIndex) {
+                        newAllocAmount += currentGc["Heaps"][heapIndex]["Generations"][generationToUse]["NewAllocation"] / kb;
+                    }
+                }
+
+                totalAllocations += newAllocAmount;
+                allocationsBetweenGc.push(newAllocAmount);
+            }
+
+            var maxAllocationAmountBetweenGcs = 0;
+            var meanAllocationBetweenGcs = 0;
+            var medianAllocationsBetweenGcs = 0;
+            var lowestAllocationAmountBetweenGcs = allocationsBetweenGc[0];
+
+            for (var index = 0; index < allocationsBetweenGc.length; ++index) {
+                if (allocationsBetweenGc[index] > maxAllocationAmountBetweenGcs) {
+                    maxAllocationAmountBetweenGcs = allocationsBetweenGc[index];
+                }
+                if (allocationsBetweenGc[index] < lowestAllocationAmountBetweenGcs) {
+                    lowestAllocationAmountBetweenGcs = allocationsBetweenGc[index];
+                }
+            }
+
+            allocationsBetweenGc.sort();
+            var half = Math.floor(allocationsBetweenGc.length / 2);
+            medianAllocationsBetweenGcs = allocationsBetweenGc[half];
+
+            meanAllocationBetweenGcs = totalAllocations / allocationsBetweenGc.length;
+
+            return [allocationsBetweenGc, [totalAllocations, meanAllocationBetweenGcs, medianAllocationsBetweenGcs, maxAllocationAmountBetweenGcs, lowestAllocationAmountBetweenGcs]];
+        };
+
+        let getValues = (generation?: number | undefined) : [number[], number[]] => {
+            var totalTimeInGc: number = 0.0;
+            var timesInEachGc = [];
+            var averageTimeInGc: number = 0;
+            var medianTimeInGc = 0;
+            var highestTimeInGc = 0;
+            var lowestTimeInGc = 0;
+
+            for (var index = 0; index < gcs.length; ++index) {
+                if (generation != undefined) {
+                    if (gcs[index]["data"]["generation"] == generation) {
+                        timesInEachGc.push(parseFloat(gcs[index]["data"]["PauseDurationMSec"]));
+                    }
+                }
+                else {
+                    timesInEachGc.push(parseFloat(gcs[index]["data"]["PauseDurationMSec"]));
+                }
+            }
+    
+            // Gcs over 50ms
+            var expensiveGcs = [];
+            for (var index = 0; index < timesInEachGc.length; ++index) {
+                if (timesInEachGc[index] > 50) {
+                    expensiveGcs.push(gcs[index]["data"]);
+                }
+            }
+    
+            lowestTimeInGc = timesInEachGc[0];
+            for (var index = 0; index < timesInEachGc.length; ++index) {
+                totalTimeInGc += timesInEachGc[index];
+    
+                if (timesInEachGc[index] < lowestTimeInGc) {
+                    lowestTimeInGc = timesInEachGc[index];
+                }
+    
+                if (timesInEachGc[index] > highestTimeInGc) {
+                    highestTimeInGc = timesInEachGc[index];
+                }
+            }
+    
+            timesInEachGc.sort();
+            var half = Math.floor(timesInEachGc.length / 2);
+            medianTimeInGc = timesInEachGc[half];
+    
+            averageTimeInGc = totalTimeInGc / timesInEachGc.length;
+
+            if (timesInEachGc.length == 0) {
+                totalTimeInGc = 0;
+                timesInEachGc = [];
+                averageTimeInGc = 0;
+                medianTimeInGc = 0;
+                highestTimeInGc = 0;
+                lowestTimeInGc = 0;
+            }
+
+            return [timesInEachGc, [totalTimeInGc, averageTimeInGc, medianTimeInGc, highestTimeInGc, lowestTimeInGc]];
+        };
+
+        var totalNumbers = getValues();
+
+        let gen0Numbers = getValues(0);
+        let gen1Numbers = getValues(1);
+        let gen2Numbers = getValues(2);
+
+        var allocationAmountTotal = getAllocationAmount();
+        var allocationAmountGen0 = getAllocationAmount(0);
+        var allocationAmountGen1 = getAllocationAmount(1);
+        var allocationAmountGen2 = getAllocationAmount(2);
+        var allocationAmountLOH = getAllocationAmount(3);
+
+        var dataValue = "kb";
+
+        var totalTotalValue = "mb";
+
+        if (allocationAmountTotal[1][0].toFixed(2).length > 8) {
+            dataValue = "mb";
+
+            allocationAmountTotal[1][0] /= 1024;
+            allocationAmountTotal[1][1] /= 1024;
+            allocationAmountTotal[1][2] /= 1024;
+            allocationAmountTotal[1][3] /= 1024;
+            allocationAmountTotal[1][4] /= 1024;
+
+            allocationAmountGen0[1][0] /= 1024;
+            allocationAmountGen0[1][1] /= 1024;
+            allocationAmountGen0[1][2] /= 1024;
+            allocationAmountGen0[1][3] /= 1024;
+            allocationAmountGen0[1][4] /= 1024;
+
+            allocationAmountGen1[1][0] /= 1024;
+            allocationAmountGen1[1][1] /= 1024;
+            allocationAmountGen1[1][2] /= 1024;
+            allocationAmountGen1[1][3] /= 1024;
+            allocationAmountGen1[1][4] /= 1024;
+
+            allocationAmountGen2[1][0] /= 1024;
+            allocationAmountGen2[1][1] /= 1024;
+            allocationAmountGen2[1][2] /= 1024;
+            allocationAmountGen2[1][3] /= 1024;
+            allocationAmountGen2[1][4] /= 1024;
+
+            allocationAmountLOH[1][0] /= 1024;
+            allocationAmountLOH[1][1] /= 1024;
+            allocationAmountLOH[1][2] /= 1024;
+            allocationAmountLOH[1][3] /= 1024;
+            allocationAmountLOH[1][4] /= 1024;
+        }
+        
+        if (allocationAmountTotal[1][0].toFixed(2).length > 8) {
+            totalTotalValue = "gb";
+
+            allocationAmountTotal[1][0] /= 1024;
+            allocationAmountGen0[1][0] /= 1024;
+            allocationAmountGen1[1][0] /= 1024;
+            allocationAmountGen2[1][0] /= 1024;
+            allocationAmountLOH[1][0] /= 1024;
+        }
+
+        var allocTotal = allocationAmountTotal[1][0].toFixed(2);
+        var allocAverage = allocationAmountTotal[1][1].toFixed(2);
+        var allocMedian = allocationAmountTotal[1][2].toFixed(2);
+        var allocHighest = allocationAmountTotal[1][3].toFixed(2);
+        var allocLowest = allocationAmountTotal[1][4].toFixed(2);
+        var allocByGc = allocationAmountTotal[0];
+
+        var allocGen0Total = allocationAmountGen0[1][0].toFixed(2);
+        var allocGen0Average = allocationAmountGen0[1][1].toFixed(2);
+        var allocGen0Median = allocationAmountGen0[1][2].toFixed(2);
+        var allocGen0Highest = allocationAmountGen0[1][3].toFixed(2);
+        var allocGen0Lowest = allocationAmountGen0[1][4].toFixed(2);
+        var allocGen0ByGc = allocationAmountGen0[0];
+
+        var allocGen1Total = allocationAmountGen1[1][0].toFixed(2);
+        var allocGen1Average = allocationAmountGen1[1][1].toFixed(2);
+        var allocGen1Median = allocationAmountGen1[1][2].toFixed(2);
+        var allocGen1Highest = allocationAmountGen1[1][3].toFixed(2);
+        var allocGen1Lowest = allocationAmountGen1[1][4].toFixed(2);
+        var allocGen1ByGc = allocationAmountGen1[0];
+
+        var allocGen2Total = allocationAmountGen2[1][0].toFixed(2);
+        var allocGen2Average = allocationAmountGen2[1][1].toFixed(2);
+        var allocGen2Median = allocationAmountGen2[1][2].toFixed(2);
+        var allocGen2Highest = allocationAmountGen2[1][3].toFixed(2);
+        var allocGen2Lowest = allocationAmountGen2[1][4].toFixed(2);
+        var allocGen2ByGc = allocationAmountGen2[0];
+
+        var allocLOHTotal = allocationAmountLOH[1][0].toFixed(2);
+        var allocLOHAverage = allocationAmountLOH[1][1].toFixed(2);
+        var allocLOHMedian = allocationAmountLOH[1][2].toFixed(2);
+        var allocLOHHighest = allocationAmountLOH[1][3].toFixed(2);
+        var allocLOHLowest = allocationAmountLOH[1][4].toFixed(2);
+        var allocLOHByGc = allocationAmountLOH[0];
 
         let getValues = (generation: number) : [number[], number[]] => {
             var totalTimeInGc: number = 0.0;
@@ -354,6 +592,14 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
         let gen2Numbers = getValues(2);
 
         // Time in GC.
+
+        var totalTimeInGc = totalNumbers[1][0].toFixed(2);
+        var averageTimeInGc = totalNumbers[1][1].toFixed(2);
+        var medianTimeInGc = totalNumbers[1][2].toFixed(2);
+        var highestTimeInGc = totalNumbers[1][3].toFixed(2);
+        var lowestTimeInGc = totalNumbers[1][4].toFixed(2);
+        var timeinsideEachGc = totalNumbers[0];
+
         var gen0TotalTimeInGc = gen0Numbers[1][0].toFixed(2);
         var gen0TimesInEachGc = gen0Numbers[0];
         var gen0AverageTimeInGc = gen0Numbers[1][1].toFixed(2);
@@ -418,7 +664,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
             gcsToSerialize.push(gcDataNew);
         }
-
+      
         var hiddenData = null;
 
         try {
@@ -466,10 +712,66 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                 <span style="display:none" id="hiddenData"><!--${hiddenData}--></span>
                 <span style="display:none" id="gcCountsByGen"><!--${gcCountsByGen}--></span>
                 <span style="display:none" id="totalTimeInEachGcJson"><!--${totalTimeInEachGcJson}--></span>
+                <h2 class="divider">${gcData["processName"]}</h2>
 
-                <h2 class="divider">GC Summary</h2>
-                <div id="summaryGcDiv">
-                    <div id="gen0">
+                <div id="timeSummary">Allocation Amount by Generation</div>
+
+                <div class="summaryGcDiv">
+                    <div class="total">
+                        <div>Total</div>
+                        <div>Total<span>${allocTotal} ${totalTotalValue}</span></div>
+                        <div>Largest<span>${allocHighest} ${dataValue}</span></div>
+                        <div>Smallest<span>${allocLowest} ${dataValue}</span></div>
+                        <div>Average<span>${allocAverage} ${dataValue}</span></div>
+                        <div>Median<span>${allocMedian} ${dataValue}</span></div>
+                    </div>
+                    <div class="gen0">
+                        <div>Gen 0</div>
+                        <div>Total<span>${allocGen0Total} ${totalTotalValue}</span></div>
+                        <div>Largest<span>${allocGen0Highest} ${dataValue}</span></div>
+                        <div>Smallest<span>${allocGen0Lowest} ${dataValue}</span></div>
+                        <div>Average<span>${allocGen0Average} ${dataValue}</span></div>
+                        <div>Median<span>${allocGen0Median} ${dataValue}</span></div>
+                    </div>
+                    <div class="gen1">
+                        <div>Gen 1</div>
+                        <div>Total<span>${allocGen1Total} ${totalTotalValue}</span></div>
+                        <div>Largest<span>${allocGen1Highest} ${dataValue}</span></div>
+                        <div>Smallest<span>${allocGen1Lowest} ${dataValue}</span></div>
+                        <div>Average<span>${allocGen1Average} ${dataValue}</span></div>
+                        <div>Median<span>${allocGen1Median} ${dataValue}</span></div>
+                    </div>
+                    <div class="gen2">
+                        <div>Gen 2</div>
+                        <div>Total<span>${allocGen2Total} ${totalTotalValue}</span></div>
+                        <div>Largest<span>${allocGen2Highest} ${dataValue}</span></div>
+                        <div>Smallest<span>${allocGen2Lowest} ${dataValue}</span></div>
+                        <div>Average<span>${allocGen2Average} ${dataValue}</span></div>
+                        <div>Median<span>${allocGen2Median} ${dataValue}</span></div>
+                    </div>
+                    <div class="loh">
+                        <div>LOH</div>
+                        <div>Total<span>${allocLOHTotal} ${totalTotalValue}</span></div>
+                        <div>Largest<span>${allocLOHHighest} ${dataValue}</span></div>
+                        <div>Smallest<span>${allocLOHLowest} ${dataValue}</span></div>
+                        <div>Average<span>${allocLOHAverage} ${dataValue}</span></div>
+                        <div>Median<span>${allocLOHMedian} ${dataValue}</span></div>
+                    </div>
+                </div>
+
+                <div id="timeSummary">Time Spent by Generation</div>
+
+                <div class="summaryGcDiv time">
+                    <div class="total">
+                        <div>Total</div>
+                        <div>Count<span>${timeinsideEachGc.length}</span></div>
+                        <div>Total<span>${totalTimeInGc} ms</span></div>
+                        <div>Largest<span>${highestTimeInGc} ms</span></div>
+                        <div>Smallest<span>${lowestTimeInGc} ms</span></div>
+                        <div>Average<span>${averageTimeInGc} ms</span></div>
+                        <div>Median<span>${medianTimeInGc} ms</span></div>
+                    </div>
+                    <div class="gen0">
                         <div>Gen 0</div>
                         <div>Count<span>${gen0TimesInEachGc.length}</span></div>
                         <div>Total<span>${gen0TotalTimeInGc} ms</span></div>
@@ -478,7 +780,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                         <div>Average<span>${gen0AverageTimeInGc} ms</span></div>
                         <div>Median<span>${gen0MedianTimeInGc} ms</span></div>
                     </div>
-                    <div id="gen1">
+                    <div class="gen1">
                         <div>Gen 1</div>
                         <div>Count<span>${gen1TimesInEachGc.length}</span></div>
                         <div>Total<span>${gen1TotalTimeInGc} ms</span></div>
@@ -487,7 +789,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                         <div>Average<span>${gen1AverageTimeInGc} ms</span></div>
                         <div>Median<span>${gen1MedianTimeInGc} ms</span></div>
                     </div>
-                    <div id="gen2">
+                    <div class="gen2">
                         <div>Gen 2</div>
                         <div>Count<span>${gen2TimesInEachGc.length}</span></div>
                         <div>Total<span>${gen2TotalTimeInGc} ms</span></div>

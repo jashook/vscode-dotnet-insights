@@ -9,9 +9,14 @@ var allocationDatasets = {};
 
     // @ts-ignore
     const vscode = acquireVsCodeApi();
-
+  
+    console.time("gcParsing");
     var gcs = JSON.parse(document.getElementById("hiddenData").innerHTML.slice(4, document.getElementById("hiddenData").innerHTML.length - 3));
+    console.timeEnd("gcParsing");
+
+    console.time("gcCountsByGenParsing");
     var gcCountsByGen = JSON.parse(document.getElementById("gcCountsByGen").innerHTML.slice(4, document.getElementById("gcCountsByGen").innerHTML.length - 3));
+    console.timeEnd("gcCountsByGenParsing");
 
     var totalTimeInEachGcJson = JSON.parse(document.getElementById("totalTimeInEachGcJson").innerHTML.slice(4, document.getElementById("totalTimeInEachGcJson").innerHTML.length - 3));
 
@@ -177,23 +182,11 @@ var allocationDatasets = {};
             var gcData = gcs[index]["data"];
 
             var currentHeap = gcData["Heaps"][passedHeapIndex]["Generations"];
-            console.log(currentHeap);
-            for (var heapIndex = 0; heapIndex < currentHeap.length; ++heapIndex) {
-                var currentGeneration = currentHeap[heapIndex];
-
-                if (heapIndex == 0) {
-                    gen0DataSet.push(currentGeneration["SizeBefore"] / kb);
-                }
-                else if(heapIndex == 1) {
-                    gen1DataSet.push(currentGeneration["SizeBefore"] / kb);
-                }
-                else if(heapIndex == 2) {
-                    gen2DataSet.push(currentGeneration["SizeBefore"] / kb);
-                }
-                else if(heapIndex == 3) {
-                    lohDataSet.push(currentGeneration["SizeBefore"] / kb);
-                }
-            }
+            
+            gen0DataSet.push(currentHeap[0]["SizeBefore"] / kb);
+            gen1DataSet.push(currentHeap[1]["SizeBefore"] / kb);
+            gen2DataSet.push(currentHeap[2]["SizeBefore"] / kb);
+            lohDataSet.push(currentHeap[3]["SizeBefore"] / kb);
         }
 
         var ctx = heapCharts[passedHeapIndex];

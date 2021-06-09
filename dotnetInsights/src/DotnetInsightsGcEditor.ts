@@ -457,7 +457,10 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
 
                 var dataToWrite = {
                     "gcData": gcData,
-                    "allocations": allocations
+                    "allocations": allocations,
+                    "processName": processInfo?.processName,
+                    "processCommandLine": processInfo?.processCommandLine,
+                    "processId": processInfo?.processId
                 };
 
                 const jsonString = JSON.stringify(dataToWrite);
