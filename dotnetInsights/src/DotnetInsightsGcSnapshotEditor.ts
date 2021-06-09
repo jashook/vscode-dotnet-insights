@@ -166,7 +166,12 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                 console.assert(currentGc["PerHeapHistories"][0]["PerHeapHistory"].length == numHeaps);
 
                 var currentHeapData : any = {
-                    "Generations": []
+                    "Generations": {
+                        0: null,
+                        1: null,
+                        2: null,
+                        3: null
+                    }
                 };
 
                 for (var heapIndex = 0; heapIndex < currentGc["PerHeapHistories"][0]["PerHeapHistory"].length; ++heapIndex) {
@@ -196,7 +201,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                         const sizeBefore = parseInt(currentGenData["SizeBefore"].replace(',',''));
                         const survRate = parseInt(currentGenData["SurvRate"].replace(',',''));
 
-                        currentHeapData["Generations"].push({
+                        currentHeapData["Generations"][generationIndex] = {
                             "Fragmentation": fragmentation,
                             "FreeListSpaceAfter": freeListSpaceAfter * kb,
                             "FreeListSpaceBefore" : freeListSpaceBefore * kb,
@@ -213,7 +218,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                             "SizeAfter" : sizeAfter * kb,
                             "SizeBefore" : sizeBefore * kb,
                             "SurvRate" : survRate * kb
-                        });
+                        };
                     }
 
                     data["Heaps"].push(currentHeapData);
