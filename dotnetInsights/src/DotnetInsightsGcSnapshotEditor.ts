@@ -534,6 +534,63 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
         var allocLOHLowest = allocationAmountLOH[1][4].toFixed(2);
         var allocLOHByGc = allocationAmountLOH[0];
 
+        let getValues = (generation: number) : [number[], number[]] => {
+            var totalTimeInGc: number = 0.0;
+            var timesInEachGc = [];
+            var averageTimeInGc: number = 0;
+            var medianTimeInGc = 0;
+            var highestTimeInGc = 0;
+            var lowestTimeInGc = 0;
+
+            for (var index = 0; index < gcs.length; ++index) {
+                if (gcs[index]["data"]["generation"] == generation) {
+                    timesInEachGc.push(parseFloat(gcs[index]["data"]["PauseDurationMSec"]));
+                }
+            }
+    
+            // Gcs over 50ms
+            var expensiveGcs = [];
+            for (var index = 0; index < timesInEachGc.length; ++index) {
+                if (timesInEachGc[index] > 50) {
+                    expensiveGcs.push(gcs[index]["data"]);
+                }
+            }
+    
+            lowestTimeInGc = timesInEachGc[0];
+            for (var index = 0; index < timesInEachGc.length; ++index) {
+                totalTimeInGc += timesInEachGc[index];
+    
+                if (timesInEachGc[index] < lowestTimeInGc) {
+                    lowestTimeInGc = timesInEachGc[index];
+                }
+    
+                if (timesInEachGc[index] > highestTimeInGc) {
+                    highestTimeInGc = timesInEachGc[index];
+                }
+            }
+    
+            timesInEachGc.sort();
+            var half = Math.floor(timesInEachGc.length / 2);
+            medianTimeInGc = timesInEachGc[half];
+    
+            averageTimeInGc = totalTimeInGc / timesInEachGc.length;
+
+            if (timesInEachGc.length == 0) {
+                totalTimeInGc = 0;
+                timesInEachGc = [];
+                averageTimeInGc = 0;
+                medianTimeInGc = 0;
+                highestTimeInGc = 0;
+                lowestTimeInGc = 0;
+            }
+
+            return [timesInEachGc, [totalTimeInGc, averageTimeInGc, medianTimeInGc, highestTimeInGc, lowestTimeInGc]];
+        };
+
+        let gen0Numbers = getValues(0);
+        let gen1Numbers = getValues(1);
+        let gen2Numbers = getValues(2);
+
         // Time in GC.
 
         var totalTimeInGc = totalNumbers[1][0].toFixed(2);
@@ -607,7 +664,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
             gcsToSerialize.push(gcDataNew);
         }
-
+      
         var hiddenData = null;
 
         try {
@@ -655,7 +712,6 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                 <span style="display:none" id="hiddenData"><!--${hiddenData}--></span>
                 <span style="display:none" id="gcCountsByGen"><!--${gcCountsByGen}--></span>
                 <span style="display:none" id="totalTimeInEachGcJson"><!--${totalTimeInEachGcJson}--></span>
-
                 <h2 class="divider">${gcData["processName"]}</h2>
 
                 <div id="timeSummary">Allocation Amount by Generation</div>

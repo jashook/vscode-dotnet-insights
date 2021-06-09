@@ -9,7 +9,7 @@ var allocationDatasets = {};
 
     // @ts-ignore
     const vscode = acquireVsCodeApi();
-
+  
     console.time("gcParsing");
     var gcs = JSON.parse(document.getElementById("hiddenData").innerHTML.slice(4, document.getElementById("hiddenData").innerHTML.length - 3));
     console.timeEnd("gcParsing");
