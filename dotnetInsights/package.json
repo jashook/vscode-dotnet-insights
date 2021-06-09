@@ -361,12 +361,14 @@
   "dependencies": {
     "@types/request": "^2.48.5",
     "@types/unzipper": "^0.10.3",
+    "@types/xml2js": "^0.4.8",
     "chart.js": "^2.9.4",
     "i": "^0.3.6",
     "request": "^2.88.2",
     "rimraf": "^3.0.2",
     "targz": "^1.0.1",
     "unzipper": "^0.10.11",
-    "uuid": "^8.3.2"
+    "uuid": "^8.3.2",
+    "xml2js": "^0.4.23"
   }
 }

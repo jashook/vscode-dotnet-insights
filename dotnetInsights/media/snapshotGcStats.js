@@ -15,18 +15,9 @@ var allocationDatasets = {};
 
     var totalTimeInEachGcJson = JSON.parse(document.getElementById("totalTimeInEachGcJson").innerHTML.slice(4, document.getElementById("totalTimeInEachGcJson").innerHTML.length - 3));
 
-    console.log(gcs);
-    console.log(gcCountsByGen);
-    console.log(totalTimeInEachGcJson);
-
     var timestamps = [];
     for (var index = 0; index < gcs.length; ++index) {
-        timestamps.push(gcs[index]["timestamp"]);
-    }
-
-    var timestampCopy = [];
-    for (var index = 0; index < timestamps.length; ++index) {
-        timestampCopy.push(timestamps[index]);
+        timestamps.push(gcs[index]["data"]["Id"]);
     }
 
     var gcStatsChart = document.getElementsByClassName("gcStatsChart")[0];
@@ -40,8 +31,7 @@ var allocationDatasets = {};
             labels: [
                 "0",
                 "1",
-                "2",
-                "LOH"
+                "2"
             ],
             datasets: [{
                 label: "GC Count By Generation",
@@ -49,8 +39,7 @@ var allocationDatasets = {};
                 backgroundColor: [
                     "rgba(72, 83, 136, 0.2)",
                     "rgba(96, 165, 69, 0.2)",
-                    "rgba(141, 31, 95, 0.2)",
-                    "rgba(201, 221, 84, 0.2)"
+                    "rgba(141, 31, 95, 0.2)"
                 ]
             }]
         },
@@ -70,8 +59,7 @@ var allocationDatasets = {};
             labels: [
                 "0",
                 "1",
-                "2",
-                "LOH"
+                "2"
             ],
             datasets: [{
                 label: "Total Time In GC By Generation",
@@ -79,8 +67,7 @@ var allocationDatasets = {};
                 backgroundColor: [
                     "rgba(72, 83, 136, 0.2)",
                     "rgba(96, 165, 69, 0.2)",
-                    "rgba(141, 31, 95, 0.2)",
-                    "rgba(201, 221, 84, 0.2)"
+                    "rgba(141, 31, 95, 0.2)"
                 ]
             }]
         },
@@ -112,7 +99,7 @@ var allocationDatasets = {};
 
     for (var index = 0; index < gcs.length; ++index) {
         var gcData = gcs[index]["data"];
-        console.log(gcData);
+        
 
         totalGen0DataSet.push(gcData["GenerationSize0"] / totalKb);
         totalGen1DataSet.push(gcData["GenerationSize1"] / totalKb);
@@ -120,15 +107,10 @@ var allocationDatasets = {};
         totalLohDataSet.push(gcData["GenerationSizeLOH"] / totalKb);
     }
 
-    console.log(totalGen0DataSet);
-    console.log(totalGen1DataSet);
-    console.log(totalGen2DataSet);
-    console.log(totalLohDataSet);
-
     var totalGcStatsOverTimeChart = new Chart(totalGcStatsOverTimeContext, {
         type: 'line',
             data: {
-                labels: timestamps.slice(),
+                labels: timestamps,
                 datasets: [{
                     label: 'Gen 0',
                     data: totalGen0DataSet,
@@ -193,22 +175,22 @@ var allocationDatasets = {};
 
         for (var index = 0; index < gcs.length; ++index) {
             var gcData = gcs[index]["data"];
-            console.log(gcData);
 
             var currentHeap = gcData["Heaps"][passedHeapIndex]["Generations"];
+            console.log(currentHeap);
             for (var heapIndex = 0; heapIndex < currentHeap.length; ++heapIndex) {
                 var currentGeneration = currentHeap[heapIndex];
 
-                if (currentGeneration["Id"] == 0) {
+                if (heapIndex == 0) {
                     gen0DataSet.push(currentGeneration["SizeBefore"] / kb);
                 }
-                else if(currentGeneration["Id"] == 1) {
+                else if(heapIndex == 1) {
                     gen1DataSet.push(currentGeneration["SizeBefore"] / kb);
                 }
-                else if(currentGeneration["Id"] == 2) {
+                else if(heapIndex == 2) {
                     gen2DataSet.push(currentGeneration["SizeBefore"] / kb);
                 }
-                else if(currentGeneration["Id"] == 3) {
+                else if(heapIndex == 3) {
                     lohDataSet.push(currentGeneration["SizeBefore"] / kb);
                 }
             }
@@ -219,7 +201,7 @@ var allocationDatasets = {};
         var heapChart = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: timestamps.slice(),
+                labels: timestamps,
                 datasets: [{
                     label: 'Gen 0',
                     data: gen0DataSet,

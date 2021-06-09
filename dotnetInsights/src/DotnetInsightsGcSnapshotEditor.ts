@@ -3,10 +3,15 @@ import * as os from "os";
 import * as path from 'path';
 import * as vscode from 'vscode';
 
+import * as xml2js from 'xml2js';
+
 import { DotnetInsights } from "./dotnetInsights";
 import { GcListener, ProcessInfo, GcData, AllocData } from "./GcListener";
 
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
+import { promises } from "dns";
+import { rejects } from "assert";
+import { exec } from "child_process";
 
 export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEditorProvider {
     public static register(context: vscode.ExtensionContext, insights: DotnetInsights): vscode.Disposable {
@@ -72,19 +77,178 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
             });
         }
 
-        webviewPanel.webview.html = this.getHtmlForWebview(gcDocument, webviewPanel.webview);
+        this.getHtmlForWebviewWrapper(gcDocument, webviewPanel.webview).then((str) => {
+            webviewPanel.webview.html = str;
+        });
 
         updateWebview();
     }
 
-    private parseFromXml(fileContents: Buffer): any {
-        
-        return null;
+    private gcDataFromXml(input: any): any {
+        var gcData = [] as GcData[];
+
+        try {
+            const processInfo = input["GCProcess"];
+            const gcEvents = processInfo["GCEvents"][0]["GCEvent"];
+
+            var gcDataToAdd = [] as any[];
+            for (var index = 0; index < gcEvents.length; ++index) {
+                const currentGc = gcEvents[index];
+                const gen0MinSize = parseInt(currentGc["GlobalHeapHistory"][0]["$"]["FinalYoungestDesired"].replace(',',''));
+                const generation = currentGc["$"]["GCGeneration"];
+                const generationSize0 = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize0"].replace(',',''));
+                const generationSize1 = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize1"].replace(',',''));
+                const generationSize2 = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize2"].replace(',',''));
+                const generationSizeLOH = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize3"].replace(',',''));
+
+                var generationSizePOH = 0;
+
+                try {
+                    generationSizePOH = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize4"].replace(',',''));
+                }
+                catch (e) {
+                    
+                }
+
+                const id = currentGc["$"]["GCNumber"];
+                const kind = currentGc["$"]["Type"];
+
+                const numHeaps = parseInt(currentGc["GlobalHeapHistory"][0]["$"]["NumHeaps"].replace(',',''));
+                const pauseDurationMSec = parseInt(currentGc["$"]["PauseDurationMSec"].replace(',',''));
+                const pauseStartRelativeMSec = parseInt(currentGc["$"]["PauseStartRelativeMSec"].replace(',',''));
+                const pauseEndRelativeMSec = pauseStartRelativeMSec + pauseDurationMSec;
+                const reason = currentGc["$"]["Reason"];
+                const gcDurationMSec = parseInt(currentGc["$"]["GCDurationMSec"].replace(',',''));
+
+                const totalHeapSize = generationSize0 + generationSize1 + generationSize2 + generationSizeLOH + generationSizePOH;
+
+                const totalPromotedSize0 = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize0"].replace(',',''));
+                const totalPromotedSize1 = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize1"].replace(',',''));
+                const totalPromotedSize2 = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize2"].replace(',',''));
+                const totalPromotedSizeLoh = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize3"].replace(',',''));
+
+                var totalPromotedSizePoh = 0;
+                try {
+                    totalPromotedSizePoh = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize3"].replace(',',''));
+                }
+                catch (e) {
+
+                }
+
+                let kb = 1024 * 1024;
+
+                var data = {
+                    "Gen0MinSize": gen0MinSize,
+                    "generation": parseInt(generation),
+                    "GenerationSize0": generationSize0 * kb,
+                    "GenerationSize1": generationSize1 * kb,
+                    "GenerationSize2": generationSize2 * kb,
+                    "GenerationSizeLOH": generationSizeLOH * kb,
+                    "Id": id,
+                    "kind": kind,
+                    "NumHeaps": numHeaps,
+                    "PauseDurationMSec": pauseDurationMSec,
+                    "PauseEndRelativeMSec": pauseEndRelativeMSec,
+                    "PauseStartRelativeMSec": pauseStartRelativeMSec,
+                    "Reason": reason,
+                    "Heaps": [] as any[],
+                    "TotalHeapSize": totalHeapSize * kb,
+                    "TotalPromoted": totalPromotedSize0 * kb,
+                    "TotalPromotedLOH": totalPromotedSizeLoh * kb,
+                    "TotalPromotedSize0": totalPromotedSize0 * kb,
+                    "TotalPromotedSize1": totalPromotedSize1 * kb,
+                    "TotalPromotedSize2": totalPromotedSize2 * kb,
+                    "Type": reason,
+                    "GCDurationMSec": gcDurationMSec
+                }
+
+                var heaps = [] as any[];
+                console.assert(currentGc["PerHeapHistories"][0]["PerHeapHistory"].length == numHeaps);
+
+                var currentHeapData : any = {
+                    "Generations": []
+                };
+
+                for (var heapIndex = 0; heapIndex < currentGc["PerHeapHistories"][0]["PerHeapHistory"].length; ++heapIndex) {
+                    var heapGenerations = [0, 1, 2, 3];
+                    const currentHeap = currentGc["PerHeapHistories"][0]["PerHeapHistory"][heapIndex];
+
+                    for (var generationIndex = 0; generationIndex < heapGenerations.length; ++generationIndex) {
+                        const genNumber = generationIndex;
+                        const currentGenData = currentHeap["GenData"][generationIndex]["$"];
+
+                        const fragmentation = parseInt(currentGenData["Fragmentation"].replace(',',''));
+                        const freeListSpaceAfter = parseInt(currentGenData["FreeListSpaceAfter"].replace(',',''));
+                        const freeListSpaceBefore = parseInt(currentGenData["FreeListSpaceBefore"].replace(',',''));
+                        const freeObjSpaceAfter = parseInt(currentGenData["FreeObjSpaceAfter"].replace(',',''));
+                        const freeObjSpaceBefore = parseInt(currentGenData["FreeObjSpaceBefore"].replace(',',''));
+                        const genid = currentGenData["Name"];
+                        const genin = parseInt(currentGenData["In"].replace(',',''));
+                        const newAllocation = parseInt(currentGenData["NewAllocation"].replace(',',''));
+                        const nonePinnedSurv = parseInt(currentGenData["NonePinnedSurv"].replace(',',''));
+                        const objSizeAfter = parseInt(currentGenData["ObjSizeAfter"].replace(',',''));
+                        const objSpaceBefore = parseInt(currentGenData["ObjSpaceBefore"].replace(',',''));
+
+                        const out = parseInt(currentGenData["Out"].replace(',',''));
+                        const pinnedSurv = parseInt(currentGenData["PinnedSurv"].replace(',',''));
+
+                        const sizeAfter = parseInt(currentGenData["SizeAfter"].replace(',',''));
+                        const sizeBefore = parseInt(currentGenData["SizeBefore"].replace(',',''));
+                        const survRate = parseInt(currentGenData["SurvRate"].replace(',',''));
+
+                        currentHeapData["Generations"].push({
+                            "Fragmentation": fragmentation,
+                            "FreeListSpaceAfter": freeListSpaceAfter * kb,
+                            "FreeListSpaceBefore" : freeListSpaceBefore * kb,
+                            "FreeObjSpaceAfter" : freeObjSpaceAfter * kb,
+                            "FreeObjSpaceBefore" : freeObjSpaceBefore * kb,
+                            "Id" : genid,
+                            "In" : genin * kb,
+                            "NewAllocation" : newAllocation * kb,
+                            "NonePinnedSurv" : nonePinnedSurv * kb,
+                            "ObjSizeAfter" : objSizeAfter * kb,
+                            "ObjSpaceBefore": objSpaceBefore * kb,
+                            "Out" : out * kb,
+                            "PinnedSurv" : pinnedSurv * kb,
+                            "SizeAfter" : sizeAfter * kb,
+                            "SizeBefore" : sizeBefore * kb,
+                            "SurvRate" : survRate * kb
+                        });
+                    }
+
+                    data["Heaps"].push(currentHeapData);
+                }
+
+                gcDataToAdd.push({"data": data});
+            }
+
+            return {
+                "gcData": gcDataToAdd
+            };
+        }
+        catch (e) {
+            return null;
+        }
     }
 
-    private getHtmlForWebview(document: DotnetInsightsGcDocument, webview: vscode.Webview): string {
-        const fileContents = fs.readFileSync(document.uri.fsPath);
+    private parseFromXml(fileContents: Buffer): Thenable<any> {
+        var returnValue = new Promise((resolve, reject) => {
+            var parser = new xml2js.Parser();
 
+            parser.parseString(fileContents, (_err: any, _result: any) => {
+                if (_err) {
+                    resolve(null);
+                }
+                else {
+                    resolve(this.gcDataFromXml(_result));
+                }
+            });
+        });
+
+        return returnValue;
+    }
+
+    private getHtmlForWebview(document: DotnetInsightsGcDocument, webview: vscode.Webview, gcData: any, fileContents: Buffer) : string {
         const defaultHtmlReturn = /* html */`
         <!DOCTYPE html>
         <html lang="en">
@@ -109,26 +273,21 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
         </body>
         </html>`;
 
-        var gcData = null;
-
-        // We should have the json representation of the gc stats
-        try
-        {
-            gcData = JSON.parse(fileContents.toString());
-
-            if (gcData["allocations"] == null || gcData["gcData"] == null) {
-                throw new Error("Json error.");
+        if (gcData == null) {
+            // We should have the json representation of the gc stats
+            try
+            {
+                gcData = JSON.parse(fileContents.toString());
+    
+                if (gcData["allocations"] == null || gcData["gcData"] == null) {
+                    throw new Error("Json error.");
+                }
             }
-        }
-        catch(e) {
-            // Check to see if this is a valid xml file
-            gcData = this.parseFromXml(fileContents);
-            if (gcData == null) {
+            catch(e) {
                 vscode.window.showWarningMessage(`${document.uri.fsPath} is corrupted or a incorrect type.`);
                 return defaultHtmlReturn;
             }
-            
-            // Else we can recover
+
         }
 
         // gc data has all of the allocations and gc events that occurred in the
@@ -193,7 +352,6 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
         let gen0Numbers = getValues(0);
         let gen1Numbers = getValues(1);
         let gen2Numbers = getValues(2);
-        let gen3Numbers = getValues(3);
 
         // Time in GC.
         var gen0TotalTimeInGc = gen0Numbers[1][0].toFixed(2);
@@ -216,13 +374,6 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
         var gen2MedianTimeInGc = gen2Numbers[1][2].toFixed(2);
         var gen2HighestTimeInGc = gen2Numbers[1][3].toFixed(2);
         var gen2LowestTimeInGc = gen2Numbers[1][4].toFixed(2);
-
-        var gen3TotalTimeInGc = gen3Numbers[1][0].toFixed(2);
-        var gen3TimesInEachGc = gen3Numbers[0];
-        var gen3AverageTimeInGc = gen3Numbers[1][1].toFixed(2);
-        var gen3MedianTimeInGc = gen3Numbers[1][2].toFixed(2);
-        var gen3HighestTimeInGc = gen3Numbers[1][3].toFixed(2);
-        var gen3LowestTimeInGc = gen3Numbers[1][4].toFixed(2);
 
         const nonce = this.getNonce();
 
@@ -253,12 +404,13 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                 perHeapCanvasData += `<div class="heapChartParentMultiple"><canvas class="heapChart"></canvas></div>`;
 
                 if (innerIndex + 1 != gcData["Heaps"].length) {
+                    ++innerIndex;
                     perHeapCanvasData += `<div class="allocChartParent heapChartNextLine"><canvas class="heapChart"></canvas></div>`;
                 }
             }
         }
 
-        const gcCountsByGen = JSON.stringify([gen0TimesInEachGc.length, gen1TimesInEachGc.length, gen2TimesInEachGc.length, gen3TimesInEachGc.length]);
+        const gcCountsByGen = JSON.stringify([gen0TimesInEachGc.length, gen1TimesInEachGc.length, gen2TimesInEachGc.length]);
 
         var gcsToSerialize = [] as GcData[];
         for (var index = 0; index < gcs.length; ++index) {
@@ -267,13 +419,19 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
             gcsToSerialize.push(gcDataNew);
         }
 
-        var hiddenData = JSON.stringify(gcsToSerialize);
+        var hiddenData = null;
+
+        try {
+            hiddenData = JSON.stringify(gcsToSerialize);
+        }
+        catch(e) {
+            var i = 0;
+        }
 
         var totalTimeInEachGc = [
             gen0TotalTimeInGc,
             gen1TotalTimeInGc,
-            gen2TotalTimeInGc,
-            gen3TotalTimeInGc
+            gen2TotalTimeInGc
         ];
 
         const totalTimeInEachGcJson = JSON.stringify(totalTimeInEachGc);
@@ -338,15 +496,6 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                         <div>Average<span>${gen2AverageTimeInGc} ms</span></div>
                         <div>Median<span>${gen2MedianTimeInGc} ms</span></div>
                     </div>
-                    <div id="LOH">
-                        <div>LOH</div>
-                        <div>Count<span>${gen3TimesInEachGc.length}</span></div>
-                        <div>Total<span>${gen3TotalTimeInGc} ms</span></div>
-                        <div>Largest<span>${gen3HighestTimeInGc} ms</span></div>
-                        <div>Smallest<span>${gen3LowestTimeInGc} ms</span></div>
-                        <div>Average<span>${gen3AverageTimeInGc} ms</span></div>
-                        <div>Median<span>${gen3MedianTimeInGc} ms</span></div>
-                    </div>
                 </div>
 
                 <div class="spacer"></div>
@@ -375,6 +524,18 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
         </html>`;
 
         return htmlToReturn;
+    }
+
+    private getHtmlForWebviewWrapper(document: DotnetInsightsGcDocument, webview: vscode.Webview): Thenable<string> {
+        const fileContents = fs.readFileSync(document.uri.fsPath);
+
+        var promiseToReturn = new Promise<string>((resolve, reject) => {
+            this.parseFromXml(fileContents).then((gcData: any) => {
+                resolve(this.getHtmlForWebview(document, webview, gcData, fileContents));
+            });
+        })
+
+        return promiseToReturn;
     }
 
     getNonce() {
