@@ -59,14 +59,6 @@ Showing IL/Dasm on save allows viewing the IL/ASM for a generated file quickly w
 
 ![Example IL/ASM Advanced](https://ev30.blob.core.windows.net/dotnetinsights/il_on_save_advanced.gif)
 
-### Show IL/Dasm on save
-
-**C# Extension is required**.
-
-From C# source file right click `Show IL/Asm on save`. From this point on each time the file is saved the IL will be shown along with the JITed code to the right. Note that this works by compiling the current file. There are current drawbacks that keep the compilation from succeeding with files that either reference other files or other projects/packages.
-
-There is hopeful work to fix this in the future. To stop generating the IL/Dasm on save you can run the command: `>Stop generating IL/Asm on save` via `<ctrl/cmd><shift><p>`.
-
 # Inspect PE File
 
 1. Select a managed PE file. This is generally a .NET DLL under the `${workspaceFolder}/bin/Release/application.dll`
