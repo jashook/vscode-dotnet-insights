@@ -449,7 +449,8 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
                     if (file.indexOf(fileName) != -1) {
                         // This process already exists we will want to attach
                         // the date to better distinguish
-                        fileName = fileName + "_" + new Date().toUTCString();
+                        var d = new Date();
+                        fileName = fileName + "_" + (d.getDate()) + (d.getMonth() + 1) +(d.getFullYear());
 
                         break;
                     }
@@ -463,7 +464,33 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
                     "processId": processInfo?.processId
                 };
 
-                const jsonString = JSON.stringify(dataToWrite);
+                var jsonString = null;
+
+                for (var index = 0; index < dataToWrite["gcData"].length; ++index) {
+                    const currentData = dataToWrite["gcData"][index];
+
+                    for (var heapIndex = 0; heapIndex < currentData.data["Heaps"]; ++heapIndex) {
+                        const first = currentData.data["Heaps"][heapIndex][0];
+                        const second = currentData.data["Heaps"][heapIndex][1];
+                        const third = currentData.data["Heaps"][heapIndex][2];
+                        const fourth = currentData.data["Heaps"][heapIndex][3];
+
+                        currentData.data["Heaps"][heapIndex] = {
+                            0: first,
+                            1: second,
+                            2: third,
+                            3: fourth
+                        }
+                    }
+                }
+
+                try {
+                    jsonString = JSON.stringify(dataToWrite);
+
+                }
+                catch(e) {
+                    var i = 0;
+                }
 
                 fileName += ".gcinfo";
 
