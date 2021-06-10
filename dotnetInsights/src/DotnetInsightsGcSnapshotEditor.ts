@@ -180,6 +180,20 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                     }
                 };
 
+                var tryParse = (genData: any, key: string, isNumber?: boolean | null): any => {
+                    try {
+                        if (isNumber != null && isNumber == false) {
+                            return genData[key];
+                        }
+                        else {
+                            return parseInt(genData[key].replace(',',''));
+                        }
+                    }
+                    catch (e) {
+                        return 0.0;
+                    }
+                }
+
                 for (var heapIndex = 0; heapIndex < currentGc["PerHeapHistories"][0]["PerHeapHistory"].length; ++heapIndex) {
                     var heapGenerations = [0, 1, 2, 3];
                     const currentHeap = currentGc["PerHeapHistories"][0]["PerHeapHistory"][heapIndex];
@@ -188,24 +202,24 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                         const genNumber = generationIndex;
                         const currentGenData = currentHeap["GenData"][generationIndex]["$"];
 
-                        const fragmentation = parseInt(currentGenData["Fragmentation"].replace(',',''));
-                        const freeListSpaceAfter = parseInt(currentGenData["FreeListSpaceAfter"].replace(',',''));
-                        const freeListSpaceBefore = parseInt(currentGenData["FreeListSpaceBefore"].replace(',',''));
-                        const freeObjSpaceAfter = parseInt(currentGenData["FreeObjSpaceAfter"].replace(',',''));
-                        const freeObjSpaceBefore = parseInt(currentGenData["FreeObjSpaceBefore"].replace(',',''));
-                        const genid = currentGenData["Name"];
-                        const genin = parseInt(currentGenData["In"].replace(',',''));
-                        const newAllocation = parseInt(currentGenData["NewAllocation"].replace(',',''));
-                        const nonePinnedSurv = parseInt(currentGenData["NonePinnedSurv"].replace(',',''));
-                        const objSizeAfter = parseInt(currentGenData["ObjSizeAfter"].replace(',',''));
-                        const objSpaceBefore = parseInt(currentGenData["ObjSpaceBefore"].replace(',',''));
+                        const fragmentation = tryParse(currentGenData, "Fragmentation", true);
+                        const freeListSpaceAfter = tryParse(currentGenData, "FreeListSpaceAfter", true);
+                        const freeListSpaceBefore = tryParse(currentGenData, "FreeListSpaceBefore", true);
+                        const freeObjSpaceAfter = tryParse(currentGenData, "FreeObjSpaceAfter", true);
+                        const freeObjSpaceBefore = tryParse(currentGenData, "FreeObjSpaceBefore", true);
+                        const genid = tryParse(currentGenData, "Name");
+                        const genin = tryParse(currentGenData, "In", true);
+                        const newAllocation = tryParse(currentGenData, "NewAllocation", true);
+                        const nonePinnedSurv = tryParse(currentGenData, "NonePinnedSurv", true);
+                        const objSizeAfter = tryParse(currentGenData, "ObjSizeAfter", true);
+                        const objSpaceBefore = tryParse(currentGenData, "ObjSpaceBefore", true);
 
-                        const out = parseInt(currentGenData["Out"].replace(',',''));
-                        const pinnedSurv = parseInt(currentGenData["PinnedSurv"].replace(',',''));
+                        const out = tryParse(currentGenData, "Out", true);
+                        const pinnedSurv = tryParse(currentGenData, "PinnedSurv", true);
 
-                        const sizeAfter = parseInt(currentGenData["SizeAfter"].replace(',',''));
-                        const sizeBefore = parseInt(currentGenData["SizeBefore"].replace(',',''));
-                        const survRate = parseInt(currentGenData["SurvRate"].replace(',',''));
+                        const sizeAfter = tryParse(currentGenData, "SizeAfter", true);
+                        const sizeBefore = tryParse(currentGenData, "SizeBefore", true);
+                        const survRate = tryParse(currentGenData, "SurvRate", true);
 
                         currentHeapData["Generations"][generationIndex] = {
                             "Fragmentation": fragmentation,
@@ -260,7 +274,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
         return returnValue;
     }
 
-    private getHtmlForWebview(document: DotnetInsightsGcDocument, webview: vscode.Webview, gcData: any, fileContents: Buffer) : string {
+    private getHtmlForWebview(document: DotnetInsightsGcDocument, webview: vscode.Webview, gcData: any) : string {
         const defaultHtmlReturn = /* html */`
         <!DOCTYPE html>
         <html lang="en">
@@ -289,6 +303,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
             // We should have the json representation of the gc stats
             try
             {
+                const fileContents = fs.readFileSync(document.uri.fsPath);
                 gcData = JSON.parse(fileContents.toString());
     
                 if (gcData["allocations"] == null || gcData["gcData"] == null) {
@@ -776,7 +791,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
         var promiseToReturn = new Promise<string>((resolve, reject) => {
             this.parseFromXml(fileContents).then((gcData: any) => {
-                resolve(this.getHtmlForWebview(document, webview, gcData, fileContents));
+                resolve(this.getHtmlForWebview(document, webview, gcData));
             });
         })
 
