@@ -365,36 +365,48 @@ export class OnSaveIlDasm {
                 }
 
                 console.assert(matchedMethod != undefined);
-                
-                var pmiMethod = new PmiCommand(boundObject.insights.coreRunPath, boundObject.insights, boundObject.roslynHelperIlFile);
-                pmiMethod.execute(matchedMethod).then(value => {
-                    let unique_id = value[0];
-                    let output = value[1];
 
-                    const outputFileName = path.join(boundObject.insights.pmiOutputPath, unique_id + ".asm");
+                var retried = false;
+                let pmiMethodWithDasm = (methodNameOveride: string) => {
+                    var pmiMethod = new PmiCommand(boundObject.insights.coreRunPath, boundObject.insights, boundObject.roslynHelperIlFile);
+                    pmiMethod.execute(methodNameOveride).then(value => {
+                        let unique_id = value[0];
+                        let output = value[1];
 
-                    fs.writeFile(outputFileName, output, (error) => {
-                        if (error) {
+                        if (retried == false && output.length == 0) {
+                            retried = true;
+                            pmiMethodWithDasm(boundObject.method + "*");
+
                             return;
                         }
-                        
-                        let splitIndex = vscode.window.visibleTextEditors.length + 1;
 
-                        if (!boundObject.hasDocumentsOpen) {
-                            boundObject.asmShown?.updateForPath(outputFileName);
+                        const outputFileName = path.join(boundObject.insights.pmiOutputPath, unique_id + ".asm");
 
-                            vscode.workspace.openTextDocument(outputFileName).then(doc => {
-                                vscode.window.showTextDocument(doc, splitIndex);
-                            });
-                        }
-                        else {
-                            boundObject.asmShown?.change(output);
-                        }
+                        fs.writeFile(outputFileName, output, (error) => {
+                            if (error) {
+                                return;
+                            }
+                            
+                            let splitIndex = vscode.window.visibleTextEditors.length + 1;
 
-                        // As a background task JITDump the method as well
-                        boundObject.jitDumpMethod(matchedMethod, unique_id);
+                            if (!boundObject.hasDocumentsOpen) {
+                                boundObject.asmShown?.updateForPath(outputFileName);
+
+                                vscode.workspace.openTextDocument(outputFileName).then(doc => {
+                                    vscode.window.showTextDocument(doc, splitIndex);
+                                });
+                            }
+                            else {
+                                boundObject.asmShown?.change(output);
+                            }
+
+                            // As a background task JITDump the method as well
+                            boundObject.jitDumpMethod(methodNameOveride, unique_id);
+                        });
                     });
-                });
+                }
+
+                pmiMethodWithDasm(matchedMethod);
             });
 
         } else {

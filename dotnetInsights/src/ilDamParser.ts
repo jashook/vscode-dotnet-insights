@@ -76,24 +76,26 @@ export class ILDasmParser {
             else if (currentLine.indexOf(".method") != -1) {
                 // Split out the class name
 
-                // Try the current line.
-                var methodLine = lines[index];
-                var methodNameSplit = methodLine.split(" ");
-
-                if (methodNameSplit[methodNameSplit.length - 1] != "managed") {
-                    methodLine = lines[index + 1];
-                    methodNameSplit = methodLine.split(" ");
+                var methodLine = lines[index].trim();
+                // Check to see if the next line has the brace
+                if (lines[index + 1].indexOf("{") != 1) {
+                    // Method is on this line.
+                    
                 }
-    
-                var methodName = "";
-                for (var innerIndex = 0; innerIndex < methodNameSplit.length; ++innerIndex) {
-                    if (methodNameSplit[innerIndex].indexOf("\(") != -1) {
-                        methodName = methodNameSplit[innerIndex];
-                        break;
+                else {
+                    // combine lines removing whitespace until we get to a brace
+                    for (var forwardIndex = index + 1; forwardIndex < lines.length; ++forwardIndex) {
+                        methodLine += lines[forwardIndex].trim();
                     }
                 }
 
-                methodName = methodName.split("\(")[0];
+                var methodName = methodLine.split("\(")[0];
+
+                var methodNameSplit = methodName.split(" ");
+                methodName = methodNameSplit[methodNameSplit.length - 1];
+
+                console.log(methodName);
+
                 this.methodMap.set(methodName, index);
             }
         }
