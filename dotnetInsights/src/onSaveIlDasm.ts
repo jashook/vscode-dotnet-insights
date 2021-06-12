@@ -373,7 +373,7 @@ export class OnSaveIlDasm {
                         let unique_id = value[0];
                         let output = value[1];
 
-                        if (retried == false && output.length == 0) {
+                        if (retried == false && output.trim().length == 0) {
                             retried = true;
                             pmiMethodWithDasm(boundObject.method + "*");
 
