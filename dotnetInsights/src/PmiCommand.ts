@@ -48,7 +48,6 @@ export class PmiCommand {
 
     public execute(methodName?: string, extraOptions?: any): Thenable<[string, string]> {
         var pmiCommand = `"${this.coreRun}"` + " " + `"${this.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${this.peFile}"`;
-        this.outputChannel.appendLine(pmiCommand);
 
         var mb = 1024 * 1024;
         var maxBufferSize = 512 * mb;
@@ -75,6 +74,9 @@ export class PmiCommand {
                 env[keys[index]] = extraOptions[keys[index]];
             }
         }
+
+        this.outputChannel.appendLine(pmiCommand);
+        this.outputChannel.appendLine("Env: " + JSON.stringify(env));
 
         var promise: Thenable<[string, string]> = new Promise((resolve, reject) => {
             var childProcess = child.exec(pmiCommand, {
