@@ -22,7 +22,7 @@ There are known issues with the extension. See [Bugs](https://github.com/jashook
 
 The extension allows for monitoring all .NET Core applications that are running on the target machine. The extension will use TraceEvent to connect to all .NET Core applications 3.x+ to receive GC allocation, start and stop events. It will then compile the information per heap and display it by process.
 
-![GC Monitoring Gif](media/gcMonitoring.gif)
+![GC Monitoring Gif](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/media/gcMonitoring.gif)
 
 ## GC Monitoring Usage
 
@@ -46,7 +46,7 @@ When a process is selected a custom view will come up with the GC Statistics for
 `<ctrl> s` or `<cmd> s` will save the file. Currently this is saved in a known location which can be seen
 via the extension's output logs.
 
-![Saving GC Info](media/saveGcInfo.gif)
+![Saving GC Info](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/media/saveGcInfo.gif)
 
 ## Reading Raw Data from Perfview
 
@@ -62,7 +62,7 @@ An existing or future perfview collection which has GC data can be exported as r
 
 You will see the gc events visualized similarly to a collection done using the extension. Note that there are a few caveats to this. First, there is no allocation information in the same way there is allocation information with the extension. Second, some events are recorded differently with Perfview and may not have the same fidelity.
 
-![GC info from perview](media/perfviewVisualization.gif)
+![GC info from perview](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/perfviewVisualization.gif)
 
 <br/>
 
@@ -74,7 +74,7 @@ Showing IL/Dasm on save allows viewing the IL/ASM for a generated file quickly w
 
 <br/>
 
-![Example IL/ASM](media/ilAsm.gif)
+![Example IL/ASM](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/ilAsm.gif)
 
 <br/>
 
@@ -86,7 +86,7 @@ Showing IL/Dasm on save allows viewing the IL/ASM for a generated file quickly w
 
 <br/>
 
-![.NET Insights Example Usage](media/peFile.gif)
+![.NET Insights Example Usage](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/peFile.gif)
 
 <br/>
 
