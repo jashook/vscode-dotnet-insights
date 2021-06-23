@@ -41,6 +41,13 @@ When a process is selected a custom view will come up with the GC Statistics for
 
 ![GC Monitoring](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/media/gcMonitoring.png)
 
+## Saving GC Files for later
+
+`<ctrl> s` or `<cmd> s` will save the file. Currently this is saved in a known location which can be seen
+via the extension's output logs.
+
+![Saving GC Info](media/saveGcInfo.gif)
+
 <br/>
 
 # IL / DASM on Save
