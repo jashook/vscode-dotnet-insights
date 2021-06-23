@@ -86,7 +86,7 @@ Showing IL/Dasm on save allows viewing the IL/ASM for a generated file quickly w
 
 <br/>
 
-![.NET Insights Example Usage](https://ev30.blob.core.windows.net/dotnetinsights/dotnet-insights-overview.gif)
+![.NET Insights Example Usage](media/peFile.gif)
 
 <br/>
 
