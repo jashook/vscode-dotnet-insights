@@ -22,7 +22,7 @@ There are known issues with the extension. See [Bugs](https://github.com/jashook
 
 The extension allows for monitoring all .NET Core applications that are running on the target machine. The extension will use TraceEvent to connect to all .NET Core applications 3.x+ to receive GC allocation, start and stop events. It will then compile the information per heap and display it by process.
 
-![GC Monitoring Gif](https://ev30.blob.core.windows.net/dotnetinsights/gcMonitoring.gif)
+![GC Monitoring Gif](media/gcMonitoring.gif)
 
 ## GC Monitoring Usage
 
