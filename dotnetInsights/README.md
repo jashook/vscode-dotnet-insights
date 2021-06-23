@@ -74,13 +74,9 @@ Showing IL/Dasm on save allows viewing the IL/ASM for a generated file quickly w
 
 <br/>
 
-![Example IL/ASM](https://ev30.blob.core.windows.net/dotnetinsights/il_on_save_general.gif)
+![Example IL/ASM](media/ilAsm.gif)
 
 <br/>
-
-## Investigating optimization failure
-
-![Example IL/ASM Advanced](https://ev30.blob.core.windows.net/dotnetinsights/il_on_save_advanced.gif)
 
 # Inspect PE File
 
