@@ -22,7 +22,7 @@ There are known issues with the extension. See [Bugs](https://github.com/jashook
 
 The extension allows for monitoring all .NET Core applications that are running on the target machine. The extension will use TraceEvent to connect to all .NET Core applications 3.x+ to receive GC allocation, start and stop events. It will then compile the information per heap and display it by process.
 
-![GC Monitoring Gif](https://ev30.blob.core.windows.net/dotnetinsights/gcMonitoring.gif)
+![GC Monitoring Gif](media/gcMonitoring.gif)
 
 ## GC Monitoring Usage
 
@@ -41,6 +41,29 @@ When a process is selected a custom view will come up with the GC Statistics for
 
 ![GC Monitoring](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/media/gcMonitoring.png)
 
+## Saving GC Files for later
+
+`<ctrl> s` or `<cmd> s` will save the file. Currently this is saved in a known location which can be seen
+via the extension's output logs.
+
+![Saving GC Info](media/saveGcInfo.gif)
+
+## Reading Raw Data from Perfview
+
+Perfview is an extremely powerful tool for viewing GC data. While the extension will not go into depth on how to collect via perfview, we can instead understand how to capture raw gc data from perfview and visualize it in .NET Insights.
+
+An existing or future perfview collection which has GC data can be exported as raw data. An example of this would be the following:
+`
+1. Collect gc `perview.exe collect /AcceptEula /NoGui /GCCollectOnly`
+2. Open the `etl` file created and navigate to `Memory Groups/GCStats`
+    - GCStats contains all Managed (.NET applications) that emitted events during the collection window. Navigate to the process you are interested in
+3. Click the link `RAW Data XML file(for debugging)`
+4. Save the file with an extension `.gcInfo` and load the file in vscode
+
+You will see the gc events visualized similarly to a collection done using the extension. Note that there are a few caveats to this. First, there is no allocation information in the same way there is allocation information with the extension. Second, some events are recorded differently with Perfview and may not have the same fidelity.
+
+![GC info from perview](media/perfviewVisualization.gif)
+
 <br/>
 
 # IL / DASM on Save
@@ -51,13 +74,9 @@ Showing IL/Dasm on save allows viewing the IL/ASM for a generated file quickly w
 
 <br/>
 
-![Example IL/ASM](https://ev30.blob.core.windows.net/dotnetinsights/il_on_save_general.gif)
+![Example IL/ASM](media/ilAsm.gif)
 
 <br/>
-
-## Investigating optimization failure
-
-![Example IL/ASM Advanced](https://ev30.blob.core.windows.net/dotnetinsights/il_on_save_advanced.gif)
 
 # Inspect PE File
 
@@ -67,7 +86,7 @@ Showing IL/Dasm on save allows viewing the IL/ASM for a generated file quickly w
 
 <br/>
 
-![.NET Insights Example Usage](https://ev30.blob.core.windows.net/dotnetinsights/dotnet-insights-overview.gif)
+![.NET Insights Example Usage](media/peFile.gif)
 
 <br/>
 
