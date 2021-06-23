@@ -48,6 +48,22 @@ via the extension's output logs.
 
 ![Saving GC Info](media/saveGcInfo.gif)
 
+## Reading Raw Data from Perfview
+
+Perfview is an extremely powerful tool for viewing GC data. While the extension will not go into depth on how to collect via perfview, we can instead understand how to capture raw gc data from perfview and visualize it in .NET Insights.
+
+An existing or future perfview collection which has GC data can be exported as raw data. An example of this would be the following:
+`
+1. Collect gc `perview.exe collect /AcceptEula /NoGui /GCCollectOnly`
+2. Open the `etl` file created and navigate to `Memory Groups/GCStats`
+    - GCStats contains all Managed (.NET applications) that emitted events during the collection window. Navigate to the process you are interested in
+3. Click the link `RAW Data XML file(for debugging)`
+4. Save the file with an extension `.gcInfo` and load the file in vscode
+
+You will see the gc events visualized similarly to a collection done using the extension. Note that there are a few caveats to this. First, there is no allocation information in the same way there is allocation information with the extension. Second, some events are recorded differently with Perfview and may not have the same fidelity.
+
+![GC info from perview](media/perfviewVisualization.gif)
+
 <br/>
 
 # IL / DASM on Save
