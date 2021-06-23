@@ -62,7 +62,7 @@ An existing or future perfview collection which has GC data can be exported as r
 
 You will see the gc events visualized similarly to a collection done using the extension. Note that there are a few caveats to this. First, there is no allocation information in the same way there is allocation information with the extension. Second, some events are recorded differently with Perfview and may not have the same fidelity.
 
-![GC info from perview](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/perfviewVisualization.gif)
+![GC info from perview](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/media/perfviewVisualization.gif)
 
 <br/>
 
@@ -74,7 +74,7 @@ Showing IL/Dasm on save allows viewing the IL/ASM for a generated file quickly w
 
 <br/>
 
-![Example IL/ASM](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/ilAsm.gif)
+![Example IL/ASM](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/media/ilAsm.gif)
 
 <br/>
 
@@ -86,7 +86,7 @@ Showing IL/Dasm on save allows viewing the IL/ASM for a generated file quickly w
 
 <br/>
 
-![.NET Insights Example Usage](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/peFile.gif)
+![.NET Insights Example Usage](https://raw.githubusercontent.com/jashook/vscode-dotnet-insights/master/dotnetInsights/media/peFile.gif)
 
 <br/>
 
