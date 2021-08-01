@@ -271,7 +271,7 @@ export class DependencySetup {
                     });
                 });
 
-                promises.push(promise)
+                promises.push(promise);
             }
             else {
                 netcoreFivePmiPath = netcoreFivePmiPathDownload;
@@ -299,7 +299,6 @@ export class DependencySetup {
             if (doDownload) {
                 var promise: Thenable<boolean> = new Promise((resolve, reject) => {
                     this.downloadGcMonitorExe(this.insights, this.latestListenerVersionNumber, gcEventListenerTempDir).then(() => {
-                        
                         var downloadSucceeded = false;
 
                         if (fs.existsSync(gcEventListenerTempDir) && fs.existsSync(gcEventListenerPath)) {
