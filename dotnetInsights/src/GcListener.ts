@@ -2,6 +2,7 @@ import { DotnetInsightsGcTreeDataProvider } from "./dotnetInsightsGc";
 
 import { createServer } from "http";
 import { IncomingMessage, ServerResponse } from 'http';
+import { DotnetInsightsJitTreeDataProvider } from "./dotnetInsightsJit";
 
 export class GcData {
     public data: any;
@@ -62,29 +63,100 @@ export class AllocData {
     }
 }
 
+export class JitMethodInfo {
+    public methodName: string;
+    public jitDuration: number;
+    public tier: number;
+    
+    constructor(methodName: string, jitDuration: number, tier: number) {
+        this.methodName = methodName;
+        this.jitDuration = jitDuration;
+        this.tier = tier;
+    }
+}
+
 export class ProcessInfo { 
     public data: GcData[];
+    public jitData: Map<number, JitMethodInfo[]>;
+    public jitDurationTotal: Map<number, number>;
     public processId: number;
     public processName: string;
     public processCommandLine: string;
     public processStartTime: Date;
 
-    constructor(data: any, isAllocData: boolean) {
+    constructor(data: any, isAllocData: boolean, isJitInfo: boolean) {
         const parsedJson = data;
         
         this.processId = parsedJson["ProcessID"];
         this.processName = parsedJson["ProcessName"];
         this.processCommandLine = parsedJson["processCommandLine"];
         this.data = [] as GcData[];
+        this.jitData = new Map<number, JitMethodInfo[]>();
+        this.jitDurationTotal = new Map<number, number>();
         this.processStartTime = new Date(parsedJson["processStartTime"]);
 
-        this.addData(parsedJson, isAllocData);
+        this.addData(parsedJson, isAllocData, isJitInfo);
     }
 
-    addData(parsedJson: any, isAllocData: boolean) {
+    addData(parsedJson: any, isAllocData: boolean, isJitInfo: boolean) {
         if (isAllocData) {
             for (var index = 0; index < parsedJson.length; ++index) {
                 this.data[this.data.length - 1].allocData.push(new AllocData(parsedJson[index]));
+            }
+        }
+        else if (isJitInfo) {
+            var data = parsedJson["data"];
+
+            var methodId = parseInt(data["methodId"]);
+            var methodInfos = this.jitData.get(methodId);
+
+            var isNewItem = false;
+            if (methodInfos == null) {
+                methodInfos = [] as JitMethodInfo[];
+                this.jitDurationTotal.set(methodId, 0);
+                isNewItem = true;
+            }
+            else {
+                console.log("found");
+            }
+
+            var tier = parseInt(data["tier"]);
+            var jitDurationMs = parseFloat(data["jitDurationMs"]);
+            var methodName = data["methodName"];
+
+            var methodNameSplit = methodName.split(":");
+            const methodNameValue = methodNameSplit[methodNameSplit.length - 1];
+            const methodSignature = methodNameSplit.slice(0, methodNameSplit.length - 1).join(":");
+
+            const methodSignatureSplit = methodSignature.split(" ");
+            var emptyIndex = 0;
+            for (var index = 0; index < methodSignatureSplit.length; ++index) {
+                if (methodSignatureSplit[index] == "") {
+                    emptyIndex = index + 1;
+                    break;
+                }
+            }
+
+            if (emptyIndex < methodSignatureSplit.length) {
+                methodName = methodSignatureSplit.slice(0, emptyIndex).join(" ") + methodNameValue + methodSignatureSplit.slice(emptyIndex).join(" ");
+            }
+            else {
+                methodName = methodSignatureSplit.slice(0, emptyIndex).join(" ") + methodNameValue;
+            }
+            
+            var jitMethodInfo = new JitMethodInfo(methodName, jitDurationMs, tier);
+            methodInfos.push(jitMethodInfo);
+
+            var jitDurationTotal = this.jitDurationTotal.get(methodId);
+            if (jitDurationTotal == undefined) {
+                console.assert(jitDurationTotal != undefined);
+            }
+            else {
+                this.jitDurationTotal.set(methodId, jitDurationTotal + jitDurationMs);
+            }
+
+            if (isNewItem) {
+                this.jitData.set(methodId, methodInfos);
             }
         }
         else {
@@ -96,6 +168,7 @@ export class ProcessInfo {
 export class GcListener {
 
     public treeView: DotnetInsightsGcTreeDataProvider | undefined;
+    public jitTreeView: DotnetInsightsJitTreeDataProvider | undefined;
     public processes: Map<number, ProcessInfo>;
     public httpServer: any;
 
@@ -106,6 +179,7 @@ export class GcListener {
     
     constructor(
     ) {
+        this.jitTreeView = undefined;
         this.treeView = undefined;
         this.processes = new Map<number, ProcessInfo>();
         this.sendShutdown = false;
@@ -144,6 +218,7 @@ export class GcListener {
 
                     console.log(request.url);
                     const isAllocData = request.url == "/gcAllocation";
+                    const isJitEvent = request.url == "/jitEvent";
 
                     var processById: ProcessInfo | undefined = this.processes.get(jsonData["ProcessID"]);
 
@@ -153,10 +228,10 @@ export class GcListener {
                     }
 
                     if (processById != undefined) {
-                        processById.addData(jsonData, isAllocData);
+                        processById.addData(jsonData, isAllocData, isJitEvent);
                     }
                     else {
-                        processById = new ProcessInfo(jsonData, isAllocData);
+                        processById = new ProcessInfo(jsonData, isAllocData, isJitEvent);
                         this.processes.set(jsonData["ProcessID"], processById);
                     }
 
@@ -165,6 +240,10 @@ export class GcListener {
                     if (isAllocData) {
                         this.treeView?.refresh();
                         console.log(`Add: ${jsonData['ProcessID']}, ${jsonData["ProcessName"]}`);
+                    }
+
+                    if (isJitEvent) {
+                        this.jitTreeView?.refresh();
                     }
 
                     if (this.sendShutdown) {

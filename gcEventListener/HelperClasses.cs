@@ -11,6 +11,7 @@ namespace DotnetInsights {
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 
 using Microsoft.Diagnostics.Tracing.Parsers.Clr;
 
@@ -208,7 +209,23 @@ internal class ProcessInfo
     }
 }
 
+internal class MethodJitInfo
+{
+    public bool isTieredUp { get; set; }
+    public bool HasLoaded { get; set; }
+    public long MethodId { get; set; }
+    public int Tier { get; set; }
+    public double JitDuration { get; set; }
+    public Stopwatch  Stopwatch { get; set; }
+    public string MethodName { get; set; }
+
+    public string ToJsonString()
+    {
+        return $"{{\"tier\":\"{this.Tier}\",\"jitDurationMs\":\"{this.JitDuration}\",\"methodName\":\"{this.MethodName}\",\"methodId\":\"{this.MethodId}\"}}";
+    }
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-}
+} // end of namepsace(DotnetInsights)

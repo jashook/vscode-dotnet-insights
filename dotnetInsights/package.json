@@ -3,7 +3,7 @@
   "displayName": ".NET Insights",
   "publisher": "jashoo",
   "description": "Monitor .NET Processes for GC information in real time, or drill into .NET DLLs by viewing the IL and compiled code. Relies on ildasm and a public .NET JIT tool PMI.",
-  "version": "1.1.8",
+  "version": "1.2.0",
   "preview": false,
   "icon": "media/dep.png",
   "repository": {
@@ -150,6 +150,11 @@
           "id": "dotnet-insights-gc",
           "title": "Dotnet Insights GC",
           "icon": "media/line.svg"
+        },
+        {
+          "id": "dotnet-insights-jit",
+          "title": "Dotnet Insights JIT",
+          "icon": "media/rj.svg"
         }
       ]
     },
@@ -168,6 +173,14 @@
           "name": "Dotnet Insights GC",
           "icon": "media/line.svg",
           "contextualTitle": "Dotnet Insights GC"
+        }
+      ],
+      "dotnet-insights-jit": [
+        {
+          "id": "dotnetInsightsJit",
+          "name": "Dotnet Insights JIT",
+          "icon": "media/rj.svg",
+          "contextualTitle": "Dotnet Inishgts JIT"
         }
       ]
     },
@@ -202,7 +215,7 @@
       },
       {
         "command": "dotnetInsights.startGCMonitor",
-        "title": "Start GC Monitoring"
+        "title": "Start .NET Monitoring"
       },
       {
         "command": "dotnetInsights.loadExtension",

@@ -51,7 +51,7 @@ export class DependencySetup {
         var pmiPath: any = undefined;
         var netcoreThreePmiPath: any = undefined;
         var netcoreFivePmiPath: any = undefined;
-        var customCoreRootPath: any  = undefined
+        var customCoreRootPath: any  = undefined;
 
         var roslynHelperPath: any = undefined;
         var gcEventListenerPath: any = undefined;
@@ -843,10 +843,27 @@ function setupPmi(insights: DotnetInsights) : Thenable<boolean> {
         }
     });
 
+    var killed = false;
+    setTimeout((childProcess: child.ChildProcess) => {
+        if (!childProcess.killed) {
+            childProcess.kill();
+            killed = true;
+        }
+    }, 5000, childProcess);
+
     return new Promise((resolve, reject) => {
         childProcess.addListener("close", (args: any) => {
             resolve(success);
         });
+        childProcess.addListener("error", (args: any) => {
+            reject(false);
+        });
+        childProcess.addListener("exit", (args: any) => {
+            // Swallow a windows error hanging on pmi unload.
+            if (killed) {
+                resolve(true);
+            }
+        })
     });
 }
 
