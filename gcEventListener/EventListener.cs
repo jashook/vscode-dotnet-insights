@@ -6,6 +6,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Diagnostics;
 using System.Net.Http;
 using System.Text;
 using System.Threading;
@@ -32,7 +33,21 @@ public class EventListener
         
         try
         {
-            string endPath = type == EventType.GcAlloc ? Paths[0] : Paths[1];
+            string endPath = "";
+            if (type == EventType.GcAlloc)
+            {
+                endPath = Paths[0];
+            }
+            else if (type == EventType.GcCollection)
+            {
+                endPath = Paths[1];
+            }
+            else
+            {
+                Debug.Assert(type == EventType.JitEvent);
+                endPath = Paths[2];
+            }
+
             endPath.AsSpan().CopyTo(endSpan);
 
             Span<char> exactPath = workingPath.Slice(0, LocalHostPath.Length + endPath.Length);
@@ -54,11 +69,11 @@ public class EventListener
 
     public static void Main()
     {
-        Paths = new string[] { "gcAllocation", "gcCollection" };
+        Paths = new string[] { "gcAllocation", "gcCollection", "jitEvent" };
         LocalHostPath = "http://localhost:2143/";
         Client = new HttpClient();
 
-        var listener = new EventPipeBasedListener(listenForGcData: true, listenForAllocations: true, PostEventData);
+        var listener = new EventPipeBasedListener(listenForGcData: true, listenForAllocations: true, listenForJitEvents: true, PostEventData);
 
         var thread = new Thread(PingServer);
         thread.Start();

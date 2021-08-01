@@ -31,7 +31,8 @@ using Microsoft.Diagnostics.Tracing.Session;
 public enum EventType
 {
     GcAlloc,
-    GcCollection
+    GcCollection,
+    JitEvent
 }
 
 public class EventPipeBasedListener
@@ -47,9 +48,12 @@ public class EventPipeBasedListener
         public DateTime StartTime { get; set; }
 
         public List<string> Allocations { get; set; }
+        public List<string> JittedMethods { get; set; }
 
         internal ProcessInfo ProcessInfo { get; set; }
         public Action<EventType, string> EventFinishedCallback { get; set; }
+
+        private Dictionary<long, MethodJitInfo> Methods { get; set; }
 
         private Process Process { get; set; }
 
@@ -67,6 +71,9 @@ public class EventPipeBasedListener
 
             this.ProcessDied = false;
             this.Allocations = new List<string>();
+            this.JittedMethods = new List<string>();
+
+            this.Methods = new Dictionary<long, MethodJitInfo>();
 
             if (string.IsNullOrWhiteSpace(this.ProcessCommandLine))
             {
@@ -401,6 +408,90 @@ public class EventPipeBasedListener
             this.Allocations.Add(returnData);
         }
 
+        public void OnJitStart(MethodJittingStartedTraceData data)
+        {
+            // Check to see if this method has already been loaded.
+            // If so this should be a tier up
+            if (this.Methods.ContainsKey(data.MethodID))
+            {
+                MethodJitInfo info = this.Methods[data.MethodID];
+
+                // If we are tiering up, assume the method has been quick
+                // jitted already
+                Debug.Assert(info.HasLoaded);
+
+                if (info.HasLoaded)
+                {
+                    // This is a rejit. We will just re-write the data
+                    info.HasLoaded = false;
+                    info.JitDuration = 0;
+                    info.Tier = 0;
+                    info.isTieredUp = true;
+
+                    Debug.Assert(info.Stopwatch != null);
+                    info.Stopwatch.Start();
+                }
+            }
+            else
+            {
+                MethodJitInfo info = new MethodJitInfo();
+                info.HasLoaded = false;
+                info.JitDuration = 0;
+                info.isTieredUp = false;
+                info.MethodId = data.MethodID;
+
+                info.Stopwatch = new Stopwatch();
+                info.Stopwatch.Start();
+
+                this.Methods.Add(data.MethodID, info);
+            }
+        }
+
+        public void MethodLoad(MethodLoadUnloadVerboseTraceData data)
+        {
+            // Method has had to have been observed for a jit started
+            if (!this.Methods.ContainsKey(data.MethodID))
+            {
+                Debug.Assert(data.OptimizationTier == OptimizationTier.ReadyToRun);
+            }
+
+            MethodJitInfo info = this.Methods[data.MethodID];
+            info.Stopwatch.Stop();
+
+            double compilationTimeMs = info.Stopwatch.Elapsed.TotalMilliseconds;
+            info.JitDuration = compilationTimeMs;
+
+            // // Most likely an older version of the runtime. Assume Tier 1
+            // if (data.OptimizationTier == OptimizationTier.Unknown)
+            // {
+            //     info.Tier = 1;
+            // }
+            // else if (data.OptimizationTier == OptimizationTier.MinOptJitted || data.OptimizationTier == OptimizationTier.QuickJitted)
+            // {
+            //     info.Tier = 0;
+            // }
+            // else if (data.OptimizationTier == OptimizationTier.Optimized || data.OptimizationTier == OptimizationTier.OptimizedTier1)
+            // {
+            //     info.Tier = 1;
+            // }
+            // else {
+            //     info.Tier = -1;
+            // }
+
+            info.Tier = (int)data.OptimizationTier;
+
+            info.HasLoaded = true;
+            info.MethodName = $"{data.MethodSignature}:{data.MethodName}";
+
+            if (info.isTieredUp)
+            {
+                info.isTieredUp = false;
+            }
+
+            string returnData = this.getReturnData(info.ToJsonString());
+            this.EventFinishedCallback(EventType.JitEvent, returnData);
+        }
+
         private void ProcessCurrentGc(GcInfo info)
         {
             Debug.Assert(info.Heaps.Count != 0);
@@ -426,12 +517,13 @@ public class EventPipeBasedListener
     private string SessionName { get; set; }
     private bool ListenForGcData { get; set; }
     private bool ListenForAllocations { get; set; }
+    private bool ListenForJitEvents { get; set; }
     private Dictionary<int, ProcessInfo> Processes { get; set; }
     public long ProcessId { get; set; }
     public Dictionary<int, PublishClient> PublishingClients { get; set; }
     public Action<EventType, string> EventFinishedCallback { get; set; }
 
-    public EventPipeBasedListener(bool listenForGcData, bool listenForAllocations, Action<EventType, string> callback, long scopedProcessId = -1)
+    public EventPipeBasedListener(bool listenForGcData, bool listenForAllocations, bool listenForJitEvents, Action<EventType, string> callback, long scopedProcessId = -1)
     {
         this.PublishingClients = new Dictionary<int, PublishClient>();
 
@@ -446,6 +538,7 @@ public class EventPipeBasedListener
 
         this.ListenForAllocations = listenForAllocations;
         this.ListenForGcData = listenForGcData;
+        this.ListenForJitEvents = listenForJitEvents;
     }
 
     public void Listen()
@@ -468,8 +561,9 @@ public class EventPipeBasedListener
 
             List<EventPipeProvider> providers = new List<EventPipeProvider>()
             {
-                new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, (long)ClrTraceEventParser.Keywords.GC),
-                new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, (long)ClrTraceEventParser.Keywords.Stack)
+                new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, (long)ClrTraceEventParser.Keywords.Jit | (long)ClrTraceEventParser.Keywords.GC | (long)ClrTraceEventParser.Keywords.Stack),
+                // new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, (ulong)ClrTraceEventParser.Keywords.GC),
+                // new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, (ulong)ClrTraceEventParser.Keywords.Stack)
             };
 
             try
@@ -492,6 +586,12 @@ public class EventPipeBasedListener
                     if (this.ListenForAllocations)
                     {
                         source.Clr.GCAllocationTick += publishClient.OnAllocationTick;
+                    }
+
+                    if (this.ListenForJitEvents)
+                    {
+                        source.Clr.MethodJittingStarted += publishClient.OnJitStart;
+                        source.Clr.MethodLoadVerbose += publishClient.MethodLoad;
                     }
 
                     Console.WriteLine($"Started listening for: {publishClient.ProcessCommandLine}");

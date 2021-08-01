@@ -18,6 +18,7 @@ import { DependencySetup } from "./DependencySetup";
 
 import { GcListener } from "./GcListener";
 import { OnSaveIlDasm } from './onSaveIlDasm';
+import { DotnetInsightsJitTreeDataProvider } from './dotnetInsightsJit';
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -31,6 +32,7 @@ export function activate(context: vscode.ExtensionContext) {
     outputChannel.appendLine('dotnetInsights: started');
 
     var dotnetInsightsGcTreeDataProvider: DotnetInsightsGcTreeDataProvider | undefined = undefined;
+    var dotnetInsightsJitTreeDataProvider: DotnetInsightsJitTreeDataProvider | undefined = undefined;
 
     if (dotnetInsightsSettings != undefined) {
         if (!dotnetInsightsSettings["surpressStartupMessage"]) {
@@ -43,7 +45,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     var insights = new DotnetInsights(outputChannel);
     const lastestVersionNumber = "0.7.0";
-    const latestListenerVersionNumber = "0.7.0";
+    const latestListenerVersionNumber = "0.7.1";
     const latestRoslynVersionNumber = "0.7.0";
 
     var childProcess: child.ChildProcess | undefined = undefined;
@@ -65,6 +67,7 @@ export function activate(context: vscode.ExtensionContext) {
 
                 dotnetInsightsGcTreeDataProvider?.listener.processes.clear();
                 dotnetInsightsGcTreeDataProvider?.refresh();
+                dotnetInsightsJitTreeDataProvider?.refresh();
 
                 // Check if we are able to run to application
                 childProcess = child.exec(`"${insights.gcEventListenerPath}"`, (exception: child.ExecException | null, stdout: string, stderr: string) => {
@@ -116,6 +119,7 @@ export function activate(context: vscode.ExtensionContext) {
 
             isRunningGcMonitor = false;
             console.assert(dotnetInsightsGcTreeDataProvider != undefined);
+            console.assert(dotnetInsightsJitTreeDataProvider != undefined);
 
             insights.outputChannel.appendLine("Stopped monitoring GCs.");
         }
@@ -148,11 +152,16 @@ export function activate(context: vscode.ExtensionContext) {
 
         const dotnetInsightsTreeDataProvider = new DotnetInsightsTreeDataProvider(insights);
         dotnetInsightsGcTreeDataProvider = new DotnetInsightsGcTreeDataProvider(listener);
+        dotnetInsightsJitTreeDataProvider = new DotnetInsightsJitTreeDataProvider(listener);
 
+
+        // Set up the tree views
         listener.treeView = dotnetInsightsGcTreeDataProvider;
+        listener.jitTreeView = dotnetInsightsJitTreeDataProvider;
 
         vscode.window.registerTreeDataProvider('dotnetInsights', dotnetInsightsTreeDataProvider);
         vscode.window.registerTreeDataProvider('dotnetInsightsGc', dotnetInsightsGcTreeDataProvider);
+        vscode.window.registerTreeDataProvider('dotnetInsightsJit', dotnetInsightsJitTreeDataProvider);
 
         vscode.commands.registerCommand("dotnetInsights.diffThreeVsFiveTier0", (treeItem: Dependency) => {
             if (treeItem.label != undefined) {
