@@ -4,6 +4,9 @@
     <OutputType>Exe</OutputType>
     <TargetFramework>net5.0</TargetFramework>
     <ServerGarbageCollection>true</ServerGarbageCollection>
+
+    <DefineConstants Condition="$(RuntimeIdentifier.StartsWith('win'))">WINDOWS</DefineConstants>
+    <WarningLevel>3</WarningLevel>
   </PropertyGroup>
 
   <ItemGroup>
@@ -11,5 +14,4 @@
     <PackageReference Include="Microsoft.Diagnostics.NETCore.Client" Version="0.2.217401" />
     <PackageReference Include="System.Management" Version="5.0.0" />
   </ItemGroup>
-
 </Project>
