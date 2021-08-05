@@ -61,7 +61,7 @@ public class EventListener
                 Environment.Exit(0);
             }
         }
-        catch (Exception e)
+        catch (Exception)
         {
             Environment.Exit(0);
         }
@@ -99,7 +99,7 @@ public class EventListener
                     break;
                 }
             }
-            catch (Exception e)
+            catch (Exception)
             {
                 Environment.Exit(0);
                 break;

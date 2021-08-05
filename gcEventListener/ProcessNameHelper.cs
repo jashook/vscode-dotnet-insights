@@ -31,7 +31,7 @@ internal static class ProcessNameHelper
             Process proc = Process.GetProcessById(processId);
             returnValue = proc.ProcessName;
         }
-        catch (Exception e)
+        catch (Exception)
         {
 
         }
@@ -54,7 +54,7 @@ internal static class ProcessNameHelper
                 }
 
             }
-            catch(Exception e)
+            catch(Exception)
             {
 
             }
@@ -78,7 +78,7 @@ internal static class ProcessNameHelper
 
                 processName = process.ProcessName;
             }
-            catch (Exception e)
+            catch (Exception)
             {
                 // Process died.
             }

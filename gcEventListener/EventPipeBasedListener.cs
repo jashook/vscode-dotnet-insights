@@ -320,7 +320,7 @@ public class EventPipeBasedListener
             {
                 processInfo.GCs.Add(info.Id, info);
             }
-            catch(Exception e)
+            catch(Exception)
             {
                 // Most likely the existing process died, and another managed process
                 // took its place.
@@ -428,6 +428,8 @@ public class EventPipeBasedListener
                     info.Tier = 0;
                     info.isTieredUp = true;
 
+                    info.MethodName = $"{data.MethodNamespace}:{data.MethodSignature}:{data.MethodName}";
+
                     Debug.Assert(info.Stopwatch != null);
                     info.Stopwatch.Start();
                 }
@@ -442,6 +444,8 @@ public class EventPipeBasedListener
 
                 info.Stopwatch = new Stopwatch();
                 info.Stopwatch.Start();
+
+                info.MethodName = $"{data.MethodNamespace}:{data.MethodSignature}:{data.MethodName}";
 
                 this.Methods.Add(data.MethodID, info);
             }
@@ -481,7 +485,6 @@ public class EventPipeBasedListener
             info.Tier = (int)data.OptimizationTier;
 
             info.HasLoaded = true;
-            info.MethodName = $"{data.MethodSignature}:{data.MethodName}";
 
             if (info.isTieredUp)
             {
@@ -600,13 +603,13 @@ public class EventPipeBasedListener
                     {
                         source.Process();
                     }
-                    catch (Exception e)
+                    catch (Exception)
                     {
                         source.Dispose();
                     }
                 }
             }
-            catch (Exception e)
+            catch (Exception)
             {
                 // The process most likely died in between setting up the event
                 // pipe.s

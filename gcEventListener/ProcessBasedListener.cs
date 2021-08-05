@@ -64,7 +64,7 @@ public class ProcessBasedListener
                 this.ProcessName = proc.ProcessName.ToString();
             }
         }
-        catch(Exception e)
+        catch(Exception)
         {
 
         }
@@ -297,7 +297,7 @@ public class ProcessBasedListener
                 {
                     processInfo.GCs.Add(info.Id, info);
                 }
-                catch(Exception e)
+                catch(Exception)
                 {
                     // Most likely the existing process died, and another managed process
                     // took its place.
@@ -358,6 +358,7 @@ public class ProcessBasedListener
     {
         string processName = null;
 
+#if WINDOWS
         try
         {
             Process proc = Process.GetProcessById(processId);
@@ -367,17 +368,12 @@ public class ProcessBasedListener
             {
                 processName = objects.Cast<ManagementBaseObject>().SingleOrDefault()?["CommandLine"]?.ToString();
             }
-
-            if (string.IsNullOrWhiteSpace(processName))
-            {
-                int i = 0;
-            }
-
         }
-        catch(Exception e)
+        catch(Exception)
         {
 
         }
+#endif // WINDOWS
 
         if (string.IsNullOrWhiteSpace(processName))
         {
