@@ -424,7 +424,7 @@ public class EventPipeBasedListener
                 {
                     // This is a rejit. We will just re-write the data
                     info.HasLoaded = false;
-                    info.JitDuration = 0;
+                    info.LoadTime = 0;
                     info.Tier = 0;
                     info.isTieredUp = true;
 
@@ -438,7 +438,7 @@ public class EventPipeBasedListener
             {
                 MethodJitInfo info = new MethodJitInfo();
                 info.HasLoaded = false;
-                info.JitDuration = 0;
+                info.LoadTime = 0;
                 info.isTieredUp = false;
                 info.MethodId = data.MethodID;
 
@@ -457,30 +457,14 @@ public class EventPipeBasedListener
             if (!this.Methods.ContainsKey(data.MethodID))
             {
                 Debug.Assert(data.OptimizationTier == OptimizationTier.ReadyToRun);
+                return;
             }
 
             MethodJitInfo info = this.Methods[data.MethodID];
             info.Stopwatch.Stop();
 
-            double compilationTimeMs = info.Stopwatch.Elapsed.TotalMilliseconds;
-            info.JitDuration = compilationTimeMs;
-
-            // // Most likely an older version of the runtime. Assume Tier 1
-            // if (data.OptimizationTier == OptimizationTier.Unknown)
-            // {
-            //     info.Tier = 1;
-            // }
-            // else if (data.OptimizationTier == OptimizationTier.MinOptJitted || data.OptimizationTier == OptimizationTier.QuickJitted)
-            // {
-            //     info.Tier = 0;
-            // }
-            // else if (data.OptimizationTier == OptimizationTier.Optimized || data.OptimizationTier == OptimizationTier.OptimizedTier1)
-            // {
-            //     info.Tier = 1;
-            // }
-            // else {
-            //     info.Tier = -1;
-            // }
+            double loadTimeMs = info.Stopwatch.Elapsed.TotalMilliseconds;
+            info.LoadTime = loadTimeMs;
 
             info.Tier = (int)data.OptimizationTier;
 
@@ -490,6 +474,42 @@ public class EventPipeBasedListener
             {
                 info.isTieredUp = false;
             }
+
+            string returnData = this.getReturnData(info.ToJsonString());
+            this.EventFinishedCallback(EventType.JitEvent, returnData);
+        }
+
+        public void LoadR2RMethodStart(R2RGetEntryPointStartTraceData data)
+        {
+            MethodJitInfo info = new MethodJitInfo();
+            info.HasLoaded = true;
+            info.LoadTime = 0;
+            info.isTieredUp = false;
+            info.MethodId = data.MethodID;
+            info.Tier = (int)OptimizationTier.ReadyToRun;
+
+            info.Stopwatch = new Stopwatch();
+            info.Stopwatch.Start();
+
+            this.Methods.Add(data.MethodID, info);
+        }
+        
+        public void LoadR2RMethodEnd(R2RGetEntryPointTraceData data)
+        {
+            // Method has had to have been observed for a jit started
+            if (!this.Methods.ContainsKey(data.MethodID))
+            {
+                Debug.Assert(false);
+                return;
+            }
+
+            MethodJitInfo info = this.Methods[data.MethodID];
+            info.Stopwatch.Stop();
+
+            double loadTimeMs = info.Stopwatch.Elapsed.TotalMilliseconds;
+            info.LoadTime = loadTimeMs;
+
+            info.MethodName = $"{data.MethodNamespace}:{data.MethodSignature}:{data.MethodName}";
 
             string returnData = this.getReturnData(info.ToJsonString());
             this.EventFinishedCallback(EventType.JitEvent, returnData);
@@ -562,10 +582,13 @@ public class EventPipeBasedListener
         Task.Run(() => {
             DiagnosticsClient client = new DiagnosticsClient(publishClient.ProcessID);
 
+            // https://github.com/dotnet/runtime/blob/main/src/coreclr/vm/ClrEtwAll.man#L82
+            long compilationDiagnosticsKeyword = 0x2000000000;
+
             List<EventPipeProvider> providers = new List<EventPipeProvider>()
             {
-                new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, (long)ClrTraceEventParser.Keywords.Jit | (long)ClrTraceEventParser.Keywords.GC | (long)ClrTraceEventParser.Keywords.Stack),
-                // new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, (ulong)ClrTraceEventParser.Keywords.GC),
+                new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, compilationDiagnosticsKeyword | (long)ClrTraceEventParser.Keywords.Jit | (long)ClrTraceEventParser.Keywords.NGen | (long)ClrTraceEventParser.Keywords.GC | (long)ClrTraceEventParser.Keywords.Stack),
+                //new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, compilationDiagnosticsKeyword | (long)ClrTraceEventParser.Keywords.Jit)
                 // new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, (ulong)ClrTraceEventParser.Keywords.Stack)
             };
 
@@ -595,6 +618,8 @@ public class EventPipeBasedListener
                     {
                         source.Clr.MethodJittingStarted += publishClient.OnJitStart;
                         source.Clr.MethodLoadVerbose += publishClient.MethodLoad;
+                        source.Clr.MethodR2RGetEntryPointStart += publishClient.LoadR2RMethodStart;
+                        source.Clr.MethodR2RGetEntryPoint += publishClient.LoadR2RMethodEnd;
                     }
 
                     Console.WriteLine($"Started listening for: {publishClient.ProcessCommandLine}");
