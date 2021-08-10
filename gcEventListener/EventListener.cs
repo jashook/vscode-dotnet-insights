@@ -95,13 +95,13 @@ public class EventListener
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    Environment.Exit(0);
+                    Environment.FailFast("Unable to connect to localhost");
                     break;
                 }
             }
             catch (Exception)
             {
-                Environment.Exit(0);
+                Environment.FailFast("Unable to connect to localhost");
                 break;
             }
 
