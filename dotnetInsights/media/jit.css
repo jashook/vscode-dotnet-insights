@@ -299,11 +299,12 @@
     margin: 1em;
 }
 
-.gcStats
+.jitStats
 {
     height: 600px;
-    margin-top:  3em;
-    width: 100%;
+    margin-top:  10em;
+    width: 70%;
+    margin-left: 15%;
 }
 
 #nextSpacer

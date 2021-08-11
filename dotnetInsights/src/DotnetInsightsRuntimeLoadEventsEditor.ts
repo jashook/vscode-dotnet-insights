@@ -132,13 +132,13 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         const styleResetUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'reset.css'));
         const styleVSCodeUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'vscode.css'));
 
-        const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'snapshotGcStats.js'));
+        const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'jit.js'));
 
         const chartjs = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', 'chart.js', 'dist', 'Chart.min.js'));
 
         var canvasData = "";
         if (this.loadData.length > 0) {
-            canvasData = `<div class="gcStats"><canvas id="totalGcStatsOverTime"></canvas></div>`;
+            canvasData = `<div class="jitStats"><canvas id="totalJitStatsOverTime"></canvas></div>`;
         }
 
         const processData = document.listener?.processes.get(document.processId);
@@ -218,10 +218,10 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
                 if (currentLoadData.tier === 1 || currentLoadData.tier === 3) {
                     tierZeroLoadTimes.push(currentLoadData);
                 } 
-                else if (currentLoadData.tier === 2 || currentLoadData.tier == 4) {
+                else if (currentLoadData.tier === 2 || currentLoadData.tier === 4) {
                     tierOneLoadTimes.push(currentLoadData);
                 }
-                else if (currentLoadData.tier == 5) {
+                else if (currentLoadData.tier === 5) {
                     r2rLoadTimes.push(currentLoadData);
                 }
                 else {
@@ -393,6 +393,222 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
 
         const dataValue = "ms";
 
+        var labelsByMs = false;
+        var labelsBy500Ms = false;
+        var labelsBySecond = false;
+        var labelsByMinute = false;
+        var labelsByHour = false;
+
+        loadTimes.sort((a: JitMethodInfo, b: JitMethodInfo) => {
+            return Date.parse(a.eventTick.toString())- Date.parse(b.eventTick.toString());
+        });
+
+        var beginTime = Date.parse(loadTimes[0].eventTick);
+        var endTime = Date.parse(loadTimes[loadTimes.length > 0 ? loadTimes.length - 1 : 0].eventTick);
+
+        var intervalTimeIn100Ms = endTime - beginTime;
+
+        const intervalTimeIn500Ms = intervalTimeIn100Ms / 5;
+        const intervalTimeInSeconds = intervalTimeIn100Ms / 1000;
+
+        const intervalTimeInMinutes = intervalTimeInSeconds / 60;
+        const intervalTimeInHours = intervalTimeInMinutes / 60;
+
+        // 100 ms intervals
+        var intervalCount = intervalTimeIn100Ms / 100;
+
+        // If there are too many buckets use 500 ms
+        if (intervalCount > 100) {
+            intervalCount = intervalTimeIn500Ms / 100;
+            if (intervalCount <= 100) {
+                labelsBy500Ms = true;
+            }
+            else {
+                intervalCount = intervalTimeInSeconds / 100;
+
+                if (intervalCount <= 100) {
+                    labelsBySecond = true;
+                }
+            }
+        }
+        else {
+            labelsByMs = true;
+        }
+
+        if (labelsByMs !== true && labelsBySecond !== true && labelsBy500Ms !== true) {
+            intervalCount = intervalTimeInMinutes / 100;
+
+            if (intervalCount <= 100) {
+                labelsByMinute = true;
+            }
+            else {
+                labelsByHour = true;
+            }
+        }
+
+        var labelsToPass = null;
+        var intervalInMs = 100;
+
+        if (labelsByMs === true) {
+            console.assert(labelsBy500Ms === false);
+            console.assert(labelsBySecond === false);
+            console.assert(labelsByMinute === false);
+            console.assert(labelsByHour === false);
+
+            labelsToPass = labelsByMs;
+        }
+        else if (labelsBy500Ms === true) {
+            console.assert(labelsByMs === false);
+            console.assert(labelsByMinute === false);
+            console.assert(labelsByHour === false);
+            console.assert(labelsByHour === false);
+
+            intervalInMs *= 5;
+        }
+        else if (labelsBySecond === true) {
+            console.assert(labelsByMs === false);
+            console.assert(labelsBy500Ms === false);
+            console.assert(labelsByMinute === false);
+            console.assert(labelsByHour === false);
+
+            intervalInMs *= 10;
+
+        }
+        else if (labelsByMinute === true) {
+            console.assert(labelsByMs === false);
+            console.assert(labelsBy500Ms === false);
+            console.assert(labelsBySecond === false);
+            console.assert(labelsByHour === false);
+
+            intervalInMs *= (10 * 60);
+        }
+        else {
+            console.assert(labelsByMs === false);
+            console.assert(labelsBy500Ms === false);
+            console.assert(labelsBySecond === false);
+            console.assert(labelsByMinute === false);
+
+            intervalInMs *= (10 * 60 * 60);
+        }
+
+        var intervalToWorkOn = (endTime - beginTime);
+        labelsToPass = [];
+
+        intervalCount = Math.ceil(intervalCount);
+
+        for (var index = 0; index < intervalCount; ++index) {
+            labelsToPass.push(intervalToWorkOn);
+            intervalToWorkOn += intervalInMs;
+        }
+
+        console.assert(labelsToPass.length === intervalCount);
+
+        var r2rTimeByBucket = [];
+        var tier0TimeByBucket = [];
+        var tier1TimeByBucket = [];
+        var tier0TierUpTimeByBucket = [];
+        var tier1TierUpTimeByBucket = [];
+
+        for (var index = 0 ; index < labelsToPass.length; ++index) {
+            r2rTimeByBucket.push(0);
+            tier0TimeByBucket.push(0);
+            tier1TimeByBucket.push(0);
+            tier0TierUpTimeByBucket.push(0);
+            tier1TierUpTimeByBucket.push(0);
+        }
+
+        let getBucketIndex = (currentLoadData: JitMethodInfo) => {
+            var timeEncountered = Date.parse(currentLoadData.eventTick.toString());
+            
+            var bucketIndex = Math.floor((timeEncountered - beginTime) / intervalInMs);
+            if (bucketIndex === intervalCount) {
+                --bucketIndex;
+            }
+
+            console.assert(bucketIndex >= 0 && bucketIndex < intervalCount);
+
+            return bucketIndex;
+        };
+
+        // Unknown = 0,
+        // MinOptJitted = 1,
+        // Optimized = 2,
+        // QuickJitted = 3,
+        // OptimizedTier1 = 4,
+        // ReadyToRun = 5,
+        // PreJIT = 255
+
+        for (var index = 0; index < loadTimes.length; ++index) {
+            const currentLoadData : JitMethodInfo = loadTimes[index];
+            const bucketIndex = getBucketIndex(currentLoadData);
+
+            if (currentLoadData.tier === 5) {
+                r2rTimeByBucket[bucketIndex] += currentLoadData.loadDuration;
+            }
+            else if (currentLoadData.tier === 1 || currentLoadData.tier === 3) {
+                tier0TimeByBucket[bucketIndex] += currentLoadData.loadDuration;
+            }
+            else if (currentLoadData.tier === 2 || currentLoadData.tier === 4) {
+                tier1TierUpTimeByBucket[bucketIndex] += currentLoadData.loadDuration;
+            }
+            else {
+                continue;
+            }
+        }
+
+        // Go through all R2R Tiered up methods and add to buckets
+        for (var index = 0; index < r2rKeys.length; ++index) {
+            const currentKey = r2rKeys[index];
+
+            if (tier0Map.has(currentKey)) {
+                const itemsForKey = tier0Map.get(currentKey)!;
+                for (var innerIndex = 0; innerIndex < itemsForKey.length; ++innerIndex) {
+                    const itemForKeyFound = itemsForKey[innerIndex];
+
+                    const bucketIndex = getBucketIndex(itemForKeyFound);
+                    tier0TierUpTimeByBucket[bucketIndex] += itemForKeyFound.loadDuration;
+                }
+            } 
+            else if (tier1Map.has(currentKey)) {
+                const itemsForKey = tier1Map.get(currentKey)!;
+                for (var innerIndex = 0; innerIndex < itemsForKey.length; ++innerIndex) {
+                    const itemForKeyFound = itemsForKey[innerIndex];
+
+                    const bucketIndex = getBucketIndex(itemForKeyFound);
+                    tier0TierUpTimeByBucket[bucketIndex] += itemForKeyFound.loadDuration;
+                }
+            }
+        }
+
+        // Go through min opts methods and add to buckets
+        for (var index = 0; index < tier0Keys.length; ++index) {
+            const currentKey = tier0Keys[index];
+
+            
+            if (tier1Map.has(currentKey)) {
+                const itemsForKey = tier1Map.get(currentKey)!;
+                for (var innerIndex = 0; innerIndex < itemsForKey.length; ++innerIndex) {
+                    const itemForKeyFound = itemsForKey[innerIndex];
+
+                    const bucketIndex = getBucketIndex(itemForKeyFound);
+                    tier0TierUpTimeByBucket[bucketIndex] += itemForKeyFound.loadDuration;
+                }
+            }
+        }
+
+        var hiddenData: any = [
+            labelsToPass,
+            r2rTimeByBucket,
+            tier0TimeByBucket,
+            tier1TimeByBucket,
+            tier0TierUpTimeByBucket,
+            tier1TierUpTimeByBucket
+        ];
+
+        console.log(hiddenData);
+
+        hiddenData = JSON.stringify(hiddenData);
+
         var htmlToReturn = /* html */`
         <!DOCTYPE html>
         <html lang="en">
@@ -418,7 +634,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
                 <link href="${styleVSCodeUri}" rel="stylesheet" />
             </head>
             <body>
-                <span style="display:none" id="hiddenData"><!--${fileContents}--></span>
+                <span style="display:none" id="hiddenData"><!--${hiddenData}--></span>
 
                 <h2 class="divider">${processData?.processName}</h2>
                 <div id="timeSummary">Jit Events (Time to JIT) and Load Events for R2R</div>
@@ -472,11 +688,14 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
                 </div>
 
                 <div class="spacer"></div>
+                <div class="spacer"></div>
 
                 <div class="gcDataContainer">
                     ${canvasData}
                     <script src="${chartjs}"></script>
                 </div>
+
+                <script nonce="${nonce}" src="${scriptUri}"></script>
             </body>
         </html>`;
 
