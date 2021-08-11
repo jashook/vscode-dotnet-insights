@@ -148,7 +148,12 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         const processData = document.listener?.processes.get(document.processId);
         processData?.processName;
 
-        var numberOfMethods = 0;
+        var loadTimes = [];
+        var r2rLoadTimes = [];
+        var tierZeroLoadTimes = [];
+        var tierOneLoadTimes = [];
+
+        var numberOfMethods = this.loadData.length;
         var totalLoadTime = 0;
         var highestLoadTime = 0;
         var lowestLoadTime = 0;
@@ -183,6 +188,200 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         var tierZeroNumberOfTrappedMethods = 0;
         var tierOneNumberOfTrappedMethods = 0;
 
+        // Unknown = 0,
+        // MinOptJitted = 1,
+        // Optimized = 2,
+        // QuickJitted = 3,
+        // OptimizedTier1 = 4,
+        // ReadyToRun = 5,
+        // PreJIT = 255
+
+        for (var index = 0; index < this.loadData.length; ++index) {
+            const currentLoadData = this.loadData[index];
+            totalLoadTime += currentLoadData.loadDuration;
+
+            if (index === 0) {
+                lowestLoadTime = currentLoadData.loadDuration;
+            }
+            else if (currentLoadData.loadDuration < lowestLoadTime) {
+                lowestLoadTime = currentLoadData.loadDuration;
+            }
+
+            if (currentLoadData.loadDuration > highestLoadTime) {
+                highestLoadTime = currentLoadData.loadDuration;
+            }
+
+            loadTimes.push(currentLoadData);
+
+            if (currentLoadData.tier === 1 || currentLoadData.tier === 3) {
+                tierZeroLoadTimes.push(currentLoadData);
+            } 
+            else if (currentLoadData.tier === 2 || currentLoadData.tier == 4) {
+                tierOneLoadTimes.push(currentLoadData);
+            }
+            else if (currentLoadData.tier == 5) {
+                r2rLoadTimes.push(currentLoadData);
+            }
+            else {
+                console.log("Unknown op tier");
+            }
+        }
+
+        loadTimes.sort((a, b) => {
+            return a.loadDuration - b.loadDuration;
+        });
+
+        var half = Math.floor(loadTimes.length / 2);
+        medianLoadTime = loadTimes[half].loadDuration;
+        averageLoadTime = totalLoadTime / numberOfMethods;
+
+        // R2R
+
+        r2rNumberOfMethods = r2rLoadTimes.length;
+
+        for (var index = 0; index < r2rLoadTimes.length; ++index) {
+            const r2rData = r2rLoadTimes[index];
+            r2rTotalLoadTime += r2rData.loadDuration;
+
+            if (index === 0) {
+                r2rLowestLoadTime = r2rData.loadDuration;
+            }
+            else if (r2rData.loadDuration < r2rHighestLoadTime) {
+                r2rLowestLoadTime = r2rData.loadDuration;
+            }
+
+            if (r2rData.loadDuration > highestLoadTime) {
+                r2rHighestLoadTime = r2rData.loadDuration;
+            }
+        }
+
+        r2rLoadTimes.sort((a, b) => { return a.loadDuration - b.loadDuration; } );
+
+        half = Math.floor(r2rLoadTimes.length / 2);
+        r2rMedianLoadTime = r2rNumberOfMethods > 0 ? r2rLoadTimes[half].loadDuration : 0;
+        r2rAverageLoadTime = r2rTotalLoadTime / r2rNumberOfMethods;
+
+        // Tier 0
+
+        tierZeroNumberOfMethods = tierZeroLoadTimes.length;
+
+        for (var index = 0; index < tierZeroLoadTimes.length; ++index) {
+            const tierZeroData = tierZeroLoadTimes[index];
+            tierZeroTotalLoadTime += tierZeroData.loadDuration;
+
+            if (index === 0) {
+                tierZeroLowestLoadTime = tierZeroData.loadDuration;
+            }
+            else if (tierZeroData.loadDuration < tierZeroLowestLoadTime) {
+                tierZeroLowestLoadTime = tierZeroData.loadDuration;
+            }
+
+            if (tierZeroData.loadDuration > tierZeroHighestLoadTime) {
+                tierZeroHighestLoadTime = tierZeroData.loadDuration;
+            }
+        }
+
+        half = Math.floor(tierZeroLoadTimes.length / 2);
+        tierZeroMedianLoadTime = tierZeroNumberOfMethods > 0 ? tierZeroLoadTimes[half].loadDuration : 0;
+        tierZeroAverageLoadTime = tierZeroTotalLoadTime / tierZeroNumberOfMethods;
+
+        // Tier 1
+
+        tierOneNumberOfMethods = tierOneLoadTimes.length;
+
+        for (var index = 0; index < tierOneLoadTimes.length; ++index) {
+            const tierOneData = tierOneLoadTimes[index];
+            tierOneTotalLoadTime += tierOneData.loadDuration;
+
+            if (index === 0) {
+                tierOneLowestLoadTime = tierOneData.loadDuration;
+            }
+            else if (tierOneData.loadDuration < tierOneLowestLoadTime) {
+                tierOneLowestLoadTime = tierOneData.loadDuration;
+            }
+
+            if (tierOneData.loadDuration > tierOneHighestLoadTime) {
+                tierOneHighestLoadTime = tierOneData.loadDuration;
+            }
+        }
+
+        half = Math.floor(tierOneLoadTimes.length / 2);
+        tierOneMedianLoadTime = tierOneLoadTimes.length > 0 ? tierOneLoadTimes[half].loadDuration : 0;
+        tierOneAverageLoadTime = tierOneTotalLoadTime / tierZeroNumberOfMethods;
+
+        // Total stats
+
+        var numberOfActiveR2RMethods = r2rNumberOfMethods;
+        var numberOfActiveTier0Methods = tierZeroNumberOfMethods;
+        var numberOfActiveTier1Methods = tierOneNumberOfMethods;
+
+        var r2rMap = new Map<number, JitMethodInfo[]>();
+        var tier0Map = new Map<number, JitMethodInfo[]>();
+        var tier1Map = new Map<number, JitMethodInfo[]>();
+
+        for (var index = 0; index < loadTimes.length; ++index) {
+            const dataPoint = loadTimes[index];
+            var dataLookedUp = undefined;
+
+            if (dataPoint.tier === 1 || dataPoint.tier === 3) {
+                dataLookedUp = tier0Map.get(dataPoint.methodId);
+
+                if (dataLookedUp !== undefined) {
+                    dataLookedUp.push(dataPoint);
+                }
+                else {
+                    tier0Map.set(dataPoint.methodId, [dataPoint]);
+                }
+            } 
+            else if (dataPoint.tier === 2 || dataPoint.tier === 4) {
+                dataLookedUp = tier1Map.get(dataPoint.methodId);
+
+                if (dataLookedUp !== undefined) {
+                    dataLookedUp.push(dataPoint);
+                }
+                else {
+                    tier1Map.set(dataPoint.methodId, [dataPoint]);
+                }
+            }
+            else if (dataPoint.tier === 5) {
+                dataLookedUp = r2rMap.get(dataPoint.methodId);
+
+                if (dataLookedUp !== undefined) {
+                    dataLookedUp.push(dataPoint);
+                }
+                else {
+                    r2rMap.set(dataPoint.methodId, [dataPoint]);
+                }
+            }
+            else {
+                continue;
+            }
+        }
+
+        var r2rKeys = Array.from(r2rMap.keys());
+        var tier0Keys = Array.from(tier0Map.keys());
+
+        for (var index = 0; index < r2rKeys.length; ++index) {
+            const currentKey = r2rKeys[index];
+
+            if (tier0Map.has(currentKey) || tier1Map.has(currentKey)) {
+                // This has been tiered up
+                numberOfActiveR2RMethods -= 1;
+            }
+        }
+
+        for (var index = 0; index < tier0Keys.length; ++index) {
+            const currentKey = tier0Keys[index];
+
+            if (tier1Map.has(currentKey)) {
+                numberOfActiveTier0Methods -= 1;
+            }
+        }
+
+        percentMethodsInR2R = numberOfActiveR2RMethods / numberOfMethods;
+        percentMethodsInTier0 = numberOfActiveTier0Methods / numberOfMethods;
+        percentMethodsInTier1 = numberOfActiveTier1Methods / numberOfMethods;
+
         const dataValue = "ms";
 
         var htmlToReturn = /* html */`
@@ -212,7 +411,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
             <body>
                 <span style="display:none" id="hiddenData"><!--${fileContents}--></span>
 
-                <h2 class="divider">${processData?.processName;}</h2>
+                <h2 class="divider">${processData?.processName}</h2>
                 <div id="timeSummary">Jit Events (Time to JIT) and Load Events for R2R</div>
 
                 <div class="summaryGcDiv">

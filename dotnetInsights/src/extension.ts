@@ -840,9 +840,7 @@ export function activate(context: vscode.ExtensionContext) {
                     if (error) {
                         return;
                     }
-                    vscode.workspace.openTextDocument(outputFileName).then(doc => {
-                        vscode.window.showTextDocument(doc, 1);
-                    });
+                    vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(outputFileName), DotnetInsightsRuntimeLoadEventsEditor.viewType);
                 });
             }
         });
