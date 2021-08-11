@@ -424,9 +424,10 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
                 labelsBy500Ms = true;
             }
             else {
-                intervalCount = intervalTimeInSeconds / 100;
+                // Every 10 seconds. Seconds is a large bucket.
+                intervalCount = intervalTimeInSeconds / 10;
 
-                if (intervalCount <= 100) {
+                if (intervalCount <= 200) {
                     labelsBySecond = true;
                 }
             }
@@ -436,9 +437,9 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         }
 
         if (labelsByMs !== true && labelsBySecond !== true && labelsBy500Ms !== true) {
-            intervalCount = intervalTimeInMinutes / 100;
+            intervalCount = intervalTimeInMinutes;
 
-            if (intervalCount <= 100) {
+            if (intervalCount <= 1440) {
                 labelsByMinute = true;
             }
             else {
@@ -471,8 +472,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
             console.assert(labelsByMinute === false);
             console.assert(labelsByHour === false);
 
-            intervalInMs *= 10;
-
+            intervalInMs *= 100;
         }
         else if (labelsByMinute === true) {
             console.assert(labelsByMs === false);
@@ -497,7 +497,9 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         intervalCount = Math.ceil(intervalCount);
 
         for (var index = 0; index < intervalCount; ++index) {
-            labelsToPass.push(intervalToWorkOn);
+            const labelToUse = new Date(intervalToWorkOn).toUTCString();
+
+            labelsToPass.push(labelToUse);
             intervalToWorkOn += intervalInMs;
         }
 
