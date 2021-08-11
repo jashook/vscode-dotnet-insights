@@ -65,20 +65,22 @@ export class AllocData {
 
 export class JitMethodInfo {
     public methodName: string;
-    public jitDuration: number;
+    public loadDuration: number;
+    public eventTick: Date;
     public tier: number;
     
-    constructor(methodName: string, jitDuration: number, tier: number) {
+    constructor(methodName: string, loadDuration: number, tier: number) {
         this.methodName = methodName;
-        this.jitDuration = jitDuration;
+        this.loadDuration = loadDuration;
         this.tier = tier;
+        this.eventTick = new Date();
     }
 }
 
 export class ProcessInfo { 
     public data: GcData[];
     public jitData: Map<number, JitMethodInfo[]>;
-    public jitDurationTotal: Map<number, number>;
+    public loadDurationTotal: Map<number, number>;
     public processId: number;
     public processName: string;
     public processCommandLine: string;
@@ -92,7 +94,7 @@ export class ProcessInfo {
         this.processCommandLine = parsedJson["processCommandLine"];
         this.data = [] as GcData[];
         this.jitData = new Map<number, JitMethodInfo[]>();
-        this.jitDurationTotal = new Map<number, number>();
+        this.loadDurationTotal = new Map<number, number>();
         this.processStartTime = new Date(parsedJson["processStartTime"]);
 
         this.addData(parsedJson, isAllocData, isJitInfo);
@@ -113,7 +115,7 @@ export class ProcessInfo {
             var isNewItem = false;
             if (methodInfos == null) {
                 methodInfos = [] as JitMethodInfo[];
-                this.jitDurationTotal.set(methodId, 0);
+                this.loadDurationTotal.set(methodId, 0);
                 isNewItem = true;
             }
             else {
@@ -121,7 +123,7 @@ export class ProcessInfo {
             }
 
             var tier = parseInt(data["tier"]);
-            var jitDurationMs = parseFloat(data["jitDurationMs"]);
+            var loadDurationMs = parseFloat(data["loadTimeMs"]);
             var methodName = data["methodName"];
 
             var methodNameSplit = methodName.split(":");
@@ -144,15 +146,15 @@ export class ProcessInfo {
                 methodName = methodSignatureSplit.slice(0, emptyIndex).join(" ") + methodNameValue;
             }
             
-            var jitMethodInfo = new JitMethodInfo(methodName, jitDurationMs, tier);
+            var jitMethodInfo = new JitMethodInfo(methodName, loadDurationMs, tier);
             methodInfos.push(jitMethodInfo);
 
-            var jitDurationTotal = this.jitDurationTotal.get(methodId);
-            if (jitDurationTotal == undefined) {
-                console.assert(jitDurationTotal != undefined);
+            var loadDurationTotal = this.loadDurationTotal.get(methodId);
+            if (loadDurationTotal == undefined) {
+                console.assert(loadDurationTotal != undefined);
             }
             else {
-                this.jitDurationTotal.set(methodId, jitDurationTotal + jitDurationMs);
+                this.loadDurationTotal.set(methodId, loadDurationTotal + loadDurationMs);
             }
 
             if (isNewItem) {
