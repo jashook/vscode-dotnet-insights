@@ -68,12 +68,14 @@ export class JitMethodInfo {
     public loadDuration: number;
     public eventTick: Date;
     public tier: number;
+    public methodId: number;
     
-    constructor(methodName: string, loadDuration: number, tier: number) {
+    constructor(methodName: string, loadDuration: number, tier: number, methodId: number) {
         this.methodName = methodName;
         this.loadDuration = loadDuration;
         this.tier = tier;
         this.eventTick = new Date();
+        this.methodId = methodId;
     }
 }
 
@@ -146,7 +148,7 @@ export class ProcessInfo {
                 methodName = methodSignatureSplit.slice(0, emptyIndex).join(" ") + methodNameValue;
             }
             
-            var jitMethodInfo = new JitMethodInfo(methodName, loadDurationMs, tier);
+            var jitMethodInfo = new JitMethodInfo(methodName, loadDurationMs, tier, methodId);
             methodInfos.push(jitMethodInfo);
 
             var loadDurationTotal = this.loadDurationTotal.get(methodId);

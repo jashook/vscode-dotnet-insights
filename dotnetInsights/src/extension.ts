@@ -829,7 +829,7 @@ export function activate(context: vscode.ExtensionContext) {
                 // document
                 
                 const id = crypto.randomBytes(16).toString("hex");
-                const outputFileName = path.join(insights.gcDataSaveLocation, pid + "---" + id + ".netload");
+                const outputFileName = path.join(insights.gcDataSaveLocation, pid + "---" + id + ".netloadinfo");
 
                 const processInfo = listener?.processes.get(parseInt(pid!));
                 var methodLoadEvents = Array.from(processInfo!.jitData);
