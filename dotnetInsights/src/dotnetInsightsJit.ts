@@ -51,7 +51,7 @@ export class DotnetInsightsJitTreeDataProvider implements vscode.TreeDataProvide
                     var processInfo = this.listener.processes.get(keys[index])!;
                     var jitMethodIds = Array.from(processInfo.jitData.keys());
                     const label = `${keys[index].toString()} - ${this.listener.processes.get(keys[index])?.processName}`;
-                    const jitDep = new JitDependency(label, vscode.TreeItemCollapsibleState.Collapsed, undefined, this.listener, keys[index].toString(), jitMethodIds.length);
+                    const jitDep = new JitDependency(true, label, vscode.TreeItemCollapsibleState.Collapsed, undefined, this.listener, keys[index].toString(), jitMethodIds.length);
 
                     deps.push(jitDep);
                 }
@@ -77,10 +77,10 @@ export class DotnetInsightsJitTreeDataProvider implements vscode.TreeDataProvide
                             const firstJitInstance = jittedMethodCalls![0];
 
                             const methodName = firstJitInstance.methodName;
-                            const totalLatencyFromJit = processInfo.jitDurationTotal.get(jitMethodId);
+                            const totalLatencyFromJit = processInfo.loadDurationTotal.get(jitMethodId);
 
                             const label = `${jitMethodId} - ` + methodName;
-                            const jitDep = new JitDependency(label, vscode.TreeItemCollapsibleState.Collapsed, undefined, this.listener, element.pid, totalLatencyFromJit, `${totalLatencyFromJit} ms`);
+                            const jitDep = new JitDependency(false, label, vscode.TreeItemCollapsibleState.Collapsed, undefined, this.listener, element.pid, totalLatencyFromJit, `${totalLatencyFromJit} ms`);
 
                             deps.push(jitDep);
                         }
@@ -99,7 +99,7 @@ export class DotnetInsightsJitTreeDataProvider implements vscode.TreeDataProvide
 
                     for (var index = 0; index < jittedMethodCalls!.length; ++index) {
                         const tier = jittedMethodCalls![index].tier;
-                        const duration = jittedMethodCalls![index].jitDuration;
+                        const duration = jittedMethodCalls![index].loadDuration;
 
                         var tierName = undefined;
 
@@ -134,7 +134,7 @@ export class DotnetInsightsJitTreeDataProvider implements vscode.TreeDataProvide
                         }
 
                         const label = `${tierName}`;
-                        deps.push(new JitDependency(label, vscode.TreeItemCollapsibleState.None, undefined, this.listener, element.pid, duration, `${duration} ms`));
+                        deps.push(new JitDependency(false, label, vscode.TreeItemCollapsibleState.None, undefined, this.listener, element.pid, duration, `${duration} ms`));
                     }
                 }
 
@@ -156,6 +156,7 @@ export class DotnetInsightsJitTreeDataProvider implements vscode.TreeDataProvide
 export class JitDependency extends vscode.TreeItem {
 
     constructor(
+        public isRoot: boolean,
         public readonly label: string,
         public readonly collapsibleState: vscode.TreeItemCollapsibleState,
         public command?: vscode.Command,
@@ -173,11 +174,13 @@ export class JitDependency extends vscode.TreeItem {
         this.numValue = numValue;
 
         if (description == undefined) {
-            this.description = `Jitted Methods: ${jitMethodIds.length}`;
+            this.description = `Loaded Methods: ${jitMethodIds.length}`;
         }
         else {
             this.description = description;
         }
+
+        this.contextValue = isRoot ? 'jitRootContext' : "";
     }
 
     iconPath = {

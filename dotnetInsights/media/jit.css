@@ -1,0 +1,352 @@
+/*
+    All divs are assumed to a line.
+*/
+
+.divider
+{
+    border-bottom: 1px solid black;
+    padding-bottom: 2em;
+    padding-top: 1em;
+    font-size: 30px;
+    text-align: center;
+}
+
+.summaryGcDiv
+{
+    text-align: center;
+    width: 100%
+}
+
+.total
+{
+    background-color: rgba(174, 207, 27, 0.8);
+    border-radius: 10px;
+    display: inline-block;
+    margin: auto;
+    margin-bottom: 2em;
+    margin-right: 1em;
+    margin-top: 2em;
+    padding-bottom: 1em;
+    padding-top: 1em;
+    text-align: center;
+    width: 20em;
+}
+
+.total>div
+{
+    display: inline-block;
+    width: 4em;
+    font-size: 16px;
+    margin: 5px;
+    color: white;
+}
+
+.total>div:first-child
+{
+    display: block;
+    font-size: 20px;
+    width: 98%;
+    border-bottom: 1px dashed black;
+    margin-bottom: .5em;
+    padding-bottom: 1em;
+}
+
+.time>.total>div:nth-child(2)
+{
+    position: relative;
+    top: -.9em;
+}
+
+.total>div>span
+{
+    display: block;
+    font-size: 12px !important;
+    margin: 1em;
+}
+
+.loh
+{
+    background-color: rgba(47, 132, 165, 0.8);
+    border-radius: 10px;
+    display: inline-block;
+    margin: auto;
+    margin-bottom: 2em;
+    margin-right: 1em;
+    margin-top: 2em;
+    padding-bottom: 1em;
+    padding-top: 1em;
+    text-align: center;
+    width: 20em;
+}
+
+.loh>div
+{
+    display: inline-block;
+    width: 4em;
+    font-size: 16px;
+    margin: 5px;
+    color: white;
+}
+
+.loh>div:first-child
+{
+    display: block;
+    font-size: 20px;
+    width: 98%;
+    border-bottom: 1px dashed black;
+    margin-bottom: .5em;
+    padding-bottom: 1em;
+}
+
+.loh>div:nth-child(2)
+{
+    padding-top: 1em;
+}
+
+.loh>div>span
+{
+    display: block;
+    font-size: 12px !important;
+    margin: 1em;
+}
+
+.gen0 
+{
+    background-color: rgba(72, 83, 136, .8);
+    border-radius: 10px;
+    display: inline-block;
+    margin: auto;
+    margin-bottom: 2em;
+    margin-right: 1em;
+    margin-top: 2em;
+    padding-bottom: 1em;
+    padding-top: 1em;
+    text-align: center;
+    width: 20em;
+}
+
+.gen0>div
+{
+    display: inline-block;
+    width: 4em;
+    font-size: 16px;
+    margin: 5px;
+    color: white;
+}
+
+.gen0>div:first-child
+{
+    display: block;
+    font-size: 20px;
+    width: 98%;
+    border-bottom: 1px dashed black;
+    margin-bottom: .5em;
+    padding-bottom: 1em;
+}
+
+.time>.gen0>div:nth-child(2)
+{
+    position: relative;
+    top: -.9em;
+}
+
+.gen0>div>span
+{
+    display: block;
+    font-size: 12px !important;
+    margin: 1em;
+}
+
+.gen1
+{
+    background-color: rgba(96, 165, 69, 0.8);
+    border-radius: 10px;
+    display: inline-block;
+    margin: auto;
+    margin-bottom: 2em;
+    margin-right: 1em;
+    margin-top: 2em;
+    padding-bottom: 1em;
+    padding-top: 1em;
+    text-align: center;
+    width: 20em;
+}
+
+.gen1>div
+{
+    display: inline-block;
+    width: 4em;
+    font-size: 16px;
+    margin: 5px;
+    color: white;
+}
+
+.gen1>div:first-child
+{
+    display: block;
+    font-size: 20px;
+    width: 98%;
+    border-bottom: 1px dashed black;
+    margin-bottom: .5em;
+    padding-bottom: 1em;
+}
+
+.time>.gen1>div:nth-child(2)
+{
+    position: relative;
+    top: -.9em;
+}
+
+.gen1>div>span
+{
+    display: block;
+    font-size: 12px !important;
+    margin: 1em;
+}
+
+.gen2
+{
+    background-color: rgba(141, 31, 95, 0.8);
+    border-radius: 10px;
+    display: inline-block;
+    margin: auto;
+    margin-bottom: 2em;
+    margin-right: 1em;
+    margin-top: 2em;
+    padding-bottom: 1em;
+    padding-top: 1em;
+    text-align: center;
+    width: 20em;
+}
+
+.gen2>div
+{
+    display: inline-block;
+    width: 4em;
+    font-size: 16px;
+    margin: 5px;
+    color: white;
+}
+
+.gen2>div:first-child
+{
+    display: block;
+    font-size: 20px;
+    width: 98%;
+    border-bottom: 1px dashed black;
+    margin-bottom: .5em;
+    padding-bottom: 1em;
+}
+
+.time>.gen2>div:nth-child(2)
+{
+    position: relative;
+    top: -.9em;
+}
+
+.gen2>div>span
+{
+    display: block;
+    font-size: 12px !important;
+    margin: 1em;
+}
+
+#LOH
+{
+    background-color: rgba(201, 221, 84, 0.8);
+    border-radius: 10px;
+    display: inline-block;
+    margin: auto;
+    margin-bottom: 2em;
+    margin-right: 1em;
+    margin-top: 2em;
+    padding-bottom: 1em;
+    padding-top: 1em;
+    text-align: center;
+    width: 20em;
+    height: 20em;
+}
+
+#LOH>div
+{
+    display: inline-block;
+    width: 4em;
+    font-size: 16px;
+    margin: 5px;
+    color: black;
+}
+
+#LOH>div:first-child
+{
+    display: block;
+    font-size: 20px;
+    width: 98%;
+    border-bottom: 1px dashed black;
+    margin-bottom: .5em;
+    padding-bottom: 1em;
+}
+
+#LOH>div:nth-child(2)
+{
+    position: relative;
+    top: -.9em;
+}
+
+#LOH>div>span
+{
+    display: block;
+    font-size: 12px !important;
+    margin: 1em;
+}
+
+.jitStats
+{
+    height: 600px;
+    margin-top:  10em;
+    width: 70%;
+    margin-left: 15%;
+}
+
+#nextSpacer
+{
+    margin-top: 3em;
+}
+
+.heapChartParent {
+    width: 100%;
+    height: 600px;
+}
+
+.heapChartParentMultiple {
+    width: 50%;
+    height: 600px;
+    display: inline-block;
+}
+
+.allocChartParent {
+    width: 50%;
+    height: 600px;
+    display: inline-block;
+}
+
+.heapChartNextLine {
+    width: 50%;
+    height: 600px;
+}
+
+#heapCharPadding {
+    margin-bottom: 16em;
+}
+
+.spacer
+{
+    margin-top: 3em;
+}
+
+
+#timeSummary
+{
+    margin-top: 1em;
+    font-size: 16px;
+    text-align: center;
+}

@@ -3,7 +3,7 @@
   "displayName": ".NET Insights",
   "publisher": "jashoo",
   "description": "Monitor .NET Processes for GC information in real time, or drill into .NET DLLs by viewing the IL and compiled code. Relies on ildasm and a public .NET JIT tool PMI.",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "preview": false,
   "icon": "media/dep.png",
   "repository": {
@@ -31,6 +31,7 @@
     "onCustomEditor:dotnetInsights.edit",
     "onCustomEditor:dotnetInsightsGc.edit",
     "onCustomEditor:dotnetInsightsGcSnapshot.edit",
+    "onCustomEditor:dotnetInsightsRuntimeEditor.edit",
     "onCommand:dotnetInsights.loadExtension",
     "onCommand:dotnetInsights.realtimeIl"
   ],
@@ -133,7 +134,17 @@
         "displayName": "Dotnet Insights GC Snapshot Editor",
         "selector": [
           {
-            "filenamePattern": "*.gc[iI]nfo",
+            "filenamePattern": "*.gcinfo",
+            "priority": "default"
+          }
+        ]
+      },
+      {
+        "viewType": "dotnetInsightsRuntimeEditor.edit",
+        "displayName": "Dotnet Insights Load Event Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.netloadinfo",
             "priority": "default"
           }
         ]
@@ -239,7 +250,11 @@
       },
       {
         "command": "dotnetInsights.stopGCMonitor",
-        "title": "Stop GC Monitoring"
+        "title": "Stop .NET Monitoring"
+      },
+      {
+        "command": "dotnetInsights.loadEvents",
+        "title": "Show details on all load events"
       }
     ],
     "menus": {
@@ -288,6 +303,10 @@
         {
           "command": "dotnetInsights.diffThreeVsFiveTier1",
           "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.loadEvents",
+          "when": "view == dotnetInsightsJit && viewItem == jitRootContext"
         }
       ]
     },

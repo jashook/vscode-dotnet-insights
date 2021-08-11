@@ -215,13 +215,13 @@ internal class MethodJitInfo
     public bool HasLoaded { get; set; }
     public long MethodId { get; set; }
     public int Tier { get; set; }
-    public double JitDuration { get; set; }
+    public double LoadTime { get; set; }
     public Stopwatch  Stopwatch { get; set; }
     public string MethodName { get; set; }
 
     public string ToJsonString()
     {
-        return $"{{\"tier\":\"{this.Tier}\",\"jitDurationMs\":\"{this.JitDuration}\",\"methodName\":\"{this.MethodName}\",\"methodId\":\"{this.MethodId}\"}}";
+        return $"{{\"tier\":\"{this.Tier}\",\"loadTimeMs\":\"{this.LoadTime}\",\"methodName\":\"{this.MethodName}\",\"methodId\":\"{this.MethodId}\"}}";
     }
 }
 

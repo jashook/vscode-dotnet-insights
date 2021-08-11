@@ -14,11 +14,12 @@ import { DotnetInsightsTextEditorProvider } from "./DotnetInightsTextEditor";
 import { DotnetInsightsGcTreeDataProvider, GcDependency } from "./dotnetInsightsGc";
 import { DotnetInsightsGcEditor } from "./DotnetInsightsGcEditor";
 import { DotnetInsightsGcSnapshotEditor } from "./DotnetInsightsGcSnapshotEditor";
+import { DotnetInsightsRuntimeLoadEventsEditor } from "./DotnetInsightsRuntimeLoadEventsEditor";
 import { DependencySetup } from "./DependencySetup";
 
 import { GcListener } from "./GcListener";
 import { OnSaveIlDasm } from './onSaveIlDasm';
-import { DotnetInsightsJitTreeDataProvider } from './dotnetInsightsJit';
+import { DotnetInsightsJitTreeDataProvider, JitDependency } from './dotnetInsightsJit';
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -45,7 +46,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     var insights = new DotnetInsights(outputChannel);
     const lastestVersionNumber = "0.7.0";
-    const latestListenerVersionNumber = "0.7.2";
+    const latestListenerVersionNumber = "0.7.3";
     const latestRoslynVersionNumber = "0.7.0";
 
     var childProcess: child.ChildProcess | undefined = undefined;
@@ -820,9 +821,34 @@ export function activate(context: vscode.ExtensionContext) {
             }
         });
 
+        vscode.commands.registerCommand("dotnetInsights.loadEvents", (treeItem: JitDependency) => {
+            if (treeItem.label !== undefined) {
+                let pid = treeItem.pid!;
+
+                // We will create a json file with the load events and then open a custom
+                // document
+                
+                const id = crypto.randomBytes(16).toString("hex");
+                const outputFileName = path.join(insights.gcDataSaveLocation, pid + "---" + id + ".netloadinfo");
+
+                const processInfo = listener?.processes.get(parseInt(pid!));
+                var methodLoadEvents = Array.from(processInfo!.jitData);
+
+                const methodLoadEventsStr = JSON.stringify(methodLoadEvents);
+
+                fs.writeFile(outputFileName, methodLoadEventsStr, (error) => {
+                    if (error) {
+                        return;
+                    }
+                    vscode.commands.executeCommand("vscode.openWith", vscode.Uri.file(outputFileName), DotnetInsightsRuntimeLoadEventsEditor.viewType);
+                });
+            }
+        });
+
         context.subscriptions.push(DotnetInsightsTextEditorProvider.register(context, insights));
         context.subscriptions.push(DotnetInsightsGcEditor.register(context, insights, listener));
         context.subscriptions.push(DotnetInsightsGcSnapshotEditor.register(context, insights));
+        context.subscriptions.push(DotnetInsightsRuntimeLoadEventsEditor.register(context, insights));
 
         if (startupCallback != undefined) {
             startupCallback();
