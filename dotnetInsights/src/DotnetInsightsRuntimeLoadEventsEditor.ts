@@ -18,7 +18,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
     public static readonly viewType = 'dotnetInsightsRuntimeEditor.edit';
 
     private timeInJit: number;
-    private loadData: JitMethodInfo[] | undefined;
+    private loadData: [any] | undefined;
     
     constructor(
         private readonly context: vscode.ExtensionContext,
@@ -110,15 +110,8 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
             this.loadData = JSON.parse(fileContents.toString());
 
             if (this.loadData === null || 
-                this.loadData === undefined ||
-                this.loadData.length === 0) {
+                this.loadData === undefined) {
                 throw new Error("Json error.");
-            }
-
-            for (var index = 0; index < this.loadData?.length; ++index) {
-                if (this.loadData[index].tier !== 5) {
-                    this.timeInJit += this.loadData[index].loadDuration;
-                }
             }
         }
         catch(e) {
@@ -153,7 +146,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         var tierZeroLoadTimes = [];
         var tierOneLoadTimes = [];
 
-        var numberOfMethods = this.loadData.length;
+        var numberOfMethods = 0;
         var totalLoadTime = 0;
         var highestLoadTime = 0;
         var lowestLoadTime = 0;
@@ -197,33 +190,40 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         // PreJIT = 255
 
         for (var index = 0; index < this.loadData.length; ++index) {
-            const currentLoadData = this.loadData[index];
-            totalLoadTime += currentLoadData.loadDuration;
+            const currentLoadMethodData = this.loadData[index];
 
-            if (index === 0) {
-                lowestLoadTime = currentLoadData.loadDuration;
-            }
-            else if (currentLoadData.loadDuration < lowestLoadTime) {
-                lowestLoadTime = currentLoadData.loadDuration;
-            }
+            for (var methodIndex = 0; methodIndex < currentLoadMethodData[1].length; ++methodIndex) {
+                const methodId = currentLoadMethodData[0];
+                const currentLoadData = currentLoadMethodData[1][methodIndex];
 
-            if (currentLoadData.loadDuration > highestLoadTime) {
-                highestLoadTime = currentLoadData.loadDuration;
-            }
+                ++numberOfMethods;
+                totalLoadTime += currentLoadData.loadDuration;
 
-            loadTimes.push(currentLoadData);
+                if (index === 0) {
+                    lowestLoadTime = currentLoadData.loadDuration;
+                }
+                else if (currentLoadData.loadDuration < lowestLoadTime) {
+                    lowestLoadTime = currentLoadData.loadDuration;
+                }
 
-            if (currentLoadData.tier === 1 || currentLoadData.tier === 3) {
-                tierZeroLoadTimes.push(currentLoadData);
-            } 
-            else if (currentLoadData.tier === 2 || currentLoadData.tier == 4) {
-                tierOneLoadTimes.push(currentLoadData);
-            }
-            else if (currentLoadData.tier == 5) {
-                r2rLoadTimes.push(currentLoadData);
-            }
-            else {
-                console.log("Unknown op tier");
+                if (currentLoadData.loadDuration > highestLoadTime) {
+                    highestLoadTime = currentLoadData.loadDuration;
+                }
+    
+                loadTimes.push(currentLoadData);
+    
+                if (currentLoadData.tier === 1 || currentLoadData.tier === 3) {
+                    tierZeroLoadTimes.push(currentLoadData);
+                } 
+                else if (currentLoadData.tier === 2 || currentLoadData.tier == 4) {
+                    tierOneLoadTimes.push(currentLoadData);
+                }
+                else if (currentLoadData.tier == 5) {
+                    r2rLoadTimes.push(currentLoadData);
+                }
+                else {
+                    console.log("Unknown op tier");
+                }
             }
         }
 
@@ -231,7 +231,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
             return a.loadDuration - b.loadDuration;
         });
 
-        var half = Math.floor(loadTimes.length / 2);
+        var half = Math.ceil(loadTimes.length / 2) === loadTimes.length ? loadTimes.length - 1 : Math.ceil(loadTimes.length / 2);
         medianLoadTime = loadTimes[half].loadDuration;
         averageLoadTime = totalLoadTime / numberOfMethods;
 
@@ -246,18 +246,18 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
             if (index === 0) {
                 r2rLowestLoadTime = r2rData.loadDuration;
             }
-            else if (r2rData.loadDuration < r2rHighestLoadTime) {
+            else if (r2rData.loadDuration < r2rLowestLoadTime) {
                 r2rLowestLoadTime = r2rData.loadDuration;
             }
 
-            if (r2rData.loadDuration > highestLoadTime) {
+            if (r2rData.loadDuration > r2rHighestLoadTime) {
                 r2rHighestLoadTime = r2rData.loadDuration;
             }
         }
 
         r2rLoadTimes.sort((a, b) => { return a.loadDuration - b.loadDuration; } );
 
-        half = Math.floor(r2rLoadTimes.length / 2);
+        half = Math.ceil(r2rLoadTimes.length / 2) === r2rLoadTimes.length ? r2rLoadTimes.length - 1 : Math.ceil(r2rLoadTimes.length / 2);
         r2rMedianLoadTime = r2rNumberOfMethods > 0 ? r2rLoadTimes[half].loadDuration : 0;
         r2rAverageLoadTime = r2rTotalLoadTime / r2rNumberOfMethods;
 
@@ -268,6 +268,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         for (var index = 0; index < tierZeroLoadTimes.length; ++index) {
             const tierZeroData = tierZeroLoadTimes[index];
             tierZeroTotalLoadTime += tierZeroData.loadDuration;
+            this.timeInJit += tierZeroData.loadDuration;
 
             if (index === 0) {
                 tierZeroLowestLoadTime = tierZeroData.loadDuration;
@@ -281,7 +282,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
             }
         }
 
-        half = Math.floor(tierZeroLoadTimes.length / 2);
+        half = Math.ceil(tierZeroLoadTimes.length / 2) === tierZeroLoadTimes.length ? tierZeroLoadTimes.length - 1 : Math.ceil(tierZeroLoadTimes.length / 2);
         tierZeroMedianLoadTime = tierZeroNumberOfMethods > 0 ? tierZeroLoadTimes[half].loadDuration : 0;
         tierZeroAverageLoadTime = tierZeroTotalLoadTime / tierZeroNumberOfMethods;
 
@@ -292,6 +293,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         for (var index = 0; index < tierOneLoadTimes.length; ++index) {
             const tierOneData = tierOneLoadTimes[index];
             tierOneTotalLoadTime += tierOneData.loadDuration;
+            this.timeInJit += tierOneData.loadDuration;
 
             if (index === 0) {
                 tierOneLowestLoadTime = tierOneData.loadDuration;
@@ -305,9 +307,9 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
             }
         }
 
-        half = Math.floor(tierOneLoadTimes.length / 2);
+        half = Math.ceil(tierOneLoadTimes.length / 2) === tierOneLoadTimes.length ? tierOneLoadTimes.length - 1 : Math.ceil(tierOneLoadTimes.length / 2);
         tierOneMedianLoadTime = tierOneLoadTimes.length > 0 ? tierOneLoadTimes[half].loadDuration : 0;
-        tierOneAverageLoadTime = tierOneTotalLoadTime / tierZeroNumberOfMethods;
+        tierOneAverageLoadTime = tierOneTotalLoadTime / tierOneNumberOfMethods;
 
         // Total stats
 
@@ -378,9 +380,13 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
             }
         }
 
-        percentMethodsInR2R = numberOfActiveR2RMethods / numberOfMethods;
-        percentMethodsInTier0 = numberOfActiveTier0Methods / numberOfMethods;
-        percentMethodsInTier1 = numberOfActiveTier1Methods / numberOfMethods;
+        percentMethodsInR2R = (numberOfActiveR2RMethods / numberOfMethods) * 100;
+        percentMethodsInTier0 = (numberOfActiveTier0Methods / numberOfMethods) * 100;
+        percentMethodsInTier1 = (numberOfActiveTier1Methods / numberOfMethods) * 100;
+
+        r2rNumberOfTrappedMethods = numberOfActiveR2RMethods;
+        tierZeroNumberOfTrappedMethods = numberOfActiveTier0Methods;
+        tierOneNumberOfTrappedMethods = numberOfActiveTier1Methods;
 
         const dataValue = "ms";
 
@@ -417,48 +423,48 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
                 <div class="summaryGcDiv">
                     <div class="total">
                         <div>Total Time (JIT + R2R)</div>
-                        <div>Number Loaded<span>${numberOfMethods}</span></div>
-                        <div>Total<span>${totalLoadTime} ${dataValue}</span></div>
-                        <div>Largest<span>${highestLoadTime} ${dataValue}</span></div>
-                        <div>Smallest<span>${lowestLoadTime} ${dataValue}</span></div>
-                        <div>Average<span>${averageLoadTime} ${dataValue}</span></div>
-                        <div>Median<span>${medianLoadTime} ${dataValue}</span></div>
+                        <div>Method Count<span>${numberOfMethods}</span></div>
+                        <div>Total<span>${totalLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Largest<span>${highestLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Smallest<span>${lowestLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Average<span>${averageLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Median<span>${medianLoadTime.toFixed(2)} ${dataValue}</span></div>
                     </div>
                     <div class="gen0">
                         <div>R2R</div>
-                        <div>Number Loaded<span>${r2rNumberOfMethods}</span></div>
-                        <div>Total<span>${r2rTotalLoadTime} ${dataValue}</span></div>
-                        <div>Largest<span>${r2rHighestLoadTime} ${dataValue}</span></div>
-                        <div>Smallest<span>${r2rLowestLoadTime} ${dataValue}</span></div>
-                        <div>Average<span>${r2rAverageLoadTime} ${dataValue}</span></div>
-                        <div>Median<span>${r2rMedianLoadTime} ${dataValue}</span></div>
+                        <div>Method Count<span>${r2rNumberOfMethods}</span></div>
+                        <div>Total<span>${r2rTotalLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Largest<span>${r2rHighestLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Smallest<span>${r2rLowestLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Average<span>${r2rAverageLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Median<span>${r2rMedianLoadTime.toFixed(2)} ${dataValue}</span></div>
                     </div>
                     <div class="gen1">
                         <div>Tier 0</div>
-                        <div>Number Loaded<span>${tierZeroNumberOfMethods}</span></div>
-                        <div>Total<span>${tierZeroTotalLoadTime} ${dataValue}</span></div>
-                        <div>Largest<span>${tierZeroHighestLoadTime} ${dataValue}</span></div>
-                        <div>Smallest<span>${tierZeroLowestLoadTime} ${dataValue}</span></div>
-                        <div>Average<span>${tierZeroAverageLoadTime} ${dataValue}</span></div>
-                        <div>Median<span>${tierZeroMedianLoadTime} ${dataValue}</span></div>
+                        <div>Method Count<span>${tierZeroNumberOfMethods}</span></div>
+                        <div>Total<span>${tierZeroTotalLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Largest<span>${tierZeroHighestLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Smallest<span>${tierZeroLowestLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Average<span>${tierZeroAverageLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Median<span>${tierZeroMedianLoadTime.toFixed(2)} ${dataValue}</span></div>
                     </div>
                     <div class="gen2">
                         <div>Tier 1</div>
-                        <div>Number Loaded<span>${tierOneNumberOfMethods}</span></div>
-                        <div>Total<span>${tierOneTotalLoadTime} ${dataValue}</span></div>
-                        <div>Largest<span>${tierOneHighestLoadTime} ${dataValue}</span></div>
-                        <div>Smallest<span>${tierOneLowestLoadTime} ${dataValue}</span></div>
-                        <div>Average<span>${tierOneAverageLoadTime} ${dataValue}</span></div>
-                        <div>Median<span>${tierOneMedianLoadTime} ${dataValue}</span></div>
+                        <div>Method Count<span>${tierOneNumberOfMethods}</span></div>
+                        <div>Total<span>${tierOneTotalLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Largest<span>${tierOneHighestLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Smallest<span>${tierOneLowestLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Average<span>${tierOneAverageLoadTime.toFixed(2)} ${dataValue}</span></div>
+                        <div>Median<span>${tierOneMedianLoadTime.toFixed(2)} ${dataValue}</span></div>
                     </div>
                     <div class="loh">
                         <div>Method Information</div>
                         <div>R2R Methods<span>${r2rNumberOfTrappedMethods}</span></div>
                         <div>Tier 0 Methods<span>${tierZeroNumberOfTrappedMethods}</span></div>
                         <div>Tier 1 Methods<span>${tierOneNumberOfTrappedMethods}</span></div>
-                        <div>R2R %<span>${percentMethodsInR2R}%</span></div>
-                        <div>Tier 0 %<span>${percentMethodsInTier0}%</span></div>
-                        <div>Tier 1 %<span>${percentMethodsInTier1}%</span></div>
+                        <div>R2R %<span>${percentMethodsInR2R.toFixed(2)}%</span></div>
+                        <div>Tier 0 %<span>${percentMethodsInTier0.toFixed(2)}%</span></div>
+                        <div>Tier 1 %<span>${percentMethodsInTier1.toFixed(2)}%</span></div>
                     </div>
                 </div>
 
@@ -478,7 +484,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         let text = '';
         const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
         for (let i = 0; i < 32; i++) {
-            text += possible.charAt(Math.floor(Math.random() * possible.length));
+            text += possible.charAt(Math.ceil(Math.random() * possible.length));
         }
         return text;
     }
