@@ -834,7 +834,12 @@ export function activate(context: vscode.ExtensionContext) {
                 const processInfo = listener?.processes.get(parseInt(pid!));
                 var methodLoadEvents = Array.from(processInfo!.jitData);
 
-                const methodLoadEventsStr = JSON.stringify(methodLoadEvents);
+                var dataToPass = [
+                    processInfo?.processName,
+                    methodLoadEvents
+                ];
+
+                const methodLoadEventsStr = JSON.stringify(dataToPass);
 
                 fs.writeFile(outputFileName, methodLoadEventsStr, (error) => {
                     if (error) {

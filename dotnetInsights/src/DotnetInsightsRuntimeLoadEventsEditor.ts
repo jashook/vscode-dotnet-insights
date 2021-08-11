@@ -20,7 +20,8 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
     private timeInJit: number;
     private loadData: [any] | undefined;
     private listener: GcListener;
-    
+    private processName: string;
+
     constructor(
         private readonly context: vscode.ExtensionContext,
         private readonly insights: DotnetInsights,
@@ -30,6 +31,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         this.loadData = undefined;
         this.timeInJit = 0;
         this.listener = gcListener;
+        this.processName = "";
     }
 
     openCustomDocument(uri: vscode.Uri, openContext: vscode.CustomDocumentOpenContext, token: vscode.CancellationToken): vscode.CustomDocument | Thenable<vscode.CustomDocument> {
@@ -110,12 +112,21 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         const fileContents = fs.readFileSync(document.uri.fsPath);
         try
         {
-            this.loadData = JSON.parse(fileContents.toString());
+            var loadData = JSON.parse(fileContents.toString());
+
+            if (loadData === null || 
+                loadData === undefined) {
+                throw new Error("Json error.");
+            }
+
+            this.processName = loadData[0];
+            this.loadData = loadData[1];
 
             if (this.loadData === null || 
                 this.loadData === undefined) {
                 throw new Error("Json error.");
             }
+
         }
         catch(e) {
             vscode.window.showWarningMessage(`${document.uri.fsPath} is corrupted or a incorrect type.`);
@@ -140,9 +151,6 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         if (this.loadData.length > 0) {
             canvasData = `<div class="jitStats"><canvas id="totalJitStatsOverTime"></canvas></div>`;
         }
-
-        const processData = document.listener?.processes.get(document.processId);
-        processData?.processName;
 
         var loadTimes = [];
         var r2rLoadTimes = [];
@@ -638,7 +646,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
             <body>
                 <span style="display:none" id="hiddenData"><!--${hiddenData}--></span>
 
-                <h2 class="divider">${processData?.processName}</h2>
+                <h2 class="divider">${this.processName}</h2>
                 <div id="timeSummary">Jit Events (Time to JIT) and Load Events for R2R</div>
 
                 <div class="summaryGcDiv">
