@@ -220,6 +220,11 @@ export class GcListener {
                         response.end("eol");
                     }
 
+                    if (jsonData == undefined) {
+                        response.end("eol");
+                        return;
+                    }
+
                     console.log(request.url);
                     const isAllocData = request.url == "/gcAllocation";
                     const isJitEvent = request.url == "/jitEvent";

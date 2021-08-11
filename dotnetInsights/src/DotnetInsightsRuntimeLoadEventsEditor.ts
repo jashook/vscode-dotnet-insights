@@ -4,13 +4,13 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { DotnetInsights } from "./dotnetInsights";
-import { JitMethodInfo, ProcessInfo } from "./GcListener";
+import { JitMethodInfo, ProcessInfo, GcListener } from "./GcListener";
 
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
 
 export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReadonlyEditorProvider {
     public static register(context: vscode.ExtensionContext, insights: DotnetInsights): vscode.Disposable {
-        const provider = new DotnetInsightsRuntimeLoadEventsEditor(context, insights, null);
+        const provider = new DotnetInsightsRuntimeLoadEventsEditor(context, insights, null, insights.listener!);
         const providerRegistration = vscode.window.registerCustomEditorProvider(DotnetInsightsRuntimeLoadEventsEditor.viewType, provider);
         return providerRegistration;
     }
@@ -19,14 +19,17 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
 
     private timeInJit: number;
     private loadData: [any] | undefined;
+    private listener: GcListener;
     
     constructor(
         private readonly context: vscode.ExtensionContext,
         private readonly insights: DotnetInsights,
-        private jitData: any
+        private jitData: any,
+        private gcListener: GcListener
     ) {
         this.loadData = undefined;
         this.timeInJit = 0;
+        this.listener = gcListener;
     }
 
     openCustomDocument(uri: vscode.Uri, openContext: vscode.CustomDocumentOpenContext, token: vscode.CancellationToken): vscode.CustomDocument | Thenable<vscode.CustomDocument> {
@@ -45,7 +48,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
                                                     endofLine,
                                                     0,
                                                     processId,
-                                                    null);
+                                                    this.listener);
 
         return document;
     }
@@ -125,7 +128,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
 
         const nonce = this.getNonce();
 
-        const mainUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'snapshot.css'));
+        const mainUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'jit.css'));
         const styleResetUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'reset.css'));
         const styleVSCodeUri = webview.asWebviewUri(vscode.Uri.joinPath(this.context.extensionUri, 'media', 'vscode.css'));
 
@@ -233,7 +236,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
 
         var half = Math.ceil(loadTimes.length / 2) === loadTimes.length ? loadTimes.length - 1 : Math.ceil(loadTimes.length / 2);
         medianLoadTime = loadTimes[half].loadDuration;
-        averageLoadTime = totalLoadTime / numberOfMethods;
+        averageLoadTime = numberOfMethods > 0 ? totalLoadTime / numberOfMethods : 0;
 
         // R2R
 
@@ -259,7 +262,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
 
         half = Math.ceil(r2rLoadTimes.length / 2) === r2rLoadTimes.length ? r2rLoadTimes.length - 1 : Math.ceil(r2rLoadTimes.length / 2);
         r2rMedianLoadTime = r2rNumberOfMethods > 0 ? r2rLoadTimes[half].loadDuration : 0;
-        r2rAverageLoadTime = r2rTotalLoadTime / r2rNumberOfMethods;
+        r2rAverageLoadTime = r2rNumberOfMethods > 0 ? r2rTotalLoadTime / r2rNumberOfMethods : 0;
 
         // Tier 0
 
@@ -284,7 +287,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
 
         half = Math.ceil(tierZeroLoadTimes.length / 2) === tierZeroLoadTimes.length ? tierZeroLoadTimes.length - 1 : Math.ceil(tierZeroLoadTimes.length / 2);
         tierZeroMedianLoadTime = tierZeroNumberOfMethods > 0 ? tierZeroLoadTimes[half].loadDuration : 0;
-        tierZeroAverageLoadTime = tierZeroTotalLoadTime / tierZeroNumberOfMethods;
+        tierZeroAverageLoadTime = tierZeroTotalLoadTime > 0 ? tierZeroTotalLoadTime / tierZeroNumberOfMethods : 0;
 
         // Tier 1
 
@@ -309,7 +312,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
 
         half = Math.ceil(tierOneLoadTimes.length / 2) === tierOneLoadTimes.length ? tierOneLoadTimes.length - 1 : Math.ceil(tierOneLoadTimes.length / 2);
         tierOneMedianLoadTime = tierOneLoadTimes.length > 0 ? tierOneLoadTimes[half].loadDuration : 0;
-        tierOneAverageLoadTime = tierOneTotalLoadTime / tierOneNumberOfMethods;
+        tierOneAverageLoadTime = tierOneNumberOfMethods > 0 ? tierOneTotalLoadTime / tierOneNumberOfMethods : tierOneNumberOfMethods;
 
         // Total stats
 

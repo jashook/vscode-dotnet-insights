@@ -250,7 +250,7 @@
       },
       {
         "command": "dotnetInsights.stopGCMonitor",
-        "title": "Stop GC Monitoring"
+        "title": "Stop .NET Monitoring"
       },
       {
         "command": "dotnetInsights.loadEvents",
