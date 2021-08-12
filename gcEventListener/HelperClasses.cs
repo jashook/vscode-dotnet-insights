@@ -67,6 +67,26 @@ internal class HeapInfo
     }
 }
 
+public enum GCKind
+{
+    //
+    // Summary:
+    //     Any kind of collection.
+    Any = 0,
+    //
+    // Summary:
+    //     A gen0 or gen1 collection.
+    Ephemeral = 1,
+    //
+    // Summary:
+    //     A blocking gen2 collection.
+    FullBlocking = 2,
+    //
+    // Summary:
+    //     A background collection.
+    Background = 3
+}
+
 internal class GcInfo
 {
     public GCKind Kind { get; set; }
