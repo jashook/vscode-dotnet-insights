@@ -373,6 +373,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
 
         var r2rKeys = Array.from(r2rMap.keys());
         var tier0Keys = Array.from(tier0Map.keys());
+        var tier1Keys = Array.from(tier1Map.keys());
 
         for (var index = 0; index < r2rKeys.length; ++index) {
             const currentKey = r2rKeys[index];
@@ -559,49 +560,42 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
                 tier0TimeByBucket[bucketIndex] += currentLoadData.loadDuration;
             }
             else if (currentLoadData.tier === 2 || currentLoadData.tier === 4) {
-                tier1TierUpTimeByBucket[bucketIndex] += currentLoadData.loadDuration;
+                tier1TimeByBucket[bucketIndex] += currentLoadData.loadDuration;
             }
             else {
                 continue;
             }
         }
 
-        // Go through all R2R Tiered up methods and add to buckets
-        for (var index = 0; index < r2rKeys.length; ++index) {
-            const currentKey = r2rKeys[index];
+        // Go through all Tier0 methods and add to buckets
+        for (var index = 0; index < tier0Keys.length; ++index) {
+            const currentKey = tier0Keys[index];
 
-            if (tier0Map.has(currentKey)) {
+            if (r2rMap.has(currentKey)) {
                 const itemsForKey = tier0Map.get(currentKey)!;
                 for (var innerIndex = 0; innerIndex < itemsForKey.length; ++innerIndex) {
                     const itemForKeyFound = itemsForKey[innerIndex];
 
                     const bucketIndex = getBucketIndex(itemForKeyFound);
-                    tier0TierUpTimeByBucket[bucketIndex] += itemForKeyFound.loadDuration;
-                }
-            } 
-            else if (tier1Map.has(currentKey)) {
-                const itemsForKey = tier1Map.get(currentKey)!;
-                for (var innerIndex = 0; innerIndex < itemsForKey.length; ++innerIndex) {
-                    const itemForKeyFound = itemsForKey[innerIndex];
-
-                    const bucketIndex = getBucketIndex(itemForKeyFound);
+                    
+                    // Tier 0 tier up time is any tier 0 method that has also a
+                    // R2R load for the same method id
                     tier0TierUpTimeByBucket[bucketIndex] += itemForKeyFound.loadDuration;
                 }
             }
         }
 
-        // Go through min opts methods and add to buckets
-        for (var index = 0; index < tier0Keys.length; ++index) {
-            const currentKey = tier0Keys[index];
+        // Go through Tier 1 methods and add to buckets
+        for (var index = 0; index < tier1Keys.length; ++index) {
+            const currentKey = tier1Keys[index];
 
-            
-            if (tier1Map.has(currentKey)) {
+            if (tier0Map.has(currentKey) || r2rMap.has(currentKey)) {
                 const itemsForKey = tier1Map.get(currentKey)!;
                 for (var innerIndex = 0; innerIndex < itemsForKey.length; ++innerIndex) {
                     const itemForKeyFound = itemsForKey[innerIndex];
 
                     const bucketIndex = getBucketIndex(itemForKeyFound);
-                    tier0TierUpTimeByBucket[bucketIndex] += itemForKeyFound.loadDuration;
+                    tier1TierUpTimeByBucket[bucketIndex] += itemForKeyFound.loadDuration;
                 }
             }
         }
@@ -617,7 +611,103 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
 
         console.log(hiddenData);
 
+        var data = "";
+        var outerData = "";
+
+        var addedSpacer = false;
+
         hiddenData = JSON.stringify(hiddenData);
+        if (r2rLoadTimes.length > 0) {
+            r2rLoadTimes.sort((a, b) => {
+                return b.loadDuration - a.loadDuration;
+            });
+
+            data += `<div class="spacer"></div>`;
+            data += `<div class="spacer"></div>`;
+            data += `<div class="spacer"></div>`;
+            data += `<div class="spacer"></div>`;
+
+            data += `<h3 class="table-title">R2R Methods</h3>`;
+
+            addedSpacer = true;
+
+            data = `<table id="r2r_table">`;
+            data += `<tr class="tableHeader"><th>Method Name</th><<th>Load Time (ms)</th></tr>`;
+
+            for (var index = 0; index < r2rLoadTimes.length && index < 100; ++index) {
+                var dataAtIndex : JitMethodInfo = r2rLoadTimes[index];
+
+                var evenOdd = index % 2 == 0 ? "even" : "odd";
+                
+                data += `<tr class=${evenOdd}><td class="left-align">${dataAtIndex.methodName}</td><td>${dataAtIndex.loadDuration}</td>`;
+            }
+
+            data += `</table>`;
+            data += `<div class="spacer"></div>`;
+            data += `<div class="spacer"></div>`;
+        }
+
+        if (tierZeroLoadTimes.length > 0) {
+            tierZeroLoadTimes.sort((a, b) => {
+                return b.loadDuration - a.loadDuration;
+            });
+
+            if (addedSpacer === false) {
+                data += `<div class="spacer"></div>`;
+                data += `<div class="spacer"></div>`;
+                data += `<div class="spacer"></div>`;
+                data += `<div class="spacer"></div>`;
+
+                addedSpacer = true;
+            }
+            data += `<h3 class="table-title">Tier 0 Methods</h3>`;
+
+            data += `<table id="t0_table">`;
+            data += `<tr class="tableHeader"><th>Method Name</th><th>Load Time (ms)</th></tr>`;
+
+            for (var index = 0; index < tierZeroLoadTimes.length && index < 100; ++index) {
+                var dataAtIndex : JitMethodInfo = tierZeroLoadTimes[index];
+                var evenOdd = index % 2 == 0 ? "even" : "odd";
+                
+                data += `<tr class=${evenOdd}><td class="left-align">${dataAtIndex.methodName}</td><td>${dataAtIndex.loadDuration}</td>`;
+            }
+
+            data += `</table>`;
+            data += `<div class="spacer"></div>`;
+            data += `<div class="spacer"></div>`;
+        }
+
+        if (tierOneLoadTimes.length > 0) {
+            tierOneLoadTimes.sort((a, b) => {
+                return b.loadDuration - a.loadDuration;
+            });
+
+            if (addedSpacer === false) {
+                data += `<div class="spacer"></div>`;
+                data += `<div class="spacer"></div>`;
+                data += `<div class="spacer"></div>`;
+                data += `<div class="spacer"></div>`;
+
+                addedSpacer = true;
+            }
+            data += `<h3 class="table-title">Tier 1 Methods</h3>`;
+
+            data += `<table id="t1_table">`;
+            data += `<tr class="tableHeader"><th>Method Name</th><th>Load Time (ms)</th></tr>`;
+
+            for (var index = 0; index < tierOneLoadTimes.length && index < 100; ++index) {
+                var dataAtIndex : JitMethodInfo = tierOneLoadTimes[index];
+                var evenOdd = index % 2 == 0 ? "even" : "odd";
+                
+                data += `<tr class=${evenOdd}><td class="left-align">${dataAtIndex.methodName}</td><td>${dataAtIndex.loadDuration}</td>`;
+            }
+
+            data += `</table>`;
+        }
+
+        if (data !== "") {
+            outerData = `<div id="jitData">${data}</div>`;
+        }
 
         var htmlToReturn = /* html */`
         <!DOCTYPE html>
@@ -705,6 +795,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
                     <script src="${chartjs}"></script>
                 </div>
 
+                ${outerData}
                 <script nonce="${nonce}" src="${scriptUri}"></script>
             </body>
         </html>`;

@@ -350,3 +350,53 @@
     font-size: 16px;
     text-align: center;
 }
+
+#jitData>table {
+    width: 70%;
+    margin-left: 15%;
+}
+
+table {
+    border-radius: 5px;
+}
+
+.tableHeader {
+    background-color: rgba(87, 93, 182, 0.808);
+}
+
+th {
+    color: white;
+    font-size: 15px;
+    padding: 10px;
+    border-radius: 5px;
+}
+
+tr:hover {
+    background-color: lightblue;
+}
+
+tr:first-child {
+    text-align: left;
+}
+
+td {
+    text-align: center;
+    padding: .5em;
+    border-radius: 5px;
+}
+
+.left-align {
+    text-align: left;
+    padding-left: 1em;
+}
+
+.table-title {
+    text-align: center;
+    margin-top: 5em;
+    margin-bottom: 2em;
+    font-size: 30px;
+}
+
+.odd {
+    background-color: rgba(87, 93, 182, 0.2);;
+}
