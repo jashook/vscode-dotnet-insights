@@ -11,43 +11,63 @@ namespace ev31 {
 ////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Collections.Generic;
 using System.CommandLine;
 using System.CommandLine.Invocation;
+using System.Diagnostics;
 using System.Threading.Tasks;
+
+using Microsoft.Diagnostics.NETCore.Client;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
     
 public class Profiler
 {
-    public async Task<int> Main(string[] args)
+    public static async Task<int> Main(string[] args)
     {
         var rootCommand = new RootCommand
         {
             new Option<string>(
-                "-sha",
-                description: "sha")
+                "-pid",
+                description: "pid for the process to profile")
         };
 
-        rootCommand.Description = "P99 Investigation";
+        rootCommand.Description = ".NET Insights Profiler";
 
-        string shaValue = null;
-        string branchName = null;
-
-        string apiAccountName = null;
-        string apiKey = null;
-        string apiIpAddress = null;
-        bool useCacheValue = true;
+        int processId = 0;
 
         // Note that the parameters of the handler method are matched according to the names of the options
-        rootCommand.Handler = CommandHandler.Create<string, string, string, string, string, bool>((sha, branch, accountName, key, ipAddress, useCache) =>
+        rootCommand.Handler = CommandHandler.Create<string>((pid) =>
         {
-            shaValue = sha;
-            branchName = branch;
-            apiAccountName = accountName;
-            apiKey = key;
-            apiIpAddress = ipAddress;
-            useCacheValue = useCache;
+            if (string.IsNullOrEmpty(pid)) return -2;
+
+            IEnumerable<int> processIds = DiagnosticsClient.GetPublishedProcesses();
+
+            int passedPid = 0;
+            try
+            {
+                passedPid = int.Parse(pid);
+            }
+            catch
+            {
+                return -3;
+            }
+
+            bool found = false;
+            foreach (int id in processIds)
+            {
+                if (passedPid == id)
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) return -1;
+            processId = passedPid;
+
+            return 0;
         });
 
         // Parse the incoming args and invoke the handler
@@ -58,9 +78,14 @@ public class Profiler
             return success;
         }
 
+        return -1;
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+} // namepsace ev31
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
