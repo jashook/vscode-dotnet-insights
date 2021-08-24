@@ -1,0 +1,6 @@
+{
+    "cmake.sourceDirectory": "${workspaceFolder}/native",
+    "files.associations": {
+        "atomic": "cpp"
+    }
+}

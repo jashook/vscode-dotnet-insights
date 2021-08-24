@@ -7,11 +7,11 @@
             "type": "process",
             "args": [
                 "build",
-                "${workspaceFolder}/profiler.csproj",
+                "${workspaceFolder}/managed/profiler.csproj",
                 "/property:GenerateFullPaths=true",
                 "/consoleloggerparameters:NoSummary"
             ],
-            "problemMatcher": "$msCompile"
+            "problemMatcher": "$msCompile",
         },
         {
             "label": "publish",

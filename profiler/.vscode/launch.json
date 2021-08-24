@@ -2,6 +2,28 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "(lldb) Launch",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "dotnet",
+            "args": [
+                "${workspaceFolder}/gcEventListener/bin/Release/net5.0/gcEventListener.dll"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [],
+            "externalConsole": false,
+            "MIMode": "lldb"
+        },
+        {
+            "name": "(lldb) Attach",
+            "type": "cppdbg",
+            "request": "attach",
+            "program": "/Users/jashoo/projects/vscode-dotnet-insights/profiler/native/build/libev31_profiler.dylib",
+            "processId": "${command:pickProcess}",
+            "MIMode": "lldb"
+        },
+        {
             // Use IntelliSense to find out which attributes exist for C# debugging
             // Use hover for the description of the existing attributes
             // For further information visit https://github.com/OmniSharp/omnisharp-vscode/blob/master/debugger-launchjson.md
@@ -10,10 +32,10 @@
             "request": "launch",
             "preLaunchTask": "build",
             // If you have changed target frameworks, make sure to update the program path.
-            "program": "${workspaceFolder}/bin/Debug/net5.0/profiler.dll",
+            "program": "${workspaceFolder}/managed/bin/Debug/net5.0/profiler.dll",
             "args": [
                 "-pid",
-                "1150"
+                "88850"
             ],
             "cwd": "${workspaceFolder}",
             // For more information about the 'console' field, see https://aka.ms/VSCode-CS-LaunchJson-Console

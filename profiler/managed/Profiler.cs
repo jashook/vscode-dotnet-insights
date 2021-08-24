@@ -78,7 +78,9 @@ public class Profiler
             return success;
         }
 
-        return -1;
+        ProfilerSetup setup = new ProfilerSetup(processId);
+        // Now that the profiler has been setup
+        // we will wait for the duration of the process attached to to 
     }
 }
 

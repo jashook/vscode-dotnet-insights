@@ -22,10 +22,12 @@ public class ProfilerSetup
     {
         this.Client = new DiagnosticsClient(processId);
 
+        Guid profilerGuid = Guid.Parse("cf0d821e-299b-5307-a3d8-b283c03916dd");
+
         this.Client.AttachProfiler(
-            new TimeSpan(0, 5, 0), // 5 minute timeout
-            Guid.NewGuid(),
-            null // Profiler path
+            TimeSpan.FromMinutes(10),
+            profilerGuid,
+            "/Users/jashoo/projects/vscode-dotnet-insights/profiler/native/build/libev31_profiler.dylib" // Profiler path
         );
     }
 }
