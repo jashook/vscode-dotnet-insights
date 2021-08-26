@@ -21,7 +21,6 @@ else()
     FILE(GLOB asm_sources asm/amd64/unix/*.S)
 endif()
 
-
 # Create the executable
 add_library(ev31_profiler SHARED ${cpp_sources} ${asm_sources})
 
