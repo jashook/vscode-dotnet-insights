@@ -4,6 +4,8 @@
 
 #include "ev31_profiler.hpp"
 
+#include "globals.hpp"
+
 ////////////////////////////////////////////////////////////////////////////////
 // Ctor / Dtor
 ////////////////////////////////////////////////////////////////////////////////
@@ -34,7 +36,7 @@ ev31::ev31_profiler::~ev31_profiler()
         return E_FAIL;
     }
 
-    DWORD eventMask = COR_PRF_MONITOR_ENTERLEAVE | COR_PRF_ENABLE_FUNCTION_ARGS | COR_PRF_ENABLE_FUNCTION_RETVAL | COR_PRF_ENABLE_FRAME_INFO;
+    DWORD eventMask = COR_PRF_MONITOR_ENTERLEAVE | COR_PRF_ENABLE_FUNCTION_ARGS | COR_PRF_ENABLE_FUNCTION_RETVAL | COR_PRF_ENABLE_FRAME_INFO | COR_PRF_MONITOR_JIT_COMPILATION;
 
     auto hr = this->profiler_info->SetEventMask(eventMask);
     if (hr != S_OK)
@@ -48,6 +50,8 @@ ev31::ev31_profiler::~ev31_profiler()
     {
         std::cout << "ERROR: Profiler SetEnterLeaveFunctionHooks3WithInfo faled (HRESULT: " << hr << ")";
     }
+
+    global_profiler = this;
 
     return S_OK;
 }
@@ -155,6 +159,8 @@ ev31::ev31_profiler::~ev31_profiler()
 
 ::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::JITCompilationStarted(FunctionID functionId, BOOL fIsSafeToBlock)
 {
+    std::cout << "JITCompilationStarted " << (std::size_t)functionId << std::endl;
+
     return S_OK;
 }
 
@@ -544,4 +550,51 @@ ULONG STDMETHODCALLTYPE ev31::ev31_profiler::Release()
     }
 
     return count;
+}
+
+void ev31::ev31_profiler::EnterMethod(FunctionIDOrClientID function_id, COR_PRF_ELT_INFO elt_info)
+{
+    std::wstring method_name = this->get_method_name(function_id.functionID);
+    method_tracker.start_method_timing((std::size_t)function_id.functionID, method_name);
+}
+
+void ev31::ev31_profiler::LeaveMethod(FunctionID function_id, COR_PRF_ELT_INFO elt_info)
+{
+    std::wstring method_name = this->get_method_name(function_id);
+    double time = method_tracker.stop_method_timing(function_id, method_name);
+
+    std::cout << "Exit " << (std::size_t)function_id << " " << time << std::endl;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Private member methods
+////////////////////////////////////////////////////////////////////////////////
+
+const std::wstring ev31::ev31_profiler::get_method_name(FunctionID function_id)
+{
+    ClassID class_id = 0;
+    ModuleID module_id = 0;
+    mdToken token = 0;
+
+    IMetaDataImport* metadata_import = nullptr;
+
+    this->profiler_info->GetFunctionInfo(function_id, &class_id, &module_id, &token);
+    this->profiler_info->GetModuleMetaData(module_id, ofRead, IID_IMetaDataImport, (IUnknown**)&metadata_import);
+
+    std::wstring return_value;
+    return_value.reserve(1024);
+
+    WCHAR name[1024];
+
+    std::size_t name_size = 1024;
+    ULONG copied_count = 0;
+
+    metadata_import->GetMethodProps(token, nullptr, name, name_size, &copied_count, nullptr, nullptr, nullptr, nullptr, nullptr);
+
+    for (std::size_t index = 0; index < copied_count; ++index)
+    {
+        return_value += name[index];
+    }
+
+    return return_value;
 }

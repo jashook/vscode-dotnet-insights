@@ -8,7 +8,7 @@ import { JitMethodInfo, ProcessInfo, GcListener } from "./GcListener";
 
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
 
-export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReadonlyEditorProvider {
+export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomEditorProvider {
     public static register(context: vscode.ExtensionContext, insights: DotnetInsights): vscode.Disposable {
         const provider = new DotnetInsightsRuntimeLoadEventsEditor(context, insights, null, insights.listener!);
         const providerRegistration = vscode.window.registerCustomEditorProvider(DotnetInsightsRuntimeLoadEventsEditor.viewType, provider);
@@ -32,6 +32,23 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         this.timeInJit = 0;
         this.listener = gcListener;
         this.processName = "";
+    }
+
+    onDidChangeCustomDocument() : any {
+
+    }
+    
+    saveCustomDocument(document: vscode.CustomDocument, cancellation: vscode.CancellationToken): Thenable<void> {
+        throw new Error("Method not implemented.");
+    }
+    saveCustomDocumentAs(document: vscode.CustomDocument, destination: vscode.Uri, cancellation: vscode.CancellationToken): Thenable<void> {
+        throw new Error("Method not implemented.");
+    }
+    revertCustomDocument(document: vscode.CustomDocument, cancellation: vscode.CancellationToken): Thenable<void> {
+        throw new Error("Method not implemented.");
+    }
+    backupCustomDocument(document: vscode.CustomDocument, context: vscode.CustomDocumentBackupContext, cancellation: vscode.CancellationToken): Thenable<vscode.CustomDocumentBackup> {
+        throw new Error("Method not implemented.");
     }
 
     openCustomDocument(uri: vscode.Uri, openContext: vscode.CustomDocumentOpenContext, token: vscode.CancellationToken): vscode.CustomDocument | Thenable<vscode.CustomDocument> {
@@ -639,7 +656,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
 
                 var evenOdd = index % 2 == 0 ? "even" : "odd";
                 
-                data += `<tr class=${evenOdd}><td class="left-align">${dataAtIndex.methodName}</td><td>${dataAtIndex.loadDuration}</td>`;
+                data += `<tr class=${evenOdd}><td>${dataAtIndex.methodId}</td><td class="left-align">${dataAtIndex.methodName}</td><td>${dataAtIndex.loadDuration}</td>`;
             }
 
             data += `</table>`;
@@ -669,7 +686,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
                 var dataAtIndex : JitMethodInfo = tierZeroLoadTimes[index];
                 var evenOdd = index % 2 == 0 ? "even" : "odd";
                 
-                data += `<tr class=${evenOdd}><td class="left-align">${dataAtIndex.methodName}</td><td>${dataAtIndex.loadDuration}</td>`;
+                data += `<tr class=${evenOdd}><td>${dataAtIndex.methodId}</td><td class="left-align">${dataAtIndex.methodName}</td><td>${dataAtIndex.loadDuration}</td>`;
             }
 
             data += `</table>`;
@@ -699,7 +716,7 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
                 var dataAtIndex : JitMethodInfo = tierOneLoadTimes[index];
                 var evenOdd = index % 2 == 0 ? "even" : "odd";
                 
-                data += `<tr class=${evenOdd}><td class="left-align">${dataAtIndex.methodName}</td><td>${dataAtIndex.loadDuration}</td>`;
+                data += `<tr class=${evenOdd}><td>${dataAtIndex.methodId}</td><td class="left-align">${dataAtIndex.methodName}</td><td>${dataAtIndex.loadDuration}</td>`;
             }
 
             data += `</table>`;

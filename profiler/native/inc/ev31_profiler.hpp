@@ -12,6 +12,7 @@
 #include "cor.h"
 #include "corhlpr.h"
 #include "corprof.h"
+#include "method_tracker.hpp"
 #include "profiler_pal.h"
 
 #include <atomic>
@@ -139,9 +140,17 @@ class ev31_profiler : public ICorProfilerCallback8
         ULONG STDMETHODCALLTYPE AddRef(void) override;
         ULONG STDMETHODCALLTYPE Release(void) override;
 
+        void EnterMethod(FunctionIDOrClientID function_id, COR_PRF_ELT_INFO elt_info);
+        void LeaveMethod(FunctionID function_id, COR_PRF_ELT_INFO elt_info);
+
+    // Private member methods
+    private:
+        const std::wstring get_method_name(FunctionID function_id);
+
     // Member variables
     private:
         std::atomic<int> ref_count;
+        ev31::method_tracker method_tracker;
         ICorProfilerInfo8* profiler_info;
 }; // (ev31_profiler)
 

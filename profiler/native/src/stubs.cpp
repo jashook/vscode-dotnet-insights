@@ -4,23 +4,25 @@
 #include "corprof.h"
 #include "profiler_pal.h"
 
+#include "globals.hpp"
+
 #include <iostream>
 
 ////////////////////////////////////////////////////////////////////////////////
 // Stubs
 ////////////////////////////////////////////////////////////////////////////////
 
-PROFILER_STUB EnterStub(FunctionIDOrClientID functionId, COR_PRF_ELT_INFO eltInfo)
+PROFILER_STUB EnterStub(FunctionIDOrClientID function_id, COR_PRF_ELT_INFO elt_info)
 {
-    std::cout << std::endl << "Enter " << (UINT64)functionId.functionID;
+    global_profiler->EnterMethod(function_id, elt_info);
 }
 
-PROFILER_STUB ExitStub(FunctionID functionId, COR_PRF_ELT_INFO eltInfo)
+PROFILER_STUB ExitStub(FunctionID function_id, COR_PRF_ELT_INFO elt_info)
 {
-    std::cout << "Exit " << (UINT64)functionId;
+    std::cout << "Exit " << (std::size_t)function_id << std::endl;
 }
 
 PROFILER_STUB TailcallStub(FunctionID functionId, COR_PRF_ELT_INFO eltInfo)
 {
-    std::cout << "Tailcall " << (UINT64)functionId;
+    std::cout << "Tailcall " << (std::size_t)functionId << std::endl;
 }

@@ -5,22 +5,27 @@
             "name": "(lldb) Launch",
             "type": "cppdbg",
             "request": "launch",
-            "program": "dotnet",
+            "program": "/Users/jashoo/Library/Application Support/Code/User/globalStorage/jashoo.dotnetinsights/coreRoot/net5.0/Core_Root/corerun",
             "args": [
-                "${workspaceFolder}/gcEventListener/bin/Release/net5.0/gcEventListener.dll"
+                "/Users/jashoo/projects/temp/bin/Release/net5.0/temp.dll"
             ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
-            "environment": [],
+            "environment": [
+                {
+                    "name": "CORECLR_PROFILER_PATH",
+                    "value": "/Users/jashoo/projects/vscode-dotnet-insights/profiler/native/build/libev31_profiler.dylib"
+                },
+                {
+                    "name": "CORECLR_PROFILER",
+                    "value": "{cf0d821e-299b-5307-a3d8-b283c03916dd}"
+                },
+                {
+                    "name": "CORECLR_ENABLE_PROFILING",
+                    "value": "1"
+                }
+            ],
             "externalConsole": false,
-            "MIMode": "lldb"
-        },
-        {
-            "name": "(lldb) Attach",
-            "type": "cppdbg",
-            "request": "attach",
-            "program": "/Users/jashoo/projects/vscode-dotnet-insights/profiler/native/build/libev31_profiler.dylib",
-            "processId": "${command:pickProcess}",
             "MIMode": "lldb"
         },
         {

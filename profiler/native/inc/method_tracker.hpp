@@ -1,20 +1,20 @@
 ////////////////////////////////////////////////////////////////////////////////
-// Module: class_factor.hpp
+// Module: method_tracker.hpp
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef __CLASS_FACTORY_HPP__
-#define __CLASS_FACTORY_HPP__
+#ifndef __METHOD_TRACKER_HPP__
+#define __METHOD_TRACKER_HPP__
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-#include "unknwn.h"
+#include <cassert>
+#include <chrono>
+#include <string>
+#include <unordered_map>
 
-#include "ev31_profiler.hpp"
-#include "globals.hpp"
-
-#include <atomic>
+#include "method_info.hpp"
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -24,35 +24,33 @@ namespace ev31 {
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-class class_factory : public IClassFactory
+class method_tracker
 {
     // Ctor / Dtor
     public:
-        class_factory();
-        virtual ~class_factory();
+        method_tracker();
+        ~method_tracker();
 
-    // Member methods
+    // Member Methods
     public:
-        ::ULONG   STDMETHODCALLTYPE AddRef(void) override;
-        ::HRESULT STDMETHODCALLTYPE CreateInstance(IUnknown *pUnkOuter, REFIID riid, void **ppvObject) override;
-        ::HRESULT STDMETHODCALLTYPE LockServer(::BOOL fLock) override;
-        ::HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override;
-        ::ULONG   STDMETHODCALLTYPE Release(void) override;
+        const ev31::method_info* get_method_info_for_name(const std::wstring&);
+        void start_method_timing(const std::size_t, const std::wstring&);
+        std::size_t stop_method_timing(const std::size_t, const std::wstring&);
 
-    // Member variables
     private:
-        std::atomic<int> ref_count;
-}; // class_factory
+        std::unordered_map<std::wstring, ev31::method_info*> method_map;
+        std::unordered_map<std::wstring, std::unordered_map<std::size_t, std::chrono::steady_clock::time_point>*> method_timing_map;
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-} // namespace (ev31)
+} // end of namespace (ev31)
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-#endif // __CLASS_FACTORY_HPP__
+#endif // __METHOD_TRACKER_HPP__
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
