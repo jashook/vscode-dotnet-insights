@@ -1,3 +1,6 @@
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
 #include "CComPtr.hpp"
 #include "cor.h"
 #include "corhlpr.h"
@@ -19,10 +22,9 @@ PROFILER_STUB EnterStub(FunctionIDOrClientID function_id, COR_PRF_ELT_INFO elt_i
 
 PROFILER_STUB ExitStub(FunctionID function_id, COR_PRF_ELT_INFO elt_info)
 {
-    std::cout << "Exit " << (std::size_t)function_id << std::endl;
+    global_profiler->LeaveMethod(function_id, elt_info);
 }
 
-PROFILER_STUB TailcallStub(FunctionID functionId, COR_PRF_ELT_INFO eltInfo)
+PROFILER_STUB TailcallStub(FunctionID function_id, COR_PRF_ELT_INFO elt_info)
 {
-    std::cout << "Tailcall " << (std::size_t)functionId << std::endl;
 }

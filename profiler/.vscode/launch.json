@@ -2,6 +2,32 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "native_profiler",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "C:\\Users\\jashoo.REDMOND\\.vscode-server\\data\\User\\globalStorage\\jashoo.dotnetinsights\\coreRoot\\net5.0\\Core_Root\\CoreRun.exe",
+            "args": [
+                "D:\\projects\\value_string\\bin\\Release\\net5.0\\value_string.dll"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [
+                {
+                    "name": "CORECLR_PROFILER_PATH",
+                    "value": "D:\\projects\\vscode-dotnet-insights\\profiler\\native\\build\\Debug\\ev31_profiler.dll"
+                },
+                {
+                    "name": "CORECLR_PROFILER",
+                    "value": "{cf0d821e-299b-5307-a3d8-b283c03916dd}"
+                },
+                {
+                    "name": "CORECLR_ENABLE_PROFILING",
+                    "value": "1"
+                }
+            ],
+            "console": "externalTerminal"
+        },
+        {
             "name": "(lldb) Launch",
             "type": "cppdbg",
             "request": "launch",

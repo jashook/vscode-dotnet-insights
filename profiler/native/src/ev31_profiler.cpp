@@ -159,8 +159,6 @@ ev31::ev31_profiler::~ev31_profiler()
 
 ::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::JITCompilationStarted(FunctionID functionId, BOOL fIsSafeToBlock)
 {
-    std::cout << "JITCompilationStarted " << (std::size_t)functionId << std::endl;
-
     return S_OK;
 }
 
@@ -563,7 +561,10 @@ void ev31::ev31_profiler::LeaveMethod(FunctionID function_id, COR_PRF_ELT_INFO e
     std::wstring method_name = this->get_method_name(function_id);
     double time = method_tracker.stop_method_timing(function_id, method_name);
 
-    std::cout << "Exit " << (std::size_t)function_id << " " << time << std::endl;
+    std::cout << "[" << (std::size_t)function_id << "] ";
+
+    std::wcout << method_name;
+    std::cout << ": " << time << std::endl;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -582,18 +583,31 @@ const std::wstring ev31::ev31_profiler::get_method_name(FunctionID function_id)
     this->profiler_info->GetModuleMetaData(module_id, ofRead, IID_IMetaDataImport, (IUnknown**)&metadata_import);
 
     std::wstring return_value;
-    return_value.reserve(1024);
+    return_value.reserve(2048);
 
-    WCHAR name[1024];
-
+    WCHAR method_name[1024];
     std::size_t name_size = 1024;
     ULONG copied_count = 0;
 
-    metadata_import->GetMethodProps(token, nullptr, name, name_size, &copied_count, nullptr, nullptr, nullptr, nullptr, nullptr);
+    // Get the class name
+
+    mdTypeDef type_information = 0;
+    metadata_import->GetMethodProps(token, &type_information, method_name, name_size, &copied_count, nullptr, nullptr, nullptr, nullptr, nullptr);
+
+    WCHAR type_name[1024];
+    ULONG type_copied_count = 0;
+    metadata_import->GetTypeDefProps(type_information, type_name, name_size, &type_copied_count, nullptr, nullptr);
+
+    for (std::size_t index = 0; index < type_copied_count - 1; ++index)
+    {
+        return_value += type_name[index];
+    }
+
+    return_value += ':';
 
     for (std::size_t index = 0; index < copied_count; ++index)
     {
-        return_value += name[index];
+        return_value += method_name[index];
     }
 
     return return_value;

@@ -57,10 +57,7 @@ void ev31::method_tracker::start_method_timing(const std::size_t profiler_method
     }
 
     // Use the method map to add the instance of this method
-
-    // Assert that this is not an instance of the profiler id method already.
-    assert(method_map->find(profiler_method_id) == method_map->end());
-    if (method_map->find(profiler_method_id) == method_map->end())
+    if (method_map->find(profiler_method_id) != method_map->end())
     {
         return;
     }
@@ -69,7 +66,7 @@ void ev31::method_tracker::start_method_timing(const std::size_t profiler_method
 }
 
 std::size_t ev31::method_tracker::stop_method_timing(const std::size_t profiler_method_id,
-                                                const std::wstring& method_name)
+                                                     const std::wstring& method_name)
 {
     // Get the method map
     std::unordered_map<std::size_t, std::chrono::steady_clock::time_point>* method_map = nullptr;
