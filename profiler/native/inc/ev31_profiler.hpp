@@ -12,7 +12,6 @@
 #include "cor.h"
 #include "corhlpr.h"
 #include "corprof.h"
-#include "method_tracker.hpp"
 #include "profiler_pal.h"
 
 #include <algorithm>
@@ -21,6 +20,9 @@
 #include <iterator>
 #include <string>
 #include <sstream>
+
+#include "method_tracker.hpp"
+#include "profiler_io.hpp"
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -155,6 +157,7 @@ class ev31_profiler : public ICorProfilerCallback8
         std::atomic<int> ref_count;
         ev31::method_tracker method_tracker;
         ICorProfilerInfo8* profiler_info;
+        ev31::profiler_io io;
 }; // (ev31_profiler)
 
 ////////////////////////////////////////////////////////////////////////////////

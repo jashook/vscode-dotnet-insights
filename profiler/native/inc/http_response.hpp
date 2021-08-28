@@ -56,15 +56,16 @@ enum http_content_type
 class http_response
 {
     private:
-        ev31::http_request request;
+        ev31::http_request<char, std::string::iterator> request;
         std::stringstream response_header_builder;
         std::string response;
         http_response_type response_type;
-        http_version version;
+        http::version version;
 
     public:
-        http_response(const ev31::http_request& request,
-                      ev31::http_version version, 
+        http_response(const std::string& response);
+        http_response(const ev31::http_request<char, std::string::iterator>& request,
+                      ev31::http::version version, 
                       ev31::http_response_type response_type, 
                       const std::string& content,
                       ev31::http_content_type content_type);

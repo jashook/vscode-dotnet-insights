@@ -560,6 +560,8 @@ void ev31::ev31_profiler::LeaveMethod(FunctionID function_id, COR_PRF_ELT_INFO e
 {
     std::wstring method_name = this->get_method_name(function_id);
     double time = method_tracker.stop_method_timing(function_id, method_name);
+
+    this->io.communicate(function_id, method_name, time);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

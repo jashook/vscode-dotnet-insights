@@ -7,8 +7,55 @@
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-ev31::http_response::http_response(const ev31::http_request& request,
-                                   ev31::http_version version, 
+ev31::http_response::http_response(const std::string& response_unparsed)
+{
+    std::stringstream ss(response_unparsed);
+
+    std::string response_type;
+    ss >> response_type;
+
+    int status_code = 0;
+    ss >> status_code;
+
+    throw std::runtime_error("NYI parse http_response");
+
+    // std::string path;
+    // ss >> path;
+
+    // std::string version;
+    // ss >> version;
+
+    // std::string host;
+    // std::getline(ss, host);
+
+    // ss >> host;
+    // ss >> host;
+
+    // if (*(host.end() - 1) == '\r')
+    // {
+    //     host.erase(host.end() - 1);
+    // }
+
+    // http::request_type parsed_request_type;
+    // if (response_type == "GET") parsed_request_type = ev31::http::Get;
+    // else if (response_type == "HEAD") parsed_request_type = ev31::http::Head;
+    // else if (response_type == "POST") parsed_request_type = ev31::http::Post;
+    // else if (response_type == "PUT") parsed_request_type = ev31::http::Put;
+    // else if (response_type == "DELETE") parsed_request_type = ev31::http::Delete;
+    // else if (response_type == "CONNECT") parsed_request_type = ev31::http::Connect;
+    // else if (response_type == "OPTIONS") parsed_request_type = ev31::http::Options;
+    // else if (response_type == "TRACE") parsed_request_type = ev31::http::Trace;
+    // else if (response_type == "PATCH") parsed_request_type = ev31::http::Patch;
+
+    // http::version parsed_version;
+
+    // if (version == "HTTP/1.0") parsed_version = ev31::http::Version1;
+    // else if (version == "HTTP/1.1") parsed_version = ev31::http::Version1_1;
+    // else if (version == "HTTP/1.2") parsed_version = ev31::http::Version1_1;
+}
+
+ev31::http_response::http_response(const ev31::http_request<char, std::string::iterator>& request,
+                                   ev31::http::version version, 
                                    ev31::http_response_type response_type, 
                                    const std::string& content,
                                    ev31::http_content_type content_type)
@@ -27,7 +74,7 @@ ev31::http_response::http_response(const ev31::http_request& request,
 
     this->add_line_to_header("");
 
-    if (content.size() > 0 && request.get_request_type() != ev31::Head)
+    if (content.size() > 0 && request.get_request_type() != ev31::http::Head)
     {
         this->add_line_to_header(content);
     }
@@ -162,15 +209,15 @@ void ev31::http_response::stamp_status_code()
 
 void ev31::http_response::stamp_version()
 {
-    if (this->version == ev31::http_version::Version1)
+    if (this->version == ev31::http::version::Version1)
     {
         this->add_to_header("HTTP/1.0");
     }
-    else if (this->version == ev31::http_version::Version1_1)
+    else if (this->version == ev31::http::version::Version1_1)
     {
         this->add_to_header("HTTP/1.1");
     }
-    else if (this->version == ev31::http_version::Version1_2)
+    else if (this->version == ev31::http::version::Version1_2)
     {
         this->add_to_header("HTTP/1.2");
     }

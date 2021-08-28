@@ -45,4 +45,10 @@ if (!WIN32)
     add_definitions(-Wno-int-to-pointer-cast)
 endif()
 
+if(WIN32)
+    add_definitions(-DWIN32_LEAN_AND_MEAN)
+    target_link_libraries(ev31_profiler wsock32 ws2_32)
+    target_link_libraries(ev31_profiler httpapi)
+endif()
+
 target_compile_features(ev31_profiler PRIVATE cxx_std_17)

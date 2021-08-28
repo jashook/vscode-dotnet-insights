@@ -10,9 +10,14 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include <cassert>
+#include <codecvt>
+#include <exception>
+#include <locale>
 #include <vector>
 
 #include "http_request.hpp"
+#include "http_response.hpp"
+#include "tcp_connection.hpp"
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -35,7 +40,20 @@ class profiler_io
 
     // Private member methods
     private:
+        void _attempt_open_connection();
+        void _close_connection();
+        bool _is_open_connection() const;
+
+    // Private member methods
+    private:
         const std::vector<wchar_t> _get_json_payload(const std::size_t, const std::wstring&, double);
+        const ev31::http_request<std::string, std::string::const_iterator> _get_http_request(const std::vector<wchar_t>&);
+
+        bool should_open_connection;
+
+        std::string ip;
+        std::string port;
+        ev31::tcp_connection* connection;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
