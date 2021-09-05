@@ -31,7 +31,7 @@ export class Profiler {
     // Member variables
     ////////////////////////////////////////////////////////////////////////////
 
-    private instance: Profiler | undefined | null;
+    private static instance: Profiler | undefined | null;
     private pid: number;
     private data: ProfilerEvent[];
 
@@ -41,11 +41,11 @@ export class Profiler {
     // Constructor
     ////////////////////////////////////////////////////////////////////////////
 
-    constructor(pid: number) {
-        this.pid = pid;
-
+    private constructor(pid: number) {
         this.data = [] as ProfilerEvent[];
         this.methodMap = new Map<string, Map<number, number>>();
+
+        this.pid = pid;
     }
 
     ////////////////////////////////////////////////////////////////////////////
@@ -78,11 +78,11 @@ export class Profiler {
         }
     }
 
-    public getInstance(pid: number): Profiler {
-        if (this.instance == null || this.instance == undefined || this.instance.pid !== pid) {
-            this.instance = new Profiler(pid);
+    public static getInstance(pid: number): Profiler {
+        if (Profiler.instance == null || Profiler.instance == undefined || Profiler.instance.pid !== pid) {
+            Profiler.instance = new Profiler(pid);
         }
 
-        return this.instance;
+        return Profiler.instance;
     }
 }

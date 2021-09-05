@@ -198,7 +198,7 @@ export class GcListener {
             this.requests = 0;
         }, 1000);
 
-        this.profiler = undefined;
+        this.profiler = Profiler.getInstance(10);
     }
 
     start() {
