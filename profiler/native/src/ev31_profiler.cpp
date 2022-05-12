@@ -67,88 +67,21 @@ ev31::ev31_profiler::~ev31_profiler()
     return S_OK;
 }
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AppDomainCreationStarted(AppDomainID appDomainId)
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AssemblyLoadStarted(AssemblyID assembly_id)
 {
+    std::wstring assembly_name = this->get_assembly_name(assembly_id);
+    this->assembly_tracker.start_assembly_timing((std::size_t)assembly_id, assembly_name);
+
     return S_OK;
 }
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AppDomainCreationFinished(AppDomainID appDomainId, ::HRESULT hrStatus)
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AssemblyLoadFinished(AssemblyID assembly_id, ::HRESULT hrStatus)
 {
-    return S_OK;
-}
+    std::wstring assembly_name = this->get_assembly_name(assembly_id);
+    double time = this->assembly_tracker.stop_assembly_timing(assembly_id, assembly_name);
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AppDomainShutdownStarted(AppDomainID appDomainId)
-{
-    return S_OK;
-}
+    this->io.communicate("assembly_id", assembly_id, assembly_name, time, "JitCompilation");
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AppDomainShutdownFinished(AppDomainID appDomainId, ::HRESULT hrStatus)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AssemblyLoadStarted(AssemblyID assemblyId)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AssemblyLoadFinished(AssemblyID assemblyId, ::HRESULT hrStatus)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AssemblyUnloadStarted(AssemblyID assemblyId)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AssemblyUnloadFinished(AssemblyID assemblyId, ::HRESULT hrStatus)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ModuleLoadStarted(ModuleID moduleId)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ModuleLoadFinished(ModuleID moduleId, ::HRESULT hrStatus)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ModuleUnloadStarted(ModuleID moduleId)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ModuleUnloadFinished(ModuleID moduleId, ::HRESULT hrStatus)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ModuleAttachedToAssembly(ModuleID moduleId, AssemblyID AssemblyId)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ClassLoadStarted(ClassID classId)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ClassLoadFinished(ClassID classId, ::HRESULT hrStatus)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ClassUnloadStarted(ClassID classId)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ClassUnloadFinished(ClassID classId, ::HRESULT hrStatus)
-{
     return S_OK;
 }
 
@@ -157,22 +90,30 @@ ev31::ev31_profiler::~ev31_profiler()
     return S_OK;
 }
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::JITCompilationStarted(FunctionID functionId, BOOL fIsSafeToBlock)
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::JITCompilationStarted(FunctionID function_id, BOOL fIsSafeToBlock)
+{
+    std::wstring method_name = this->get_method_name(function_id);
+    method_tracker.start_method_execution_timing((std::size_t)function_id, method_name);
+
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::JITCompilationFinished(FunctionID function_id, ::HRESULT hrStatus, BOOL fIsSafeToBlock)
+{
+    std::wstring method_name = this->get_method_name(function_id);
+    double time = method_tracker.stop_method_execution_timing(function_id, method_name);
+
+    this->io.communicate("function_id", function_id, method_name, time, "JitCompilation");
+
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::JITCachedFunctionSearchStarted(FunctionID function_id, BOOL *pbUseCachedFunction)
 {
     return S_OK;
 }
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::JITCompilationFinished(FunctionID functionId, ::HRESULT hrStatus, BOOL fIsSafeToBlock)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::JITCachedFunctionSearchStarted(FunctionID functionId, BOOL *pbUseCachedFunction)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::JITCachedFunctionSearchFinished(FunctionID functionId, COR_PRF_JIT_CACHE result)
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::JITCachedFunctionSearchFinished(FunctionID function_id, COR_PRF_JIT_CACHE result)
 {
     return S_OK;
 }
@@ -182,7 +123,7 @@ ev31::ev31_profiler::~ev31_profiler()
     return S_OK;
 }
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::JITInlining(FunctionID callerId, FunctionID calleeId, BOOL *pfShouldInline)
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::JITInlining(FunctionID callerId, FunctionID calleeId, BOOL* pfShouldInline)
 {
     return S_OK;
 }
@@ -202,52 +143,12 @@ ev31::ev31_profiler::~ev31_profiler()
     return S_OK;
 }
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingClientInvocationStarted()
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::UnmanagedToManagedTransition(FunctionID function_id, COR_PRF_TRANSITION_REASON reason)
 {
     return S_OK;
 }
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingClientSendingMessage(GUID *pCookie, BOOL fIsAsync)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingClientReceivingReply(GUID *pCookie, BOOL fIsAsync)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingClientInvocationFinished()
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingServerReceivingMessage(GUID *pCookie, BOOL fIsAsync)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingServerInvocationStarted()
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingServerInvocationReturned()
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingServerSendingReply(GUID *pCookie, BOOL fIsAsync)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::UnmanagedToManagedTransition(FunctionID functionId, COR_PRF_TRANSITION_REASON reason)
-{
-    return S_OK;
-}
-
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ManagedToUnmanagedTransition(FunctionID functionId, COR_PRF_TRANSITION_REASON reason)
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ManagedToUnmanagedTransition(FunctionID function_id, COR_PRF_TRANSITION_REASON reason)
 {
     return S_OK;
 }
@@ -372,7 +273,7 @@ ev31::ev31_profiler::~ev31_profiler()
     return S_OK;
 }
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ExceptionCatcherEnter(FunctionID functionId, ObjectID objectId)
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ExceptionCatcherEnter(FunctionID function_id, ObjectID objectId)
 {
     return S_OK;
 }
@@ -457,7 +358,8 @@ ev31::ev31_profiler::~ev31_profiler()
     return S_OK;
 }
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ReJITCompilationStarted(FunctionID functionId, ReJITID rejitId, BOOL fIsSafeToBlock)
+// Most likely this is due to tier up
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ReJITCompilationStarted(FunctionID function_id, ReJITID rejitId, BOOL fIsSafeToBlock)
 {
     return S_OK;
 }
@@ -467,12 +369,12 @@ ev31::ev31_profiler::~ev31_profiler()
     return S_OK;
 }
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ReJITCompilationFinished(FunctionID functionId, ReJITID rejitId, ::HRESULT hrStatus, BOOL fIsSafeToBlock)
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ReJITCompilationFinished(FunctionID function_id, ReJITID rejitId, ::HRESULT hrStatus, BOOL fIsSafeToBlock)
 {
     return S_OK;
 }
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ReJITError(ModuleID moduleId, mdMethodDef methodId, FunctionID functionId, ::HRESULT hrStatus)
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ReJITError(ModuleID moduleId, mdMethodDef methodId, FunctionID function_id, ::HRESULT hrStatus)
 {
     return S_OK;
 }
@@ -502,13 +404,21 @@ ev31::ev31_profiler::~ev31_profiler()
     return S_OK;
 }
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::DynamicMethodJITCompilationStarted(FunctionID functionId, BOOL fIsSafeToBlock, LPCBYTE ilHeader, ULONG cbILHeader)
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::DynamicMethodJITCompilationStarted(FunctionID function_id, BOOL fIsSafeToBlock, LPCBYTE ilHeader, ULONG cbILHeader)
 {
+    std::wstring method_name = this->get_method_name(function_id, true);
+    method_tracker.start_method_execution_timing((std::size_t)function_id, method_name);
+
     return S_OK;
 }
 
-::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::DynamicMethodJITCompilationFinished(FunctionID functionId, ::HRESULT hrStatus, BOOL fIsSafeToBlock)
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::DynamicMethodJITCompilationFinished(FunctionID function_id, ::HRESULT hrStatus, BOOL fIsSafeToBlock)
 {
+    std::wstring method_name = this->get_method_name(function_id, true);
+    double time = method_tracker.stop_method_execution_timing(function_id, method_name);
+
+    this->io.communicate("function_id", function_id, method_name, time, "JitCompilation");
+
     return S_OK;
 }
 
@@ -553,59 +463,201 @@ ULONG STDMETHODCALLTYPE ev31::ev31_profiler::Release()
 void ev31::ev31_profiler::EnterMethod(FunctionIDOrClientID function_id, COR_PRF_ELT_INFO elt_info)
 {
     std::wstring method_name = this->get_method_name(function_id.functionID);
-    method_tracker.start_method_timing((std::size_t)function_id.functionID, method_name);
+    method_tracker.start_method_execution_timing((std::size_t)function_id.functionID, method_name);
 }
 
 void ev31::ev31_profiler::LeaveMethod(FunctionID function_id, COR_PRF_ELT_INFO elt_info)
 {
     std::wstring method_name = this->get_method_name(function_id);
-    double time = method_tracker.stop_method_timing(function_id, method_name);
+    double time = method_tracker.stop_method_execution_timing(function_id, method_name);
 
-    this->io.communicate(function_id, method_name, time);
+    this->io.communicate("function_id", function_id, method_name, time, "MethodExecution");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Private member methods
 ////////////////////////////////////////////////////////////////////////////////
 
-const std::wstring ev31::ev31_profiler::get_method_name(FunctionID function_id)
+const std::wstring ev31::ev31_profiler::get_assembly_name(AssemblyID assembly_id)
 {
-    ClassID class_id = 0;
     ModuleID module_id = 0;
-    mdToken token = 0;
+    AppDomainID app_domain_id = 0;
 
-    IMetaDataImport* metadata_import = nullptr;
-
-    this->profiler_info->GetFunctionInfo(function_id, &class_id, &module_id, &token);
-    this->profiler_info->GetModuleMetaData(module_id, ofRead, IID_IMetaDataImport, (IUnknown**)&metadata_import);
-
-    std::wstring return_value;
-    return_value.reserve(2048);
-
-    WCHAR method_name[1024];
+    WCHAR assembly_name[1024];
     std::size_t name_size = 1024;
     ULONG copied_count = 0;
 
-    // Get the class name
+    this->profiler_info->GetAssemblyInfo(assembly_id, name_size, &copied_count, assembly_name, &app_domain_id, &module_id);
 
-    mdTypeDef type_information = 0;
-    metadata_import->GetMethodProps(token, &type_information, method_name, name_size, &copied_count, nullptr, nullptr, nullptr, nullptr, nullptr);
+    return std::wstring(assembly_name);
+}
 
-    WCHAR type_name[1024];
-    ULONG type_copied_count = 0;
-    metadata_import->GetTypeDefProps(type_information, type_name, name_size, &type_copied_count, nullptr, nullptr);
-
-    for (std::size_t index = 0; index < type_copied_count - 1; ++index)
+const std::wstring ev31::ev31_profiler::get_method_name(FunctionID function_id, bool is_dynamic_method)
+{
+    if (!is_dynamic_method)
     {
-        return_value += type_name[index];
+        ClassID class_id = 0;
+        ModuleID module_id = 0;
+        mdToken token = 0;
+
+        IMetaDataImport* metadata_import = nullptr;
+
+        this->profiler_info->GetFunctionInfo(function_id, &class_id, &module_id, &token);
+        this->profiler_info->GetModuleMetaData(module_id, ofRead, IID_IMetaDataImport, (IUnknown**)&metadata_import);
+
+        std::wstring return_value;
+        return_value.reserve(2048);
+
+        WCHAR method_name[1024];
+        std::size_t name_size = 1024;
+        ULONG copied_count = 0;
+
+        // Get the class name
+
+        mdTypeDef type_information = 0;
+        metadata_import->GetMethodProps(token, &type_information, method_name, name_size, &copied_count, nullptr, nullptr, nullptr, nullptr, nullptr);
+
+        WCHAR type_name[1024];
+        ULONG type_copied_count = 0;
+        metadata_import->GetTypeDefProps(type_information, type_name, name_size, &type_copied_count, nullptr, nullptr);
+
+        std::size_t copy_count_minus_one = type_copied_count > 0 ? type_copied_count - 1 : 0;
+        for (std::size_t index = 0; index < copy_count_minus_one; ++index)
+        {
+            return_value += type_name[index];
+        }
+
+        return_value += ':';
+
+        for (std::size_t index = 0; index < copied_count; ++index)
+        {
+            return_value += method_name[index];
+        }
+
+        return return_value;
     }
-
-    return_value += ':';
-
-    for (std::size_t index = 0; index < copied_count; ++index)
+    else
     {
-        return_value += method_name[index];
+        return L"DynamicMethod.DyanmicMethod";
     }
+}
 
-    return return_value;
+////////////////////////////////////////////////////////////////////////////////
+// Unimplemented Callback
+////////////////////////////////////////////////////////////////////////////////
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AppDomainCreationStarted(AppDomainID appDomainId)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AppDomainCreationFinished(AppDomainID appDomainId, ::HRESULT hrStatus)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AppDomainShutdownStarted(AppDomainID appDomainId)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AppDomainShutdownFinished(AppDomainID appDomainId, ::HRESULT hrStatus)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ClassLoadStarted(ClassID classId)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ClassLoadFinished(ClassID classId, ::HRESULT hrStatus)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ClassUnloadStarted(ClassID classId)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ClassUnloadFinished(ClassID classId, ::HRESULT hrStatus)
+{
+    return S_OK;
+}
+
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingClientInvocationStarted()
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingClientSendingMessage(GUID *pCookie, BOOL fIsAsync)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingClientReceivingReply(GUID *pCookie, BOOL fIsAsync)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingClientInvocationFinished()
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingServerReceivingMessage(GUID *pCookie, BOOL fIsAsync)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingServerInvocationStarted()
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingServerInvocationReturned()
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::RemotingServerSendingReply(GUID *pCookie, BOOL fIsAsync)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AssemblyUnloadStarted(AssemblyID assembly_id)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::AssemblyUnloadFinished(AssemblyID assembly_id, ::HRESULT hrStatus)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ModuleLoadStarted(ModuleID moduleId)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ModuleLoadFinished(ModuleID moduleId, ::HRESULT hrStatus)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ModuleUnloadStarted(ModuleID moduleId)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ModuleUnloadFinished(ModuleID moduleId, ::HRESULT hrStatus)
+{
+    return S_OK;
+}
+
+::HRESULT STDMETHODCALLTYPE ev31::ev31_profiler::ModuleAttachedToAssembly(ModuleID moduleId, AssemblyID Assembly_id)
+{
+    return S_OK;
 }

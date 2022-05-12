@@ -1,10 +1,10 @@
 ////////////////////////////////////////////////////////////////////////////////
-// Module: method_tracker.hpp
+// Module: assembly_tracker.hpp
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-#ifndef __METHOD_TRACKER_HPP__
-#define __METHOD_TRACKER_HPP__
+#ifndef __ASSEMBLY_TRACKER_HPP__
+#define __ASSEMBLY_TRACKER_HPP__
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -14,8 +14,6 @@
 #include <string>
 #include <unordered_map>
 
-#include "method_info.hpp"
-
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -24,25 +22,21 @@ namespace ev31 {
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-class method_tracker
+class assembly_tracker
 {
     // Ctor / Dtor
     public:
-        method_tracker();
-        ~method_tracker();
+        assembly_tracker();
+        ~assembly_tracker();
 
     // Member Methods
     public:
-        const ev31::method_info* get_method_info_for_name(const std::wstring&);
-        void start_method_compilation_timing(const std::size_t, const std::wstring&);
-        void start_method_execution_timing(const std::size_t, const std::wstring&);
-        std::size_t stop_method_compilation_timing(const std::size_t, const std::wstring&);
-        std::size_t stop_method_execution_timing(const std::size_t, const std::wstring&);
+        void start_assembly_timing(const std::size_t, const std::wstring&);
+        std::size_t stop_assembly_timing(const std::size_t, const std::wstring&);
 
     private:
-        std::unordered_map<std::wstring, ev31::method_info*> method_map;
-        std::unordered_map<std::wstring, std::unordered_map<std::size_t, std::chrono::steady_clock::time_point>*> method_compilation_timing_map;
-        std::unordered_map<std::wstring, std::unordered_map<std::size_t, std::chrono::steady_clock::time_point>*> method_execution_timing_map;
+        std::unordered_map<std::wstring, std::wstring*> assembly_map;
+        std::unordered_map<std::wstring, std::unordered_map<std::size_t, std::chrono::steady_clock::time_point>*> assembly_timing_map;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -53,7 +47,7 @@ class method_tracker
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-#endif // __METHOD_TRACKER_HPP__
+#endif // __ASSEMBLY_TRACKER_HPP__
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////

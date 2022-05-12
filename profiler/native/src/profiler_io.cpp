@@ -8,7 +8,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-ev31::profiler_io::profiler_io()
+ev31::profiler_io::profiler_io(bool use_console)
 {
     this->ip = "127.0.0.1";
     this->port = "2143";
@@ -17,6 +17,7 @@ ev31::profiler_io::profiler_io()
     this->connection->initialize_winsock();
 
     this->should_open_connection = true;
+    this->use_console = use_console;
 }
 
 ev31::profiler_io::~profiler_io()
@@ -27,40 +28,10 @@ ev31::profiler_io::~profiler_io()
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-void ev31::profiler_io::communicate(const std::size_t function_id, const std::wstring& method_name, double time)
+
+void ev31::profiler_io::io_via_console(bool use_console)
 {
-    auto&& json_payload = this->_get_json_payload(function_id, method_name, time);
-    auto&& http_request = this->_get_http_request(json_payload);
-
-    this->_attempt_open_connection();
-    if (this->_is_open_connection())
-    {
-        const std::string& request_string = http_request.to_string();
-        int bytes_sent = this->connection->send(request_string);
-        
-        if (bytes_sent != http_request.size())
-        {
-            // We should close the connection and ignore failures.
-            this->_close_connection();
-        }
-
-        // Unused
-        std::array<unsigned char, 1024> bytes_received;
-        int receive_count = this->connection->receive(bytes_received);
-
-        if (receive_count == 0)
-        {
-            // This is most likely an issue with us overloading the http server.
-            std::cout << "Receive count zero" << std::endl;
-        }
-
-        std::string response_string(bytes_received.begin(), bytes_received.begin() + receive_count);
-        std::cout << response_string << std::endl;
-    }
-    else
-    {
-        int i = 0;
-    }
+    this->use_console = use_console;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -95,28 +66,6 @@ void ev31::profiler_io::_close_connection()
 {
     this->connection->close();
     this->should_open_connection = false;
-}
-
-const std::vector<wchar_t> ev31::profiler_io::_get_json_payload(const std::size_t function_id, const std::wstring& method_name, double time)
-{
-    std::vector<wchar_t> payload;
-
-    std::stringstream ss;
-    ss << "{ \"id\": " << (std::size_t)function_id << ',';
-
-    std::copy(std::istream_iterator<char>(ss), std::istream_iterator<char>(), std::back_insert_iterator<std::vector<wchar_t>>(payload));
-
-    ss.clear();
-    ss << "methodName: ";
-
-    std::copy(std::istream_iterator<char>(ss), std::istream_iterator<char>(), std::back_insert_iterator<std::vector<wchar_t>>(payload));
-    std::copy(method_name.begin(), method_name.end(), std::back_insert_iterator<std::vector<wchar_t>>(payload));
-    
-    ss.clear();
-    ss << ", time: " << time << '}';
-
-    std::copy(std::istream_iterator<char>(ss), std::istream_iterator<char>(), std::back_insert_iterator<std::vector<wchar_t>>(payload));
-    return payload;
 }
 
 const ev31::http_request<std::string, std::string::const_iterator> ev31::profiler_io::_get_http_request(const std::vector<wchar_t>& payload)

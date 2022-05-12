@@ -21,6 +21,7 @@
 #include <string>
 #include <sstream>
 
+#include "assembly_tracker.hpp"
 #include "method_tracker.hpp"
 #include "profiler_io.hpp"
 
@@ -150,11 +151,13 @@ class ev31_profiler : public ICorProfilerCallback8
 
     // Private member methods
     private:
-        const std::wstring get_method_name(FunctionID function_id);
+        const std::wstring get_assembly_name(AssemblyID assembly_id);
+        const std::wstring get_method_name(FunctionID function_id, bool is_dynamic_method=false);
 
     // Member variables
     private:
         std::atomic<int> ref_count;
+        ev31::assembly_tracker assembly_tracker;
         ev31::method_tracker method_tracker;
         ICorProfilerInfo8* profiler_info;
         ev31::profiler_io io;
