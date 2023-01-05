@@ -73,8 +73,8 @@ export class DependencySetup {
             gcEventListenerPath = dotnetInsightsSettings["gcEventListenerPath"];
             roslynHelperPath = dotnetInsightsSettings["roslynHelperPath"];
 
-            if (dotnetInsightsSettings["preferNetCoreThreeOne"] != undefined && dotnetInsightsSettings["preferNetCoreThreeOne"] == true) {
-                this.insights.useNetCoreThree = true;
+            if (dotnetInsightsSettings["preferNetCoreLatestLts"] != undefined && dotnetInsightsSettings["preferNetCoreLatestLts"] == true) {
+                this.insights.useNetCoreLts = true;
             }
 
             if (customCoreRootPath == undefined) {
@@ -714,7 +714,7 @@ export class DependencySetup {
         insights.netcoreThreePmiPath = netcoreThreePmiPath;
         insights.netcoreFivePmiPath = netcoreFivePmiPath;
 
-        if (insights.useNetCoreThree) {
+        if (insights.useNetCoreLts) {
             insights.pmiPath = netcoreThreePmiPath;
         }
         else {
@@ -726,7 +726,7 @@ export class DependencySetup {
         }
 
         if (insights.customCoreRootPath == "" || insights.customCoreRootPath == "") {
-            if (insights.useNetCoreThree) {
+            if (insights.useNetCoreLts) {
                 insights.coreRunPath = insights.netcoreThreeCoreRunPath;
             }
             else {

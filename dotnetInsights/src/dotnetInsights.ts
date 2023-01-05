@@ -243,7 +243,7 @@ export class DotnetInsights {
 
     public coreRunPath: string;
 
-    public useNetCoreThree: boolean;
+    public useNetCoreLts: boolean;
 
     public sdkVersions: string[];
 
@@ -253,7 +253,7 @@ export class DotnetInsights {
     public pmiTempDir: string;
 
     public useIldasm: boolean;
-    public usePmi: boolean
+    public usePmi: boolean;
 
     public methods: Map<string, Method[]> | undefined;
     public types: Type[] | undefined;
@@ -298,7 +298,7 @@ export class DotnetInsights {
 
         this.pmiPath = "";
 
-        this.useNetCoreThree = false;
+        this.useNetCoreLts = false;
 
         this.netcoreThreeCoreRootPath = "";
         this.netcoreFiveCoreRootPath = "";

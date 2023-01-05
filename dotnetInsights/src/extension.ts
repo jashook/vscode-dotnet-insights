@@ -45,9 +45,9 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     var insights = new DotnetInsights(outputChannel);
-    const lastestVersionNumber = "0.7.0";
-    const latestListenerVersionNumber = "0.7.3";
-    const latestRoslynVersionNumber = "0.7.0";
+    const lastestVersionNumber = "0.8.0";
+    const latestListenerVersionNumber = "0.8.0";
+    const latestRoslynVersionNumber = "0.8.0";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;

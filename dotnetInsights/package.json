@@ -89,13 +89,13 @@
           "default": null,
           "description": "Path to a local roslynPath executable. This will override the roslynPath executable setup by the extension."
         },
-        "dotnet-insights.preferNetCoreThreeOne": {
+        "dotnet-insights.preferNetCoreLatestLts": {
           "type": [
             "string",
             "null"
           ],
           "default": null,
-          "description": "Prefer using .NET Core 3.1 in place of 5.0 when using JIT Dasm and Jit Dump."
+          "description": "Prefer using the latest LTS .NET in place of the latest non-lts release when using JIT Dasm and Jit Dump."
         },
         "dotnet-insights.surpressStartupMessage": {
           "type": "boolean",
