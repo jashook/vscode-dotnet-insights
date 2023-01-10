@@ -228,18 +228,24 @@ export class DotnetInsights {
 
     public netcoreThreePmiPath : string;
     public netcoreFivePmiPath : string;
+    public netcoreSixPmiPath: string;
+    public netcoreSevenPmiPath: string;
 
     public pmiPath: string;
 
     public netcoreThreeCoreRootPath: string;
     public netcoreFiveCoreRootPath: string;
+    public netcoreSixCoreRootPath: string;
+    public netcoreSevenCoreRootPath: string;
 
     public customCoreRootPath: string;
 
     public netcoreThreeCoreRunPath: string;
     public netcoreFiveCoreRunPath: string;
+    public netcoreSixCoreRunPath: string;
+    public netcoreSevenCoreRunPath: string;
 
-    public customCoreRunPath: string
+    public customCoreRunPath: string;
 
     public coreRunPath: string;
 
@@ -295,18 +301,24 @@ export class DotnetInsights {
 
         this.netcoreFivePmiPath = "";
         this.netcoreThreePmiPath = "";
+        this.netcoreSixPmiPath = "";
+        this.netcoreSevenPmiPath = "";
 
         this.pmiPath = "";
 
-        this.useNetCoreLts = false;
+        this.useNetCoreLts = true;
 
         this.netcoreThreeCoreRootPath = "";
         this.netcoreFiveCoreRootPath = "";
+        this.netcoreSixCoreRootPath = "";
+        this.netcoreSevenCoreRootPath = "";
 
         this.customCoreRootPath = "";
 
         this.netcoreThreeCoreRunPath = "";
         this.netcoreFiveCoreRunPath = "";
+        this.netcoreSixCoreRunPath = "";
+        this.netcoreSevenCoreRunPath = "";
 
         this.customCoreRunPath = "";
 

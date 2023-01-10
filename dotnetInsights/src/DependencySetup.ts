@@ -46,18 +46,22 @@ export class DependencySetup {
         const config = vscode.workspace.getConfiguration();
         var dotnetInsightsSettings: any = config.get("dotnet-insights");
 
-        
         var ilDasmPath:any = undefined;
         var pmiPath: any = undefined;
         var netcoreThreePmiPath: any = undefined;
         var netcoreFivePmiPath: any = undefined;
+        var netcoreSixPmiPath: any = undefined;
+        var netcoreSevenPmiPath: any = undefined;
+
         var customCoreRootPath: any  = undefined;
 
         var roslynHelperPath: any = undefined;
         var gcEventListenerPath: any = undefined;
 
-        var netcoreFiveCoreRootPath: any = undefined;
         var netcoreThreeCoreRootPath: any = undefined;
+        var netcoreFiveCoreRootPath: any = undefined;
+        var netcoreSixCoreRootPath: any = undefined;
+        var netcoreSevenCoreRootPath: any = undefined;
 
         var gcStatsLocation: any = undefined;
 
@@ -73,8 +77,11 @@ export class DependencySetup {
             gcEventListenerPath = dotnetInsightsSettings["gcEventListenerPath"];
             roslynHelperPath = dotnetInsightsSettings["roslynHelperPath"];
 
-            if (dotnetInsightsSettings["preferNetCoreLatestLts"] != undefined && dotnetInsightsSettings["preferNetCoreLatestLts"] == true) {
+            if (dotnetInsightsSettings["useNetCoreLts"] != undefined && dotnetInsightsSettings["useNetCoreLts"] == true) {
                 this.insights.useNetCoreLts = true;
+            }
+            else {
+                this.insights.useNetCoreLts = false;
             }
 
             if (customCoreRootPath == undefined) {
@@ -163,16 +170,21 @@ export class DependencySetup {
 
             netcoreFiveCoreRootPath = path.join(coreRootPath, "net5.0", "Core_Root");
             netcoreThreeCoreRootPath = path.join(coreRootPath, "netcore3.1", "Core_Root");
-            var ilDasmCoreRootPath = path.join(netcoreFiveCoreRootPath, "ildasm.exe");
+            netcoreSixCoreRootPath = path.join(coreRootPath, "net6.0", "Core_Root");
+            netcoreSevenCoreRootPath = path.join(coreRootPath, "net7.0", "Core_Root");
+
+            var ilDasmCoreRootPath = path.join(netcoreSixCoreRootPath, "ildasm.exe");
             if (os.platform() != "win32") {
-                ilDasmCoreRootPath = path.join(netcoreFiveCoreRootPath, "ildasm");
+                ilDasmCoreRootPath = path.join(netcoreSixCoreRootPath, "ildasm");
             }
 
             var doDownload = false;
 
             if (forceDownload ||
-                !fs.existsSync(netcoreFiveCoreRootPath) || 
                 !fs.existsSync(netcoreThreeCoreRootPath) ||
+                !fs.existsSync(netcoreFiveCoreRootPath) || 
+                !fs.existsSync(netcoreSixCoreRootPath) ||
+                !fs.existsSync(netcoreSevenCoreRootPath) ||
                 !fs.existsSync(ilDasmCoreRootPath)) {
                 doDownload = true;
             }
@@ -183,8 +195,10 @@ export class DependencySetup {
                         // We will expect to now have coreRootPath/net5.0/Core_Root and coreRootPath/netcoreapp3.1/Core_Root
                         var runtimeDownloadSucceeded = false;
         
-                        if (fs.existsSync(netcoreFiveCoreRootPath) &&
-                            fs.existsSync(netcoreThreeCoreRootPath) &&
+                        if (fs.existsSync(netcoreThreeCoreRootPath) &&
+                            fs.existsSync(netcoreFiveCoreRootPath) &&
+                            fs.existsSync(netcoreSixCoreRootPath) &&
+                            fs.existsSync(netcoreSevenCoreRootPath) &&
                             fs.existsSync(ilDasmCoreRootPath)) {
                             runtimeDownloadSucceeded = true;
                         }
@@ -204,10 +218,16 @@ export class DependencySetup {
                             // If on !windows set chmod +x to corerun and ildasm
                             fs.chmodSync(ilDasmPath, "0755");
         
-                            var coreRunPath = path.join(netcoreFiveCoreRootPath, "corerun");
+                            var coreRunPath = path.join(netcoreThreeCoreRootPath, "corerun");
                             fs.chmodSync(coreRunPath, "0755");
 
-                            coreRunPath = path.join(netcoreThreeCoreRootPath, "corerun");
+                            coreRunPath = path.join(netcoreFiveCoreRootPath, "corerun");
+                            fs.chmodSync(coreRunPath, "0755");
+
+                            coreRunPath = path.join(netcoreSixCoreRootPath, "corerun");
+                            fs.chmodSync(coreRunPath, "0755");
+
+                            coreRunPath = path.join(netcoreSevenCoreRootPath, "corerun");
                             fs.chmodSync(coreRunPath, "0755");
 
                             if (customCoreRootPath != "") {
@@ -218,6 +238,8 @@ export class DependencySetup {
 
                         this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreThreeCoreRootPath: ${netcoreThreeCoreRootPath}`);
                         this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreFiveCoreRootPath: ${netcoreFiveCoreRootPath}`);
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreSixCoreRootPath: ${netcoreSixCoreRootPath}`);
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreSevenCoreRootPath: ${netcoreSevenCoreRootPath}`);
                         this.insights.outputChannel.appendLine(`[Dependency Setup]: ilDasmCoreRootPath: ${ilDasmCoreRootPath}`);
 
                         resolve(runtimeDownloadSucceeded);
@@ -228,8 +250,10 @@ export class DependencySetup {
             }
             else {
                 const coreRootPath = path.join(outputPath, "coreRoot");
-                netcoreFiveCoreRootPath = path.join(coreRootPath, "net5.0", "Core_Root");
                 netcoreThreeCoreRootPath = path.join(coreRootPath, "netcore3.1", "Core_Root");
+                netcoreFiveCoreRootPath = path.join(coreRootPath, "net5.0", "Core_Root");
+                netcoreSixCoreRootPath = path.join(coreRootPath, "net6.0", "Core_Root");
+                netcoreSevenCoreRootPath = path.join(coreRootPath, "net7.0", "Core_Root");
 
                 if (ilDasmPath == undefined) {
                     ilDasmPath = ilDasmCoreRootPath;
@@ -242,9 +266,15 @@ export class DependencySetup {
 
             const netcoreThreePmiPathDownload = path.join(pmiExePath, "netcore3.1", "netcoreapp3.1", "pmi.dll");
             const netcoreFivePmiPathDownload = path.join(pmiExePath, "net5.0", "net5.0", "pmi.dll");
+            const netcoreSixPmiDownload = path.join(pmiExePath, "net6.0", "net6.0", "pmi.dll");
+            const netcoreSevenPmiDownload = path.join(pmiExePath, "net7.0", "net7.0", "pmi.dll");
 
             var doDownload = false;
-            if (forceDownload || !fs.existsSync(netcoreThreePmiPathDownload) || !fs.existsSync(netcoreFivePmiPathDownload)) {
+            if (forceDownload || 
+                !fs.existsSync(netcoreThreePmiPathDownload) || 
+                !fs.existsSync(netcoreFivePmiPathDownload) ||
+                !fs.existsSync(netcoreSixPmiDownload) ||
+                !fs.existsSync(netcoreSevenPmiDownload)) {
                 doDownload = true;
             }
 
@@ -254,12 +284,17 @@ export class DependencySetup {
                         // We will expect to now have net5.0/net5.0/pmi.dll and netcore/netcoreapp3.1/pmi.dll
                         var pmiDownloadSucceeded = false;
 
-                        if (fs.existsSync(netcoreFivePmiPathDownload) && fs.existsSync(netcoreThreePmiPathDownload)) {
+                        if (fs.existsSync(netcoreThreePmiPathDownload) &&
+                            fs.existsSync(netcoreFivePmiPathDownload) && 
+                            fs.existsSync(netcoreSixPmiDownload) &&
+                            fs.existsSync(netcoreSevenPmiDownload)) {
                             pmiDownloadSucceeded = true;
                         }
 
                         netcoreThreePmiPath = netcoreThreePmiPathDownload;
                         netcoreFivePmiPath = netcoreFivePmiPathDownload;
+                        netcoreSixPmiPath = netcoreSixPmiDownload;
+                        netcoreSevenPmiPath = netcoreSevenPmiDownload;
 
                         if (!pmiDownloadSucceeded) {
                             vscode.window.showWarningMessage("Unable to download pmi successfully.");
@@ -267,6 +302,8 @@ export class DependencySetup {
 
                         this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreThreePmiPathDownload: ${netcoreThreePmiPathDownload}`);
                         this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreFivePmiPathDownload: ${netcoreFivePmiPathDownload}`);
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreSixPmiDownload: ${netcoreSixPmiDownload}`);
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreSevenPmiDownload: ${netcoreSevenPmiDownload}`);
                         resolve(pmiDownloadSucceeded);
                     });
                 });
@@ -276,6 +313,8 @@ export class DependencySetup {
             else {
                 netcoreFivePmiPath = netcoreFivePmiPathDownload;
                 netcoreThreePmiPath = netcoreThreePmiPathDownload;
+                netcoreSixPmiPath = netcoreSixPmiDownload;
+                netcoreSevenPmiPath = netcoreSevenPmiDownload;
             }
         }
 
@@ -389,13 +428,13 @@ export class DependencySetup {
                         resolve(false);
                     }
                     else {
-                        resolve(this.continueSetup(this.insights, ilDasmPath, netcoreFivePmiPath, netcoreThreePmiPath, pmiPath, netcoreFiveCoreRootPath, netcoreThreeCoreRootPath, customCoreRootPath, outputPath, ilDasmOutputPath, pmiOutputPath, pmiTempDir));
+                        resolve(this.continueSetup(this.insights, ilDasmPath, netcoreThreePmiPath, netcoreFivePmiPath, netcoreSixPmiPath, netcoreSevenPmiPath, pmiPath, netcoreThreeCoreRootPath, netcoreFiveCoreRootPath, netcoreSixCoreRootPath, netcoreSevenCoreRootPath, customCoreRootPath, outputPath, ilDasmOutputPath, pmiOutputPath, pmiTempDir));
                     }
                 });
             });
         }
         else {
-            return this.continueSetup(this.insights, ilDasmPath, netcoreFivePmiPath, netcoreThreePmiPath, pmiPath, netcoreFiveCoreRootPath, netcoreThreeCoreRootPath, customCoreRootPath, outputPath, ilDasmOutputPath, pmiOutputPath, pmiTempDir);
+            return this.continueSetup(this.insights, ilDasmPath, netcoreThreePmiPath, netcoreFivePmiPath, netcoreSixPmiPath, netcoreSevenPmiPath, pmiPath, netcoreThreeCoreRootPath, netcoreFiveCoreRootPath, netcoreSixCoreRootPath, netcoreSevenCoreRootPath, customCoreRootPath, outputPath, ilDasmOutputPath, pmiOutputPath, pmiTempDir);
         }
     }
 
@@ -404,8 +443,87 @@ export class DependencySetup {
     ////////////////////////////////////////////////////////////////////////////
 
 
-    private downloadAnUnzip(insights: DotnetInsights, url: string, unzipFolder: string, outputPath: string, isCoreRoot: boolean) : Thenable<void> {
+    private downloadAndUnzip(insights: DotnetInsights, url: string, unzipFolder: string, outputPath: string, isCoreRoot: boolean) : Thenable<void> {
         const unzipName = path.join(unzipFolder, crypto.randomBytes(16).toString("hex") + ".tar.gz");
+
+        var continueSetupAfterDownload = (resolve: any, reject: any) => {
+            insights.outputChannel.appendLine(`[COMPLETE]: mkdir ${outputPath}`);
+
+            insights.outputChannel.appendLine(`readDir ${outputPath}`);
+            fs.readdir(outputPath, (err, filesInOutputPath) => {
+                insights.outputChannel.appendLine(`[COMPLETE]: readDir ${outputPath}`);
+                var deletePromises = [] as Promise<Error>[];
+
+                if (filesInOutputPath.length > 0) {
+                    for (var index = 0; index < filesInOutputPath.length; ++index) {
+                        if (filesInOutputPath[index] == "temp") {
+                            continue;
+                        }
+
+                        try {
+                            var folderToDelete = path.join(outputPath, filesInOutputPath[index]);
+                            insights.outputChannel.appendLine(`rm -r ${folderToDelete}`);
+                            deletePromises.push(new Promise((deleteResolve, deleteReject) => {
+                                rimraf(folderToDelete, (err) => {
+                                    insights.outputChannel.appendLine(`[COMPLETED]: rm -r ${folderToDelete}`);
+
+                                    if (err != undefined && err != null) { 
+                                        insights.outputChannel.appendLine(`FAILED: ${err}`);
+                                        deleteReject(err);
+                                    }
+                                    else {
+                                        deleteResolve(new Error());
+                                    }
+                                });
+                            }));
+                        }
+                        catch (e) {
+                            console.log(e);
+                        }
+                    }
+                }
+
+                let allPromise = Promise.all(deletePromises);
+
+                allPromise.then(() =>{
+                    insights.outputChannel.appendLine(`untar ${unzipName} ${outputPath}`);
+                    targz.decompress({
+                        src: unzipName,
+                        dest: outputPath
+                    }, function(err){
+                        if(err) {
+                            insights.outputChannel.appendLine(`untar failed: ${unzipName}, ${err}`);
+                            reject();
+                        } else {
+                            insights.outputChannel.appendLine(`[COMPLETE]: untar ${unzipName}`);
+                            insights.outputChannel.appendLine(`readdir ${unzipName}`);
+                            fs.readdir(outputPath, (err, files) => {
+                                if (isCoreRoot) {
+                                    if (files.length != 1) {
+                                        var i = 0;
+                                    }
+                                }
+
+                                insights.outputChannel.appendLine(`[COMPLETE]: readdir ${unzipName}`);
+    
+                                if (isCoreRoot && files[0] != "Core_Root") {
+                                    // Rename the folder to Core_Root
+    
+                                    fs.rename(path.join(outputPath, files[0]), path.join(outputPath, "Core_Root"), (err) => {
+                                        insights.outputChannel.appendLine(`[FULL-COMPLETE]: ${url}`);
+                                        resolve();
+                                    });
+                                }
+                                else {
+                                    insights.outputChannel.appendLine(`[FULL-COMPLETE]: ${url}`);
+                                    resolve();
+                                }
+                            });
+                        }
+                    });
+                });
+            });
+        };
 
         try {
             const fileStream = fs.createWriteStream(unzipName);
@@ -417,77 +535,35 @@ export class DependencySetup {
             return new Promise((resolve, reject) => {
                 req.on("close", (response: any) => {
                     insights.outputChannel.appendLine(`Download completed: ${unzipName}`);
-
                     insights.outputChannel.appendLine(`mkdir ${outputPath}`);
-                    fs.mkdir(outputPath, (err) => {
-                        insights.outputChannel.appendLine(`[COMPLETE]: mkdir ${outputPath}`);
 
-                        insights.outputChannel.appendLine(`readDir ${outputPath}`);
-                        fs.readdir(outputPath, (err, filesInOutputPath) => {
-                            insights.outputChannel.appendLine(`[COMPLETE]: readDir ${outputPath}`);
-                            var deletePromises = [] as Promise<Error>[];
+                    try {
+                        var dirExists = fs.existsSync(outputPath);
 
-                            if (filesInOutputPath.length > 0) {
-                                for (var index = 0; index < filesInOutputPath.length; ++index) {
-                                    if (filesInOutputPath[index] == "temp") {
-                                        continue;
+                        if (dirExists) {
+                            continueSetupAfterDownload(resolve, reject);
+                        }
+
+                        else {
+                            var mdPromise = fs.mkdir(outputPath, (err) => {
+                                if (err?.code !== "EEXIST") {
+                                    if (err != undefined) {
+                                        insights.outputChannel.appendLine(err?.message);
                                     }
-        
-                                    try {
-                                        var folderToDelete = path.join(outputPath, filesInOutputPath[index]);
-                                        insights.outputChannel.appendLine(`rm -r ${folderToDelete}`);
-                                        deletePromises.push(new Promise((deleteResolve, deleteReject) => {
-                                            rimraf(folderToDelete, (err) => {
-                                                insights.outputChannel.appendLine(`[COMPLETED]: rm -r ${folderToDelete}`);
-                                                deleteResolve(err);
-                                            })
-                                        }));
-                                    }
-                                    catch (e) {
-                                        console.log(e);
-                                    }
+                                    reject();
                                 }
-                            }
 
-                            let allPromise = Promise.all(deletePromises);
-
-                            allPromise.then(() =>{
-                                insights.outputChannel.appendLine(`untar ${unzipName} ${outputPath}`);
-                                targz.decompress({
-                                    src: unzipName,
-                                    dest: outputPath
-                                }, function(err){
-                                    if(err) {
-                                        insights.outputChannel.appendLine(`untar failed: ${unzipName}, ${err}`);
-                                        reject();
-                                    } else {
-                                        fs.readdir(outputPath, (err, files) => {
-                                            if (isCoreRoot) {
-                                                console.assert(files.length == 1);
-                
-                                                if (files.length != 1) {
-                                                    var i = 0;
-                                                }
-                                            }
-
-                                            insights.outputChannel.appendLine(`[COMPLETE]: untar ${unzipName}`);
-                
-                                            if (isCoreRoot && files[0] != "Core_Root") {
-                                                // Rename the folder to Core_Root
-                
-                                                fs.rename(path.join(outputPath, files[0]), path.join(outputPath, "Core_Root"), (err) => {
-                                                    resolve();
-                                                });
-                                            }
-                                            else {
-                                                resolve();
-                                            }
-                                        });
-                                    }
-                                });
+                                continueSetupAfterDownload(resolve, reject);
                             });
-                        });
-                    });
+                        }
+                    }
+                    catch(e: any) {
+                        // If exists, continue.
+                        if (e.code !== os.constants.errno.EEXIST) {
+                            insights.outputChannel.appendLine(e);
+                            reject();
+                        }
+                    }
                 });
             });
         }
@@ -502,7 +578,7 @@ export class DependencySetup {
     }
 
     private downloadRuntimes(insights: DotnetInsights, versionNumber: string, unzipFolder: string) : Thenable<void[]> {
-        const runtimes = ["netcore3.1", "net5.0"];
+        const runtimes = ["netcore3.1", "net5.0", "net6.0", "net7.0"];
         const coreRootFolder = unzipFolder;
 
         unzipFolder = path.join(unzipFolder, "temp");
@@ -532,14 +608,14 @@ export class DependencySetup {
             const outputPath = path.join(coreRootFolder, runtimes[index]);
 
             const runtimeUrl = baseRuntimeUrl + `${osName}-${arch}-${runtimes[index]}.tar.gz`;
-            promises.push(this.downloadAnUnzip(insights, runtimeUrl, unzipFolder, outputPath, true));
+            promises.push(this.downloadAndUnzip(insights, runtimeUrl, unzipFolder, outputPath, true));
         }
 
         return Promise.all(promises);
     }
 
     private downloadPmiExe(insights: DotnetInsights, versionNumber: string, unzipFolder: string) : Thenable<void[]> {
-        const runtimes = ["netcore3.1", "net5.0"];
+        const runtimes = ["netcore3.1", "net5.0", "net6.0", "net7.0"];
         const pmiExeFolder = unzipFolder;
 
         unzipFolder = path.join(unzipFolder, "temp");
@@ -564,7 +640,7 @@ export class DependencySetup {
             const outputPath = path.join(pmiExeFolder, runtimes[index]);
 
             const pmiUrl = baseUrl + `${osName}-${arch}-${runtimes[index]}-pmi.tar.gz`;
-            promises.push(this.downloadAnUnzip(insights, pmiUrl, unzipFolder, outputPath, false));
+            promises.push(this.downloadAndUnzip(insights, pmiUrl, unzipFolder, outputPath, false));
         }
 
         return Promise.all(promises);
@@ -596,7 +672,7 @@ export class DependencySetup {
         const arch = "x64";
         const baseUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/gcEventListener-${osName}.tar.gz`;
 
-        promises.push(this.downloadAnUnzip(insights, baseUrl, unzipFolder, exeFolder, false));
+        promises.push(this.downloadAndUnzip(insights, baseUrl, unzipFolder, exeFolder, false));
         return Promise.all(promises);
     }
 
@@ -626,11 +702,11 @@ export class DependencySetup {
         const arch = "x64";
         const baseUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/roslynHelper-${osName}-${arch}.tar.gz`;
 
-        promises.push(this.downloadAnUnzip(insights, baseUrl, unzipFolder, exeFolder, false));
+        promises.push(this.downloadAndUnzip(insights, baseUrl, unzipFolder, exeFolder, false));
         return Promise.all(promises);
     }
 
-    private continueSetup(insights: DotnetInsights, ilDasmPath: any, netcoreFivePmiPath: any, netcoreThreePmiPath: any, customPmiPath: any, netcoreFiveCoreRoot: any, netcoreThreeCoreRootPath: any, customCoreRootPath: any, outputPath: any, ilDasmOutputPath: string, pmiOutputPath: string, pmiTempDir: string) : Thenable<boolean> {
+    private continueSetup(insights: DotnetInsights, ilDasmPath: any, netcoreThreePmiPath: any, netcoreFivePmiPath: any, netcoreSixPmiPath: any, netcoreSevenPmiPath: any,customPmiPath: any, netcoreThreeCoreRootPath: any, netcoreFiveCoreRoot: any, netcoreSixCoreRoot: any, netcoreSevenCoreRoot: any, customCoreRootPath: any, outputPath: any, ilDasmOutputPath: string, pmiOutputPath: string, pmiTempDir: string) : Thenable<boolean> {
         if (typeof(ilDasmPath) != "string") {
             if (os.platform() == "darwin") {
                 ilDasmPath = ilDasmPath["osx"];
@@ -683,6 +759,8 @@ export class DependencySetup {
 
         insights.netcoreThreeCoreRootPath = netcoreThreeCoreRootPath;
         insights.netcoreFiveCoreRootPath = netcoreFiveCoreRoot;
+        insights.netcoreSixCoreRootPath = netcoreSixCoreRoot;
+        insights.netcoreSevenCoreRootPath = netcoreSevenCoreRoot;
 
         insights.customCoreRootPath = customCoreRootPath;
 
@@ -702,23 +780,30 @@ export class DependencySetup {
             coreRunExe = "corerun";
         }
 
-        insights.netcoreFiveCoreRunPath = path.join(insights.netcoreFiveCoreRootPath, coreRunExe);
         insights.netcoreThreeCoreRunPath = path.join(insights.netcoreThreeCoreRootPath, coreRunExe);
+        insights.netcoreFiveCoreRunPath = path.join(insights.netcoreFiveCoreRootPath, coreRunExe);
+        insights.netcoreSixCoreRunPath = path.join(insights.netcoreSixCoreRootPath, coreRunExe);
+        insights.netcoreSevenCoreRunPath = path.join(insights.netcoreSevenCoreRootPath, coreRunExe);
 
-        if (!fs.existsSync(insights.netcoreFiveCoreRunPath) || 
-            !fs.existsSync(insights.netcoreThreeCoreRunPath)) {
+        if (!fs.existsSync(insights.netcoreThreeCoreRunPath) ||
+            !fs.existsSync(insights.netcoreFiveCoreRunPath) || 
+            !fs.existsSync(insights.netcoreSixCoreRunPath) || 
+            !fs.existsSync(insights.netcoreSevenCoreRunPath)) {
             vscode.window.showWarningMessage("Failed to set corerun path.");
             Promise.resolve(false);
         }
 
         insights.netcoreThreePmiPath = netcoreThreePmiPath;
         insights.netcoreFivePmiPath = netcoreFivePmiPath;
+        insights.netcoreSixPmiPath = netcoreSixPmiPath;
+        insights.netcoreSevenPmiPath = netcoreSevenPmiPath;
 
+        // Change default here.
         if (insights.useNetCoreLts) {
-            insights.pmiPath = netcoreThreePmiPath;
+            insights.pmiPath = insights.netcoreThreePmiPath;
         }
         else {
-            insights.pmiPath = netcoreFivePmiPath;
+            insights.pmiPath = insights.netcoreFivePmiPath;
         }
 
         if (customPmiPath != "" && customPmiPath != undefined) {
