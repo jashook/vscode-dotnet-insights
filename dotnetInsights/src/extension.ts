@@ -111,27 +111,40 @@ function doDiffBetweenRuntimesTier0(treeItem: Dependency, insights: DotnetInsigh
     var baseIsFive: boolean = false;
     var baseIsSix: boolean = false;
 
+    const isArm64 = process.arch === "arm64";
+    var baseIsX64 = true;
+
     if (threeOne === true) {
-        baseCoreRunPath = insights.netcoreThreeCoreRunPath;
+        baseCoreRunPath = insights.netcoreThreeX64CoreRunPath;
         basePmiPath = insights.netcoreThreePmiPath;
     } else if (five === true) {
-        baseCoreRunPath = insights.netcoreFiveCoreRunPath;
+        baseCoreRunPath = insights.netcoreFiveX64CoreRunPath;
         basePmiPath = insights.netcoreFivePmiPath;
         baseIsFive = true;
     } else if (six === true) {
-        baseCoreRunPath = insights.netcoreSixCoreRunPath;
+        const useArm64 = isArm64 && insights.netcoreSixArm64CoreRunPath !== "";
+        
+        if (useArm64) {
+            baseIsX64 = false;
+        }
+
+        baseCoreRunPath = useArm64 ? insights.netcoreSixArm64CoreRunPath : insights.netcoreSixX64CoreRunPath;
         basePmiPath = insights.netcoreSixPmiPath;
         baseIsSix = true;
     }
 
     if (five === true && baseIsFive !== true) {
-        diffCoreRunPath = insights.netcoreFiveCoreRunPath;
+        diffCoreRunPath = insights.netcoreFiveX64CoreRunPath;
         diffPmiPath = insights.netcoreFivePmiPath;
     } else if (six === true && baseIsSix !== true) {
-        diffCoreRunPath = insights.netcoreSixCoreRunPath;
+        const useArm64 = isArm64 && insights.netcoreSixArm64CoreRunPath !== "" && !baseIsX64;
+
+        diffCoreRunPath = useArm64 ? insights.netcoreSixArm64CoreRunPath : insights.netcoreSixX64CoreRunPath;
         diffPmiPath = insights.netcoreSixPmiPath;
     } else {
-        diffCoreRunPath = insights.netcoreSevenCoreRunPath;
+        const useArm64 = isArm64 && insights.netcoreSevenArm64CoreRunPath !== "" && !baseIsX64;
+
+        diffCoreRunPath = useArm64 ? insights.netcoreSevenArm64CoreRunPath : insights.netcoreSevenX64CoreRunPath;
         diffPmiPath = insights.netcoreSevenPmiPath;
     }
 
@@ -172,30 +185,42 @@ function doDiffBetweenRuntimesTier1(treeItem: Dependency, insights: DotnetInsigh
     var baseIsFive: boolean = false;
     var baseIsSix: boolean = false;
 
+    const isArm64 = process.arch === "arm64";
+    var baseIsX64 = true;
+
     if (threeOne === true) {
-        baseCoreRunPath = insights.netcoreThreeCoreRunPath;
+        baseCoreRunPath = insights.netcoreThreeX64CoreRunPath;
         basePmiPath = insights.netcoreThreePmiPath;
     } else if (five === true) {
-        baseCoreRunPath = insights.netcoreFiveCoreRunPath;
+        baseCoreRunPath = insights.netcoreFiveX64CoreRunPath;
         basePmiPath = insights.netcoreFivePmiPath;
         baseIsFive = true;
     } else if (six === true) {
-        baseCoreRunPath = insights.netcoreSixCoreRunPath;
+        const useArm64 = isArm64 && insights.netcoreSixArm64CoreRunPath !== "";
+        
+        if (useArm64) {
+            baseIsX64 = false;
+        }
+
+        baseCoreRunPath = useArm64 ? insights.netcoreSixArm64CoreRunPath : insights.netcoreSixX64CoreRunPath;
         basePmiPath = insights.netcoreSixPmiPath;
         baseIsSix = true;
     }
 
     if (five === true && baseIsFive !== true) {
-        diffCoreRunPath = insights.netcoreFiveCoreRunPath;
+        diffCoreRunPath = insights.netcoreFiveX64CoreRunPath;
         diffPmiPath = insights.netcoreFivePmiPath;
     } else if (six === true && baseIsSix !== true) {
-        diffCoreRunPath = insights.netcoreSixCoreRunPath;
+        const useArm64 = isArm64 && insights.netcoreSixArm64CoreRunPath !== "" && !baseIsX64;
+
+        diffCoreRunPath = useArm64 ? insights.netcoreSixArm64CoreRunPath : insights.netcoreSixX64CoreRunPath;
         diffPmiPath = insights.netcoreSixPmiPath;
     } else {
-        diffCoreRunPath = insights.netcoreSevenCoreRunPath;
+        const useArm64 = isArm64 && insights.netcoreSevenArm64CoreRunPath !== "" && !baseIsX64;
+
+        diffCoreRunPath = useArm64 ? insights.netcoreSevenArm64CoreRunPath : insights.netcoreSevenX64CoreRunPath;
         diffPmiPath = insights.netcoreSevenPmiPath;
     }
-
     
     var id = crypto.randomBytes(16).toString("hex");
     var basefilePath = path.join(insights.pmiOutputPath, id + ".asm");
@@ -245,9 +270,9 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     var insights = new DotnetInsights(outputChannel);
-    const lastestVersionNumber = "0.8.0";
-    const latestListenerVersionNumber = "0.8.0";
-    const latestRoslynVersionNumber = "0.8.0";
+    const lastestVersionNumber = "0.8.1";
+    const latestListenerVersionNumber = "0.8.1";
+    const latestRoslynVersionNumber = "0.8.1";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;

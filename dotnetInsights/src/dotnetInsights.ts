@@ -233,17 +233,27 @@ export class DotnetInsights {
 
     public pmiPath: string;
 
-    public netcoreThreeCoreRootPath: string;
-    public netcoreFiveCoreRootPath: string;
-    public netcoreSixCoreRootPath: string;
-    public netcoreSevenCoreRootPath: string;
+    public netcoreThreeX64CoreRootPath: string;
+    public netcoreFiveX64CoreRootPath: string;
+    public netcoreSixX64CoreRootPath: string;
+    public netcoreSevenX64CoreRootPath: string;
+
+    public netcoreThreeArm64CoreRootPath: string;
+    public netcoreFiveArm64CoreRootPath: string;
+    public netcoreSixArm64CoreRootPath: string;
+    public netcoreSevenArm64CoreRootPath: string;
 
     public customCoreRootPath: string;
 
-    public netcoreThreeCoreRunPath: string;
-    public netcoreFiveCoreRunPath: string;
-    public netcoreSixCoreRunPath: string;
-    public netcoreSevenCoreRunPath: string;
+    public netcoreThreeX64CoreRunPath: string;
+    public netcoreFiveX64CoreRunPath: string;
+    public netcoreSixX64CoreRunPath: string;
+    public netcoreSevenX64CoreRunPath: string;
+
+    public netcoreThreeArm64CoreRunPath: string;
+    public netcoreFiveArm64CoreRunPath: string;
+    public netcoreSixArm64CoreRunPath: string;
+    public netcoreSevenArm64CoreRunPath: string;
 
     public customCoreRunPath: string;
 
@@ -308,17 +318,27 @@ export class DotnetInsights {
 
         this.useNetCoreLts = true;
 
-        this.netcoreThreeCoreRootPath = "";
-        this.netcoreFiveCoreRootPath = "";
-        this.netcoreSixCoreRootPath = "";
-        this.netcoreSevenCoreRootPath = "";
+        this.netcoreThreeX64CoreRootPath = "";
+        this.netcoreFiveX64CoreRootPath = "";
+        this.netcoreSixX64CoreRootPath = "";
+        this.netcoreSevenX64CoreRootPath = "";
+
+        this.netcoreThreeArm64CoreRootPath = "";
+        this.netcoreFiveArm64CoreRootPath = "";
+        this.netcoreSixArm64CoreRootPath = "";
+        this.netcoreSevenArm64CoreRootPath = "";
 
         this.customCoreRootPath = "";
 
-        this.netcoreThreeCoreRunPath = "";
-        this.netcoreFiveCoreRunPath = "";
-        this.netcoreSixCoreRunPath = "";
-        this.netcoreSevenCoreRunPath = "";
+        this.netcoreThreeX64CoreRunPath = "";
+        this.netcoreFiveX64CoreRunPath = "";
+        this.netcoreSixX64CoreRunPath = "";
+        this.netcoreSevenX64CoreRunPath = "";
+
+        this.netcoreThreeArm64CoreRunPath = "";
+        this.netcoreFiveArm64CoreRunPath = "";
+        this.netcoreSixArm64CoreRunPath = "";
+        this.netcoreSevenArm64CoreRunPath = "";
 
         this.customCoreRunPath = "";
 

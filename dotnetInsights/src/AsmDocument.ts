@@ -22,14 +22,14 @@ export class AsmDocument {
     ////////////////////////////////////////////////////////////////////////////
 
     constructor(path?: string, text?: string) {
-        if (path != undefined) {
+        if (path !== undefined) {
             this.path = path;
         }
         else {
             this.path = "";
         }
 
-        if (text != undefined) {
+        if (text !== undefined) {
             this.text = text;
         }
 
@@ -46,7 +46,7 @@ export class AsmDocument {
         let boundObject = this;
         let promise = new Promise<boolean>((resolve, reject) => {
             fs.writeFile(boundObject.path, contents, (err) => {
-                if (err != null) {
+                if (err !== null) {
                     reject(false);
                 }
 
