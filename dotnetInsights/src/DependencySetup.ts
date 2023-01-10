@@ -800,10 +800,10 @@ export class DependencySetup {
 
         // Change default here.
         if (insights.useNetCoreLts) {
-            insights.pmiPath = insights.netcoreThreePmiPath;
+            insights.pmiPath = insights.netcoreSixPmiPath;
         }
         else {
-            insights.pmiPath = insights.netcoreFivePmiPath;
+            insights.pmiPath = insights.netcoreSevenPmiPath;
         }
 
         if (customPmiPath != "" && customPmiPath != undefined) {
@@ -812,10 +812,10 @@ export class DependencySetup {
 
         if (insights.customCoreRootPath == "" || insights.customCoreRootPath == "") {
             if (insights.useNetCoreLts) {
-                insights.coreRunPath = insights.netcoreThreeCoreRunPath;
+                insights.coreRunPath = insights.netcoreSixCoreRunPath;
             }
             else {
-                insights.coreRunPath = insights.netcoreFiveCoreRunPath;
+                insights.coreRunPath = insights.netcoreSevenCoreRunPath;
             }
         }
         else {
