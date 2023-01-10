@@ -3,7 +3,7 @@
   "displayName": ".NET Insights",
   "publisher": "jashoo",
   "description": "Monitor .NET Processes for GC information in real time, or drill into .NET DLLs by viewing the IL and compiled code. Relies on ildasm and a public .NET JIT tool PMI.",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "preview": false,
   "icon": "media/dep.png",
   "repository": {
@@ -49,6 +49,11 @@
           "default": null,
           "description": "Path to a local ildasm executable. This will override the ildasm executable setup by the extension."
         },
+        "dotnet-insights.useNetCoreLts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use the latest LTS .NET in place of the latest non-lts release when using JIT Dasm and Jit Dump."
+        },
         "dotnet-insights.pmiPath": {
           "type": [
             "string",
@@ -88,14 +93,6 @@
           ],
           "default": null,
           "description": "Path to a local roslynPath executable. This will override the roslynPath executable setup by the extension."
-        },
-        "dotnet-insights.preferNetCoreThreeOne": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "default": null,
-          "description": "Prefer using .NET Core 3.1 in place of 5.0 when using JIT Dasm and Jit Dump."
         },
         "dotnet-insights.surpressStartupMessage": {
           "type": "boolean",
@@ -226,6 +223,46 @@
         "title": "Diff - 3.1 / 5.0 - Tier 1"
       },
       {
+        "command": "dotnetInsights.diffThreeVsSixTier0",
+        "title": "Diff - 3.1 / 6.0 - Tier 0"
+      },
+      {
+        "command": "dotnetInsights.diffThreeVsSixTier1",
+        "title": "Diff - 3.1 / 6.0 - Tier 1"
+      },
+      {
+        "command": "dotnetInsights.diffThreeVsSevenTier0",
+        "title": "Diff - 3.1 / 7.0 - Tier 0"
+      },
+      {
+        "command": "dotnetInsights.diffThreeVsSevenTier1",
+        "title": "Diff - 3.1 / 7.0 - Tier 1"
+      },
+      {
+        "command": "dotnetInsights.diffFiveVsSixTier0",
+        "title": "Diff - 5.0 / 6.0 - Tier 0"
+      },
+      {
+        "command": "dotnetInsights.diffFiveVsSixTier1",
+        "title": "Diff - 5.0 / 6.0 - Tier 1"
+      },
+      {
+        "command": "dotnetInsights.diffFiveVsSevenTier0",
+        "title": "Diff - 5.0 / 7.0 - Tier 0"
+      },
+      {
+        "command": "dotnetInsights.diffFiveVsSevenTier1",
+        "title": "Diff - 5.0 / 7.0 - Tier 1"
+      },
+      {
+        "command": "dotnetInsights.diffSixVsSevenTier0",
+        "title": "Diff - 6.0 / 7.0 - Tier 0"
+      },
+      {
+        "command": "dotnetInsights.diffSixVsSevenTier1",
+        "title": "Diff - 6.0 / 7.0 - Tier 1"
+      },
+      {
         "command": "dotnetInsights.startGCMonitor",
         "title": "Start .NET Monitoring"
       },
@@ -303,6 +340,46 @@
         },
         {
           "command": "dotnetInsights.diffThreeVsFiveTier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffThreeVsSixTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffThreeVsSixTier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffThreeVsSevenTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffThreeVsSevenTier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffFiveVsSixTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffFiveVsSixTier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffFiveVsSevenTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffFiveVsSevenTier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffSixVsSevenTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffSixVsSevenTier1",
           "when": "view == dotnetInsights && viewItem == dependency"
         },
         {
@@ -387,7 +464,7 @@
     "eslint": "^7.19.0",
     "glob": "^7.1.6",
     "mocha": "^8.2.1",
-    "typescript": "^4.1.3",
+    "typescript": "^4.9.4",
     "unzipper": "^0.10.11",
     "vscode-test": "^1.5.0"
   },
