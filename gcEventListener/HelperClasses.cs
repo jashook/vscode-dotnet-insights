@@ -18,7 +18,7 @@ using Microsoft.Diagnostics.Tracing.Parsers.Clr;
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-internal class Generation
+public class Generation
 {
     public int Id { get; set; }
     public long SizeBefore { get; set; }
@@ -43,7 +43,7 @@ internal class Generation
     }
 }
 
-internal class HeapInfo
+public class HeapInfo
 {
     public int HeapIndex { get; set; }
     public List<Generation> GenData { get; set; }
@@ -67,7 +67,7 @@ internal class HeapInfo
     }
 }
 
-internal class GcInfo
+public class GcInfo
 {
     public GCKind Kind { get; set; }
     public int Generation { get; set; }
@@ -181,7 +181,7 @@ internal class GcInfo
     }
 }
 
-internal class AllocationInfo
+public class AllocationInfo
 {
     public int HeapIndex { get; set; }
     public GCAllocationKind Kind { get; set; }
@@ -194,7 +194,7 @@ internal class AllocationInfo
     }
 }
 
-internal class ProcessInfo
+public class ProcessInfo
 {
     public int ProcessId { get; set; }
 
@@ -209,7 +209,7 @@ internal class ProcessInfo
     }
 }
 
-internal class MethodJitInfo
+public class MethodJitInfo
 {
     public bool isTieredUp { get; set; }
     public bool HasLoaded { get; set; }

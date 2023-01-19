@@ -53,6 +53,10 @@ public class EventPipeBasedListener
         internal ProcessInfo ProcessInfo { get; set; }
         public Action<EventType, string> EventFinishedCallback { get; set; }
 
+        public Action<string, string, MethodJitInfo> JitEventFinishedCallback { get; set; }
+        public Action<string, string, AllocationInfo> GcAllocEventFinishedCallback { get; set; }
+        public Action<string, string, GcInfo> GcCollectEventFinishedCallback { get; set; }
+
         private Dictionary<long, MethodJitInfo> Methods { get; set; }
 
         private Process Process { get; set; }
@@ -64,6 +68,48 @@ public class EventPipeBasedListener
         // the GC data for this particular process.
         // </summary>
         public PublishClient(int processId, Action<EventType, string> callback)
+        {
+            this.ProcessID = processId;
+            this.Session = null;
+            Console.WriteLine(processId);
+            this.ProcessCommandLine = ProcessNameHelper.GetProcessCommandLineForPid(processId);
+
+            this.ProcessDied = false;
+            this.Allocations = new List<string>();
+            this.JittedMethods = new List<string>();
+
+            this.Methods = new Dictionary<long, MethodJitInfo>();
+
+            if (string.IsNullOrWhiteSpace(this.ProcessCommandLine))
+            {
+                // Process died.
+                this.ProcessDied = true;
+                return;
+            }
+
+            try
+            {
+                this.Process = Process.GetProcessById(processId);
+                this.StartTime = this.Process.StartTime;
+            }
+            catch
+            {
+                this.ProcessDied = true;
+            }
+
+            this.ProcessName = ProcessNameHelper.GetProcessNameForPid(processId);
+
+            this.EventFinishedCallback = callback;
+            this.ProcessInfo = new ProcessInfo(this.ProcessID);
+        }
+
+        // <summary>
+        // There is one PublishClient per process. Unlike the TraceEvent based
+        // provider when there is an instance level call, we will already have
+        // all the bookkeeping done via the instance call. We only need to add
+        // the GC data for this particular process.
+        // </summary>
+        public PublishClient(int processId, Action<string, string, MethodJitInfo> jitEventCallback, Action<string, string, AllocationInfo> allocInfoCallback, Action<string, string, GcInfo> gcCollectCallback)
         {
             this.ProcessID = processId;
             this.Session = null;
@@ -94,7 +140,12 @@ public class EventPipeBasedListener
 
             this.ProcessName = ProcessNameHelper.GetProcessNameForPid(processId);
 
-            this.EventFinishedCallback = callback;
+            this.EventFinishedCallback = null;
+
+            this.JitEventFinishedCallback = jitEventCallback;
+            this.GcAllocEventFinishedCallback = allocInfoCallback;
+            this.GcCollectEventFinishedCallback = gcCollectCallback;
+
             this.ProcessInfo = new ProcessInfo(this.ProcessID);
         }
 
@@ -356,7 +407,7 @@ public class EventPipeBasedListener
             }
         }
 
-        private string getReturnData(string jsonInfoString)
+        private string getProcessName()
         {
             string processName = this.ProcessName;
 
@@ -383,6 +434,13 @@ public class EventPipeBasedListener
                 throw new NotImplementedException();
             }
 
+            return processName;
+        }
+
+        private string getReturnData(string jsonInfoString)
+        {
+            string processName = this.getProcessName();
+
             this.Process = Process.GetProcessById(this.ProcessID);
 
             long workingSet = this.Process.WorkingSet64;
@@ -403,6 +461,12 @@ public class EventPipeBasedListener
             info.HeapIndex = data.HeapIndex;
             info.Kind = data.AllocationKind;
             info.TypeName = data.TypeName;
+
+            if (this.GcAllocEventFinishedCallback != null)
+            {
+                this.GcAllocEventFinishedCallback(this.ProcessID.ToString(), this.getProcessName(), info);
+                return;
+            }
 
             string returnData = this.getReturnData(info.ToJsonString());
             this.Allocations.Add(returnData);
@@ -476,7 +540,15 @@ public class EventPipeBasedListener
             }
 
             string returnData = this.getReturnData(info.ToJsonString());
-            this.EventFinishedCallback(EventType.JitEvent, returnData);
+
+            if (this.EventFinishedCallback != null)
+            {
+                this.EventFinishedCallback(EventType.JitEvent, returnData);
+            }
+            else
+            {
+                this.JitEventFinishedCallback(this.ProcessID.ToString(), this.getProcessName(), info);
+            }
         }
 
         public void LoadR2RMethodStart(R2RGetEntryPointStartTraceData data)
@@ -512,7 +584,15 @@ public class EventPipeBasedListener
             info.MethodName = $"{data.MethodNamespace}:{data.MethodSignature}:{data.MethodName}";
 
             string returnData = this.getReturnData(info.ToJsonString());
-            this.EventFinishedCallback(EventType.JitEvent, returnData);
+
+            if (this.EventFinishedCallback != null)
+            {
+                this.EventFinishedCallback(EventType.JitEvent, returnData);
+            }
+            else
+            {
+                this.JitEventFinishedCallback(this.ProcessID.ToString(), this.getProcessName(), info);
+            }
         }
 
         private void ProcessCurrentGc(GcInfo info)
@@ -521,7 +601,15 @@ public class EventPipeBasedListener
 
             string returnData = this.getReturnData(info.ToJsonString());
 
-            this.EventFinishedCallback(EventType.GcCollection, returnData);
+            if (this.EventFinishedCallback != null)
+            {
+                this.EventFinishedCallback(EventType.GcCollection, returnData);
+            }
+            else
+            {
+                this.GcCollectEventFinishedCallback(this.ProcessID.ToString(), this.getProcessName(), info);
+            }
+
             info.ProcessedGcHeapInfo = true;
             info.ProcessedPerHeap = true;
 
@@ -531,7 +619,11 @@ public class EventPipeBasedListener
 
                 allocReturnData = $"[{string.Join(",", this.Allocations)}]";
                 this.Allocations.Clear();
-                this.EventFinishedCallback(EventType.GcAlloc, allocReturnData);
+
+                if (this.EventFinishedCallback != null)
+                {
+                    this.EventFinishedCallback(EventType.GcAlloc, allocReturnData);
+                }
             }
         }
     }
@@ -545,6 +637,10 @@ public class EventPipeBasedListener
     public long ProcessId { get; set; }
     public Dictionary<int, PublishClient> PublishingClients { get; set; }
     public Action<EventType, string> EventFinishedCallback { get; set; }
+
+    public Action<string, string, MethodJitInfo> JitEventFinishedCallback { get; set; }
+    public Action<string, string, AllocationInfo> GcAllocEventFinishedCallback { get; set; }
+    public Action<string, string, GcInfo> GcCollectEventFinishedCallback { get; set; }
 
     public EventPipeBasedListener(bool listenForGcData, bool listenForAllocations, bool listenForJitEvents, Action<EventType, string> callback, long scopedProcessId = -1)
     {
@@ -563,6 +659,29 @@ public class EventPipeBasedListener
         this.ListenForGcData = listenForGcData;
         this.ListenForJitEvents = listenForJitEvents;
     }
+
+    public EventPipeBasedListener(bool listenForGcData, bool listenForAllocations, bool listenForJitEvents, Action<string, string, MethodJitInfo> jitEventCallback, Action<string, string, AllocationInfo> allocInfoCallback, Action<string, string, GcInfo> gcCollectCallback, long scopedProcessId = -1)
+    {
+        this.PublishingClients = new Dictionary<int, PublishClient>();
+
+        IEnumerable<int> processIds = DiagnosticsClient.GetPublishedProcesses();
+
+        foreach (int processId in processIds)
+        {
+            this.PublishingClients.Add(processId, new PublishClient(processId, jitEventCallback, allocInfoCallback, gcCollectCallback));
+        }
+
+        this.EventFinishedCallback = null;
+
+        this.JitEventFinishedCallback = jitEventCallback;
+        this.GcAllocEventFinishedCallback = allocInfoCallback;
+        this.GcCollectEventFinishedCallback = gcCollectCallback;
+
+        this.ListenForAllocations = listenForAllocations;
+        this.ListenForGcData = listenForGcData;
+        this.ListenForJitEvents = listenForJitEvents;
+    }
+
 
     public void Listen()
     {
@@ -653,7 +772,17 @@ public class EventPipeBasedListener
         {
             if (!this.PublishingClients.TryGetValue(processId, out PublishClient unused))
             {
-                PublishClient publishClient = new PublishClient(processId, this.EventFinishedCallback);
+                PublishClient publishClient;
+
+                if (this.EventFinishedCallback != null)
+                {
+                    publishClient = new PublishClient(processId, this.EventFinishedCallback);
+                }
+                else
+                {
+                    publishClient = new PublishClient(processId, this.JitEventFinishedCallback, this.GcAllocEventFinishedCallback, this.GcCollectEventFinishedCallback);
+                }
+
                 this.PublishingClients.Add(processId, publishClient);
                 newClients.Add(publishClient);
             }
