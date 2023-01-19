@@ -9,9 +9,20 @@
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "build",
-            "program": "${workspaceFolder}/gcEventListener/bin/Debug/net5.0/gcEventListener.dll",
+            "program": "${workspaceFolder}/gcEventListener/bin/Debug/net6.0/gcEventListener.dll",
             "args": [],
             "cwd": "${workspaceFolder}/gcEventListener",
+            "console": "internalConsole",
+            "stopAtEntry": false
+        },
+        {
+            "name": "gcEventListenerServer",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "buildServer",
+            "program": "${workspaceFolder}/gcEventListenerServer/bin/Debug/net6.0/gcEventListenerServer.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/gcEventListenerServer",
             "console": "internalConsole",
             "stopAtEntry": false
         },

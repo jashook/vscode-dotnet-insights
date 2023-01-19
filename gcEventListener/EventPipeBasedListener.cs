@@ -176,6 +176,7 @@ public class EventPipeBasedListener
             if (info.Heaps.Count > 0 && info.Heaps.Count == info.NumHeaps && info.ProcessedPerHeap)
             {
                 this.ProcessCurrentGc(info);
+                processInfo.CurrentGC = null;
             }
 
             info.ProcessedGcHeapInfo = true;
@@ -347,6 +348,7 @@ public class EventPipeBasedListener
             if (processInfo.CurrentGC.Heaps.Count == processInfo.CurrentGC.NumHeaps && processInfo.CurrentGC.ProcessedGcHeapInfo)
             {
                 this.ProcessCurrentGc(processInfo.CurrentGC);
+                processInfo.CurrentGC = null;
             }
 
             processInfo.CurrentGC.ProcessedPerHeap = true;
@@ -571,7 +573,6 @@ public class EventPipeBasedListener
             // Method has had to have been observed for a jit started
             if (!this.Methods.ContainsKey(data.MethodID))
             {
-                Debug.Assert(false);
                 return;
             }
 
