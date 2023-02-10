@@ -100,16 +100,16 @@ var allocationDatasets = {};
     var totalGen2DataSet = [];
     var totalLohDataSet = [];
 
-    var totalKb = 1024 * 1024;
+    var totalMb = 1024 * 1024;
 
     for (var index = 0; index < gcs.length; ++index) {
         var gcData = gcs[index]["data"];
         
 
-        totalGen0DataSet.push(gcData["GenerationSize0"] / totalKb);
-        totalGen1DataSet.push(gcData["GenerationSize1"] / totalKb);
-        totalGen2DataSet.push(gcData["GenerationSize2"] / totalKb);
-        totalLohDataSet.push(gcData["GenerationSizeLOH"] / totalKb);
+        totalGen0DataSet.push(gcData["GenerationSize0"] / totalMb);
+        totalGen1DataSet.push(gcData["GenerationSize1"] / totalMb);
+        totalGen2DataSet.push(gcData["GenerationSize2"] / totalMb);
+        totalLohDataSet.push(gcData["GenerationSizeLOH"] / totalMb);
     }
 
     var totalGcStatsOverTimeChart = new Chart(totalGcStatsOverTimeContext, {
@@ -161,7 +161,7 @@ var allocationDatasets = {};
                         },
                         scaleLabel: {
                             display: true,
-                            labelString: "Memory Usage in KB"
+                            labelString: "Memory Usage in MB"
                         }
                     }],
                 },
@@ -175,18 +175,17 @@ var allocationDatasets = {};
         var gen2DataSet = [];
         var lohDataSet = [];
 
-        var kb = 1024 * 1024;
-        var mb = 1024 * mb;
+        var mb = 1024;
 
         for (var index = 0; index < gcs.length; ++index) {
             var gcData = gcs[index]["data"];
 
             var currentHeap = gcData["Heaps"][passedHeapIndex]["Generations"];
             
-            gen0DataSet.push(currentHeap[0]["SizeBefore"] / kb);
-            gen1DataSet.push(currentHeap[1]["SizeBefore"] / kb);
-            gen2DataSet.push(currentHeap[2]["SizeBefore"] / kb);
-            lohDataSet.push(currentHeap[3]["SizeBefore"] / kb);
+            gen0DataSet.push(currentHeap[0]["SizeAfter"] / mb);
+            gen1DataSet.push(currentHeap[1]["SizeAfter"] / mb);
+            gen2DataSet.push(currentHeap[2]["SizeAfter"] / mb);
+            lohDataSet.push(currentHeap[3]["SizeAfter"] / mb);
         }
 
         var ctx = heapCharts[passedHeapIndex];
@@ -240,7 +239,7 @@ var allocationDatasets = {};
                         },
                         scaleLabel: {
                             display: true,
-                            labelString: "Memory Usage in KB"
+                            labelString: "Memory Usage in MB"
                         }
                     }],
                 },

@@ -100,17 +100,17 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
             var gcDataToAdd = [] as any[];
             for (var index = 0; index < gcEvents.length; ++index) {
                 const currentGc = gcEvents[index];
-                const gen0MinSize = parseInt(currentGc["GlobalHeapHistory"][0]["$"]["FinalYoungestDesired"].replace(',',''));
+                const gen0MinSize = parseInt(currentGc["GlobalHeapHistory"][0]["$"]["FinalYoungestDesired"].replaceAll(',',''));
                 const generation = currentGc["$"]["GCGeneration"];
-                const generationSize0 = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize0"].replace(',',''));
-                const generationSize1 = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize1"].replace(',',''));
-                const generationSize2 = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize2"].replace(',',''));
-                const generationSizeLOH = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize3"].replace(',',''));
+                const generationSize0 = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize0"].replaceAll(',',''));
+                const generationSize1 = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize1"].replaceAll(',',''));
+                const generationSize2 = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize2"].replaceAll(',',''));
+                const generationSizeLOH = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize3"].replaceAll(',',''));
 
                 var generationSizePOH = 0;
 
                 try {
-                    generationSizePOH = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize4"].replace(',',''));
+                    generationSizePOH = parseInt(currentGc["HeapStats"][0]["$"]["GenerationSize4"].replaceAll(',',''));
                 }
                 catch (e) {
                     
@@ -119,37 +119,35 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                 const id = currentGc["$"]["GCNumber"];
                 const kind = currentGc["$"]["Type"];
 
-                const numHeaps = parseInt(currentGc["GlobalHeapHistory"][0]["$"]["NumHeaps"].replace(',',''));
-                const pauseDurationMSec = parseInt(currentGc["$"]["PauseDurationMSec"].replace(',',''));
-                const pauseStartRelativeMSec = parseInt(currentGc["$"]["PauseStartRelativeMSec"].replace(',',''));
+                const numHeaps = parseInt(currentGc["GlobalHeapHistory"][0]["$"]["NumHeaps"].replaceAll(',',''));
+                const pauseDurationMSec = parseInt(currentGc["$"]["PauseDurationMSec"].replaceAll(',',''));
+                const pauseStartRelativeMSec = parseInt(currentGc["$"]["PauseStartRelativeMSec"].replaceAll(',',''));
                 const pauseEndRelativeMSec = pauseStartRelativeMSec + pauseDurationMSec;
                 const reason = currentGc["$"]["Reason"];
-                const gcDurationMSec = parseInt(currentGc["$"]["GCDurationMSec"].replace(',',''));
+                const gcDurationMSec = parseInt(currentGc["$"]["GCDurationMSec"].replaceAll(',',''));
 
                 const totalHeapSize = generationSize0 + generationSize1 + generationSize2 + generationSizeLOH + generationSizePOH;
 
-                const totalPromotedSize0 = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize0"].replace(',',''));
-                const totalPromotedSize1 = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize1"].replace(',',''));
-                const totalPromotedSize2 = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize2"].replace(',',''));
-                const totalPromotedSizeLoh = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize3"].replace(',',''));
+                const totalPromotedSize0 = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize0"].replaceAll(',',''));
+                const totalPromotedSize1 = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize1"].replaceAll(',',''));
+                const totalPromotedSize2 = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize2"].replaceAll(',',''));
+                const totalPromotedSizeLoh = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize3"].replaceAll(',',''));
 
                 var totalPromotedSizePoh = 0;
                 try {
-                    totalPromotedSizePoh = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize3"].replace(',',''));
+                    totalPromotedSizePoh = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize3"].replaceAll(',',''));
                 }
                 catch (e) {
 
                 }
 
-                let kb = 1024 * 1024;
-
                 var data = {
                     "Gen0MinSize": gen0MinSize,
                     "generation": parseInt(generation),
-                    "GenerationSize0": generationSize0 * kb,
-                    "GenerationSize1": generationSize1 * kb,
-                    "GenerationSize2": generationSize2 * kb,
-                    "GenerationSizeLOH": generationSizeLOH * kb,
+                    "GenerationSize0": generationSize0,
+                    "GenerationSize1": generationSize1,
+                    "GenerationSize2": generationSize2,
+                    "GenerationSizeLOH": generationSizeLOH,
                     "Id": id,
                     "kind": kind,
                     "NumHeaps": numHeaps,
@@ -158,12 +156,12 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                     "PauseStartRelativeMSec": pauseStartRelativeMSec,
                     "Reason": reason,
                     "Heaps": [] as any[],
-                    "TotalHeapSize": totalHeapSize * kb,
-                    "TotalPromoted": totalPromotedSize0 * kb,
-                    "TotalPromotedLOH": totalPromotedSizeLoh * kb,
-                    "TotalPromotedSize0": totalPromotedSize0 * kb,
-                    "TotalPromotedSize1": totalPromotedSize1 * kb,
-                    "TotalPromotedSize2": totalPromotedSize2 * kb,
+                    "TotalHeapSize": totalHeapSize,
+                    "TotalPromoted": totalPromotedSize0,
+                    "TotalPromotedLOH": totalPromotedSizeLoh,
+                    "TotalPromotedSize0": totalPromotedSize0,
+                    "TotalPromotedSize1": totalPromotedSize1,
+                    "TotalPromotedSize2": totalPromotedSize2,
                     "Type": reason,
                     "GCDurationMSec": gcDurationMSec
                 }
@@ -186,7 +184,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                             return genData[key];
                         }
                         else {
-                            return parseInt(genData[key].replace(',',''));
+                            return parseInt(genData[key].replaceAll(',',''));
                         }
                     }
                     catch (e) {
@@ -223,21 +221,21 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
                         currentHeapData["Generations"][generationIndex] = {
                             "Fragmentation": fragmentation,
-                            "FreeListSpaceAfter": freeListSpaceAfter * kb,
-                            "FreeListSpaceBefore" : freeListSpaceBefore * kb,
-                            "FreeObjSpaceAfter" : freeObjSpaceAfter * kb,
-                            "FreeObjSpaceBefore" : freeObjSpaceBefore * kb,
+                            "FreeListSpaceAfter": freeListSpaceAfter,
+                            "FreeListSpaceBefore" : freeListSpaceBefore,
+                            "FreeObjSpaceAfter" : freeObjSpaceAfter,
+                            "FreeObjSpaceBefore" : freeObjSpaceBefore,
                             "Id" : genid,
-                            "In" : genin * kb,
-                            "NewAllocation" : newAllocation * kb,
-                            "NonePinnedSurv" : nonePinnedSurv * kb,
-                            "ObjSizeAfter" : objSizeAfter * kb,
-                            "ObjSpaceBefore": objSpaceBefore * kb,
-                            "Out" : out * kb,
-                            "PinnedSurv" : pinnedSurv * kb,
-                            "SizeAfter" : sizeAfter * kb,
-                            "SizeBefore" : sizeBefore * kb,
-                            "SurvRate" : survRate * kb
+                            "In" : genin,
+                            "NewAllocation" : newAllocation,
+                            "NonePinnedSurv" : nonePinnedSurv,
+                            "ObjSizeAfter" : objSizeAfter,
+                            "ObjSpaceBefore": objSpaceBefore,
+                            "Out" : out,
+                            "PinnedSurv" : pinnedSurv,
+                            "SizeAfter" : sizeAfter,
+                            "SizeBefore" : sizeBefore,
+                            "SurvRate" : survRate
                         };
                     }
 
@@ -329,15 +327,15 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
                     if (generationToUse == undefined) {
                         for (var heapIndex = 0; heapIndex < currentGc["Heaps"].length; ++heapIndex) {
-                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][0]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replace(',', ''));
-                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][1]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replace(',', ''));
-                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][2]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replace(',', ''));
-                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][3]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replace(',', ''));
+                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][0]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replaceAll(',', ''));
+                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][1]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replaceAll(',', ''));
+                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][2]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replaceAll(',', ''));
+                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][3]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replaceAll(',', ''));
                         }
                     }
                     else {
                         for (var heapIndex = 0; heapIndex < currentGc["Heaps"].length; ++heapIndex) {
-                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][generationToUse]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replace(',', ''));
+                            gcs[index]["data"]["Heaps"][heapIndex]["Generations"][generationToUse]["NewAllocation"] = parseInt(gcs[index]["data"]["TotalHeapSize"].replaceAll(',', ''));
                         }
                     }
                 }
@@ -346,7 +344,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
             }
 
-            var kb = 1024 * 1024;
+            var kb = 1024;
             var totalAllocations = 0;
             var allocationsBetweenGc = [];
 
