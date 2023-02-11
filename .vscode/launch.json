@@ -40,6 +40,23 @@
             "stopAtEntry": false
         },
         {
+            "name": "dni-listener",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "buildDniListener",
+            "program": "${workspaceFolder}/dni-listener/bin/Debug/net6.0/dni-listener.dll",
+            "args": [
+                "collect",
+                "--collection-type",
+                "gc-alloc",
+                "--process-id",
+                "13925"
+            ],
+            "cwd": "${workspaceFolder}/dni-listener",
+            "console": "integratedTerminal",
+            "stopAtEntry": false
+        },
+        {
             "name": ".NET Core Attach",
             "type": "coreclr",
             "request": "attach",

@@ -21,7 +21,7 @@ using System.Text.RegularExpressions;
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-internal static class ProcessNameHelper
+public static class ProcessNameHelper
 {
     public static string GetProcessNameForPid(int processId)
     {
@@ -39,7 +39,7 @@ internal static class ProcessNameHelper
         return returnValue;
     }
 
-    public static string GetProcessCommandLineForPid(int processId)
+    public static string GetProcessCommandLineForPid(int processId, int maxLength = 128)
     {
         string processName = "";
 
@@ -70,7 +70,7 @@ internal static class ProcessNameHelper
                 processName = processName.Replace("\\", "\\\\");
             }
         }
-        else
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
         {
             try
             {
@@ -81,18 +81,28 @@ internal static class ProcessNameHelper
             catch (Exception)
             {
                 // Process died.
+                return null;
             }
 
             ProcessStartInfo info = new ProcessStartInfo();
             info.FileName = "ps";
             info.Arguments = "aux";
             info.RedirectStandardOutput = true;
+            info.RedirectStandardError = true;
 
             Process proc = Process.Start(info);
             proc.Start();
 
             string data = proc.StandardOutput.ReadToEnd();
+
+            if (!proc.HasExited)
+            {
+                proc.WaitForExit();
+            }
+
             string[] lines = data.Split('\n');
+
+            bool found = false;
 
             foreach (string line in lines)
             {
@@ -110,9 +120,36 @@ internal static class ProcessNameHelper
                 
                 if (pid == processId)
                 {
+                    found = true;
                     processName = Regex.Split(line, @"\s+[0-9]+:[0-9.]+\s+")[1];
+                    break;
                 }
             }
+
+            if (!found)
+            {
+                return null;
+            }
+        }
+        else
+        {
+            try
+            {
+                Process process = Process.GetProcessById(processId);
+
+                processName = process.ProcessName;
+            }
+            catch (Exception)
+            {
+                // Process died.
+            }
+
+            throw new NotImplementedException();
+        }
+
+        if (processName.Length > maxLength)
+        {
+            processName = processName.Substring(0, maxLength);
         }
 
         return processName;

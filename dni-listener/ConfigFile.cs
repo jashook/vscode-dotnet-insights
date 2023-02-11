@@ -10,6 +10,11 @@ namespace DniListener {
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+using System.Diagnostics;
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
 struct ConfigFile
 {
     /// <Summary> CpuCollectionPercentage </Summary>
@@ -18,9 +23,29 @@ struct ConfigFile
     /// when the process' CPU hits 80%. By default this is over the total core
     /// percentage.
     /// </Notes>
-    float CpuCollectionPercentage = -1.0f;
-    float MemoryCollectionPercentage = -1.0f;
-    float CpuRateCollectionPercentage = -1.0;
+    float CpuCollectionPercentage;
+    float MemoryCollectionPercentage;
+    float CpuRateCollectionPercentage;
+
+    public ConfigFile()
+    {
+        this.CpuCollectionPercentage = -1.0f;
+        this.MemoryCollectionPercentage = -1.0f;
+        this.CpuRateCollectionPercentage = -1.0f;
+    }
+
+    void ParseConfigFile(string path, out bool success)
+    {
+        success = false;
+
+        this.CpuCollectionPercentage = -1.0f;
+        this.MemoryCollectionPercentage = -1.0f;
+        this.CpuRateCollectionPercentage = -1.0f;
+
+        Debug.Assert(this.CpuCollectionPercentage == -1.0f);
+        Debug.Assert(this.MemoryCollectionPercentage == -1.0f);
+        Debug.Assert(this.CpuRateCollectionPercentage == -1.0f);
+    }
     
 }
 

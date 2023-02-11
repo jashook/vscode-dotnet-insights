@@ -669,7 +669,14 @@ public class EventPipeBasedListener
 
         foreach (int processId in processIds)
         {
-            this.PublishingClients.Add(processId, new PublishClient(processId, jitEventCallback, allocInfoCallback, gcCollectCallback));
+            if (scopedProcessId == -1)
+            {
+                this.PublishingClients.Add(processId, new PublishClient(processId, jitEventCallback, allocInfoCallback, gcCollectCallback));
+            }
+            else if (scopedProcessId == processId)
+            {
+                this.PublishingClients.Add(processId, new PublishClient(processId, jitEventCallback, allocInfoCallback, gcCollectCallback));
+            }
         }
 
         this.EventFinishedCallback = null;
@@ -684,20 +691,23 @@ public class EventPipeBasedListener
     }
 
 
-    public void Listen()
+    public void Listen(bool parkMainThread = true)
     {
         foreach (KeyValuePair<int, PublishClient> clientPair in this.PublishingClients)
         {
             if (!clientPair.Value.ProcessDied)
             {
-                this.StartListener(clientPair.Value);
+                this.StartListener(clientPair.Value, parkMainThread);
             }
         }
 
-        ParkMainThread().Wait();
+        if (parkMainThread)
+        {
+            ParkMainThread().Wait();
+        }
     }
 
-    private void StartListener(PublishClient publishClient)
+    private void StartListener(PublishClient publishClient, bool verbose = true)
     {
         Task.Run(() => {
             DiagnosticsClient client = new DiagnosticsClient(publishClient.ProcessID);
@@ -742,7 +752,10 @@ public class EventPipeBasedListener
                         source.Clr.MethodR2RGetEntryPoint += publishClient.LoadR2RMethodEnd;
                     }
 
-                    Console.WriteLine($"Started listening for: {publishClient.ProcessCommandLine}");
+                    if (verbose)
+                    {
+                        Console.WriteLine($"Started listening for: {publishClient.ProcessCommandLine}");
+                    }
 
                     try
                     {
