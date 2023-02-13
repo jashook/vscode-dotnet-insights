@@ -23,6 +23,8 @@ using Microsoft.Diagnostics.NETCore.Client;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Parsers;
 using Microsoft.Diagnostics.Tracing.Parsers.Clr;
+using Microsoft.Diagnostics.Symbols;
+using Microsoft.Diagnostics.Tracing.Etlx;
 using Microsoft.Diagnostics.Tracing.Session;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -60,6 +62,9 @@ public class EventPipeBasedListener
         private Dictionary<long, MethodJitInfo> Methods { get; set; }
 
         private Process Process { get; set; }
+
+        private TextWriter SymbolLookupStream;
+        private SymbolReader SymbolReader;
 
         // <summary>
         // There is one PublishClient per process. Unlike the TraceEvent based
@@ -101,6 +106,11 @@ public class EventPipeBasedListener
 
             this.EventFinishedCallback = callback;
             this.ProcessInfo = new ProcessInfo(this.ProcessID);
+
+            this.SymbolLookupStream = new StringWriter();
+
+            var symbolPath = new SymbolPath(SymbolPath.SymbolPathFromEnvironment).Add(SymbolPath.MicrosoftSymbolServerPath);
+            this.SymbolReader = new SymbolReader(this.SymbolLookupStream, symbolPath.ToString());
         }
 
         // <summary>
@@ -463,6 +473,13 @@ public class EventPipeBasedListener
             info.HeapIndex = data.HeapIndex;
             info.Kind = data.AllocationKind;
             info.TypeName = data.TypeName;
+            info.ThreadId = data.ThreadID;
+
+            var callStack = data.CallStack();
+            if (callStack != null)
+            {
+                this.StackWalk(callStack);
+            }
 
             if (this.GcAllocEventFinishedCallback != null)
             {
@@ -472,6 +489,37 @@ public class EventPipeBasedListener
 
             string returnData = this.getReturnData(info.ToJsonString());
             this.Allocations.Add(returnData);
+        }
+
+        private void StackWalk(TraceCallStack frame)
+        {
+            while (frame != null)
+            {
+                var codeAddress = frame.CodeAddress;
+                if (codeAddress.Method == null)
+                {
+                    var moduleFile = codeAddress.ModuleFile;
+                    if (moduleFile != null)
+                    {
+                        codeAddress.CodeAddresses.LookupSymbolsForModule(this.SymbolReader, moduleFile);
+                    }
+                }
+                if (!string.IsNullOrEmpty(codeAddress.FullMethodName))
+                    Console.WriteLine($"     {codeAddress.FullMethodName}");
+                else
+                    Console.WriteLine($"     0x{codeAddress.Address:x}");
+                frame = frame.Caller;
+            }
+        }
+
+        public void OnSampledObjectAlloc(GCSampledObjectAllocationTraceData data)
+        {
+            
+        }
+
+        public void OnStackWalk(ClrStackWalkTraceData data)
+        {
+            return;
         }
 
         public void OnJitStart(MethodJittingStartedTraceData data)
@@ -715,16 +763,50 @@ public class EventPipeBasedListener
             // https://github.com/dotnet/runtime/blob/main/src/coreclr/vm/ClrEtwAll.man#L82
             long compilationDiagnosticsKeyword = 0x2000000000;
 
-            List<EventPipeProvider> providers = new List<EventPipeProvider>()
+            long mask = 0;
+            System.Diagnostics.Tracing.EventLevel eventLevel = System.Diagnostics.Tracing.EventLevel.Informational;
+            if (this.ListenForGcData)
             {
-                new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, compilationDiagnosticsKeyword | (long)ClrTraceEventParser.Keywords.Jit | (long)ClrTraceEventParser.Keywords.NGen | (long)ClrTraceEventParser.Keywords.GC | (long)ClrTraceEventParser.Keywords.Stack),
-                //new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, compilationDiagnosticsKeyword | (long)ClrTraceEventParser.Keywords.Jit)
-                // new EventPipeProvider("Microsoft-Windows-DotNETRuntime", System.Diagnostics.Tracing.EventLevel.Verbose, (ulong)ClrTraceEventParser.Keywords.Stack)
-            };
+                mask |= (long)ClrTraceEventParser.Keywords.GC;
+            }
+            if (this.ListenForJitEvents)
+            {
+                mask |= (long)ClrTraceEventParser.Keywords.Jit;
+                mask |= compilationDiagnosticsKeyword;
+                mask |= (long)ClrTraceEventParser.Keywords.NGen;
+            }
+
+            long rundownMask = 0;
+
+            if (this.ListenForAllocations)
+            {
+                mask |= (long)ClrTraceEventParser.Keywords.GC;
+                mask |= (long)ClrTraceEventParser.Keywords.GCHandle;
+                mask |= (long)ClrTraceEventParser.Keywords.Exception;
+                mask |= (long)ClrTraceEventParser.Keywords.GCAllObjectAllocation;
+                mask |= (long)ClrTraceEventParser.Keywords.GCHeapAndTypeNames;
+                mask |= (long)ClrTraceEventParser.Keywords.Type;
+
+                mask |= (long)ClrTraceEventParser.Keywords.JittedMethodILToNativeMap;
+                mask |= (long)ClrTraceEventParser.Keywords.Stack;
+                mask |= (long)ClrTraceEventParser.Keywords.Loader;
+                mask |= (long)ClrTraceEventParser.Keywords.Jit;
+                
+                rundownMask |= (long)ClrTraceEventParser.Keywords.JittedMethodILToNativeMap;
+                rundownMask |= (long)ClrTraceEventParser.Keywords.StartEnumeration;
+                rundownMask |= (long)ClrTraceEventParser.Keywords.Loader;
+                rundownMask |= (long)ClrTraceEventParser.Keywords.Jit;
+
+                eventLevel = System.Diagnostics.Tracing.EventLevel.Verbose;
+            }
+
+            List<EventPipeProvider> providers = new List<EventPipeProvider>();
+
+            providers.Add(new EventPipeProvider("Microsoft-Windows-DotNETRuntime", eventLevel, mask));
 
             try
             {
-                using (EventPipeSession session = client.StartEventPipeSession(providers, false))
+                using (EventPipeSession session = client.StartEventPipeSession(providers, requestRundown: this.ListenForAllocations))
                 {
                     EventPipeEventSource source = new EventPipeEventSource(session.EventStream);
 
@@ -742,6 +824,8 @@ public class EventPipeBasedListener
                     if (this.ListenForAllocations)
                     {
                         source.Clr.GCAllocationTick += publishClient.OnAllocationTick;
+                        source.Clr.GCSampledObjectAllocation += publishClient.OnSampledObjectAlloc;
+                        source.Clr.ClrStackWalk += publishClient.OnStackWalk;
                     }
 
                     if (this.ListenForJitEvents)
@@ -761,7 +845,7 @@ public class EventPipeBasedListener
                     {
                         source.Process();
                     }
-                    catch (Exception)
+                    catch (Exception e)
                     {
                         source.Dispose();
                     }

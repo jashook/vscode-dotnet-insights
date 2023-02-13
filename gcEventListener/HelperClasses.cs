@@ -187,6 +187,7 @@ public class AllocationInfo
     public GCAllocationKind Kind { get; set; }
     public long AllocSizeBytes { get; set; }
     public string TypeName { get; set; }
+    public int ThreadId { get; set; }
 
     public string ToJsonString()
     {

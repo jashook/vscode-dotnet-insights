@@ -50,7 +50,7 @@
                 "--collection-type",
                 "gc-alloc",
                 "--process-id",
-                "13925"
+                "1720"
             ],
             "cwd": "${workspaceFolder}/dni-listener",
             "console": "integratedTerminal",

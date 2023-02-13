@@ -104,6 +104,11 @@ namespace DniListener
                     }
                 }
 
+                if (!collectClrThreads && !collectCpuSample && !collectGc && !collectGcAllocs && !collectJitEvents)
+                {
+                    collectGc = true;
+                }
+
                 // Start collecting
                 ProcessEventCollector collector = new ProcessEventCollector(processIdOptions,
                                                                             collectGc,

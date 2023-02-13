@@ -20,22 +20,22 @@ namespace DniListener {
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-public class JitData
+public struct JitData
 {
-    public bool Tiered;
-    public bool Loaded;
-    public long MethodId;
-    public int Tier;
-    public string Name;
-    public double Time;
+    public bool Tiered { get; set; }
+    public bool Loaded { get; set; }
+    public long MethodId { get; set; }
+    public int Tier { get; set; }
+    public string? Name { get; set; }
+    public double Time { get; set; }
 }
 
-public class AllocData
+public struct AllocData
 {
-    public int HeapId;
-    public string Kind;
-    public string Type;
-    public long Size;
+    public int HeapId { get; set; }
+    public string? Kind { get; set; }
+    public string? Type { get; set; }
+    public long Size { get; set; }
 }
 
 public class ProcessEventCollector
@@ -59,6 +59,8 @@ public class ProcessEventCollector
     private char[] Buffer;
 
     private int WriteIndex;
+
+    private object WriteLock = new Object();
     
     private JsonSerializerOptions SerializerOptions;
 
@@ -97,6 +99,8 @@ public class ProcessEventCollector
 
         this.BufferPool = ArrayPool<char>.Shared;
         this.Buffer = this.BufferPool.Rent(4096);
+
+        this.FileStream.Write(@"{""data"":[");
 
         this.SerializerOptions = new JsonSerializerOptions { WriteIndented = false, PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
     }
@@ -145,7 +149,7 @@ public class ProcessEventCollector
         listener.Listen(parkMainThread: false);
 
         if (this.UseStdOut)
-        {;
+        {
             Console.WriteLine($"Collection Started {DateTime.UtcNow.Date}.");
             Console.WriteLine();
             Console.WriteLine($"    Writing to: {this.OutputFileName}");
@@ -209,6 +213,10 @@ public class ProcessEventCollector
                 ClearBuffer();
                 handle.WaitOne(100);
             }
+
+            ClearBuffer();
+            this.FileStream.Write("]}");
+            this.FileStream.Flush();
         }
     }
 
@@ -217,37 +225,49 @@ public class ProcessEventCollector
 
     private void ClearBuffer()
     {
-        if (this.WriteIndex == 0)
-        {
-            return;
-        }
+        char[] bufferReference;
+        int writeCount;
 
-        // Get a new buffer.
-        char[] bufferReference = this.Buffer;
-        this.Buffer = this.BufferPool.Rent(4096);
+        lock(this.WriteLock)
+        {
+            if (this.WriteIndex == 0)
+            {
+                return;
+            }
+
+            // Get a new buffer.
+            bufferReference = this.Buffer;
+            writeCount = this.WriteIndex;
+            this.Buffer = this.BufferPool.Rent(4096);
+            this.WriteIndex = 0;
+        }
         
         // Write the contents in a background thread
         Task.Run(() => {
-            this.FileStream.Write(bufferReference, 0, this.WriteIndex);
+            this.FileStream.Write(bufferReference, 0, writeCount);
             this.BufferPool.Return(bufferReference);
 
+            this.FileStream.Write(',');
             this.FileStream.Flush();
         });
     }
 
     private void WriteToBuffer(string data)
     {
-        if (data.Length + this.WriteIndex >= this.Buffer.Length)
+        lock(this.WriteLock)
         {
-            this.ClearBuffer();
-        }
-        else if (data.Length + this.WriteIndex + data.Length >= this.Buffer.Length)
-        {
-            this.ClearBuffer();
-        }
+            if (data.Length + this.WriteIndex >= this.Buffer.Length)
+            {
+                this.ClearBuffer();
+            }
+            else if (data.Length + this.WriteIndex + data.Length >= this.Buffer.Length)
+            {
+                this.ClearBuffer();
+            }
 
-        data.CopyTo(0, this.Buffer, this.WriteIndex, data.Length);
-        this.WriteIndex += data.Length;
+            data.CopyTo(0, this.Buffer, this.WriteIndex, data.Length);
+            this.WriteIndex += data.Length;
+        }
     }
 }
 
