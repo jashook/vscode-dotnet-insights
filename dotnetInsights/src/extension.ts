@@ -113,11 +113,8 @@ function doDiffBetweenRuntimesTier0(treeItem: Dependency, insights: DotnetInsigh
 
     const isArm64 = process.arch === "arm64";
     var baseIsX64 = true;
-
-    if (threeOne === true) {
-        baseCoreRunPath = insights.netcoreThreeX64CoreRunPath;
-        basePmiPath = insights.netcoreThreePmiPath;
-    } else if (five === true) {
+    
+    if (five === true) {
         baseCoreRunPath = insights.netcoreFiveX64CoreRunPath;
         basePmiPath = insights.netcoreFivePmiPath;
         baseIsFive = true;
@@ -167,7 +164,6 @@ function doDiffBetweenRuntimesTier0(treeItem: Dependency, insights: DotnetInsigh
             // right - Right-hand side resource of the diff editor
             // title - (optional) Human readable title for the diff editor
             
-            insights.outputChannel.appendLine(".Net Core 3.1 file path: " + basefilePath);
             insights.outputChannel.appendLine(".Net Core 5.0 file path: " + outputFileName);
 
             vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(basefilePath), vscode.Uri.file(outputFileName), description);
@@ -188,10 +184,7 @@ function doDiffBetweenRuntimesTier1(treeItem: Dependency, insights: DotnetInsigh
     const isArm64 = process.arch === "arm64";
     var baseIsX64 = true;
 
-    if (threeOne === true) {
-        baseCoreRunPath = insights.netcoreThreeX64CoreRunPath;
-        basePmiPath = insights.netcoreThreePmiPath;
-    } else if (five === true) {
+    if (five === true) {
         baseCoreRunPath = insights.netcoreFiveX64CoreRunPath;
         basePmiPath = insights.netcoreFivePmiPath;
         baseIsFive = true;
@@ -241,7 +234,6 @@ function doDiffBetweenRuntimesTier1(treeItem: Dependency, insights: DotnetInsigh
             // right - Right-hand side resource of the diff editor
             // title - (optional) Human readable title for the diff editor
             
-            insights.outputChannel.appendLine(".Net Core 3.1 file path: " + basefilePath);
             insights.outputChannel.appendLine(".Net Core 5.0 file path: " + outputFileName);
 
             vscode.commands.executeCommand("vscode.diff", vscode.Uri.file(basefilePath), vscode.Uri.file(outputFileName), description);
@@ -389,18 +381,6 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.registerTreeDataProvider('dotnetInsightsGc', dotnetInsightsGcTreeDataProvider);
         vscode.window.registerTreeDataProvider('dotnetInsightsJit', dotnetInsightsJitTreeDataProvider);
 
-        vscode.commands.registerCommand("dotnetInsights.diffThreeVsFiveTier0", (treeItem: Dependency) => {
-            doDiffBetweenRuntimesTier0(treeItem, insights, true, true, false, false, ".Net Core 3.1/.Net Core 5.0 Tier 0 Diff");
-        });
-
-        vscode.commands.registerCommand("dotnetInsights.diffThreeVsSixTier0", (treeItem: Dependency) => {
-            doDiffBetweenRuntimesTier0(treeItem, insights, true, false, true, false, ".Net Core 3.1/.Net Core 6.0 Tier 0 Diff");
-        });
-
-        vscode.commands.registerCommand("dotnetInsights.diffThreeVsSevenTier0", (treeItem: Dependency) => {
-            doDiffBetweenRuntimesTier0(treeItem, insights, true, false, false, true, ".Net Core 3.1/.Net Core 7.0 Tier 0 Diff");
-        });
-
         vscode.commands.registerCommand("dotnetInsights.diffFiveVsSixTier0", (treeItem: Dependency) => {
             doDiffBetweenRuntimesTier0(treeItem, insights, false, true, true, false, ".Net Core 5.0/.Net Core 6.0 Tier 0 Diff");
         });
@@ -411,18 +391,6 @@ export function activate(context: vscode.ExtensionContext) {
 
         vscode.commands.registerCommand("dotnetInsights.diffSixVsSevenTier0", (treeItem: Dependency) => {
             doDiffBetweenRuntimesTier0(treeItem, insights, false, false, true, true, ".Net Core 6.0/.Net Core 7.0 Tier 0 Diff");
-        });
-
-        vscode.commands.registerCommand("dotnetInsights.diffThreeVsFiveTier1", (treeItem: Dependency) => {
-            doDiffBetweenRuntimesTier1(treeItem, insights, true, true, false, false, ".Net Core 3.1/.Net Core 5.0 Tier 1 Diff");
-        });
-
-        vscode.commands.registerCommand("dotnetInsights.diffThreeVsSixTier1", (treeItem: Dependency) => {
-            doDiffBetweenRuntimesTier1(treeItem, insights, true, false, true, false, ".Net Core 3.1/.Net Core 6.0 Tier 1 Diff");
-        });
-
-        vscode.commands.registerCommand("dotnetInsights.diffThreeVsSevenTier1", (treeItem: Dependency) => {
-            doDiffBetweenRuntimesTier1(treeItem, insights, true, false, false, true, ".Net Core 3.1/.Net Core 7.0 Tier 1 Diff");
         });
 
         vscode.commands.registerCommand("dotnetInsights.diffFiveVsSixTier1", (treeItem: Dependency) => {
