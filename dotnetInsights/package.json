@@ -3,7 +3,7 @@
   "displayName": ".NET Insights",
   "publisher": "jashoo",
   "description": "Monitor .NET Processes for GC information in real time, or drill into .NET DLLs by viewing the IL and compiled code. Relies on ildasm and a public .NET JIT tool PMI.",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "preview": false,
   "icon": "media/dep.png",
   "repository": {
@@ -213,30 +213,6 @@
       {
         "command": "dotnetInsights.diff",
         "title": "Diff"
-      },
-      {
-        "command": "dotnetInsights.diffThreeVsFiveTier0",
-        "title": "Diff - 3.1 / 5.0 - Tier 0"
-      },
-      {
-        "command": "dotnetInsights.diffThreeVsFiveTier1",
-        "title": "Diff - 3.1 / 5.0 - Tier 1"
-      },
-      {
-        "command": "dotnetInsights.diffThreeVsSixTier0",
-        "title": "Diff - 3.1 / 6.0 - Tier 0"
-      },
-      {
-        "command": "dotnetInsights.diffThreeVsSixTier1",
-        "title": "Diff - 3.1 / 6.0 - Tier 1"
-      },
-      {
-        "command": "dotnetInsights.diffThreeVsSevenTier0",
-        "title": "Diff - 3.1 / 7.0 - Tier 0"
-      },
-      {
-        "command": "dotnetInsights.diffThreeVsSevenTier1",
-        "title": "Diff - 3.1 / 7.0 - Tier 1"
       },
       {
         "command": "dotnetInsights.diffFiveVsSixTier0",

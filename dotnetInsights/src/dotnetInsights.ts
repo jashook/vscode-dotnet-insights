@@ -226,7 +226,6 @@ export class DotnetInsights {
     public ilDasmPath: string;
     public ilDasmVersion: string;
 
-    public netcoreThreePmiPath : string;
     public netcoreFivePmiPath : string;
     public netcoreSixPmiPath: string;
     public netcoreSevenPmiPath: string;
@@ -245,7 +244,6 @@ export class DotnetInsights {
 
     public customCoreRootPath: string;
 
-    public netcoreThreeX64CoreRunPath: string;
     public netcoreFiveX64CoreRunPath: string;
     public netcoreSixX64CoreRunPath: string;
     public netcoreSevenX64CoreRunPath: string;
@@ -310,7 +308,6 @@ export class DotnetInsights {
         this.outputChannel = outputChannel;
 
         this.netcoreFivePmiPath = "";
-        this.netcoreThreePmiPath = "";
         this.netcoreSixPmiPath = "";
         this.netcoreSevenPmiPath = "";
 
@@ -330,7 +327,6 @@ export class DotnetInsights {
 
         this.customCoreRootPath = "";
 
-        this.netcoreThreeX64CoreRunPath = "";
         this.netcoreFiveX64CoreRunPath = "";
         this.netcoreSixX64CoreRunPath = "";
         this.netcoreSevenX64CoreRunPath = "";
