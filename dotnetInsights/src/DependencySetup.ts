@@ -176,6 +176,9 @@ export class DependencySetup {
         const coreRootPath = path.join(outputPath, "coreRoot");
 
         var coreRootPaths: { [id:string]: { [id: string]: string } } = {
+            "5.0": {
+                "x64": path.join(coreRootPath, "net5.0", "Core_Root")
+            },
             "6.0": {
                 "x64": path.join(coreRootPath, "net6.0", "Core_Root")
             },
