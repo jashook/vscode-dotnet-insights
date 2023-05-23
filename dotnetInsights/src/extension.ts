@@ -28,8 +28,6 @@ function compile(minOpts: boolean, jitDump: boolean, treeItem: Dependency, insig
     var methodName = treeItem.label;
     var methodNameSplit = treeItem.label.split(":");
     if (methodNameSplit.length > 2) {
-        methodName = methodNameSplit[0];
-    } else if (methodNameSplit.length > 2) {
         methodNameSplit = methodNameSplit.slice(0, methodNameSplit.length - 1);
         methodName = methodNameSplit.join(":");
     }
