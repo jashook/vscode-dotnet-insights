@@ -248,7 +248,7 @@ export class GcListener {
 
                     if (isAllocData) {
                         this.treeView?.refresh();
-                        console.log(`Add: ${jsonData['ProcessID']}, ${jsonData["ProcessName"]}`);
+                        console.log(`Add: ${processById["processId"]}, ${processById["processName"]}`);
                     }
 
                     if (isJitEvent) {

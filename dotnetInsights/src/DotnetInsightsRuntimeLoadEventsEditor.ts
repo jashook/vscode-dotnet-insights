@@ -409,13 +409,20 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         var labelsByHour = false;
 
         loadTimes.sort((a: JitMethodInfo, b: JitMethodInfo) => {
-            return Date.parse(a.eventTick.toString())- Date.parse(b.eventTick.toString());
+            let first: Date | undefined = new Date(a.eventTick.toString());
+            let second: Date | undefined = new Date(b.eventTick.toString());
+            return first.getTime() - second.getTime();
         });
 
-        var beginTime = Date.parse(loadTimes[0].eventTick);
-        var endTime = Date.parse(loadTimes[loadTimes.length > 0 ? loadTimes.length - 1 : 0].eventTick);
+        let beginTime: Date | undefined = new Date(loadTimes[0].eventTick);
+        let endTime: Date | undefined = new Date(loadTimes[loadTimes.length > 0 ? loadTimes.length - 1 : 0].eventTick);
 
-        var intervalTimeIn100Ms = endTime - beginTime;
+        if (beginTime === undefined || endTime === undefined) {
+            console.log("incorrect date format.");
+            return "";
+        }
+
+        var intervalTimeIn100Ms = endTime.getTime() - beginTime.getTime();
 
         const intervalTimeIn500Ms = intervalTimeIn100Ms / 5;
         const intervalTimeInSeconds = intervalTimeIn100Ms / 1000;
@@ -500,13 +507,13 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
             intervalInMs *= (10 * 60 * 60);
         }
 
-        var intervalToWorkOn = (endTime - beginTime);
+        var intervalToWorkOn = (endTime.getTime() - beginTime.getTime());
         labelsToPass = [];
 
         intervalCount = Math.ceil(intervalCount);
 
         for (var index = 0; index < intervalCount; ++index) {
-            const labelToUse = new Date(intervalToWorkOn).toUTCString();
+            const labelToUse = new Date(beginTime.getTime() + intervalToWorkOn).toUTCString();
 
             labelsToPass.push(labelToUse);
             intervalToWorkOn += intervalInMs;
@@ -529,11 +536,14 @@ export class DotnetInsightsRuntimeLoadEventsEditor implements vscode.CustomReado
         }
 
         let getBucketIndex = (currentLoadData: JitMethodInfo) => {
-            var timeEncountered = Date.parse(currentLoadData.eventTick.toString());
+            var timeEncountered = new Date(currentLoadData.eventTick.toString());
+            var bucketIndex = 0;
             
-            var bucketIndex = Math.floor((timeEncountered - beginTime) / intervalInMs);
-            if (bucketIndex === intervalCount) {
-                --bucketIndex;
+            if (beginTime !== undefined) {
+                bucketIndex = Math.floor((timeEncountered.getTime() - beginTime.getTime()) / intervalInMs);
+                if (bucketIndex === intervalCount) {
+                    --bucketIndex;
+                }
             }
 
             console.assert(bucketIndex >= 0 && bucketIndex < intervalCount);

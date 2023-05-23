@@ -226,30 +226,22 @@ export class DotnetInsights {
     public ilDasmPath: string;
     public ilDasmVersion: string;
 
-    public netcoreFivePmiPath : string;
     public netcoreSixPmiPath: string;
     public netcoreSevenPmiPath: string;
 
     public pmiPath: string;
 
-    public netcoreThreeX64CoreRootPath: string;
-    public netcoreFiveX64CoreRootPath: string;
     public netcoreSixX64CoreRootPath: string;
     public netcoreSevenX64CoreRootPath: string;
 
-    public netcoreThreeArm64CoreRootPath: string;
-    public netcoreFiveArm64CoreRootPath: string;
     public netcoreSixArm64CoreRootPath: string;
     public netcoreSevenArm64CoreRootPath: string;
 
     public customCoreRootPath: string;
 
-    public netcoreFiveX64CoreRunPath: string;
     public netcoreSixX64CoreRunPath: string;
     public netcoreSevenX64CoreRunPath: string;
 
-    public netcoreThreeArm64CoreRunPath: string;
-    public netcoreFiveArm64CoreRunPath: string;
     public netcoreSixArm64CoreRunPath: string;
     public netcoreSevenArm64CoreRunPath: string;
 
@@ -307,7 +299,6 @@ export class DotnetInsights {
 
         this.outputChannel = outputChannel;
 
-        this.netcoreFivePmiPath = "";
         this.netcoreSixPmiPath = "";
         this.netcoreSevenPmiPath = "";
 
@@ -315,24 +306,17 @@ export class DotnetInsights {
 
         this.useNetCoreLts = true;
 
-        this.netcoreThreeX64CoreRootPath = "";
-        this.netcoreFiveX64CoreRootPath = "";
         this.netcoreSixX64CoreRootPath = "";
         this.netcoreSevenX64CoreRootPath = "";
 
-        this.netcoreThreeArm64CoreRootPath = "";
-        this.netcoreFiveArm64CoreRootPath = "";
         this.netcoreSixArm64CoreRootPath = "";
         this.netcoreSevenArm64CoreRootPath = "";
 
         this.customCoreRootPath = "";
 
-        this.netcoreFiveX64CoreRunPath = "";
         this.netcoreSixX64CoreRunPath = "";
         this.netcoreSevenX64CoreRunPath = "";
 
-        this.netcoreThreeArm64CoreRunPath = "";
-        this.netcoreFiveArm64CoreRunPath = "";
         this.netcoreSixArm64CoreRunPath = "";
         this.netcoreSevenArm64CoreRunPath = "";
 
