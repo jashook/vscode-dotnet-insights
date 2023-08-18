@@ -48,12 +48,60 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
                 return Promise.resolve(topLevelDeps);
             }
             else if (element.label == "Methods") {
+                var topLevelDeps = [] as Dependency[];
+
+                const ilAsmVsCodePath = this.insights.ilAsmVsCodePath;
+                assert(ilAsmVsCodePath != undefined);
+                topLevelDeps.push(new Dependency("System", false, false, ilAsmVsCodePath, dllPath, undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
+                topLevelDeps.push(new Dependency("User", false, false, ilAsmVsCodePath, dllPath, undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
+
+                return Promise.resolve(topLevelDeps);
+            }
+            else if (element.label == "System") {
+                var dependencies = [] as Dependency[];
+
+                assert(this.insights != undefined);
+                assert(this.insights?.methods != undefined);
+
+                const userMethods = this.insights?.methods.get("system");
+
+                userMethods?.sort((lhs: Method, rhs: Method) => {
+                    return lhs.name.localeCompare(rhs.name);
+                });
+
+                if (userMethods == undefined) {
+                    return Promise.resolve(dependencies);
+                }
+
+                const ilAsmVsCodePath = this.insights.ilAsmVsCodePath;
+                assert(ilAsmVsCodePath != undefined);
+
+                for (var index = 0; index < userMethods?.length; ++index) {
+                    const currentMethod = userMethods[index];
+                    var dep = new Dependency(currentMethod.name, true, false, ilAsmVsCodePath, dllPath, currentMethod.ilBytes, currentMethod.totalCodeSize, vscode.TreeItemCollapsibleState.None);
+
+                    dep.command = {
+                        command: "dotnetInsights.tier1",
+                        title: "View DASM",
+                        arguments: [dep, this.insights]
+                    }
+
+                    dependencies.push(dep);
+                }
+
+                return Promise.resolve(dependencies);
+            }
+            else if (element.label == "User") {
                 var dependencies = [] as Dependency[];
 
                 assert(this.insights != undefined);
                 assert(this.insights?.methods != undefined);
 
                 const userMethods = this.insights?.methods.get("user");
+
+                userMethods?.sort((lhs, rhs) => {
+                    return lhs.name.localeCompare(rhs.name);
+                });
                 if (userMethods == undefined) {
                     return Promise.resolve(dependencies);
                 }

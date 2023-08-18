@@ -3,7 +3,7 @@
   "displayName": ".NET Insights",
   "publisher": "jashoo",
   "description": "Monitor .NET Processes for GC information in real time, or drill into .NET DLLs by viewing the IL and compiled code. Relies on ildasm and a public .NET JIT tool PMI.",
-  "version": "1.4.6",
+  "version": "1.4.7",
   "preview": false,
   "icon": "media/dep.png",
   "repository": {
@@ -384,7 +384,7 @@
     "eslint": "^7.19.0",
     "glob": "^7.1.6",
     "mocha": "^8.2.1",
-    "typescript": "^4.9.4",
+    "typescript": "^4.9.5",
     "unzipper": "^0.10.11",
     "vscode-test": "^1.5.0"
   },
