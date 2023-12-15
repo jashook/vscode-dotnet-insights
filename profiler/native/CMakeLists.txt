@@ -14,6 +14,14 @@ endif()
 
 FILE(GLOB cpp_sources *.cpp src/*.cpp)
 
+add_compile_options(-Wno-unused-but-set-variable)
+
+if (CMAKE_C_COMPILER_ID MATCHES "Clang")
+    add_compile_options(-Wno-unknown-warning-option)
+    add_compile_options(-Wno-reserved-identifier)
+    add_compile_options(-Wno-pragma-pack)
+endif()
+
 if (WIN32)
     FILE(GLOB asm_sources asm/amd64/windows/*.asm)
     set(def_sources ${PROJECT_SOURCE_DIR}/ev31_profiler.def)
@@ -25,9 +33,9 @@ endif()
 add_library(ev31_profiler SHARED ${cpp_sources} ${asm_sources} ${def_sources})
 
 if (WIN32)
-    target_include_directories(ev31_profiler PRIVATE inc ../../../runtime/src/coreclr/src/inc)
+    target_include_directories(ev31_profiler PRIVATE inc ../../../runtime/src/coreclr/inc)
 else()
-    target_include_directories(ev31_profiler PRIVATE inc ../../../runtime/src/coreclr/src/inc ../../../runtime/src/coreclr/src/pal/inc/rt ../../../runtime/src/coreclr/src/pal/inc ../../../runtime/src/coreclr/src/pal/prebuilt/inc)
+    target_include_directories(ev31_profiler PRIVATE inc ../../../runtime/src/coreclr/inc ../../../runtime/src/coreclr/pal/inc/rt ../../../runtime/src/coreclr/pal/inc ../../../runtime/src/coreclr/pal/prebuilt/inc)
 endif()
 
 add_compile_options(-fexceptions)

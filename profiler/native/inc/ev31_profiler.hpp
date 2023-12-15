@@ -160,7 +160,7 @@ class ev31_profiler : public ICorProfilerCallback8
         ev31::assembly_tracker assembly_tracker;
         ev31::method_tracker method_tracker;
         ICorProfilerInfo8* profiler_info;
-        ev31::profiler_io io;
+        // ev31::profiler_io io;
 }; // (ev31_profiler)
 
 ////////////////////////////////////////////////////////////////////////////////
