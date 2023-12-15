@@ -34,7 +34,11 @@ if (WIN32)
     FILE(GLOB asm_sources asm/amd64/windows/*.asm)
     set(def_sources ${PROJECT_SOURCE_DIR}/ev31_profiler.def)
 else()
-    FILE(GLOB asm_sources asm/amd64/unix/*.S)
+    if (CMAKE_SYSTEM_PROCESSOR STREQUAL x86_64 OR CMAKE_SYSTEM_PROCESSOR STREQUAL amd64)
+        FILE(GLOB asm_sources asm/amd64/unix/*.S)
+    else ()
+        FILE(GLOB asm_sources asm/aarch64/unix/*.S)
+    endif()
 endif()
 
 # Create the executable
