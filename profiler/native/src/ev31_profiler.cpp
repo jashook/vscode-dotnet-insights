@@ -80,7 +80,7 @@ ev31::ev31_profiler::~ev31_profiler()
     std::wstring assembly_name = this->get_assembly_name(assembly_id);
     double time = this->assembly_tracker.stop_assembly_timing(assembly_id, assembly_name);
 
-    this->io.communicate("assembly_id", assembly_id, assembly_name, time, "JitCompilation");
+    // this->io.communicate("assembly_id", assembly_id, assembly_name, time, "JitCompilation");
 
     return S_OK;
 }
@@ -103,7 +103,7 @@ ev31::ev31_profiler::~ev31_profiler()
     std::wstring method_name = this->get_method_name(function_id);
     double time = method_tracker.stop_method_execution_timing(function_id, method_name);
 
-    this->io.communicate("function_id", function_id, method_name, time, "JitCompilation");
+    // this->io.communicate("function_id", function_id, method_name, time, "JitCompilation");
 
     return S_OK;
 }
@@ -417,7 +417,7 @@ ev31::ev31_profiler::~ev31_profiler()
     std::wstring method_name = this->get_method_name(function_id, true);
     double time = method_tracker.stop_method_execution_timing(function_id, method_name);
 
-    this->io.communicate("function_id", function_id, method_name, time, "JitCompilation");
+    // this->io.communicate("function_id", function_id, method_name, time, "JitCompilation");
 
     return S_OK;
 }
@@ -471,7 +471,7 @@ void ev31::ev31_profiler::LeaveMethod(FunctionID function_id, COR_PRF_ELT_INFO e
     std::wstring method_name = this->get_method_name(function_id);
     double time = method_tracker.stop_method_execution_timing(function_id, method_name);
 
-    this->io.communicate("function_id", function_id, method_name, time, "MethodExecution");
+    // this->io.communicate("function_id", function_id, method_name, time, "MethodExecution");
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -483,13 +483,13 @@ const std::wstring ev31::ev31_profiler::get_assembly_name(AssemblyID assembly_id
     ModuleID module_id = 0;
     AppDomainID app_domain_id = 0;
 
-    WCHAR assembly_name[1024];
+    char16_t assembly_name[1024];
     std::size_t name_size = 1024;
     ULONG copied_count = 0;
 
     this->profiler_info->GetAssemblyInfo(assembly_id, name_size, &copied_count, assembly_name, &app_domain_id, &module_id);
 
-    return std::wstring(assembly_name);
+    return std::wstring();
 }
 
 const std::wstring ev31::ev31_profiler::get_method_name(FunctionID function_id, bool is_dynamic_method)
