@@ -14,8 +14,6 @@ endif()
 
 FILE(GLOB cpp_sources *.cpp src/*.cpp)
 
-add_compile_options(-Wno-unused-but-set-variable)
-
 if (WIN32)
 else()
     add_definitions(-fms-extensions)
@@ -28,6 +26,9 @@ else()
     add_compile_options(-Wno-incompatible-function-pointer-types-strict)
     add_compile_options(-Wno-unknown-warning-option)
     add_compile_options(-Wvoid-pointer-to-int-cast)
+    add_definitions(-DPLATFORM_UNIX)
+    add_definitions(-DPAL_STDCPP_COMPAT)
+    add_compile_options(-Wno-unused-but-set-variable)
 endif()
 
 if (WIN32)
@@ -53,14 +54,14 @@ endif()
 add_compile_options(-fexceptions)
 add_definitions(-DUSE_STL)
 
-add_definitions(-DPAL_STDCPP_COMPAT)
 add_definitions(-DBIT64)
-add_definitions(-DPLATFORM_UNIX)
 
 if(WIN32)
     add_definitions(-DWIN32_LEAN_AND_MEAN)
     target_link_libraries(ev31_profiler wsock32 ws2_32)
     target_link_libraries(ev31_profiler httpapi)
+    
+    add_definitions(-DHOST_WINDOWS)
 endif()
 
 target_compile_features(ev31_profiler PRIVATE cxx_std_20)
