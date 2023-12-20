@@ -5,16 +5,16 @@
             "name": "native_profiler",
             "type": "cppvsdbg",
             "request": "launch",
-            "program": "C:\\Users\\jashoo\\.vscode-server\\data\\User\\globalStorage\\jashoo.dotnetinsights\\coreRoot\\net5.0\\Core_Root\\CoreRun.exe",
+            "program": "${workspaceRoot}\\..\\..\\runtime\\artifacts\\tests\\coreclr\\windows.x64.Debug\\Tests\\Core_Root\\CoreRun.exe",
             "args": [
-                "C:\\Users\\jashoo\\projects\\vscode-dotnet-insights\\profiler\\tests\\bringup\\jit_compilation\\bin\\Debug\\net6.0\\jit_compilation.dll"
+                "${workspaceRoot}\\tests\\bringup\\jit_compilation\\bin\\Debug\\net6.0\\jit_compilation.dll"
             ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
             "environment": [
                 {
                     "name": "CORECLR_PROFILER_PATH",
-                    "value": "C:\\Users\\jashoo\\projects\\vscode-dotnet-insights\\profiler\\native\\build\\Debug\\ev31_profiler.dll"
+                    "value": "${workspaceRoot}\\native\\build\\Debug\\ev31_profiler.dll"
                 },
                 {
                     "name": "CORECLR_PROFILER",

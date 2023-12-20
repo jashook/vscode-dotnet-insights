@@ -66,6 +66,10 @@
         "xtree": "cpp",
         "xutility": "cpp",
         "functional": "cpp",
-        "codecvt": "cpp"
+        "codecvt": "cpp",
+        "complex": "cpp",
+        "mutex": "cpp",
+        "stop_token": "cpp",
+        "thread": "cpp"
     }
 }

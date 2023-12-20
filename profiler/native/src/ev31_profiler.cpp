@@ -472,6 +472,7 @@ void ev31::ev31_profiler::LeaveMethod(FunctionID function_id, COR_PRF_ELT_INFO e
     double time = method_tracker.stop_method_execution_timing(function_id, method_name);
 
     // this->io.communicate("function_id", function_id, method_name, time, "MethodExecution");
+    std::wcout << "[" << method_name << "] " << (time / (1000 * 1000)) << std::fixed << std::setprecision(2) << "ms" << std::endl;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -483,13 +484,13 @@ const std::wstring ev31::ev31_profiler::get_assembly_name(AssemblyID assembly_id
     ModuleID module_id = 0;
     AppDomainID app_domain_id = 0;
 
-    char16_t assembly_name[1024];
+    WCHAR assembly_name[1024];
     std::size_t name_size = 1024;
     ULONG copied_count = 0;
 
     this->profiler_info->GetAssemblyInfo(assembly_id, name_size, &copied_count, assembly_name, &app_domain_id, &module_id);
 
-    return std::wstring();
+    return std::wstring(assembly_name);
 }
 
 const std::wstring ev31::ev31_profiler::get_method_name(FunctionID function_id, bool is_dynamic_method)
