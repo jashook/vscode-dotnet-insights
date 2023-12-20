@@ -3,6 +3,7 @@ import { DotnetInsightsGcTreeDataProvider } from "./dotnetInsightsGc";
 import { createServer } from "http";
 import { IncomingMessage, ServerResponse } from 'http';
 import { DotnetInsightsJitTreeDataProvider } from "./dotnetInsightsJit";
+import { Profiler } from "./Profiler";
 
 export class GcData {
     public data: any;
@@ -178,6 +179,8 @@ export class GcListener {
 
     public sendShutdown: boolean;
 
+    public profiler: Profiler | undefined;
+
     public requests: number;
     public secondTimer: any;
     
@@ -194,6 +197,8 @@ export class GcListener {
             console.log(`Requests per second: ${this.requests}`);
             this.requests = 0;
         }, 1000);
+
+        this.profiler = Profiler.getInstance(10);
     }
 
     start() {
@@ -218,6 +223,7 @@ export class GcListener {
                     }
                     catch(e) {
                         response.end("eol");
+                        return;
                     }
 
                     if (jsonData == undefined) {
@@ -228,6 +234,17 @@ export class GcListener {
                     console.log(request.url);
                     const isAllocData = request.url == "/gcAllocation";
                     const isJitEvent = request.url == "/jitEvent";
+                    const isProfilerEvent = request.url == "/profiler";
+
+                    if (isProfilerEvent) {
+                        const profilerData = jsonData;
+                        console.assert(this.profiler != undefined);
+
+                        this.profiler?.addData(profilerData);
+
+                        response.end("eol");
+                        return;
+                    }
 
                     var processById: ProcessInfo | undefined = this.processes.get(jsonData["ProcessID"]);
 

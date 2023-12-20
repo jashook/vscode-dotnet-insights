@@ -1,0 +1,82 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "native_profiler",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceRoot}\\..\\..\\runtime\\artifacts\\tests\\coreclr\\windows.x64.Debug\\Tests\\Core_Root\\CoreRun.exe",
+            "args": [
+                "${workspaceRoot}\\tests\\bringup\\jit_compilation\\bin\\Debug\\net6.0\\jit_compilation.dll"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [
+                {
+                    "name": "CORECLR_PROFILER_PATH",
+                    "value": "${workspaceRoot}\\native\\build\\Debug\\ev31_profiler.dll"
+                },
+                {
+                    "name": "CORECLR_PROFILER",
+                    "value": "{cf0d821e-299b-5307-a3d8-b283c03916dd}"
+                },
+                {
+                    "name": "CORECLR_ENABLE_PROFILING",
+                    "value": "1"
+                }
+            ],
+            "console": "internalConsole"
+        },
+        {
+            "name": "(lldb) Launch",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "/Users/jashoo/Library/Application Support/Code/User/globalStorage/jashoo.dotnetinsights/coreRoot/net5.0/Core_Root/corerun",
+            "args": [
+                "/Users/jashoo/projects/temp/bin/Release/net5.0/temp.dll"
+            ],
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [
+                {
+                    "name": "CORECLR_PROFILER_PATH",
+                    "value": "/Users/jashoo/projects/vscode-dotnet-insights/profiler/native/build/libev31_profiler.dylib"
+                },
+                {
+                    "name": "CORECLR_PROFILER",
+                    "value": "{cf0d821e-299b-5307-a3d8-b283c03916dd}"
+                },
+                {
+                    "name": "CORECLR_ENABLE_PROFILING",
+                    "value": "1"
+                }
+            ],
+            "externalConsole": false,
+            "MIMode": "lldb"
+        },
+        {
+            // Use IntelliSense to find out which attributes exist for C# debugging
+            // Use hover for the description of the existing attributes
+            // For further information visit https://github.com/OmniSharp/omnisharp-vscode/blob/master/debugger-launchjson.md
+            "name": ".NET Core Launch (console)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            // If you have changed target frameworks, make sure to update the program path.
+            "program": "${workspaceFolder}/managed/bin/Debug/net5.0/profiler.dll",
+            "args": [
+                "-pid",
+                "88850"
+            ],
+            "cwd": "${workspaceFolder}",
+            // For more information about the 'console' field, see https://aka.ms/VSCode-CS-LaunchJson-Console
+            "console": "internalConsole",
+            "stopAtEntry": false
+        },
+        {
+            "name": ".NET Core Attach",
+            "type": "coreclr",
+            "request": "attach"
+        }
+    ]
+}

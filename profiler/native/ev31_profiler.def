@@ -1,0 +1,5 @@
+LIBRARY "ev31_profiler.dll"
+
+EXPORTS
+    DllCanUnloadNow PRIVATE
+    DllGetClassObject PRIVATE
