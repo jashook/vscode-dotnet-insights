@@ -41,7 +41,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
 
     openCustomDocument(uri: vscode.Uri, openContext: vscode.CustomDocumentOpenContext, token: vscode.CancellationToken): vscode.CustomDocument | Thenable<vscode.CustomDocument> {
         var filename = path.basename(uri.path);
-        var endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+        var endofLine = os.platform() === "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
 
         var processId = parseInt(filename.split(".gcstats")[0]);
 
@@ -67,7 +67,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
                 vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', 'chart.js', 'dist'),
                 vscode.Uri.joinPath(this.context.extensionUri, 'media')
             ]
-        }
+        };
 
         var gcDocument = document as DotnetInsightsGcDocument;
         const pid = gcDocument.processId;
@@ -78,19 +78,21 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
         function updateWebview() {
             var currentData = listener.processes.get(pid)?.data;
 
-            if (currentData == undefined) return;
+            if (currentData === undefined) {
+                return;
+            }
 
             // Reconcile the last data with the current data.
             // We will only send the differnece of the two for performance
             // reasons.
 
             // No update needed.
-            if (gcEditor.gcData.length == currentData.length) {
+            if (gcEditor.gcData.length === currentData.length) {
                 return;
             }
 
-            if (gcEditor.gcData.length + 1 != currentData.length) {
-                console.assert(gcEditor.gcData.length + 1 == currentData.length);
+            if (gcEditor.gcData.length + 1 !== currentData.length) {
+                console.assert(gcEditor.gcData.length + 1 === currentData.length);
                 console.log(gcEditor.gcData.length);
                 console.log(currentData.length);
             }
@@ -118,7 +120,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
             allocationsByType["totalAllocations"] = 0;
             allocationsByType["types"] = {};
 
-            if (allocations != undefined) {
+            if (allocations !== undefined) {
                 for (var allocIndex = 0; allocIndex < currentData[0].allocData.length; ++allocIndex) {
                     const currentAllocData = currentData[0].allocData[allocIndex];
 
@@ -126,11 +128,11 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
                     const allocType = currentAllocData.data.data["typeName"];
                     const allocSizeInBytes = parseInt(currentAllocData.data.data["allocSizeBytes"]);
 
-                    if (allocationsByType["types"][heapIndex] == undefined) {
+                    if (allocationsByType["types"][heapIndex] === undefined) {
                         allocationsByType["types"][heapIndex] = {};
                     }
 
-                    if (allocationsByType["types"][heapIndex][allocType] == undefined) {
+                    if (allocationsByType["types"][heapIndex][allocType] === undefined) {
                         allocationsByType["types"][heapIndex][allocType] = [] as string[];
                     }
                     
@@ -169,7 +171,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
         const allocations: AllocData[] | undefined = [];
 
         this.gcData = [] as GcData[];
-        if (gcs != undefined) {
+        if (gcs !== undefined) {
             for (var index = 0; index < gcs?.length; ++index) {
                 this.gcData.push(gcs[index]);
             }
@@ -194,7 +196,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
         totalAllocationsByType["totalAllocations"] = 0;
         totalAllocationsByType["types"] = {};
 
-        if (gcs != undefined && gcs?.length > 0 && processInfo != undefined) {
+        if (gcs !== undefined && gcs?.length > 0 && processInfo !== undefined) {
             const startTime = gcs[0].data["PauseStartRelativeMSec"];
             const currentTime = gcs[gcs.length - 1].data["PauseEndRelativeMSec"];
 
@@ -247,7 +249,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
                 allocationsByType["totalAllocations"] = 0;
                 allocationsByType["types"] = {};
 
-                if (allocations != undefined) {
+                if (allocations !== undefined) {
                     for (var allocIndex = 0; allocIndex < gcs[index].allocData.length; ++allocIndex) {
                         const currentAllocData = gcs[index].allocData[allocIndex];
 
@@ -255,17 +257,17 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
                         const allocType = currentAllocData.data.data["typeName"];
                         const allocSizeInBytes = parseInt(currentAllocData.data.data["allocSizeBytes"]);
 
-                        if (totalAllocationsByType["types"][allocType] == undefined) {
+                        if (totalAllocationsByType["types"][allocType] === undefined) {
                             totalAllocationsByType["types"][allocType] = [] as string[];
                         }
 
                         totalAllocationsByType["types"][allocType].push({heapIndex: heapIndex, allocSizeInBytes: allocSizeInBytes});
 
-                        if (allocationsByType["types"][heapIndex] == undefined) {
+                        if (allocationsByType["types"][heapIndex] === undefined) {
                             allocationsByType["types"][heapIndex] = {};
                         }
 
-                        if (allocationsByType["types"][heapIndex][allocType] == undefined) {
+                        if (allocationsByType["types"][heapIndex][allocType] === undefined) {
                             allocationsByType["types"][heapIndex][allocType] = [] as string[];
                         }
                         
@@ -416,7 +418,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
             const allocations: AllocData[] | undefined = [];
 
             var gcData = [] as GcData[];
-            if (gcs != undefined) {
+            if (gcs !== undefined) {
                 for (var index = 0; index < gcs?.length; ++index) {
                     gcData.push(gcs[index]);
                 }
@@ -440,13 +442,13 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
             fs.readdir(this.insights.gcDataSaveLocation, (err, files) => {
                 // Calculate the save file name.
                 var fileName = document.processId.toString();
-                if (processInfo != undefined) {
+                if (processInfo !== undefined) {
                     fileName = processInfo?.processName + "_" + document.processId.toString();
                 }
 
                 for(var index = 0; index < files.length; ++index) {
                     const file = files[index];
-                    if (file.indexOf(fileName) != -1) {
+                    if (file.indexOf(fileName) !== -1) {
                         // This process already exists we will want to attach
                         // the date to better distinguish
                         var d = new Date();
@@ -480,7 +482,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
                             1: second,
                             2: third,
                             3: fourth
-                        }
+                        };
                     }
                 }
 
@@ -497,7 +499,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
                 const fullPath = path.join(this.insights.gcDataSaveLocation, fileName);
 
                 fs.writeFile(fullPath, jsonString, (err) => {
-                    if (err != null) {
+                    if (err !== null) {
                         vscode.window.showWarningMessage("Failed to write file: " + err.toString());
                     }
                     else {
@@ -526,7 +528,8 @@ export class DotnetInsightsGcDocument extends vscode.Disposable implements vscod
     eol: vscode.EndOfLine;
     lineCount: number;
     processId: number;
-    listener: GcListener | null
+    encoding: string;
+    listener: GcListener | null;
 
     constructor(
         uri: vscode.Uri,
@@ -553,6 +556,7 @@ export class DotnetInsightsGcDocument extends vscode.Disposable implements vscod
         this.isDirty = isDirty;
         this.isClosed = isClosed;
         this.eol = eol,
+        this.encoding = "utf8";
         this.lineCount = lineCount;
         this.processId = processId;
         this.listener = listener;
@@ -605,7 +609,7 @@ export class DotnetInsightsGcDocument extends vscode.Disposable implements vscod
             const allocations: AllocData[] | undefined = [];
 
             var gcData = [] as GcData[];
-            if (gcs != undefined) {
+            if (gcs !== undefined) {
                 for (var index = 0; index < gcs?.length; ++index) {
                     gcData.push(gcs[index]);
                 }

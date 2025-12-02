@@ -94,7 +94,7 @@ Showing IL/Dasm on save allows viewing the IL/ASM for a generated file quickly w
 
 Dumping the ASM for a Debug built DLL will **always** dump debuggable code (Tier 0).
 
-The first startup of the extension will download two private builds of the .NET runtime 6.0 and 7.0. This is expected to take ~5 minutes to setup.
+The first startup of the extension will download five private builds of the .NET runtime 6.0 and 7.0, 8.0, 9.0 and 10.0. This is expected to take ~5 minutes to setup.
 
 ## Future planned work
 

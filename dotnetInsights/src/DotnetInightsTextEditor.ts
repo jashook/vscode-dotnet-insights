@@ -3,9 +3,9 @@ import * as fs from 'fs';
 import * as os from "os";
 import * as path from 'path';
 import * as vscode from 'vscode';
-import * as assert from "assert"
+import * as assert from "assert";
 
-import { Uri } from 'vscode'
+import { Uri } from 'vscode';
 
 import { DotnetInsights } from './dotnetInsights';
 import { ILDasm } from './ILDasm';
@@ -32,7 +32,7 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
 
         // Used by pmi as it need FS access
         const cwd: string =  this.insights.pmiTempDir;
-        const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+        const endofLine = os.platform() === "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
         
         var filename = path.basename(uri.fsPath);
 
@@ -41,7 +41,7 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
         // Hijack the URI by saving the created file to a temporary location
         var filename = path.basename(uri.fsPath);
 
-        var filenameWithoutExt = filename.split(".dll")[0]
+        var filenameWithoutExt = filename.split(".dll")[0];
         filename = filenameWithoutExt + ".ildasm";
         outputFilePath = path.join(extensionOutputPath, filename);
 
@@ -51,11 +51,11 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
 
         var openPath = vscode.Uri.file(outputFilePath);
 
-        if (vscode.window.visibleTextEditors.length == 1 && !this.insights.isInlineIL) {
+        if (vscode.window.visibleTextEditors.length === 1 && !this.insights.isInlineIL) {
             vscode.commands.executeCommand('workbench.action.closeActiveEditor').then(() => {
                 vscode.workspace.openTextDocument(openPath).then(doc => {
                     this.insights.isInlineIL = false;
-                    vscode.window.showTextDocument(doc)
+                    vscode.window.showTextDocument(doc);
                 });
             });
         }
@@ -63,7 +63,7 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
             this.insights.outputChannel.appendLine("closeEditorsAndGroup");
             vscode.commands.executeCommand('workbench.action.closeEditorsAndGroup').then(() => {
                 vscode.workspace.openTextDocument(openPath).then(doc => {
-                    if (this.insights.inlineIlCallback != undefined) {
+                    if (this.insights.inlineIlCallback !== undefined) {
                         vscode.window.showTextDocument(doc, {
                             viewColumn: vscode.ViewColumn.Beside
                         }).then(this.insights.inlineIlCallback);
@@ -177,6 +177,7 @@ class DotnetInsightsDocument extends vscode.Disposable implements vscode.TextDoc
     isDirty: boolean;
     isClosed: boolean;
     eol: vscode.EndOfLine;
+    encoding: string;
     lineCount: number;
 
     constructor(
@@ -202,6 +203,7 @@ class DotnetInsightsDocument extends vscode.Disposable implements vscode.TextDoc
         this.isDirty = isDirty;
         this.isClosed = isClosed;
         this.eol = eol,
+        this.encoding = "utf8";
         this.lineCount = lineCount;
     }
 

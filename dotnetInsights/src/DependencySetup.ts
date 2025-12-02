@@ -50,6 +50,9 @@ export class DependencySetup {
         var pmiPath: any = undefined;
         var netcoreSixPmiPath: any = undefined;
         var netcoreSevenPmiPath: any = undefined;
+        var netcoreEightPmiPath: any = undefined;
+        var netcoreNinePmiPath: any = undefined;
+        var netcoreTenPmiPath: any = undefined;
 
         var customCoreRootPath: any  = undefined;
 
@@ -180,19 +183,31 @@ export class DependencySetup {
             },
             "7.0": {
                 "x64": path.join(coreRootPath, "net7.0", "Core_Root")
-            }
+            },
+            "8.0": {
+                "x64": path.join(coreRootPath, "net8.0", "Core_Root")
+            },
+            "9.0": {
+                "x64": path.join(coreRootPath, "net9.0", "Core_Root")
+            },
+            "10.0": {
+                "x64": path.join(coreRootPath, "net10.0", "Core_Root")
+            },
         };
 
         if (isArm64) {
             coreRootPaths["6.0"]["arm64"] = path.join(coreRootPath, "net6.0", "Core_Root-arm64");
             coreRootPaths["7.0"]["arm64"] = path.join(coreRootPath, "net7.0", "Core_Root-arm64");
+            coreRootPaths["8.0"]["arm64"] = path.join(coreRootPath, "net8.0", "Core_Root-arm64");
+            coreRootPaths["9.0"]["arm64"] = path.join(coreRootPath, "net9.0", "Core_Root-arm64");
+            coreRootPaths["10"]["arm64"] = path.join(coreRootPath, "net10", "Core_Root-arm64");
         }
 
         // ildasm comes with the core_root
         if (ilDasmPath === undefined || ilDasmPath === null) {
 
             const arm64Downloads: { [id: string]: string[] } = {
-                "osx": ["net6.0", "net7.0"],
+                "osx": ["net6.0", "net7.0", "net8.0", "net9.0", "net10"],
                 "win": [],
                 "linux": []
             };
@@ -205,7 +220,7 @@ export class DependencySetup {
             }
 
             var doDownload = false;
-            var pathsToCheck = [coreRootPaths["6.0"]["x64"], coreRootPaths["7.0"]["x64"], ilDasmCoreRootPath];
+            var pathsToCheck = [coreRootPaths["6.0"]["x64"], coreRootPaths["7.0"]["x64"], coreRootPaths["8.0"]["x64"], coreRootPaths["9.0"]["x64"], coreRootPaths["10"]["x64"], ilDasmCoreRootPath];
 
             if (osContainsArm64Downloads[osName]) {
                 const runtimesWithArm64 = arm64Downloads[osName];
@@ -260,6 +275,9 @@ export class DependencySetup {
 
                         this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreSixCoreRootPath: ${coreRootPaths["6.0"]["x64"]}`);
                         this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreSevenCoreRootPath: ${coreRootPaths["7.0"]["x64"]}`);
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreSevenCoreRootPath: ${coreRootPaths["8.0"]["x64"]}`);
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreSevenCoreRootPath: ${coreRootPaths["9.0"]["x64"]}`);
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreSevenCoreRootPath: ${coreRootPaths["10"]["x64"]}`);
                         this.insights.outputChannel.appendLine(`[Dependency Setup]: ilDasmCoreRootPath: ${ilDasmCoreRootPath}`);
 
                         resolve(runtimeDownloadSucceeded);
@@ -272,10 +290,16 @@ export class DependencySetup {
                 const coreRootPath = path.join(outputPath, "coreRoot");
                 coreRootPaths["6.0"]["x64"] = path.join(coreRootPath, "net6.0", "Core_Root");
                 coreRootPaths["7.0"]["x64"] = path.join(coreRootPath, "net7.0", "Core_Root");
+                coreRootPaths["8.0"]["x64"] = path.join(coreRootPath, "net8.0", "Core_Root");
+                coreRootPaths["9.0"]["x64"] = path.join(coreRootPath, "net9.0", "Core_Root");
+                coreRootPaths["10"]["x64"] = path.join(coreRootPath, "net10", "Core_Root");
 
                 if (isArm64) {
                     coreRootPaths["6.0"]["arm64"] = path.join(coreRootPath, "net6.0", "Core_Root-arm64");
                     coreRootPaths["7.0"]["arm64"] = path.join(coreRootPath, "net7.0", "Core_Root-arm64");
+                    coreRootPaths["8.0"]["arm64"] = path.join(coreRootPath, "net8.0", "Core_Root-arm64");
+                    coreRootPaths["9.0"]["arm64"] = path.join(coreRootPath, "net9.0", "Core_Root-arm64");
+                    coreRootPaths["10"]["arm64"] = path.join(coreRootPath, "net10", "Core_Root-arm64");
                 }
 
                 if (ilDasmPath === undefined || ilDasmPath === null) {
@@ -289,8 +313,11 @@ export class DependencySetup {
 
             const netcoreSixPmiDownload = path.join(pmiExePath, "net6.0", "net6.0", "pmi.dll");
             const netcoreSevenPmiDownload = path.join(pmiExePath, "net7.0", "net7.0", "pmi.dll");
+            const netcoreEightPmiDownload = path.join(pmiExePath, "net8.0", "net8.0", "pmi.dll");
+            const netcoreNinePmiDownload = path.join(pmiExePath, "net9.0", "net9.0", "pmi.dll");
+            const netcoreTenPmiDownload = path.join(pmiExePath, "net10", "net10", "pmi.dll");
 
-            const pathsToCheck = [netcoreSixPmiDownload, netcoreSevenPmiDownload];
+            const pathsToCheck = [netcoreSixPmiDownload, netcoreSevenPmiDownload, netcoreEightPmiDownload, netcoreNinePmiDownload, netcoreTenPmiDownload];
 
             var doDownload = false;
             if (forceDownload || !checkFoldersExist(pathsToCheck)) {
@@ -315,6 +342,9 @@ export class DependencySetup {
 
                         this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreSixPmiDownload: ${netcoreSixPmiDownload}`);
                         this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreSevenPmiDownload: ${netcoreSevenPmiDownload}`);
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreEightPmiDownload: ${netcoreEightPmiDownload}`);
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreNinePmiDownload: ${netcoreNinePmiDownload}`);
+                        this.insights.outputChannel.appendLine(`[Dependency Setup]: netcoreTenPmiDownload: ${netcoreTenPmiDownload}`);
                         resolve(pmiDownloadSucceeded);
                     });
                 });
@@ -324,6 +354,9 @@ export class DependencySetup {
             else {
                 netcoreSixPmiPath = netcoreSixPmiDownload;
                 netcoreSevenPmiPath = netcoreSevenPmiDownload;
+                netcoreEightPmiPath = netcoreEightPmiDownload;
+                netcoreNinePmiPath = netcoreNinePmiDownload;
+                netcoreTenPmiPath = netcoreTenPmiDownload;
             }
         }
 
@@ -437,13 +470,13 @@ export class DependencySetup {
                         resolve(false);
                     }
                     else {
-                        resolve(this.continueSetup(this.insights, ilDasmPath, netcoreSixPmiPath, netcoreSevenPmiPath, pmiPath, coreRootPaths, customCoreRootPath, outputPath, ilDasmOutputPath, pmiOutputPath, pmiTempDir));
+                        resolve(this.continueSetup(this.insights, ilDasmPath, netcoreSixPmiPath, netcoreSevenPmiPath, netcoreEightPmiPath, netcoreNinePmiPath, netcoreTenPmiPath, pmiPath, coreRootPaths, customCoreRootPath, outputPath, ilDasmOutputPath, pmiOutputPath, pmiTempDir));
                     }
                 });
             });
         }
         else {
-            return this.continueSetup(this.insights, ilDasmPath, netcoreSixPmiPath, netcoreSevenPmiPath, pmiPath, coreRootPaths, customCoreRootPath, outputPath, ilDasmOutputPath, pmiOutputPath, pmiTempDir);
+            return this.continueSetup(this.insights, ilDasmPath, netcoreSixPmiPath, netcoreSevenPmiPath, netcoreEightPmiPath, netcoreNinePmiPath, netcoreTenPmiPath, pmiPath, coreRootPaths, customCoreRootPath, outputPath, ilDasmOutputPath, pmiOutputPath, pmiTempDir);
         }
     }
 
@@ -750,7 +783,7 @@ export class DependencySetup {
         return Promise.all(promises);
     }
 
-    private continueSetup(insights: DotnetInsights, ilDasmPath: any, netcoreSixPmiPath: any, netcoreSevenPmiPath: any,customPmiPath: any, coreRootPaths: { [id:string]: { [id: string]: string } }, customCoreRootPath: any, outputPath: any, ilDasmOutputPath: string, pmiOutputPath: string, pmiTempDir: string) : Thenable<boolean> {
+    private continueSetup(insights: DotnetInsights, ilDasmPath: any, netcoreSixPmiPath: any, netcoreSevenPmiPath: any, netcoreEightPmiPath: any, netcoreNinePmiPath: any, netcoreTenPmiPath: any, customPmiPath: any, coreRootPaths: { [id:string]: { [id: string]: string } }, customCoreRootPath: any, outputPath: any, ilDasmOutputPath: string, pmiOutputPath: string, pmiTempDir: string) : Thenable<boolean> {
         if (typeof(ilDasmPath) !== "string") {
             if (os.platform() === "darwin") {
                 ilDasmPath = ilDasmPath["osx"];
@@ -803,9 +836,15 @@ export class DependencySetup {
 
         insights.netcoreSixX64CoreRootPath = coreRootPaths["6.0"]["x64"];
         insights.netcoreSevenX64CoreRootPath = coreRootPaths["7.0"]["x64"];
+        insights.netcoreEightX64CoreRootPath = coreRootPaths["8.0"]["x64"];
+        insights.netcoreNineX64CoreRootPath = coreRootPaths["9.0"]["x64"];
+        insights.netcoreTenX64CoreRootPath = coreRootPaths["10"]["x64"];
 
         insights.netcoreSixArm64CoreRootPath = coreRootPaths["6.0"]["arm64"];
         insights.netcoreSevenArm64CoreRootPath = coreRootPaths["7.0"]["arm64"];
+        insights.netcoreEightArm64CoreRootPath = coreRootPaths["8.0"]["arm64"];
+        insights.netcoreNineArm64CoreRootPath = coreRootPaths["9.0"]["arm64"];
+        insights.netcoreTenArm64CoreRootPath = coreRootPaths["10"]["arm64"];
 
         insights.customCoreRootPath = customCoreRootPath;
 
@@ -827,33 +866,48 @@ export class DependencySetup {
 
         insights.netcoreSixX64CoreRunPath = path.join(insights.netcoreSixX64CoreRootPath, coreRunExe);
         insights.netcoreSevenX64CoreRunPath = path.join(insights.netcoreSevenX64CoreRootPath, coreRunExe);
+        insights.netcoreEightX64CoreRunPath = path.join(insights.netcoreEightX64CoreRootPath, coreRunExe);
+        insights.netcoreNineX64CoreRunPath = path.join(insights.netcoreNineX64CoreRootPath, coreRunExe);
+        insights.netcoreTenX64CoreRunPath = path.join(insights.netcoreTenX64CoreRootPath, coreRunExe);
 
         insights.netcoreSixArm64CoreRunPath = insights.netcoreSixArm64CoreRootPath !== undefined ? path.join(insights.netcoreSixArm64CoreRootPath, coreRunExe) : "";
         insights.netcoreSevenArm64CoreRunPath = insights.netcoreSevenArm64CoreRootPath !== undefined ? path.join(insights.netcoreSevenArm64CoreRootPath, coreRunExe) : "";
+        insights.netcoreEightArm64CoreRunPath = insights.netcoreEightArm64CoreRootPath !== undefined ? path.join(insights.netcoreEightArm64CoreRootPath, coreRunExe) : "";
+        insights.netcoreNineArm64CoreRunPath = insights.netcoreNineArm64CoreRootPath !== undefined ? path.join(insights.netcoreNineArm64CoreRootPath, coreRunExe) : "";
+        insights.netcoreTenArm64CoreRunPath = insights.netcoreTenArm64CoreRootPath !== undefined ? path.join(insights.netcoreTenArm64CoreRootPath, coreRunExe) : "";
 
         if (process.arch === "arm64") {
             if (!fs.existsSync(insights.netcoreSixArm64CoreRootPath) ||
-                !fs.existsSync(insights.netcoreSevenArm64CoreRootPath)) {
+                !fs.existsSync(insights.netcoreSevenArm64CoreRootPath) ||
+                !fs.existsSync(insights.netcoreEightArm64CoreRootPath)  ||
+                !fs.existsSync(insights.netcoreNineArm64CoreRootPath)  ||
+                !fs.existsSync(insights.netcoreTenArm64CoreRootPath) ) {
                 vscode.window.showWarningMessage("Failed to set corerun path.");
                 Promise.resolve(false);
             }
         }
 
         if (!fs.existsSync(insights.netcoreSixX64CoreRunPath) || 
-            !fs.existsSync(insights.netcoreSevenX64CoreRunPath)) {
+            !fs.existsSync(insights.netcoreSevenX64CoreRunPath) || 
+            !fs.existsSync(insights.netcoreEightX64CoreRunPath) || 
+            !fs.existsSync(insights.netcoreNineX64CoreRunPath) || 
+            !fs.existsSync(insights.netcoreTenX64CoreRunPath)) {
             vscode.window.showWarningMessage("Failed to set corerun path.");
             Promise.resolve(false);
         }
 
         insights.netcoreSixPmiPath = netcoreSixPmiPath;
         insights.netcoreSevenPmiPath = netcoreSevenPmiPath;
+        insights.netcoreEightPmiPath = netcoreEightPmiPath;
+        insights.netcoreNinePmiPath = netcoreNinePmiPath;
+        insights.netcoreTenPmiPath = netcoreTenPmiPath;
 
         // Change default here.
         if (insights.useNetCoreLts) {
-            insights.pmiPath = insights.netcoreSixPmiPath;
+            insights.pmiPath = insights.netcoreEightPmiPath;
         }
         else {
-            insights.pmiPath = insights.netcoreSevenPmiPath;
+            insights.pmiPath = insights.netcoreTenPmiPath;
         }
 
         if (customPmiPath !== "" && (customPmiPath !== undefined && customPmiPath !== null)) {
@@ -864,10 +918,10 @@ export class DependencySetup {
 
         if (insights.customCoreRootPath === "" || insights.customCoreRootPath === "") {
             if (insights.useNetCoreLts) {
-                insights.coreRunPath = isArm64 ? insights.netcoreSixArm64CoreRunPath : insights.netcoreSixX64CoreRunPath;
+                insights.coreRunPath = isArm64 ? insights.netcoreEightArm64CoreRunPath : insights.netcoreEightX64CoreRunPath;
             }
             else {
-                insights.coreRunPath = isArm64 ? insights.netcoreSevenArm64CoreRunPath : insights.netcoreSevenX64CoreRunPath;
+                insights.coreRunPath = isArm64 ? insights.netcoreTenArm64CoreRunPath : insights.netcoreTenX64CoreRunPath;
             }
         }
         else {

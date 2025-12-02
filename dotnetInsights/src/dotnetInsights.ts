@@ -30,38 +30,38 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
     }
 
     getChildren(element?: Dependency): Thenable<Dependency[]> {
-        if (this.insights?.methods?.size == 0) {
+        if (this.insights?.methods?.size === 0) {
             return Promise.resolve([]);
         }
-        else if (this.insights != undefined && this.insights.methods != undefined && this.insights.ilAsmVsCodePath != undefined && this.insights.dllPath != undefined && this.insights.methods.size > 0) {
+        else if (this.insights !== undefined && this.insights.methods !== undefined && this.insights.ilAsmVsCodePath !== undefined && this.insights.dllPath !== undefined && this.insights.methods.size > 0) {
             const dllPath = this.insights.dllPath;
-            if (element == undefined) {
+            if (element === undefined) {
                 // Get the top level items
                 var topLevelDeps = [] as Dependency[];
 
                 const ilAsmVsCodePath = this.insights.ilAsmVsCodePath;
-                assert(ilAsmVsCodePath != undefined);
+                assert(ilAsmVsCodePath !== undefined);
 
                 topLevelDeps.push(new Dependency("Types", false, false, ilAsmVsCodePath, dllPath, undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
                 topLevelDeps.push(new Dependency("Methods", false, false, ilAsmVsCodePath, dllPath, undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
 
                 return Promise.resolve(topLevelDeps);
             }
-            else if (element.label == "Methods") {
+            else if (element.label === "Methods") {
                 var topLevelDeps = [] as Dependency[];
 
                 const ilAsmVsCodePath = this.insights.ilAsmVsCodePath;
-                assert(ilAsmVsCodePath != undefined);
+                assert(ilAsmVsCodePath !== undefined);
                 topLevelDeps.push(new Dependency("System", false, false, ilAsmVsCodePath, dllPath, undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
                 topLevelDeps.push(new Dependency("User", false, false, ilAsmVsCodePath, dllPath, undefined, undefined, vscode.TreeItemCollapsibleState.Collapsed));
 
                 return Promise.resolve(topLevelDeps);
             }
-            else if (element.label == "System") {
+            else if (element.label === "System") {
                 var dependencies = [] as Dependency[];
 
-                assert(this.insights != undefined);
-                assert(this.insights?.methods != undefined);
+                assert(this.insights !== undefined);
+                assert(this.insights?.methods !== undefined);
 
                 const userMethods = this.insights?.methods.get("system");
 
@@ -69,12 +69,12 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
                     return lhs.name.localeCompare(rhs.name);
                 });
 
-                if (userMethods == undefined) {
+                if (userMethods === undefined) {
                     return Promise.resolve(dependencies);
                 }
 
                 const ilAsmVsCodePath = this.insights.ilAsmVsCodePath;
-                assert(ilAsmVsCodePath != undefined);
+                assert(ilAsmVsCodePath !== undefined);
 
                 for (var index = 0; index < userMethods?.length; ++index) {
                     const currentMethod = userMethods[index];
@@ -84,30 +84,30 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
                         command: "dotnetInsights.tier1",
                         title: "View DASM",
                         arguments: [dep, this.insights]
-                    }
+                    };
 
                     dependencies.push(dep);
                 }
 
                 return Promise.resolve(dependencies);
             }
-            else if (element.label == "User") {
+            else if (element.label === "User") {
                 var dependencies = [] as Dependency[];
 
-                assert(this.insights != undefined);
-                assert(this.insights?.methods != undefined);
+                assert(this.insights !== undefined);
+                assert(this.insights?.methods !== undefined);
 
                 const userMethods = this.insights?.methods.get("user");
 
                 userMethods?.sort((lhs, rhs) => {
                     return lhs.name.localeCompare(rhs.name);
                 });
-                if (userMethods == undefined) {
+                if (userMethods === undefined) {
                     return Promise.resolve(dependencies);
                 }
 
                 const ilAsmVsCodePath = this.insights.ilAsmVsCodePath;
-                assert(ilAsmVsCodePath != undefined);
+                assert(ilAsmVsCodePath !== undefined);
 
                 for (var index = 0; index < userMethods?.length; ++index) {
                     const currentMethod = userMethods[index];
@@ -117,39 +117,39 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
                         command: "dotnetInsights.tier1",
                         title: "View DASM",
                         arguments: [dep, this.insights]
-                    }
+                    };
 
                     dependencies.push(dep);
                 }
 
                 return Promise.resolve(dependencies);
             }
-            else if (element.label == "Types") {
+            else if (element.label === "Types") {
                 var dependencies = [] as Dependency[];
 
-                assert(this.insights != undefined);
-                assert(this.insights?.types != undefined);
+                assert(this.insights !== undefined);
+                assert(this.insights?.types !== undefined);
 
                 const ilAsmVsCodePath = this.insights.ilAsmVsCodePath;
-                assert(ilAsmVsCodePath != undefined);
+                assert(ilAsmVsCodePath !== undefined);
 
                 for (var index = 0; index < this.insights.types.length; ++index) {
                     const currentType = this.insights.types[index];
 
-                    const collapsedState = currentType.nestedType.length == 0 ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.Collapsed;
+                    const collapsedState = currentType.nestedType.length === 0 ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.Collapsed;
 
                     var dep = new Dependency(currentType.name, false, true, ilAsmVsCodePath, dllPath, undefined, currentType.size, collapsedState, undefined, currentType.typeName, currentType);
 
-                    if (collapsedState == vscode.TreeItemCollapsibleState.None) {
+                    if (collapsedState === vscode.TreeItemCollapsibleState.None) {
                         // We can add a command this has to be a type.
 
-                        if (this.insights.typeMap != undefined) {
-                            if (this.insights.typeMap.get(currentType.name) != undefined) {
+                        if (this.insights.typeMap !== undefined) {
+                            if (this.insights.typeMap.get(currentType.name) !== undefined) {
                                 dep.command = {
                                     command: "dotnetInsights.selectNode",
                                     title: "View Type",
                                     arguments: [dep]
-                                }
+                                };
 
                                 dep.lineNumber = this.insights.typeMap.get(currentType.name);
                             }
@@ -162,7 +162,7 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
                 
                 return Promise.resolve(dependencies);
             }
-            else if (element.type != undefined) {
+            else if (element.type !== undefined) {
                 var dependencies = [] as Dependency[];
 
                 for (var index = 0; index < element.type.nestedType.length; ++index) {
@@ -170,23 +170,23 @@ export class DotnetInsightsTreeDataProvider implements vscode.TreeDataProvider<D
 
                     const ilAsmVsCodePath = this.insights.ilAsmVsCodePath;
                     const dllPath = this.insights.dllPath;
-                    assert(ilAsmVsCodePath != undefined);
+                    assert(ilAsmVsCodePath !== undefined);
 
                     const isType = element.isType;
 
-                    const collapsedState = currentType.nestedType.length == 0 ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.Collapsed;
+                    const collapsedState = currentType.nestedType.length === 0 ? vscode.TreeItemCollapsibleState.None : vscode.TreeItemCollapsibleState.Collapsed;
                     const dep = new Dependency(currentType.name, !isType, isType, ilAsmVsCodePath, dllPath, undefined, currentType.size, collapsedState, undefined, currentType.typeName, currentType);
         
-                    if (collapsedState == vscode.TreeItemCollapsibleState.None) {
+                    if (collapsedState === vscode.TreeItemCollapsibleState.None) {
                         // We can add a command
 
-                        if (this.insights.fieldMap != undefined) {
-                            if (this.insights.fieldMap.get(currentType.name) != undefined) {
+                        if (this.insights.fieldMap !== undefined) {
+                            if (this.insights.fieldMap.get(currentType.name) !== undefined) {
                                 dep.command = {
                                     command: "dotnetInsights.selectNode",
                                     title: "View Type",
                                     arguments: [dep]
-                                }
+                                };
 
                                 dep.lineNumber = this.insights.fieldMap.get(currentType.name);
                             }
@@ -229,12 +229,12 @@ export class Dependency extends vscode.TreeItem {
 
         this.tooltip = `${this.label}`;
 
-        if (typeName != undefined) {
+        if (typeName !== undefined) {
             this.description = `size: ${this.bytes} type: ${this.typeName}`;
             this.type = type;
         }
         else {
-            if (this.ilBytes == undefined || this.bytes == undefined) {
+            if (this.ilBytes === undefined || this.bytes === undefined) {
                 this.description = "";
             }
             else {
@@ -243,10 +243,7 @@ export class Dependency extends vscode.TreeItem {
         }
     }
 
-    iconPath = {
-        light: path.join(__filename, '..', '..', 'resources', 'light', 'dependency.svg'),
-        dark: path.join(__filename, '..', '..', 'resources', 'dark', 'dependency.svg')
-    };
+    iconPath?: string | vscode.IconPath | undefined;
 
     contextValue = 'dependency';
 }
@@ -276,22 +273,37 @@ export class DotnetInsights {
 
     public netcoreSixPmiPath: string;
     public netcoreSevenPmiPath: string;
+    public netcoreEightPmiPath: string;
+    public netcoreNinePmiPath: string;
+    public netcoreTenPmiPath: string;
 
     public pmiPath: string;
 
     public netcoreSixX64CoreRootPath: string;
     public netcoreSevenX64CoreRootPath: string;
+    public netcoreEightX64CoreRootPath: string;
+    public netcoreNineX64CoreRootPath: string;
+    public netcoreTenX64CoreRootPath: string;
 
     public netcoreSixArm64CoreRootPath: string;
     public netcoreSevenArm64CoreRootPath: string;
+    public netcoreEightArm64CoreRootPath: string;
+    public netcoreNineArm64CoreRootPath: string;
+    public netcoreTenArm64CoreRootPath: string;
 
     public customCoreRootPath: string;
 
     public netcoreSixX64CoreRunPath: string;
     public netcoreSevenX64CoreRunPath: string;
+    public netcoreEightX64CoreRunPath: string;
+    public netcoreNineX64CoreRunPath: string;
+    public netcoreTenX64CoreRunPath: string;
 
     public netcoreSixArm64CoreRunPath: string;
     public netcoreSevenArm64CoreRunPath: string;
+    public netcoreEightArm64CoreRunPath: string;
+    public netcoreNineArm64CoreRunPath: string;
+    public netcoreTenArm64CoreRunPath: string;
 
     public customCoreRunPath: string;
 
@@ -349,6 +361,9 @@ export class DotnetInsights {
 
         this.netcoreSixPmiPath = "";
         this.netcoreSevenPmiPath = "";
+        this.netcoreEightPmiPath = "";
+        this.netcoreNinePmiPath = "";
+        this.netcoreTenPmiPath = "";
 
         this.pmiPath = "";
 
@@ -356,17 +371,29 @@ export class DotnetInsights {
 
         this.netcoreSixX64CoreRootPath = "";
         this.netcoreSevenX64CoreRootPath = "";
+        this.netcoreEightX64CoreRootPath = "";
+        this.netcoreNineX64CoreRootPath = "";
+        this.netcoreTenX64CoreRootPath = "";
 
         this.netcoreSixArm64CoreRootPath = "";
         this.netcoreSevenArm64CoreRootPath = "";
+        this.netcoreEightArm64CoreRootPath = "";
+        this.netcoreNineArm64CoreRootPath = "";
+        this.netcoreTenArm64CoreRootPath = "";
 
         this.customCoreRootPath = "";
 
         this.netcoreSixX64CoreRunPath = "";
         this.netcoreSevenX64CoreRunPath = "";
+        this.netcoreEightX64CoreRunPath = "";
+        this.netcoreNineX64CoreRunPath = "";
+        this.netcoreTenX64CoreRunPath = "";
 
         this.netcoreSixArm64CoreRunPath = "";
         this.netcoreSevenArm64CoreRunPath = "";
+        this.netcoreEightArm64CoreRunPath = "";
+        this.netcoreNineArm64CoreRunPath = "";
+        this.netcoreTenArm64CoreRunPath = "";
 
         this.customCoreRunPath = "";
 
@@ -434,7 +461,7 @@ export class DotnetInsights {
 
         // Used by pmi as it need FS access
         const cwd: string =  this.pmiTempDir;
-        const endofLine = os.platform() == "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+        const endofLine = os.platform() === "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
 
         var methodPromise = undefined;
         var typePromise = undefined;
@@ -443,7 +470,9 @@ export class DotnetInsights {
             maxBuffer: maxBufferSize,
             "cwd": jitOrderCwd,
             "env": {
+                // eslint-disable-next-line @typescript-eslint/naming-convention
                 "COMPlus_JitOrder": "1",
+                // eslint-disable-next-line @typescript-eslint/naming-convention
                 "COMPlus_TieredCompilation": "0"
             }
         }, (error: any, output: string, stderr: string) => {
@@ -484,7 +513,7 @@ export class DotnetInsights {
 
     private parseIlDasmOutput(output: string, eol: vscode.EndOfLine) {
         var eolChar = "\n";
-        if (eol == vscode.EndOfLine.CRLF) {
+        if (eol === vscode.EndOfLine.CRLF) {
             eolChar = "\r\n";
         }
 
@@ -495,35 +524,35 @@ export class DotnetInsights {
         for (var index = 0; index < lines.length; ++index) {
             const currentLine = lines[index];
 
-            if (currentLine.indexOf(".class") != -1) {
+            if (currentLine.indexOf(".class") !== -1) {
                 // Split out the class name
-                const classNameSplit = currentLine.split(" ")
+                const classNameSplit = currentLine.split(" ");
 
                 var className = classNameSplit[classNameSplit.length - 1];
 
-                if (className[0] == "'" || className[0] == "\"") {
-                    const quoteChar = className[0] == "'" ? "'" : "\"";
+                if (className[0] === "'" || className[0] === "\"") {
+                    const quoteChar = className[0] === "'" ? "'" : "\"";
 
-                    var lastIndex = className[className.length - 1] == quoteChar ? className.length - 1 : className.length;
+                    var lastIndex = className[className.length - 1] === quoteChar ? className.length - 1 : className.length;
                     className = className.substring(1, lastIndex);
                 }
 
-                if (className.indexOf('.') != -1) {
+                if (className.indexOf('.') !== -1) {
                     className = className.substring(className.indexOf('.') + 1, className.length);
                 }
 
                 typeNumbers.set(className, index);
             }
-            else if (currentLine.indexOf(".field") != -1) {
+            else if (currentLine.indexOf(".field") !== -1) {
                 // Split out the class name
-                const classNameSplit = currentLine.split(" ")
+                const classNameSplit = currentLine.split(" ");
 
                 var className = classNameSplit[classNameSplit.length - 1];
 
-                if (className[0] == "'" || className[0] == "\"") {
-                    const quoteChar = className[0] == "'" ? "'" : "\"";
+                if (className[0] === "'" || className[0] === "\"") {
+                    const quoteChar = className[0] === "'" ? "'" : "\"";
 
-                    var lastIndex = className[className.length - 1] == quoteChar ? className.length - 1 : className.length;
+                    var lastIndex = className[className.length - 1] === quoteChar ? className.length - 1 : className.length;
                     className = className.substring(1, lastIndex);
                 }
 
@@ -536,7 +565,7 @@ export class DotnetInsights {
 
     private parseTypes(output: string, endofLine: vscode.EndOfLine) {
         var eolChar = "\n";
-        if (endofLine == vscode.EndOfLine.CRLF) {
+        if (endofLine === vscode.EndOfLine.CRLF) {
             eolChar = "\r\n";
         }
 
@@ -551,19 +580,19 @@ export class DotnetInsights {
             var regex = /\[(.*) \((.*)\)\]: \[(.*)\] Size: (.*), nested types: (.*)/g;
             const currentLine = lines[index];
 
-            if (currentLine.length == 0) {
+            if (currentLine.length === 0) {
                 continue;
             }
 
-            if (currentLine.indexOf("- CHILD") == -1 && currentLine.indexOf("Completed assembly ") == -1) {
+            if (currentLine.indexOf("- CHILD") === -1 && currentLine.indexOf("Completed assembly ") === -1) {
                 var splitLine = regex.exec(currentLine);
 
-                if (currentLine.indexOf("BadImageFormatException") != -1) {
+                if (currentLine.indexOf("BadImageFormatException") !== -1) {
                     // Not a managed assembly.
                     return undefined;
                 }
 
-                if (splitLine?.length != 6) {
+                if (splitLine?.length !== 6) {
                     throw new Error("Unable to parse type");
                 }
 
@@ -573,8 +602,8 @@ export class DotnetInsights {
                 var size = parseInt(splitLine[4]);
                 var nestedTypeCount = parseInt(splitLine[5]);
 
-                if (currentType != undefined) {
-                    if(currentType.nestedTypeCount != currentType.nestedType.length) {
+                if (currentType !== undefined) {
+                    if(currentType.nestedTypeCount !== currentType.nestedType.length) {
                         throw new Error("Error");
                     }
                     types.push(currentType);
@@ -582,12 +611,12 @@ export class DotnetInsights {
 
                 currentType = new Type(name, baseType, typeName, size, nestedTypeCount);
             }
-            else if (currentLine.indexOf("- CHILD") != -1) {
+            else if (currentLine.indexOf("- CHILD") !== -1) {
                 var startTypeLine = currentLine.indexOf("- CHILD ");
 
                 var splitLine = regex.exec(currentLine.substring(startTypeLine, currentLine.length));
 
-                if (splitLine?.length != 6) {
+                if (splitLine?.length !== 6) {
                     throw new Error("Unable to parse type");
                 }
 
@@ -605,7 +634,7 @@ export class DotnetInsights {
             }
         }
 
-        if (currentType != undefined) {
+        if (currentType !== undefined) {
             types.push(currentType);
         }
 
@@ -614,7 +643,7 @@ export class DotnetInsights {
 
     private parseJitOrderOutput(jitOrder: string, eol: vscode.EndOfLine) {
         var eolChar = "\n";
-        if (eol == vscode.EndOfLine.CRLF) {
+        if (eol === vscode.EndOfLine.CRLF) {
             eolChar = "\r\n";
         }
 
@@ -624,14 +653,14 @@ export class DotnetInsights {
         
         for (var index = 0; index < lines.length; ++index) {
             var currentLine = lines[index];
-            if (currentLine.length == 0 ||
-                currentLine.indexOf("-------") != -1 ||
-                currentLine.indexOf("Method has") != -1 ||
-                currentLine.indexOf("method name") != -1 ) {
+            if (currentLine.length === 0 ||
+                currentLine.indexOf("-------") !== -1 ||
+                currentLine.indexOf("Method has") !== -1 ||
+                currentLine.indexOf("method name") !== -1 ) {
                 continue;
             }
 
-            if (currentLine.indexOf("Completed assembly jit-dasm ") != -1) {
+            if (currentLine.indexOf("Completed assembly jit-dasm ") !== -1) {
                 const newCurrentLine = currentLine.split("skipped methods: ")[1];
 
                 const firstValue = newCurrentLine.split("| ")[0].trim();
@@ -653,9 +682,9 @@ export class DotnetInsights {
                     var unused = lineSplit[splitIndex++].trim();
                     var region = lineSplit[splitIndex++].trim();
                     var hash = lineSplit[splitIndex++].trim();
-                    var hashEh = lineSplit[splitIndex++].indexOf("EH") != -1;
+                    var hashEh = lineSplit[splitIndex++].indexOf("EH") !== -1;
                     var frame = lineSplit[splitIndex++].trim();
-                    var hasLoop = lineSplit[splitIndex++].indexOf("LOOP") != -1;
+                    var hasLoop = lineSplit[splitIndex++].indexOf("LOOP") !== -1;
                     var directCallCount = parseInt(lineSplit[splitIndex++].trim());
                     var indirectCallCount = parseInt(lineSplit[splitIndex++].trim());
                     var basicBlockCount = parseInt(lineSplit[splitIndex++].trim());
@@ -665,11 +694,11 @@ export class DotnetInsights {
                     var cseCount = undefined;
                     var isMinOpts = false;
 
-                    if (lineSplit[splitIndex].trim() == "MinOpts") {
+                    if (lineSplit[splitIndex].trim() === "MinOpts") {
                         isMinOpts = true;
                         ++splitIndex;
 
-                        if (splitIndex != 12) {
+                        if (splitIndex !== 12) {
                             throw new Error("unhandled");
                         }
                     }
@@ -677,7 +706,7 @@ export class DotnetInsights {
                         assertionPropCount = parseInt(lineSplit[splitIndex++].trim());
                         cseCount = parseInt(lineSplit[splitIndex++].trim());
 
-                        if (splitIndex != 13) {
+                        if (splitIndex !== 13) {
                             throw new Error("unhandled");
                         }
                     }
@@ -685,7 +714,7 @@ export class DotnetInsights {
                     var perfScore = undefined;
                     const perfScoreSize = isMinOpts ? 17 : 18;
 
-                    if (lineSplit.length == perfScoreSize) {
+                    if (lineSplit.length === perfScoreSize) {
                         perfScore = parseFloat(lineSplit[splitIndex++].trim());
                     }
 
@@ -713,35 +742,35 @@ export class DotnetInsights {
             const currentMethod = methods[index];
             const methodName = currentMethod.name.split("\(")[0];
 
-            if (methodName.indexOf("System.") == -1 && 
-                methodName.indexOf("ILStubClass") == -1 &&
-                methodName.indexOf(".cctor") == -1 &&
-                methodName.indexOf("<>c:.ctor") == -1 && 
-                methodName.indexOf("Microsoft.Win32.") == -1 && 
-                methodName.indexOf("Sys:") == -1 && 
-                methodName.indexOf("PrepareMethodinator:") == -1 &&
-                methodName.indexOf("c:<Canonicalize>") == -1 &&
-                methodName.indexOf("PMI") == -1 &&
-                methodName.indexOf("<ReadBufferAsync>") == -1 &&
-                methodName.indexOf("UnixConsoleStream") == -1 && 
-                methodName.indexOf("PrepareAll") == -1 &&
-                methodName.indexOf("Worker:") == -1 &&
-                methodName.indexOf("PrepareBase:") == -1 &&
-                methodName.indexOf("CounterBase:") == -1 &&
-                methodName.indexOf("CustomLoadContext:") == -1 &&
-                methodName.indexOf("Visitor:") == -1 &&
-                methodName.indexOf("Resolver:") == -1 &&
-                methodName.indexOf("Util:") == -1 &&
-                methodName.indexOf("WindowsConsoleStream") == -1) {
+            if (methodName.indexOf("System.") === -1 && 
+                methodName.indexOf("ILStubClass") === -1 &&
+                methodName.indexOf(".cctor") === -1 &&
+                methodName.indexOf("<>c:.ctor") === -1 && 
+                methodName.indexOf("Microsoft.Win32.") === -1 && 
+                methodName.indexOf("Sys:") === -1 && 
+                methodName.indexOf("PrepareMethodinator:") === -1 &&
+                methodName.indexOf("c:<Canonicalize>") === -1 &&
+                methodName.indexOf("PMI") === -1 &&
+                methodName.indexOf("<ReadBufferAsync>") === -1 &&
+                methodName.indexOf("UnixConsoleStream") === -1 && 
+                methodName.indexOf("PrepareAll") === -1 &&
+                methodName.indexOf("Worker:") === -1 &&
+                methodName.indexOf("PrepareBase:") === -1 &&
+                methodName.indexOf("CounterBase:") === -1 &&
+                methodName.indexOf("CustomLoadContext:") === -1 &&
+                methodName.indexOf("Visitor:") === -1 &&
+                methodName.indexOf("Resolver:") === -1 &&
+                methodName.indexOf("Util:") === -1 &&
+                methodName.indexOf("WindowsConsoleStream") === -1) {
                 var userList = sortedMethods.get("user");
 
-                assert(userList != undefined);
+                assert(userList !== undefined);
                 userList.push(currentMethod);
             }
             else {
                 var systemList = sortedMethods.get("system");
                 
-                assert(systemList != undefined);
+                assert(systemList !== undefined);
                 systemList.push(currentMethod);
             }
         }
