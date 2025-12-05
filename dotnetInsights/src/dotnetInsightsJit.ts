@@ -36,11 +36,11 @@ export class DotnetInsightsJitTreeDataProvider implements vscode.TreeDataProvide
         if (this.listener?.processes?.size === 0) {
             return Promise.resolve([]);
         }
-        else if (this.listener != undefined && this.listener.processes != undefined) {
+        else if (this.listener !== undefined && this.listener.processes !== undefined) {
             var keys = Array.from(this.listener.processes.keys());
 
             // Get the top level items
-            if (element == undefined) {
+            if (element === undefined) {
                 keys.sort((lhs: any, rhs: any) => {
                     return lhs - rhs;
                 });
@@ -64,7 +64,7 @@ export class DotnetInsightsJitTreeDataProvider implements vscode.TreeDataProvide
 
                 // Check this is a process by attempting to parse and lookup the
                 // pid
-                if (this.listener.processes.get(value) != undefined) {
+                if (this.listener.processes.get(value) !== undefined) {
                     try {
                         // Show all of the methods jitted for this process
                         var processInfo = this.listener.processes.get(value)!;
@@ -111,22 +111,22 @@ export class DotnetInsightsJitTreeDataProvider implements vscode.TreeDataProvide
                         // ReadyToRun = 5,
                         // PreJIT = 255
 
-                        if (tier == 0) {
+                        if (tier === 0) {
                             tierName = "Undefined";
                         }
-                        else if (tier == 1) {
+                        else if (tier === 1) {
                             tierName = "MinOptJitted";
                         }
-                        else if (tier == 2) {
+                        else if (tier === 2) {
                             tierName = "Optimized";
                         }
-                        else if (tier == 3) {
+                        else if (tier === 3) {
                             tierName = "QuickJitted";
                         }
-                        else if (tier == 4) {
+                        else if (tier === 4) {
                             tierName = "OptimizedTier1";
                         }
-                        else if (tier == 5) {
+                        else if (tier === 5) {
                             tierName = "ReadyToRun";
                         }
                         else {
@@ -173,7 +173,7 @@ export class JitDependency extends vscode.TreeItem {
 
         this.numValue = numValue;
 
-        if (description == undefined) {
+        if (description === undefined) {
             this.description = `Loaded Methods: ${jitMethodIds.length}`;
         }
         else {
@@ -182,11 +182,6 @@ export class JitDependency extends vscode.TreeItem {
 
         this.contextValue = isRoot ? 'jitRootContext' : "";
     }
-
-    iconPath = {
-        light: path.join(__filename, '..', '..', 'resources', 'light', 'dependency.svg'),
-        dark: path.join(__filename, '..', '..', 'resources', 'dark', 'dependency.svg')
-    };
 
     contextValue = 'dependency';
 }

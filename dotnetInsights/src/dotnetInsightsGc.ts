@@ -25,14 +25,14 @@ export class DotnetInsightsGcTreeDataProvider implements vscode.TreeDataProvider
     }
 
     getChildren(element?: GcDependency): Thenable<GcDependency[]> {
-        if (this.listener?.processes?.size == 0) {
+        if (this.listener?.processes?.size === 0) {
             return Promise.resolve([]);
         }
-        else if (this.listener != undefined && this.listener.processes != undefined) {
+        else if (this.listener !== undefined && this.listener.processes !== undefined) {
             var keys = Array.from(this.listener.processes.keys());
 
             keys.sort((lhs, rhs) => {
-                return lhs - rhs
+                return lhs - rhs;
             });
 
             var deps = [] as GcDependency[];
@@ -44,7 +44,7 @@ export class DotnetInsightsGcTreeDataProvider implements vscode.TreeDataProvider
                     command: "dotnetInsightsGc.selectPid",
                     title: "View Type",
                     arguments: [gcDep]
-                }
+                };
 
                 deps.push(gcDep);
             }
@@ -72,11 +72,6 @@ export class GcDependency extends vscode.TreeItem {
         this.tooltip = `${this.label}`;
         this.description = `GC Count: ${this.listener?.processes.get(parseInt(this.label))?.data.length}`;
     }
-
-    iconPath = {
-        light: path.join(__filename, '..', '..', 'resources', 'light', 'dependency.svg'),
-        dark: path.join(__filename, '..', '..', 'resources', 'dark', 'dependency.svg')
-    };
 
     contextValue = 'dependency';
 }

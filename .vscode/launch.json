@@ -31,7 +31,7 @@
             "type": "coreclr",
             "request": "launch",
             "preLaunchTask": "buildRoslynHelper",
-            "program": "${workspaceFolder}/roslynHelper/bin/Debug/net5.0/roslynHelper.dll",
+            "program": "${workspaceFolder}/roslynHelper/bin/Debug/net10.0/roslynHelper.dll",
             "args": [
                 "/Users/jashoo/temp/output.dll"
             ],

@@ -30,7 +30,7 @@ export class ILDasm {
     ////////////////////////////////////////////////////////////////////////////
 
     public execute(uri: vscode.Uri): string {
-        if (this.insights.ilDasmPath == "") {
+        if (this.insights.ilDasmPath === "") {
             throw new Error("DotnetInsights not setup correctly.");
         }
 

@@ -69,13 +69,13 @@ export class OnSaveIlDasm {
     ////////////////////////////////////////////////////////////////////////////
 
     public setupActiveMethod(cursorLocation: vscode.Position | undefined, symbols: vscode.DocumentSymbol[] | undefined) : boolean {
-        if (cursorLocation == undefined || symbols == undefined) {
+        if (cursorLocation === undefined || symbols === undefined) {
             return false;
         }
 
         let methodsReturned = this.getActiveMethod(cursorLocation, symbols);
 
-        if (methodsReturned[0] == undefined || methodsReturned[1] == undefined) {
+        if (methodsReturned[0] === undefined || methodsReturned[1] === undefined) {
             // Not a valid method.
             return false;
         }
@@ -85,8 +85,8 @@ export class OnSaveIlDasm {
 
         // Check if the current method has changed. If so we will want to reset
         // all the differences that are being tracked.
-        if (this.method != "") {
-            if (this.method != method) {
+        if (this.method !== "") {
+            if (this.method !== method) {
                 // The method has changed.
                 // TODO remove differences.
             }
@@ -99,7 +99,7 @@ export class OnSaveIlDasm {
     }
 
     public runRoslynHelperForFile(file: string | undefined) : boolean {
-        if (file == undefined) {
+        if (file === undefined) {
             return false;
         }
 
@@ -107,7 +107,7 @@ export class OnSaveIlDasm {
 
         this.insights.outputChannel.appendLine(`pmi for method: ${this.method}`);
 
-        if (this.roslynHelper == undefined) {
+        if (this.roslynHelper === undefined) {
             this.roslynHelper = child.exec(this.roslynHelperCommand, (error: any, stdout: string, stderr: string) => {
                 // No op, should not finish
 
@@ -125,7 +125,7 @@ export class OnSaveIlDasm {
             try {
                 this.roslynHelper?.stdin?.write(file);
 
-                if (os.platform() == "win32") {
+                if (os.platform() === "win32") {
                     this.roslynHelper?.stdin?.write("\r\n");
                 }
                 else {
@@ -154,7 +154,7 @@ export class OnSaveIlDasm {
         if (editorsShown.length >= 3) {
             // The last two editors should be the ildasm and asm files.
             var skipCount = 0;
-            if (editorsShown[editorsShown.length - 1].document.fileName.indexOf("extension-output") != -1) {
+            if (editorsShown[editorsShown.length - 1].document.fileName.indexOf("extension-output") !== -1) {
                 skipCount = 1;
             }
 
@@ -163,7 +163,7 @@ export class OnSaveIlDasm {
 
             console.assert(secondToLast > 0 && last > 0);
 
-            if (editorsShown[secondToLast].document.fileName.indexOf(".ildasm") != -1 && editorsShown[last].document.fileName.indexOf(".asm") != -1) {
+            if (editorsShown[secondToLast].document.fileName.indexOf(".ildasm") !== -1 && editorsShown[last].document.fileName.indexOf(".asm") !== -1) {
                 documentsAreOpen = true;
 
                 this.ilShown?.updateForPath(editorsShown[secondToLast].document.fileName);
@@ -179,7 +179,9 @@ export class OnSaveIlDasm {
 
     private findSymbol(symbols: vscode.DocumentSymbol[], position: vscode.Position | undefined): [vscode.DocumentSymbol, vscode.DocumentSymbol] | undefined {
         // Get all the leaf nodes into one list
-        if (position == undefined) return undefined;
+        if (position === undefined) {
+            return undefined;
+        }
     
         var leafNodes:  [vscode.DocumentSymbol, vscode.DocumentSymbol][] = this.getLeafNodesWithType(symbols, undefined, undefined);
     
@@ -198,7 +200,7 @@ export class OnSaveIlDasm {
     }
 
     private getLeafNodesWithType(symbols: vscode.DocumentSymbol[], parent: vscode.DocumentSymbol | undefined, leafNodes: [vscode.DocumentSymbol, vscode.DocumentSymbol][] | undefined): [vscode.DocumentSymbol, vscode.DocumentSymbol][] {
-        if (leafNodes == undefined) {
+        if (leafNodes === undefined) {
             leafNodes = [] as [vscode.DocumentSymbol, vscode.DocumentSymbol][];
         }
     
@@ -222,10 +224,10 @@ export class OnSaveIlDasm {
         if (symbols !== undefined) {
             var symbol = this.findSymbol(symbols, cursorLocation);
 
-            if (symbol != undefined) {
+            if (symbol !== undefined) {
                 var typeNameWithoutAssembly = symbol[0].name.split(".")[1];
 
-                if (typeNameWithoutAssembly == undefined) {
+                if (typeNameWithoutAssembly === undefined) {
                     typeNameWithoutAssembly = symbol[0].name;
                 }
 
@@ -233,11 +235,11 @@ export class OnSaveIlDasm {
 
                 activeMethod = methodNameWithoutArgs;
                 activeMethodWithoutArgs = methodNameWithoutArgs;
-                if (symbol[1].kind == vscode.SymbolKind.Constructor) {
+                if (symbol[1].kind === vscode.SymbolKind.Constructor) {
                     activeMethod = ".ctor";
                 }
 
-                if (symbol[1].kind == vscode.SymbolKind.Constructor) {
+                if (symbol[1].kind === vscode.SymbolKind.Constructor) {
                     activeMethod = `${typeNameWithoutAssembly}:.ctor`;
                     methodNameWithoutArgs = ".ctor";
                     activeMethodWithoutArgs = methodNameWithoutArgs;
@@ -260,21 +262,21 @@ export class OnSaveIlDasm {
     }
 
     private inLineIlCallback(e: any) {
-        console.assert(this.insights.ilDasmOutput != undefined);
+        console.assert(this.insights.ilDasmOutput !== undefined);
 
         let ildasmParser = new ILDasmParser(this.insights.ilDasmOutput);
         ildasmParser.parse();
 
         let lineNumber = ildasmParser.methodMap.get(this.methodNoArgs);
 
-        if (lineNumber == undefined) {
+        if (lineNumber === undefined) {
             // Name does not directly match. Look for a loose match
 
-            let it = ildasmParser.methodMap.keys()
+            let it = ildasmParser.methodMap.keys();
             let current = it.next();
-            while(current.value != undefined) {
+            while(current.value !== undefined) {
                 let key = current.value;
-                if (key.indexOf(this.methodNoArgs) != -1) {
+                if (key.indexOf(this.methodNoArgs) !== -1) {
                     lineNumber = ildasmParser.methodMap.get(key);
                     break;
                 }
@@ -283,7 +285,7 @@ export class OnSaveIlDasm {
             }
         }
 
-        if (lineNumber == undefined) {
+        if (lineNumber === undefined) {
             vscode.window.showWarningMessage("Unable to determine method. Check that the C# extension is installed and Omnisharp has loaded this project.");
             return;
         }
@@ -320,10 +322,10 @@ export class OnSaveIlDasm {
     }
 
     private onRoslynStdOut(data: string) {
-        let response = data != null ? data.toString().trim() : "";
+        let response = data !== null ? data.toString().trim() : "";
         this.insights.outputChannel.appendLine(response);
 
-        if (response == "Compilation succeeded") {
+        if (response === "Compilation succeeded") {
             // We have written IL to roslynHelperIlFile
 
             // TODO: change decision based on whether documents are open.
@@ -349,14 +351,14 @@ export class OnSaveIlDasm {
 
                 // Split the output by newline
                 var newLine = "\n";
-                if (os.platform() == "win32") {
+                if (os.platform() === "win32") {
                     newLine = "\r\n";
                 }
 
                 var lines = output.split(newLine);
                 var matchedMethod: any = undefined;
                 for (var index = 0; index < lines.length; ++index) {
-                    if (lines[index].indexOf(boundObject.method) != -1) {
+                    if (lines[index].indexOf(boundObject.method) !== -1) {
                         let methodSplit = lines[index].split(' | ');
 
                         matchedMethod = methodSplit[methodSplit.length - 1].trim();
@@ -364,23 +366,23 @@ export class OnSaveIlDasm {
                     }
                 }
 
-                console.assert(matchedMethod != undefined);
+                console.assert(matchedMethod !== undefined);
 
                 var retried = false;
                 let pmiMethodWithDasm = (methodNameOveride: string) => {
                     var pmiMethod = new PmiCommand(boundObject.insights.coreRunPath, boundObject.insights, boundObject.roslynHelperIlFile);
                     pmiMethod.execute(methodNameOveride).then(value => {
-                        let unique_id = value[0];
+                        let uniqueId = value[0];
                         let output = value[1];
 
-                        if (retried == false && output.trim().length == 0) {
+                        if (retried === false && output.trim().length === 0) {
                             retried = true;
                             pmiMethodWithDasm(boundObject.method + "*");
 
                             return;
                         }
 
-                        const outputFileName = path.join(boundObject.insights.pmiOutputPath, unique_id + ".asm");
+                        const outputFileName = path.join(boundObject.insights.pmiOutputPath, uniqueId + ".asm");
 
                         fs.writeFile(outputFileName, output, (error) => {
                             if (error) {
@@ -401,10 +403,10 @@ export class OnSaveIlDasm {
                             }
 
                             // As a background task JITDump the method as well
-                            boundObject.jitDumpMethod(methodNameOveride, unique_id);
+                            boundObject.jitDumpMethod(methodNameOveride, uniqueId);
                         });
                     });
-                }
+                };
 
                 pmiMethodWithDasm(matchedMethod);
             });
@@ -415,14 +417,15 @@ export class OnSaveIlDasm {
         }
     }
 
-    private jitDumpMethod(matchedMethod: string, unique_id: string) {
+    private jitDumpMethod(matchedMethod: string, uniqueId: string) {
         const boundObject = this;
         var pmiMethod = new PmiCommand(boundObject.insights.coreRunPath, boundObject.insights, boundObject.roslynHelperIlFile);
 
+        // eslint-disable-next-line @typescript-eslint/naming-convention
         pmiMethod.execute(matchedMethod, {"COMPlus_JitDump": matchedMethod}).then(value => {
             let output = value[1];
 
-            const outputFileName = path.join(boundObject.insights.pmiOutputPath, unique_id + ".jitDump");
+            const outputFileName = path.join(boundObject.insights.pmiOutputPath, uniqueId + ".jitDump");
 
             fs.writeFile(outputFileName, output, (error) => {
                 if (error) {

@@ -18,7 +18,7 @@ export class GcData {
     public filteredAllocData: any;
 
     constructor(data: any) {
-        if (data["workingSet"] != undefined) {
+        if (data["workingSet"] !== undefined) {
             this.data = data.data;
             this.timestamp = data.timestamp;
             this.percentInGc = data.percentInGc;
@@ -31,7 +31,7 @@ export class GcData {
             this.filteredAllocData = data.filteredAllocData;
             this.allocData = [];
 
-            if (this.timestamp == undefined) {
+            if (this.timestamp === undefined) {
                 this.timestamp = new Date();
             }
 
@@ -115,7 +115,7 @@ export class ProcessInfo {
             var methodInfos = this.jitData.get(methodId);
 
             var isNewItem = false;
-            if (methodInfos == null) {
+            if (methodInfos === null) {
                 methodInfos = [] as JitMethodInfo[];
                 this.loadDurationTotal.set(methodId, 0);
                 isNewItem = true;
@@ -135,7 +135,7 @@ export class ProcessInfo {
             const methodSignatureSplit = methodSignature.split(" ");
             var emptyIndex = 0;
             for (var index = 0; index < methodSignatureSplit.length; ++index) {
-                if (methodSignatureSplit[index] == "") {
+                if (methodSignatureSplit[index] === "") {
                     emptyIndex = index + 1;
                     break;
                 }
@@ -149,18 +149,18 @@ export class ProcessInfo {
             }
             
             var jitMethodInfo = new JitMethodInfo(methodName, loadDurationMs, tier, methodId);
-            methodInfos.push(jitMethodInfo);
+            methodInfos!.push(jitMethodInfo);
 
             var loadDurationTotal = this.loadDurationTotal.get(methodId);
-            if (loadDurationTotal == undefined) {
-                console.assert(loadDurationTotal != undefined);
+            if (loadDurationTotal === undefined) {
+                console.assert(loadDurationTotal !== undefined);
             }
             else {
                 this.loadDurationTotal.set(methodId, loadDurationTotal + loadDurationMs);
             }
 
             if (isNewItem) {
-                this.jitData.set(methodId, methodInfos);
+                this.jitData.set(methodId, methodInfos!);
             }
         }
         else {
@@ -198,14 +198,14 @@ export class GcListener {
 
     start() {
         this.httpServer = createServer((request: IncomingMessage, response: ServerResponse) => {
-            if (request.method == "GET") {
+            if (request.method === "GET") {
                 if (this.sendShutdown) {
                     response.statusCode = 400;
                 }
 
                 response.end("eol");
             }
-            else if (request.method == "POST") {
+            else if (request.method === "POST") {
                 var data = "";
                 request.on("data", (chunk: any) => {
                     data += chunk;
@@ -220,23 +220,23 @@ export class GcListener {
                         response.end("eol");
                     }
 
-                    if (jsonData == undefined) {
+                    if (jsonData === undefined) {
                         response.end("eol");
                         return;
                     }
 
                     console.log(request.url);
-                    const isAllocData = request.url == "/gcAllocation";
-                    const isJitEvent = request.url == "/jitEvent";
+                    const isAllocData = request.url === "/gcAllocation";
+                    const isJitEvent = request.url === "/jitEvent";
 
                     var processById: ProcessInfo | undefined = this.processes.get(jsonData["ProcessID"]);
 
                     if (isAllocData) {
                         processById = this.processes.get(jsonData[0]["ProcessID"]);
-                        console.assert(processById != undefined);
+                        console.assert(processById !== undefined);
                     }
 
-                    if (processById != undefined) {
+                    if (processById !== undefined) {
                         processById.addData(jsonData, isAllocData, isJitEvent);
                     }
                     else {
