@@ -31,7 +31,7 @@ export class ILDasmParser {
 
     public parse() {
         var eolChar = "\n";
-        if (os.platform() == "win32") {
+        if (os.platform() === "win32") {
             eolChar = "\r\n";
         }
     
@@ -39,46 +39,46 @@ export class ILDasmParser {
         for (var index = 0; index < lines.length; ++index) {
             const currentLine = lines[index];
     
-            if (currentLine.indexOf(".class") != -1) {
+            if (currentLine.indexOf(".class") !== -1) {
                 // Split out the class name
-                const classNameSplit = currentLine.split(" ")
+                const classNameSplit = currentLine.split(" ");
     
                 var className = classNameSplit[classNameSplit.length - 1];
     
-                if (className[0] == "'" || className[0] == "\"") {
-                    const quoteChar = className[0] == "'" ? "'" : "\"";
+                if (className[0] === "'" || className[0] === "\"") {
+                    const quoteChar = className[0] === "'" ? "'" : "\"";
     
-                    var lastIndex = className[className.length - 1] == quoteChar ? className.length - 1 : className.length;
+                    var lastIndex = className[className.length - 1] === quoteChar ? className.length - 1 : className.length;
                     className = className.substring(1, lastIndex);
                 }
     
-                if (className.indexOf('.') != -1) {
+                if (className.indexOf('.') !== -1) {
                     className = className.substring(className.indexOf('.') + 1, className.length);
                 }
     
                 this.typeMap.set(className, index);
             }
-            else if (currentLine.indexOf(".field") != -1) {
+            else if (currentLine.indexOf(".field") !== -1) {
                 // Split out the class name
-                const classNameSplit = currentLine.split(" ")
+                const classNameSplit = currentLine.split(" ");
     
                 var className = classNameSplit[classNameSplit.length - 1];
     
-                if (className[0] == "'" || className[0] == "\"") {
-                    const quoteChar = className[0] == "'" ? "'" : "\"";
+                if (className[0] === "'" || className[0] === "\"") {
+                    const quoteChar = className[0] === "'" ? "'" : "\"";
     
-                    var lastIndex = className[className.length - 1] == quoteChar ? className.length - 1 : className.length;
+                    var lastIndex = className[className.length - 1] === quoteChar ? className.length - 1 : className.length;
                     className = className.substring(1, lastIndex);
                 }
     
                 this.fieldMap.set(className, index);
             }
-            else if (currentLine.indexOf(".method") != -1) {
+            else if (currentLine.indexOf(".method") !== -1) {
                 // Split out the class name
 
                 var methodLine = lines[index].trim();
                 // Check to see if the next line has the brace
-                if (lines[index + 1].indexOf("{") != 1) {
+                if (lines[index + 1].indexOf("{") !== 1) {
                     // Method is on this line.
                     
                 }

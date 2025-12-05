@@ -243,8 +243,6 @@ export class Dependency extends vscode.TreeItem {
         }
     }
 
-    iconPath?: string | vscode.IconPath | undefined;
-
     contextValue = 'dependency';
 }
 
@@ -442,12 +440,57 @@ export class DotnetInsights {
     }
 
     public updateForPath(ilAsmPath: string, fsPath: string, ilDasmOutput: string) {
-        var pmiCommand = `"${this.coreRunPath}"` + " " + `"${this.pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${fsPath}"`;
-        this.outputChannel.appendLine(pmiCommand);
+        var coreRunVersion = "";
+        var pmiPath = "";
 
         var mb = 1024 * 1024;
         var maxBufferSize = 512 * mb;
-        
+        const endofLine = os.platform() === "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
+        const endofLineValue:string = endofLine === vscode.EndOfLine.LF ? "\n" : "\r\n";
+
+        try {
+            // Check the framework version that this dll is compiled for.
+            let indexOfRuntime = this.ilDasmOutput.indexOf("extern System.Runtime");
+            let runtimeVerIndex = this.ilDasmOutput.slice(indexOfRuntime, indexOfRuntime + 124).indexOf(".ver");
+            let runtimeVersion = this.ilDasmOutput.slice(indexOfRuntime, indexOfRuntime + 124).slice(runtimeVerIndex, runtimeVerIndex + 124).split(" ")[1].split(endofLineValue)[0];
+            
+            let isArm64 = process.arch === "arm64";
+
+            if (runtimeVersion.indexOf("6") !== -1) {
+                // We will always be able to run the x64 corerun.
+                coreRunVersion = isArm64 ? this.netcoreSixArm64CoreRunPath : this.netcoreSixX64CoreRunPath;
+                pmiPath = this.netcoreSixPmiPath;
+            }
+            else if (runtimeVersion.indexOf("7") !== -1) {
+                coreRunVersion = isArm64 ? this.netcoreSevenArm64CoreRunPath : this.netcoreSevenX64CoreRunPath;
+                pmiPath = this.netcoreSevenPmiPath;
+            }
+            else if (runtimeVersion.indexOf("8") !== -1) {
+                coreRunVersion = isArm64 ? this.netcoreEightArm64CoreRunPath : this.netcoreEightX64CoreRunPath;
+                pmiPath = this.netcoreEightPmiPath;
+            }
+            else if (runtimeVersion.indexOf("9") !== -1) {
+                coreRunVersion = isArm64 ? this.netcoreNineArm64CoreRunPath : this.netcoreNineX64CoreRunPath;
+                pmiPath = this.netcoreNinePmiPath;
+            }
+            else if (runtimeVersion.indexOf("10") !== -1) {
+                coreRunVersion = isArm64 ? this.netcoreTenArm64CoreRunPath : this.netcoreTenX64CoreRunPath;
+                pmiPath = this.netcoreTenPmiPath;
+            }
+            else {
+                this.outputChannel.appendLine("Failed to determine dependent runtime version. JIT Order may fail.");
+                coreRunVersion = this.coreRunPath;
+            }
+        }
+        catch (e)
+        {
+            this.outputChannel.appendLine("Failed to determine dependent runtime version. JIT Order may fail.");
+            coreRunVersion = this.coreRunPath;
+        }
+
+        var pmiCommand = `"${coreRunVersion}"` + " " + `"${pmiPath}"` + " " + "PREPALL-QUIET" + " " + `"${fsPath}"`;
+        this.outputChannel.appendLine(pmiCommand);
+
         const jitOrderCwd = path.join(this.pmiOutputPath, "jitOrder");
         const typeCwd = path.join(this.pmiOutputPath, "types");
 
@@ -461,7 +504,6 @@ export class DotnetInsights {
 
         // Used by pmi as it need FS access
         const cwd: string =  this.pmiTempDir;
-        const endofLine = os.platform() === "win32" ? vscode.EndOfLine.CRLF : vscode.EndOfLine.LF;
 
         var methodPromise = undefined;
         var typePromise = undefined;
@@ -477,8 +519,8 @@ export class DotnetInsights {
             }
         }, (error: any, output: string, stderr: string) => {
             if (error) {
-                console.error("Failed to execute pmi.");
-                console.error(error);
+                this.outputChannel.appendLine("Failed to execute pmi.");
+                this.outputChannel.append(error);
             }
 
             var methods = this.parseJitOrderOutput(output, endofLine);
@@ -487,7 +529,7 @@ export class DotnetInsights {
             this.treeView?.refresh();
         });
 
-        pmiCommand = `"${this.coreRunPath}"` + " " + `"${this.pmiPath}"` + " " + "PREPALL-QUIET-DUMPTYPES" + " " + `"${fsPath}"`;
+        pmiCommand = `"${coreRunVersion}"` + " " + `"${pmiPath}"` + " " + "PREPALL-QUIET-DUMPTYPES" + " " + `"${fsPath}"`;
         this.outputChannel.appendLine(pmiCommand);
         var typeChildProcess = child.exec(pmiCommand, {
             maxBuffer: maxBufferSize,
@@ -495,7 +537,8 @@ export class DotnetInsights {
         }, (error: any, output: string, stderr: string) => {
             if (error) {
                 console.error("Failed to execute pmi for types.");
-                console.error(error);
+                this.outputChannel.appendLine("Failed to execute pmi for types.");
+                this.outputChannel.append(error);
             }
 
             var types = this.parseTypes(output, endofLine);

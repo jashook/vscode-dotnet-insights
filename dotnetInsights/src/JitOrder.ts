@@ -38,6 +38,7 @@ export class JitOrder {
     public execute(): Thenable<string> {
         var pmiCommand = new PmiCommand(this.coreRun, this.insights, this.peFile);
         var promise: Thenable<string> = new Promise((resolve, reject) => {
+            // eslint-disable-next-line @typescript-eslint/naming-convention
             pmiCommand.execute(undefined, {"COMPlus_JitOrder": "1"}).then(value => {
                 resolve(value[1]);
             });

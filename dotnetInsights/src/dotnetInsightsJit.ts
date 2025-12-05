@@ -183,6 +183,5 @@ export class JitDependency extends vscode.TreeItem {
         this.contextValue = isRoot ? 'jitRootContext' : "";
     }
 
-    iconPath?: string | vscode.IconPath | undefined;
     contextValue = 'dependency';
 }

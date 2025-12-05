@@ -466,7 +466,7 @@ export class DotnetInsightsGcEditor implements vscode.CustomEditorProvider {
                     "processId": processInfo?.processId
                 };
 
-                var jsonString = null;
+                var jsonString:any = null;
 
                 for (var index = 0; index < dataToWrite["gcData"].length; ++index) {
                     const currentData = dataToWrite["gcData"][index];

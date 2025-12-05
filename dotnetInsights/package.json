@@ -112,8 +112,7 @@
         "displayName": "Dotnet Insights Editor",
         "selector": [
           {
-            "filenamePattern": "*.dll",
-            "priority": "default"
+            "filenamePattern": "*.dll"
           }
         ]
       },
@@ -122,8 +121,7 @@
         "displayName": "Dotnet Insights GC Editor",
         "selector": [
           {
-            "filenamePattern": "*.gcstats",
-            "priority": "default"
+            "filenamePattern": "*.gcstats"
           }
         ]
       },
@@ -132,8 +130,7 @@
         "displayName": "Dotnet Insights GC Snapshot Editor",
         "selector": [
           {
-            "filenamePattern": "*.gcinfo",
-            "priority": "default"
+            "filenamePattern": "*.gcinfo"
           }
         ]
       },
@@ -142,8 +139,7 @@
         "displayName": "Dotnet Insights Load Event Editor",
         "selector": [
           {
-            "filenamePattern": "*.netloadinfo",
-            "priority": "default"
+            "filenamePattern": "*.netloadinfo"
           }
         ]
       }
@@ -219,8 +215,80 @@
         "title": "Diff - 6.0 / 7.0 - Tier 0"
       },
       {
+        "command": "dotnetInsights.diffSixVsEightTier0",
+        "title": "Diff - 6.0 / 8.0 - Tier 0"
+      },
+      {
+        "command": "dotnetInsights.diffSixVsNineTier0",
+        "title": "Diff - 6.0 / 9.0 - Tier 0"
+      },
+      {
+        "command": "dotnetInsights.diffSixVsTenTier0",
+        "title": "Diff - 6.0 / 10.0 - Tier 0"
+      },
+      {
+        "command": "dotnetInsights.diffSevenVsEightTier0",
+        "title": "Diff - 7.0 / 8.0 - Tier 0"
+      },
+      {
+        "command": "dotnetInsights.diffSevenVsNineTier0",
+        "title": "Diff - 7.0 / 9.0 - Tier 0"
+      },
+      {
+        "command": "dotnetInsights.diffSevenVsTenTier0",
+        "title": "Diff - 7.0 / 10.0 - Tier 0"
+      },
+      {
+        "command": "dotnetInsights.diffEightVsNineTier0",
+        "title": "Diff - 8.0 / 9.0 - Tier 0"
+      },
+      {
+        "command": "dotnetInsights.diffEightVsTenTier0",
+        "title": "Diff - 8.0 / 10.0 - Tier 0"
+      },
+      {
+        "command": "dotnetInsights.diffNineVsTenTier0",
+        "title": "Diff - 9.0 / 10.0 - Tier 0"
+      },
+      {
         "command": "dotnetInsights.diffSixVsSevenTier1",
         "title": "Diff - 6.0 / 7.0 - Tier 1"
+      },
+      {
+        "command": "dotnetInsights.diffSixVsEightTier1",
+        "title": "Diff - 6.0 / 8.0 - Tier 1"
+      },
+      {
+        "command": "dotnetInsights.diffSixVsNineTier1",
+        "title": "Diff - 6.0 / 9.0 - Tier 1"
+      },
+      {
+        "command": "dotnetInsights.diffSixVsTenTier1",
+        "title": "Diff - 6.0 / 10.0 - Tier 1"
+      },
+      {
+        "command": "dotnetInsights.diffSevenVsEightTier1",
+        "title": "Diff - 7.0 / 8.0 - Tier 1"
+      },
+      {
+        "command": "dotnetInsights.diffSevenVsNineTier1",
+        "title": "Diff - 7.0 / 9.0 - Tier 1"
+      },
+      {
+        "command": "dotnetInsights.diffSevenVsTenTier1",
+        "title": "Diff - 7.0 / 10.0 - Tier 1"
+      },
+      {
+        "command": "dotnetInsights.diffEightVsNineTier1",
+        "title": "Diff - 8.0 / 9.0 - Tier 1"
+      },
+      {
+        "command": "dotnetInsights.diffEightVsTenTier1",
+        "title": "Diff - 8.0 / 10.0 - Tier 1"
+      },
+      {
+        "command": "dotnetInsights.diffNineVsTenTier1",
+        "title": "Diff - 9.0 / 10.0 - Tier 1"
       },
       {
         "command": "dotnetInsights.startGCMonitor",
@@ -299,12 +367,84 @@
           "when": "view == dotnetInsights && viewItem == dependency"
         },
         {
+          "command": "dotnetInsights.diffSixVsEightTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffSixVsNineTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffSixVsTenTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffSevenVsEightTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffSevenVsNineTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffSevenVsTenTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffEightVsNineTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffEightVsTenTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffNineVsTenTier0",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
           "command": "dotnetInsights.diffSixVsSevenTier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffSixVsEightTier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffSixVsNineTier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffSixVsTenTier1",
           "when": "view == dotnetInsights && viewItem == dependency"
         },
         {
           "command": "dotnetInsights.loadEvents",
           "when": "view == dotnetInsightsJit && viewItem == jitRootContext"
+        },
+        {
+          "command": "dotnetInsights.diffSevenVsEightTier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffSevenVsNineTier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffSevenVsTenTier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffEightVsNineTier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffEightVsTenTier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
+        },
+        {
+          "command": "dotnetInsights.diffNineVsTenTier1",
+          "when": "view == dotnetInsights && viewItem == dependency"
         }
       ]
     },
@@ -373,7 +513,8 @@
     "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
-    "@types/node": "^12.20.55",
+    "@types/node": "^24.10.1",
+    "@types/node-fetch": "^3.0.2",
     "@types/request": "^2.48.5",
     "@types/rimraf": "^3.0.0",
     "@types/targz": "^1.0.0",
@@ -384,7 +525,7 @@
     "eslint": "^7.19.0",
     "glob": "^7.1.6",
     "mocha": "^8.2.1",
-    "typescript": "^4.9.5",
+    "typescript": "^5.9.3",
     "unzipper": "^0.10.11",
     "vscode-test": "^1.5.0"
   },
@@ -392,8 +533,10 @@
     "@types/request": "^2.48.5",
     "@types/unzipper": "^0.10.3",
     "@types/xml2js": "^0.4.8",
+    "axios": "^1.13.2",
     "chart.js": "^2.9.4",
     "i": "^0.3.6",
+    "node-fetch": "^3.3.2",
     "request": "^2.88.2",
     "rimraf": "^3.0.2",
     "targz": "^1.0.1",

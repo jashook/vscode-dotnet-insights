@@ -73,6 +73,5 @@ export class GcDependency extends vscode.TreeItem {
         this.description = `GC Count: ${this.listener?.processes.get(parseInt(this.label))?.data.length}`;
     }
 
-    iconPath?: string | vscode.IconPath | undefined;
     contextValue = 'dependency';
 }
