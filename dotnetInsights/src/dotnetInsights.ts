@@ -335,6 +335,9 @@ export class DotnetInsights {
     public gcEventListenerPath: string;
     public roslynHelperPath: string;
 
+    public nettraceParserPath: string;
+    public nettraceParserOutputPath: string;
+
     public listener: GcListener | undefined;
 
     public isInlineIL: boolean;
@@ -418,6 +421,9 @@ export class DotnetInsights {
         this.sdkVersions = [] as string[];
         this.gcEventListenerPath = "";
         this.roslynHelperPath = "";
+
+        this.nettraceParserPath = "";
+        this.nettraceParserOutputPath = "";
 
         this.listener = undefined;
 

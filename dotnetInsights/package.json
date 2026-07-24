@@ -32,6 +32,7 @@
     "onCustomEditor:dotnetInsights.edit",
     "onCustomEditor:dotnetInsightsGc.edit",
     "onCustomEditor:dotnetInsightsGcSnapshot.edit",
+    "onCustomEditor:dotnetInsightsNettrace.edit",
     "onCustomEditor:dotnetInsightsRuntimeEditor.edit",
     "onCommand:dotnetInsights.loadExtension",
     "onCommand:dotnetInsights.realtimeIl"
@@ -94,6 +95,14 @@
           "default": null,
           "description": "Path to a local roslynPath executable. This will override the roslynPath executable setup by the extension."
         },
+        "dotnet-insights.nettraceParserPath": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Path to a local nettraceParser executable. This will override the nettraceParser executable setup by the extension."
+        },
         "dotnet-insights.surpressStartupMessage": {
           "type": "boolean",
           "default": false,
@@ -131,6 +140,15 @@
         "selector": [
           {
             "filenamePattern": "*.gcinfo"
+          }
+        ]
+      },
+      {
+        "viewType": "dotnetInsightsNettrace.edit",
+        "displayName": "Dotnet Insights Nettrace GC Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.nettrace"
           }
         ]
       },
@@ -513,6 +531,8 @@
     "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
+    "@types/glob": "^8.1.0",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^24.10.1",
     "@types/node-fetch": "^3.0.2",
     "@types/request": "^2.48.5",
@@ -522,12 +542,12 @@
     "@types/vscode": "^1.54.0",
     "@typescript-eslint/eslint-plugin": "^4.14.1",
     "@typescript-eslint/parser": "^4.14.1",
+    "@vscode/test-electron": "^3.1.0",
     "eslint": "^7.19.0",
     "glob": "^7.1.6",
     "mocha": "^8.2.1",
     "typescript": "^5.9.3",
-    "unzipper": "^0.10.11",
-    "vscode-test": "^1.5.0"
+    "unzipper": "^0.10.11"
   },
   "dependencies": {
     "@types/request": "^2.48.5",

@@ -14,6 +14,7 @@ import { DotnetInsightsTextEditorProvider } from "./DotnetInightsTextEditor";
 import { DotnetInsightsGcTreeDataProvider, GcDependency } from "./dotnetInsightsGc";
 import { DotnetInsightsGcEditor } from "./DotnetInsightsGcEditor";
 import { DotnetInsightsGcSnapshotEditor } from "./DotnetInsightsGcSnapshotEditor";
+import { DotnetInsightsNettraceEditor } from "./DotnetInsightsNettraceEditor";
 import { DotnetInsightsRuntimeLoadEventsEditor } from "./DotnetInsightsRuntimeLoadEventsEditor";
 import { DependencySetup } from "./DependencySetup";
 
@@ -306,6 +307,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const lastestVersionNumber = "0.8.3";
     const latestListenerVersionNumber = "0.8.3";
     const latestRoslynVersionNumber = "0.8.3";
+    const latestNettraceParserVersionNumber = "0.8.3";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;
@@ -390,7 +392,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(stopGCMonitor);
 
-    let dependencySetup = new DependencySetup(lastestVersionNumber, latestListenerVersionNumber, latestRoslynVersionNumber, context, insights);
+    let dependencySetup = new DependencySetup(lastestVersionNumber, latestListenerVersionNumber, latestRoslynVersionNumber, latestNettraceParserVersionNumber, context, insights);
 
     // Setup
     var success:boolean =await dependencySetup.setup();
@@ -757,6 +759,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(DotnetInsightsTextEditorProvider.register(context, insights));
     context.subscriptions.push(DotnetInsightsGcEditor.register(context, insights, listener));
     context.subscriptions.push(DotnetInsightsGcSnapshotEditor.register(context, insights));
+    context.subscriptions.push(DotnetInsightsNettraceEditor.register(context, insights));
     context.subscriptions.push(DotnetInsightsRuntimeLoadEventsEditor.register(context, insights));
 
     if (startupCallback !== undefined) {
