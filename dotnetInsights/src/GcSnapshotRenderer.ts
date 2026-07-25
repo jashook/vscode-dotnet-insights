@@ -290,7 +290,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <div class="tabBar">
                 <button class="tabButton active" data-tab="charts">Charts</button>
                 <button class="tabButton" data-tab="detailed">Detailed</button>
-                <button class="fieldToggleButton" id="genFieldsToggle">Show All Fields</button>
+                <button class="fieldToggleButton" id="genFieldsToggle" style="display:none">Show All Fields</button>
             </div>
 
             <div id="tab-charts" class="tabPanel active">

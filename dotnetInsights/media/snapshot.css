@@ -395,6 +395,15 @@
     display: block;
 }
 
+.detailTableHeading
+{
+    color: rgba(31, 45, 110, 1);
+    font-size: 24px;
+    margin-left: 2%;
+    margin-top: 2em;
+    text-align: left;
+}
+
 .detailTable
 {
     margin-left: 2%;

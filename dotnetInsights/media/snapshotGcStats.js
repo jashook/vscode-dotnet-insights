@@ -518,6 +518,29 @@ var allocationDatasets = {};
 
     var MB = 1024 * 1024;
 
+    // Mirrors GcDetailTableRenderer.ts's severity thresholds exactly, so the
+    // GC Number column on the generation-breakdown tables below can carry
+    // the same at-a-glance coloring the GC summary table already
+    // establishes for that GC, without duplicating whole-row logic here.
+    var getSeverityClass = function (pauseTime) {
+        if (pauseTime > 200.0) {
+            return "expensiveGc";
+        }
+        if (pauseTime > 100.0) {
+            return "warnGc";
+        }
+        if (pauseTime > 50.0) {
+            return "interstingGc";
+        }
+        if (pauseTime > 20.0) {
+            return "somewhatInterestingGc";
+        }
+        if (pauseTime > 10.0) {
+            return "notSomewhatInterestingGc";
+        }
+        return "";
+    };
+
     // Per-generation fields available on Heaps[].Generations[genIndex] (see
     // GcJsonExporter.cs / gcDataFromXml - both sources produce this same
     // shape). "Common" is the default view; the full list is one click away
@@ -627,6 +650,8 @@ var allocationDatasets = {};
             var gcEntry = gcs[index]["data"];
             var heaps = gcEntry["Heaps"];
 
+            var severityClass = getSeverityClass(parseFloat(gcEntry["PauseDurationMSec"]));
+            var rowClass = severityClass ? ` class="${severityClass}"` : "";
             var rowCells = `<td>${gcEntry["Id"]}</td><td>${formatHumanDateTime(gcEntry["DateTime"])}</td>`;
             for (var rowGenIndex = 0; rowGenIndex < 4; ++rowGenIndex) {
                 for (var rowFieldIndex = 0; rowFieldIndex < fields.length; ++rowFieldIndex) {
@@ -636,7 +661,7 @@ var allocationDatasets = {};
                 }
             }
 
-            rows += `<tr>${rowCells}</tr>`;
+            rows += `<tr${rowClass}>${rowCells}</tr>`;
         }
 
         return `<div class="detailTable"><table><tr class="tableHeader">${headerCells}</tr>${rows}</table></div>`;
@@ -653,9 +678,9 @@ var allocationDatasets = {};
             }
         }
 
-        var html = `<h3>Generations: All Heaps</h3>` + buildGenerationBreakdownTable(-1, showAllFields);
+        var html = `<h3 class="detailTableHeading">Generations: All Heaps</h3>` + buildGenerationBreakdownTable(-1, showAllFields);
         for (var heapIndex = 0; heapIndex < maxHeapCount; ++heapIndex) {
-            html += `<h3>Generations: Heap ${heapIndex}</h3>` + buildGenerationBreakdownTable(heapIndex, showAllFields);
+            html += `<h3 class="detailTableHeading">Generations: Heap ${heapIndex}</h3>` + buildGenerationBreakdownTable(heapIndex, showAllFields);
         }
 
         return html;
@@ -698,6 +723,11 @@ var allocationDatasets = {};
 
             event.currentTarget.classList.add('active');
             document.getElementById('tab-' + targetTab).classList.add('active');
+
+            // Only the Detailed tab's generation-breakdown tables have a
+            // curated/full field mode - no point showing the toggle while
+            // looking at Charts.
+            genFieldsToggle.style.display = (targetTab === 'detailed') ? 'inline-block' : 'none';
 
             if (targetTab === 'detailed' && !detailTableInjected) {
                 var holder = document.getElementById("detailTableHtml");
