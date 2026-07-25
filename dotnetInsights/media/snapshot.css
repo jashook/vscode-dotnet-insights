@@ -371,6 +371,20 @@
     background-color: rgba(72, 83, 136, 0.9);
 }
 
+.fieldToggleButton
+{
+    background-color: rgba(141, 31, 95, 0.8);
+    border: none;
+    border-radius: 6px;
+    color: white;
+    cursor: pointer;
+    display: inline-block;
+    font-size: 14px;
+    margin-left: 1em;
+    padding: 0.5em 1.5em;
+    width: auto;
+}
+
 .tabPanel
 {
     display: none;
@@ -381,64 +395,69 @@
     display: block;
 }
 
-#detailTable
+.detailTable
 {
     margin-left: 2%;
     margin-top: 2em;
+    /* The generation-breakdown tables can have far more columns (up to 22+)
+       than the GC summary table (16) - without this, they overflow past
+       this box entirely instead of scrolling within it, losing the same
+       contained/rounded-corner look the summary table has. */
+    overflow-x: auto;
     width: 96%;
 }
 
-#detailTable table
+.detailTable table
 {
     border-radius: 5px;
     width: 100%;
 }
 
-#detailTable .tableHeader
+.detailTable .tableHeader
 {
     background-color: rgba(87, 93, 182, 0.808);
 }
 
-#detailTable th
+.detailTable th
 {
     color: white;
     font-size: 14px;
     padding: 8px;
 }
 
-#detailTable tr:hover
+.detailTable tr:hover
 {
     background-color: lightblue;
 }
 
-#detailTable td
+.detailTable td
 {
     padding: 4px;
     text-align: center;
 }
 
-#detailTable .expensiveGc
+.detailTable .expensiveGc
 {
     background-color: rgba(212, 36, 65, 0.808);
     color: white;
 }
 
-#detailTable .warnGc
+.detailTable .warnGc
 {
     background-color: rgb(217, 255, 46);
 }
 
-#detailTable .interstingGc
+.detailTable .interstingGc
 {
     background-color: rgba(145, 96, 209, 0.493);
 }
 
-#detailTable .somewhatInterestingGc
+.detailTable .somewhatInterestingGc
 {
     background-color: rgba(0, 0, 0, 0.247);
 }
 
-#detailTable .notSomewhatInterestingGc
+.detailTable .notSomewhatInterestingGc
 {
     background-color: rgba(192, 192, 192, 0.247);
 }

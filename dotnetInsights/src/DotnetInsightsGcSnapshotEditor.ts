@@ -184,15 +184,6 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                 var heaps = [] as any[];
                 console.assert(currentGc["PerHeapHistories"][0]["PerHeapHistory"].length == numHeaps);
 
-                var currentHeapData : any = {
-                    "Generations": {
-                        0: null,
-                        1: null,
-                        2: null,
-                        3: null
-                    }
-                };
-
                 var tryParse = (genData: any, key: string, isNumber?: boolean | null): any => {
                     try {
                         if (isNumber != null && isNumber == false) {
@@ -210,6 +201,22 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                 for (var heapIndex = 0; heapIndex < currentGc["PerHeapHistories"][0]["PerHeapHistory"].length; ++heapIndex) {
                     var heapGenerations = [0, 1, 2, 3];
                     const currentHeap = currentGc["PerHeapHistories"][0]["PerHeapHistory"][heapIndex];
+
+                    // Declared fresh per heap - previously this object was
+                    // declared once outside the loop and mutated+pushed on
+                    // every iteration, so every entry in data["Heaps"] ended
+                    // up as the same reference holding only the last heap's
+                    // data (multi-heap/server GC captures only, invisible on
+                    // single-heap workstation GC captures).
+                    var currentHeapData : any = {
+                        "HeapIndex": heapIndex,
+                        "Generations": {
+                            0: null,
+                            1: null,
+                            2: null,
+                            3: null
+                        }
+                    };
 
                     for (var generationIndex = 0; generationIndex < heapGenerations.length; ++generationIndex) {
                         const genNumber = generationIndex;

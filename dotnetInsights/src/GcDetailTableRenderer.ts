@@ -45,7 +45,7 @@ export function formatHumanDateTime(dateTimeString: any): string {
 // which predates that field).
 export function renderGcDetailTable(gcs: any[]): string {
     if (gcs.length === 0) {
-        return `<div id="detailTable"><p>No GC events to display.</p></div>`;
+        return `<div class="detailTable"><p>No GC events to display.</p></div>`;
     }
 
     // 1024*1024 - i.e. this produces MB, not KB (the columns below are
@@ -101,5 +101,5 @@ export function renderGcDetailTable(gcs: any[]): string {
 
     const header = `<tr class="tableHeader"><th>GC Number</th><th>DateTime</th><th>Collection Generation</th><th>Type</th><th>Pause Time (mSec)</th><th>Reason</th><th>Generation 0 Size (mb)</th><th>Generation 1 Size (mb)</th><th>Generation 2 Size (mb)</th><th>LOH Size (mb)</th><th>POH Size (mb)</th><th>Total Heap Size (mb)</th><th>Gen 0 Min Budget (mb)</th><th>Promoted Gen0 (mb)</th><th>Promoted Gen1 (mb)</th><th>Promoted Gen2 (mb)</th></tr>`;
 
-    return `<div id="detailTable"><table>${header}${rows}</table></div>`;
+    return `<div class="detailTable"><table>${header}${rows}</table></div>`;
 }
