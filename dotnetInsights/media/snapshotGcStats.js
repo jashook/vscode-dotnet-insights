@@ -42,6 +42,42 @@ var allocationDatasets = {};
         return parsed.toLocaleTimeString();
     };
 
+    // Full human-readable form for tooltips (space isn't constrained there
+    // the way it is on an axis tick) - mirrors GcDetailTableRenderer.ts's
+    // formatHumanDateTime exactly, e.g. "21-Jul-2026 03:42:13 PM PDT".
+    var formatHumanDateTime = function (dateTimeString) {
+        if (dateTimeString === undefined || dateTimeString === null) {
+            return "";
+        }
+
+        if (dateTimeString.charAt(0) === '+') {
+            return dateTimeString;
+        }
+
+        var parsed = new Date(dateTimeString);
+        if (isNaN(parsed.getTime())) {
+            return dateTimeString;
+        }
+
+        var parts = new Intl.DateTimeFormat('en-US', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: true,
+            timeZoneName: 'short'
+        }).formatToParts(parsed);
+
+        var partsByType = {};
+        for (var partIndex = 0; partIndex < parts.length; ++partIndex) {
+            partsByType[parts[partIndex].type] = parts[partIndex].value;
+        }
+
+        return `${partsByType["day"]}-${partsByType["month"]}-${partsByType["year"]} ${partsByType["hour"]}:${partsByType["minute"]}:${partsByType["second"]} ${partsByType["dayPeriod"]} ${partsByType["timeZoneName"]}`;
+    };
+
     var timestamps = [];
     var gcDateTimes = [];
     // Chart.js 2.x renders an array label as multiple stacked lines under the
@@ -60,7 +96,7 @@ var allocationDatasets = {};
         var lines = [];
         for (var itemIndex = 0; itemIndex < tooltipItems.length; ++itemIndex) {
             var gcIndex = tooltipItems[itemIndex].index;
-            lines.push(`GC #${timestamps[gcIndex]} — ${gcDateTimes[gcIndex]}`);
+            lines.push(`GC #${timestamps[gcIndex]} — ${formatHumanDateTime(gcDateTimes[gcIndex])}`);
         }
         return lines;
     };
@@ -197,7 +233,7 @@ var allocationDatasets = {};
             if (point.isGap) {
                 lines.push(`${formatElapsedMs(point.x)} elapsed — idle`);
             } else {
-                lines.push(`GC #${point.gcId} — ${point.dateTime}`);
+                lines.push(`GC #${point.gcId} — ${formatHumanDateTime(point.dateTime)}`);
             }
         }
         return lines;
@@ -467,9 +503,42 @@ var allocationDatasets = {};
     };
 
     var heapCharts = document.getElementsByClassName("heapChart");
-    
+
     for (var index = 0; index < heapCharts.length; ++index) {
         setChart(index);
+    }
+
+    // The Detailed table's markup arrives as inert commented-out text (see
+    // GcSnapshotRenderer.ts) rather than live HTML, so the browser doesn't
+    // have to parse/build a DOM node for every GC's row on page load - only
+    // do that (once, then cache) the first time the tab is actually opened.
+    var detailTableInjected = false;
+
+    var tabButtons = document.getElementsByClassName("tabButton");
+    for (var tabIndex = 0; tabIndex < tabButtons.length; ++tabIndex) {
+        tabButtons[tabIndex].addEventListener('click', function (event) {
+            var targetTab = event.currentTarget.getAttribute('data-tab');
+
+            var buttons = document.getElementsByClassName("tabButton");
+            for (var buttonIndex = 0; buttonIndex < buttons.length; ++buttonIndex) {
+                buttons[buttonIndex].classList.remove('active');
+            }
+
+            var panels = document.getElementsByClassName("tabPanel");
+            for (var panelIndex = 0; panelIndex < panels.length; ++panelIndex) {
+                panels[panelIndex].classList.remove('active');
+            }
+
+            event.currentTarget.classList.add('active');
+            document.getElementById('tab-' + targetTab).classList.add('active');
+
+            if (targetTab === 'detailed' && !detailTableInjected) {
+                var holder = document.getElementById("detailTableHtml");
+                var detailTableHtml = holder.innerHTML.slice(4, holder.innerHTML.length - 3);
+                document.getElementById('tab-detailed').innerHTML = detailTableHtml;
+                detailTableInjected = true;
+            }
+        });
     }
 
     // Handle messages sent from the extension to the webview

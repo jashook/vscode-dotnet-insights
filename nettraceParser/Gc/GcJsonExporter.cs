@@ -45,6 +45,7 @@ public static class GcJsonExporter
             data["GenerationSize1"] = gcEvent.GenerationSize1;
             data["GenerationSize2"] = gcEvent.GenerationSize2;
             data["GenerationSizeLOH"] = gcEvent.GenerationSize3;
+            data["GenerationSizePOH"] = gcEvent.GenerationSize4;
             data["Id"] = gcEvent.Id;
             // ISO-8601 (round-trip format) - directly parseable by JS's `new Date(...)`.
             // Converted to the machine's local timezone (gcEvent.Timestamp is UTC) so the
@@ -59,6 +60,7 @@ public static class GcJsonExporter
             data["TotalHeapSize"] = gcEvent.TotalHeapSize;
             data["TotalPromoted"] = gcEvent.TotalPromotedSize0;
             data["TotalPromotedLOH"] = gcEvent.TotalPromotedSize3;
+            data["TotalPromotedPOH"] = gcEvent.TotalPromotedSize4;
             data["TotalPromotedSize0"] = gcEvent.TotalPromotedSize0;
             data["TotalPromotedSize1"] = gcEvent.TotalPromotedSize1;
             data["TotalPromotedSize2"] = gcEvent.TotalPromotedSize2;

@@ -343,3 +343,102 @@
     font-size: 16px;
     text-align: center;
 }
+
+.tabBar
+{
+    margin-top: 1em;
+    text-align: center;
+}
+
+.tabButton
+{
+    /* vscode.css sets a blanket `button { width: 100% }` for form controls,
+       which stacks these full-width one per line unless overridden. */
+    background-color: rgba(174, 207, 27, 0.8);
+    border: none;
+    border-radius: 6px 6px 0 0;
+    color: white;
+    cursor: pointer;
+    display: inline-block;
+    font-size: 16px;
+    margin: 0 2px;
+    padding: 0.75em 2em;
+    width: auto;
+}
+
+.tabButton.active
+{
+    background-color: rgba(72, 83, 136, 0.9);
+}
+
+.tabPanel
+{
+    display: none;
+}
+
+.tabPanel.active
+{
+    display: block;
+}
+
+#detailTable
+{
+    margin-left: 2%;
+    margin-top: 2em;
+    width: 96%;
+}
+
+#detailTable table
+{
+    border-radius: 5px;
+    width: 100%;
+}
+
+#detailTable .tableHeader
+{
+    background-color: rgba(87, 93, 182, 0.808);
+}
+
+#detailTable th
+{
+    color: white;
+    font-size: 14px;
+    padding: 8px;
+}
+
+#detailTable tr:hover
+{
+    background-color: lightblue;
+}
+
+#detailTable td
+{
+    padding: 4px;
+    text-align: center;
+}
+
+#detailTable .expensiveGc
+{
+    background-color: rgba(212, 36, 65, 0.808);
+    color: white;
+}
+
+#detailTable .warnGc
+{
+    background-color: rgb(217, 255, 46);
+}
+
+#detailTable .interstingGc
+{
+    background-color: rgba(145, 96, 209, 0.493);
+}
+
+#detailTable .somewhatInterestingGc
+{
+    background-color: rgba(0, 0, 0, 0.247);
+}
+
+#detailTable .notSomewhatInterestingGc
+{
+    background-color: rgba(192, 192, 192, 0.247);
+}

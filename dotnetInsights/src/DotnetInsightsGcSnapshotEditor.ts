@@ -136,7 +136,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
                 var totalPromotedSizePoh = 0;
                 try {
-                    totalPromotedSizePoh = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize3"].replaceAll(',',''));
+                    totalPromotedSizePoh = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize4"].replaceAll(',',''));
                 }
                 catch (e) {
 
@@ -160,6 +160,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                     "GenerationSize1": generationSize1,
                     "GenerationSize2": generationSize2,
                     "GenerationSizeLOH": generationSizeLOH,
+                    "GenerationSizePOH": generationSizePOH,
                     "Id": id,
                     "DateTime": dateTime,
                     "kind": kind,
@@ -172,6 +173,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                     "TotalHeapSize": totalHeapSize,
                     "TotalPromoted": totalPromotedSize0,
                     "TotalPromotedLOH": totalPromotedSizeLoh,
+                    "TotalPromotedPOH": totalPromotedSizePoh,
                     "TotalPromotedSize0": totalPromotedSize0,
                     "TotalPromotedSize1": totalPromotedSize1,
                     "TotalPromotedSize2": totalPromotedSize2,
