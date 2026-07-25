@@ -26,6 +26,7 @@ export class DependencySetup {
     private lastestVersionNumber: string;
     private latestListenerVersionNumber: string;
     private latestRoslynVersionNumber: string;
+    private latestNettraceParserVersionNumber: string;
     private context: vscode.ExtensionContext;
     private insights: DotnetInsights;
 
@@ -33,10 +34,11 @@ export class DependencySetup {
     // Public methods
     ////////////////////////////////////////////////////////////////////////////
 
-    constructor(lastestVersionNumber: string, latestListenerVersionNumber: string, latestRoslynVersionNumber: string, context: vscode.ExtensionContext, insights: DotnetInsights) {
+    constructor(lastestVersionNumber: string, latestListenerVersionNumber: string, latestRoslynVersionNumber: string, latestNettraceParserVersionNumber: string, context: vscode.ExtensionContext, insights: DotnetInsights) {
         this.lastestVersionNumber = lastestVersionNumber;
         this.latestListenerVersionNumber = latestListenerVersionNumber;
         this.latestRoslynVersionNumber = latestRoslynVersionNumber;
+        this.latestNettraceParserVersionNumber = latestNettraceParserVersionNumber;
         this.context = context;
         this.insights = insights;
     }
@@ -64,6 +66,7 @@ export class DependencySetup {
 
         var roslynHelperPath: any = undefined;
         var gcEventListenerPath: any = undefined;
+        var nettraceParserPath: any = undefined;
 
         var osName: string = "osx";
         if (os.platform() === "win32") {
@@ -86,6 +89,7 @@ export class DependencySetup {
 
             gcEventListenerPath = dotnetInsightsSettings["gcEventListenerPath"];
             roslynHelperPath = dotnetInsightsSettings["roslynHelperPath"];
+            nettraceParserPath = dotnetInsightsSettings["nettraceParserPath"];
 
             if ((dotnetInsightsSettings["useNetCoreLts"] !== undefined && dotnetInsightsSettings["useNetCoreLts"] !== null) && dotnetInsightsSettings["useNetCoreLts"] === true) {
                 this.insights.useNetCoreLts = true;
@@ -151,6 +155,14 @@ export class DependencySetup {
             fs.mkdirSync(pmiTempDir);
         }
 
+        var nettraceParserOutputPath = path.join(outputPath, "nettraceParser-json");
+
+        if (!fs.existsSync(nettraceParserOutputPath)) {
+            fs.mkdirSync(nettraceParserOutputPath);
+        }
+
+        this.insights.nettraceParserOutputPath = nettraceParserOutputPath;
+
         var osVer = "osx";
         if (os.platform() === 'win32') {
             osVer = "win";
@@ -161,6 +173,7 @@ export class DependencySetup {
 
         const latestToolFile = path.join(outputPath, this.lastestVersionNumber + ".txt");
         const latestListenerFile = path.join(outputPath, this.latestListenerVersionNumber + ".txt");
+        const latestNettraceParserFile = path.join(outputPath, this.latestNettraceParserVersionNumber + "-nettraceParser.txt");
 
         var forceDownload = false;
         if (!fs.existsSync(latestToolFile) || fs.readFileSync(latestToolFile).toString() !== this.lastestVersionNumber) {
@@ -170,6 +183,11 @@ export class DependencySetup {
         var forceListenerDownload = false;
         if (!fs.existsSync(latestListenerFile) || fs.readFileSync(latestListenerFile).toString() !== this.latestListenerVersionNumber) {
             forceListenerDownload = true;
+        }
+
+        var forceNettraceParserDownload = false;
+        if (!fs.existsSync(latestNettraceParserFile) || fs.readFileSync(latestNettraceParserFile).toString() !== this.latestNettraceParserVersionNumber) {
+            forceNettraceParserDownload = true;
         }
 
         const osContainsArm64Downloads: { [id: string]: boolean } = {
@@ -439,6 +457,55 @@ export class DependencySetup {
         else {
             this.insights.outputChannel.appendLine(`roslynHelperPath: ${roslynHelperPath}`);
             this.insights.roslynHelperPath = roslynHelperPath;
+        }
+
+        if (nettraceParserPath === undefined || nettraceParserPath === null) {
+            const nettraceParserTempDir = path.join(outputPath, "nettraceParser");
+
+            // Distributed as a self-contained native executable, same as
+            // gcEventListener/roslynHelper - invoked directly, not "dotnet <dll>".
+            if (os.platform() === "win32") {
+                nettraceParserPath = path.join(nettraceParserTempDir, "nettraceParser", "nettraceParser.exe");
+            }
+            else {
+                nettraceParserPath = path.join(nettraceParserTempDir, "nettraceParser", "nettraceParser");
+            }
+
+            this.insights.nettraceParserPath = nettraceParserPath;
+
+            var doDownload = false;
+            if (forceNettraceParserDownload || !fs.existsSync(nettraceParserTempDir) || !fs.existsSync(nettraceParserPath)) {
+                doDownload = true;
+            }
+
+            if (doDownload) {
+                await this.downloadNettraceParserExe(this.insights, this.latestNettraceParserVersionNumber, nettraceParserTempDir);
+
+                var downloadSucceeded = false;
+                if (fs.existsSync(nettraceParserTempDir) && fs.existsSync(nettraceParserPath)) {
+                    downloadSucceeded = true;
+                }
+
+                if (!downloadSucceeded) {
+                    // Not fatal - .nettrace files just won't open until either the
+                    // release asset exists or dotnet-insights.nettraceParserPath is
+                    // set to a local build.
+                    this.insights.outputChannel.appendLine("Unable to download nettraceParser. .nettrace files will not open until dotnet-insights.nettraceParserPath is set to a local build, or a nettraceParser release asset is published.");
+                }
+                else {
+                    fs.writeFileSync(latestNettraceParserFile, this.latestNettraceParserVersionNumber);
+                }
+
+                this.insights.outputChannel.appendLine(`[Dependency Setup]: nettraceParserPath: ${nettraceParserPath}`);
+            }
+            else {
+                this.insights.outputChannel.appendLine(`nettraceParserPath: ${nettraceParserPath}`);
+                this.insights.nettraceParserPath = nettraceParserPath;
+            }
+        }
+        else {
+            this.insights.outputChannel.appendLine(`nettraceParserPath: ${nettraceParserPath}`);
+            this.insights.nettraceParserPath = nettraceParserPath;
         }
 
         if (didDownload) {
@@ -755,6 +822,38 @@ export class DependencySetup {
 
         const arch = "x64";
         const baseUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/gcEventListener-${osName}.tar.gz`;
+
+        var success = await this.downloadAndUnzip(insights, baseUrl, unzipFolder, exeFolder, false);
+        return success;
+    }
+
+    private async downloadNettraceParserExe(insights: DotnetInsights, versionNumber: string, unzipFolder: string) : Promise<boolean> {
+        const exeFolder = unzipFolder;
+
+        unzipFolder = path.join(unzipFolder, "temp");
+
+        if (!fs.existsSync(exeFolder)) {
+            fs.mkdirSync(exeFolder);
+        }
+
+        if (!fs.existsSync(unzipFolder)) {
+            fs.mkdirSync(unzipFolder);
+        }
+
+        var osName = "osx";
+        if (os.platform() === "win32") {
+            osName = "win";
+        }
+        else if (os.platform() !== "darwin") {
+            osName = "linux";
+        }
+
+        // Matches roslynHelper's exact archive naming convention (x64-only
+        // per OS, verified against the real roslynHelper-osx-x64.tar.gz
+        // release asset) - see nettraceParser/pack.py, which produces
+        // archives under this same name.
+        const arch = "x64";
+        const baseUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/nettraceParser-${osName}-${arch}.tar.gz`;
 
         var success = await this.downloadAndUnzip(insights, baseUrl, unzipFolder, exeFolder, false);
         return success;

@@ -20,10 +20,50 @@ var allocationDatasets = {};
 
     var totalTimeInEachGcJson = JSON.parse(document.getElementById("totalTimeInEachGcJson").innerHTML.slice(4, document.getElementById("totalTimeInEachGcJson").innerHTML.length - 3));
 
+    // DateTime is a real calendar date/time (in the parsing machine's local
+    // timezone - see GcJsonExporter.cs) for .nettrace sources, or a
+    // "+elapsed since capture start" string for .gcinfo (XML) sources, which
+    // have no absolute time anchor available - see gcDataFromXml.
+    var formatGcAxisTime = function (dateTimeString) {
+        if (dateTimeString === undefined || dateTimeString === null) {
+            return "";
+        }
+
+        if (dateTimeString.charAt(0) === '+') {
+            // Already a compact elapsed-time string (.gcinfo/XML source).
+            return dateTimeString;
+        }
+
+        var parsed = new Date(dateTimeString);
+        if (isNaN(parsed.getTime())) {
+            return "";
+        }
+
+        return parsed.toLocaleTimeString();
+    };
+
     var timestamps = [];
+    var gcDateTimes = [];
+    // Chart.js 2.x renders an array label as multiple stacked lines under the
+    // tick, so each axis tick shows both the GC number and its time.
+    var chartLabels = [];
     for (var index = 0; index < gcs.length; ++index) {
-        timestamps.push(gcs[index]["data"]["Id"]);
+        var gcId = gcs[index]["data"]["Id"];
+        var gcDateTime = gcs[index]["data"]["DateTime"];
+
+        timestamps.push(gcId);
+        gcDateTimes.push(gcDateTime);
+        chartLabels.push([`${gcId}`, formatGcAxisTime(gcDateTime)]);
     }
+
+    var gcTooltipTitle = function (tooltipItems) {
+        var lines = [];
+        for (var itemIndex = 0; itemIndex < tooltipItems.length; ++itemIndex) {
+            var gcIndex = tooltipItems[itemIndex].index;
+            lines.push(`GC #${timestamps[gcIndex]} — ${gcDateTimes[gcIndex]}`);
+        }
+        return lines;
+    };
 
     var gcStatsChart = document.getElementsByClassName("gcStatsChart")[0];
 
@@ -92,6 +132,174 @@ var allocationDatasets = {};
         }
     });
 
+    var totalGcPauseTimeOverTime = document.getElementById("totalGcPauseTimeOverTime");
+    const totalGcPauseTimeOverTimeContext = totalGcPauseTimeOverTime.getContext('2d');
+
+    // LOH isn't a distinct GC generation - LOH is swept as part of Gen 2
+    // (full) GCs, so a GC's "generation" field alone can't identify it. A GC
+    // counts toward the LOH line only when its trigger Reason indicates LOH
+    // allocation pressure specifically.
+    var lohTriggerReasons = { "AllocLarge": true, "OutOfSpaceLOH": true };
+
+    // Real captures can have many seconds of true idle time between GCs. A
+    // plain category axis (one evenly-spaced tick per GC, like the memory
+    // charts use) hides that entirely - and a line chart with one point per
+    // GC and no explicit zero in between draws a straight line directly from
+    // one GC's pause value to the next, which reads as continuous blocking
+    // across the whole capture. Both problems are fixed by putting this
+    // chart on a real *linear* (elapsed-ms) x-axis and emitting each GC as a
+    // zero-flanked pulse: (start, 0) -> (start, pauseMs) -> (end, pauseMs)
+    // -> (end, 0). Consecutive pulses' flanking zeros are equal (both 0), so
+    // Chart.js draws a flat baseline between them that's exactly as wide as
+    // the real gap.
+    var buildPauseTimePulses = function (matches) {
+        var points = [];
+        for (var index = 0; index < gcs.length; ++index) {
+            var pulseGcData = gcs[index]["data"];
+            if (!matches(pulseGcData)) {
+                continue;
+            }
+
+            var startMs = pulseGcData["PauseStartRelativeMSec"];
+            var endMs = pulseGcData["PauseEndRelativeMSec"];
+            var pauseMs = pulseGcData["PauseDurationMSec"];
+            var gcId = pulseGcData["Id"];
+            var gcDateTime = pulseGcData["DateTime"];
+
+            points.push({ x: startMs, y: 0, gcId: gcId, dateTime: gcDateTime, isGap: true });
+            points.push({ x: startMs, y: pauseMs, gcId: gcId, dateTime: gcDateTime, isGap: false });
+            points.push({ x: endMs, y: pauseMs, gcId: gcId, dateTime: gcDateTime, isGap: false });
+            points.push({ x: endMs, y: 0, gcId: gcId, dateTime: gcDateTime, isGap: true });
+        }
+        return points;
+    };
+
+    var formatElapsedMs = function (ms) {
+        if (ms < 1000) {
+            return `${Math.round(ms)}ms`;
+        }
+
+        var totalSeconds = ms / 1000;
+        if (totalSeconds < 60) {
+            return `${totalSeconds.toFixed(1)}s`;
+        }
+
+        var minutes = Math.floor(totalSeconds / 60);
+        var seconds = Math.round(totalSeconds % 60);
+        return `${minutes}m ${seconds}s`;
+    };
+
+    var pauseTimeTooltipTitle = function (tooltipItems, tooltipData) {
+        var lines = [];
+        for (var itemIndex = 0; itemIndex < tooltipItems.length; ++itemIndex) {
+            var tooltipItem = tooltipItems[itemIndex];
+            var point = tooltipData.datasets[tooltipItem.datasetIndex].data[tooltipItem.index];
+            if (point.isGap) {
+                lines.push(`${formatElapsedMs(point.x)} elapsed — idle`);
+            } else {
+                lines.push(`GC #${point.gcId} — ${point.dateTime}`);
+            }
+        }
+        return lines;
+    };
+
+    var totalGcPauseTimeOverTimeChart = new Chart(totalGcPauseTimeOverTimeContext, {
+        type: 'line',
+            data: {
+                datasets: [{
+                    label: 'Total Blocking Time',
+                    data: buildPauseTimePulses(function () { return true; }),
+                    backgroundColor: [
+                        "rgba(220, 53, 69, 0.2)",
+                    ],
+                    borderColor: "rgba(220, 53, 69, 1)",
+                    borderWidth: 1,
+                    lineTension: 0
+                },
+                {
+                    label: 'Gen 0',
+                    data: buildPauseTimePulses(function (d) { return d["generation"] === 0; }),
+                    backgroundColor: [
+                        "rgba(72, 83, 136, 0.2)",
+                    ],
+                    borderWidth: 1,
+                    lineTension: 0
+                },
+                {
+                    label: "Gen 1",
+                    data: buildPauseTimePulses(function (d) { return d["generation"] === 1; }),
+                    backgroundColor: [
+                        "rgba(96, 165, 69, 0.2)",
+                    ],
+                    borderWidth: 1,
+                    lineTension: 0
+                },
+                {
+                    label: "Gen 2",
+                    data: buildPauseTimePulses(function (d) { return d["generation"] === 2; }),
+                    backgroundColor: [
+                        "rgba(141, 31, 95, 0.2)",
+                    ],
+                    borderWidth: 1,
+                    lineTension: 0
+                },
+                {
+                    label: "LOH",
+                    data: buildPauseTimePulses(function (d) { return lohTriggerReasons[d["Reason"]] === true; }),
+                    backgroundColor: [
+                        "rgba(201, 221, 84, 0.2)"
+                    ],
+                    borderWidth: 1,
+                    lineTension: 0
+                }
+            ]},
+            options: {
+                title: {
+                    display: true,
+                    text: `GC Pause Time by Generation`
+                },
+                // Sharp vertical pulses (x,0)->(x,pauseMs) confuse Chart.js's
+                // default bezier curve fitting (lineTension) - it overshoots
+                // through the vertical segments and loops back on itself,
+                // producing the self-crossing "figure eight" artifact. Force
+                // straight-line segments instead, both per-dataset above and
+                // here as a chart-wide default so nothing falls back to it.
+                elements: {
+                    line: {
+                        tension: 0
+                    }
+                },
+                scales: {
+                    xAxes: [{
+                        type: 'linear',
+                        position: 'bottom',
+                        ticks: {
+                            callback: formatElapsedMs
+                        },
+                        scaleLabel: {
+                            display: true,
+                            labelString: "Capture Time Elapsed"
+                        }
+                    }],
+                    yAxes: [{
+                        ticks: {
+                            beginAtZero: true
+                        },
+                        scaleLabel: {
+                            display: true,
+                            labelString: "Time in ms"
+                        }
+                    }],
+                },
+                tooltips: {
+                    callbacks: {
+                        title: pauseTimeTooltipTitle
+                    }
+                },
+                "maintainAspectRatio": false,
+            }
+    });
+
     var totalGcStatsOverTime = document.getElementById("totalGcStatsOverTime");
     const totalGcStatsOverTimeContext = totalGcStatsOverTime.getContext('2d');
 
@@ -115,7 +323,7 @@ var allocationDatasets = {};
     var totalGcStatsOverTimeChart = new Chart(totalGcStatsOverTimeContext, {
         type: 'line',
             data: {
-                labels: timestamps,
+                labels: chartLabels,
                 datasets: [{
                     label: 'Gen 0',
                     data: totalGen0DataSet,
@@ -165,6 +373,11 @@ var allocationDatasets = {};
                         }
                     }],
                 },
+                tooltips: {
+                    callbacks: {
+                        title: gcTooltipTitle
+                    }
+                },
                 "maintainAspectRatio": false,
             }
     });
@@ -193,7 +406,7 @@ var allocationDatasets = {};
         var heapChart = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: timestamps,
+                labels: chartLabels,
                 datasets: [{
                     label: 'Gen 0',
                     data: gen0DataSet,
@@ -242,6 +455,11 @@ var allocationDatasets = {};
                             labelString: "Memory Usage in MB"
                         }
                     }],
+                },
+                tooltips: {
+                    callbacks: {
+                        title: gcTooltipTitle
+                    }
                 },
                 "maintainAspectRatio": false,
             }
