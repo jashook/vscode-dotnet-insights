@@ -42,6 +42,42 @@ var allocationDatasets = {};
         return parsed.toLocaleTimeString();
     };
 
+    // Full human-readable form for tooltips (space isn't constrained there
+    // the way it is on an axis tick) - mirrors GcDetailTableRenderer.ts's
+    // formatHumanDateTime exactly, e.g. "21-Jul-2026 03:42:13 PM PDT".
+    var formatHumanDateTime = function (dateTimeString) {
+        if (dateTimeString === undefined || dateTimeString === null) {
+            return "";
+        }
+
+        if (dateTimeString.charAt(0) === '+') {
+            return dateTimeString;
+        }
+
+        var parsed = new Date(dateTimeString);
+        if (isNaN(parsed.getTime())) {
+            return dateTimeString;
+        }
+
+        var parts = new Intl.DateTimeFormat('en-US', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            hour12: true,
+            timeZoneName: 'short'
+        }).formatToParts(parsed);
+
+        var partsByType = {};
+        for (var partIndex = 0; partIndex < parts.length; ++partIndex) {
+            partsByType[parts[partIndex].type] = parts[partIndex].value;
+        }
+
+        return `${partsByType["day"]}-${partsByType["month"]}-${partsByType["year"]} ${partsByType["hour"]}:${partsByType["minute"]}:${partsByType["second"]} ${partsByType["dayPeriod"]} ${partsByType["timeZoneName"]}`;
+    };
+
     var timestamps = [];
     var gcDateTimes = [];
     // Chart.js 2.x renders an array label as multiple stacked lines under the
@@ -60,7 +96,7 @@ var allocationDatasets = {};
         var lines = [];
         for (var itemIndex = 0; itemIndex < tooltipItems.length; ++itemIndex) {
             var gcIndex = tooltipItems[itemIndex].index;
-            lines.push(`GC #${timestamps[gcIndex]} — ${gcDateTimes[gcIndex]}`);
+            lines.push(`GC #${timestamps[gcIndex]} — ${formatHumanDateTime(gcDateTimes[gcIndex])}`);
         }
         return lines;
     };
@@ -197,7 +233,7 @@ var allocationDatasets = {};
             if (point.isGap) {
                 lines.push(`${formatElapsedMs(point.x)} elapsed — idle`);
             } else {
-                lines.push(`GC #${point.gcId} — ${point.dateTime}`);
+                lines.push(`GC #${point.gcId} — ${formatHumanDateTime(point.dateTime)}`);
             }
         }
         return lines;
@@ -467,9 +503,240 @@ var allocationDatasets = {};
     };
 
     var heapCharts = document.getElementsByClassName("heapChart");
-    
+
     for (var index = 0; index < heapCharts.length; ++index) {
         setChart(index);
+    }
+
+    // The Detailed tab's markup arrives as inert commented-out text (see
+    // GcSnapshotRenderer.ts) rather than live HTML, so the browser doesn't
+    // have to parse/build a DOM node for every GC's row (or, for the
+    // generation-breakdown tables appended below it, every heap x
+    // generation x field combination) on page load - only do that once,
+    // the first time the tab is actually opened.
+    var detailTableInjected = false;
+
+    var MB = 1024 * 1024;
+
+    // Mirrors GcDetailTableRenderer.ts's severity thresholds exactly, so the
+    // GC Number column on the generation-breakdown tables below can carry
+    // the same at-a-glance coloring the GC summary table already
+    // establishes for that GC, without duplicating whole-row logic here.
+    var getSeverityClass = function (pauseTime) {
+        if (pauseTime > 200.0) {
+            return "expensiveGc";
+        }
+        if (pauseTime > 100.0) {
+            return "warnGc";
+        }
+        if (pauseTime > 50.0) {
+            return "interstingGc";
+        }
+        if (pauseTime > 20.0) {
+            return "somewhatInterestingGc";
+        }
+        if (pauseTime > 10.0) {
+            return "notSomewhatInterestingGc";
+        }
+        return "";
+    };
+
+    // Per-generation fields available on Heaps[].Generations[genIndex] (see
+    // GcJsonExporter.cs / gcDataFromXml - both sources produce this same
+    // shape). "Common" is the default view; the full list is one click away
+    // via #genFieldsToggle rather than always rendering all 56 (14 fields x
+    // 4 generations) columns.
+    var COMMON_GEN_FIELDS = [
+        { key: "NewAllocation", label: "New Allocation" },
+        { key: "SurvRate", label: "Surv Rate", isPercent: true },
+        { key: "In", label: "In" },
+        { key: "Out", label: "Out" },
+        { key: "Fragmentation", label: "Fragmentation" }
+    ];
+
+    var ALL_GEN_FIELDS = [
+        { key: "SizeBefore", label: "Size Before" },
+        { key: "ObjSpaceBefore", label: "Obj Space Before" },
+        { key: "Fragmentation", label: "Fragmentation" },
+        { key: "FreeListSpaceBefore", label: "Free List Space Before" },
+        { key: "FreeListSpaceAfter", label: "Free List Space After" },
+        { key: "FreeObjSpaceBefore", label: "Free Obj Space Before" },
+        { key: "FreeObjSpaceAfter", label: "Free Obj Space After" },
+        { key: "ObjSizeAfter", label: "Obj Size After" },
+        { key: "In", label: "In" },
+        { key: "Out", label: "Out" },
+        { key: "NewAllocation", label: "New Allocation" },
+        { key: "SurvRate", label: "Surv Rate", isPercent: true },
+        { key: "PinnedSurv", label: "Pinned Surv" },
+        { key: "NonePinnedSurv", label: "Non-Pinned Surv" }
+    ];
+
+    var GENERATION_LABELS = ["Gen0", "Gen1", "Gen2", "LOH"];
+
+    // heapIndex === -1 means "All Heaps": byte fields summed across every
+    // heap the GC reports, SurvRate averaged across heaps. There's no
+    // separately-decoded GC-level total for these fields the way there is
+    // for GenerationSize0-3/LOH/POH (those come from a distinct GCHeapStats
+    // event) - summing/averaging the per-heap breakdown is the only way to
+    // get one number per generation across the whole GC.
+    function computeGenFieldValue(heaps, heapIndex, genIndex, field) {
+        if (heapIndex === -1) {
+            if (!heaps || heaps.length === 0) {
+                return null;
+            }
+
+            var total = 0;
+            var count = 0;
+            for (var h = 0; h < heaps.length; ++h) {
+                var gen = heaps[h]["Generations"][genIndex];
+                if (gen === undefined || gen === null) {
+                    continue;
+                }
+                total += parseFloat(gen[field.key]) || 0;
+                ++count;
+            }
+
+            if (count === 0) {
+                return null;
+            }
+
+            return field.isPercent ? (total / count) : total;
+        }
+
+        if (!heaps || heapIndex >= heaps.length) {
+            return null;
+        }
+
+        var heapGen = heaps[heapIndex]["Generations"][genIndex];
+        if (heapGen === undefined || heapGen === null) {
+            return null;
+        }
+
+        return parseFloat(heapGen[field.key]) || 0;
+    }
+
+    function formatGenFieldValue(value, field) {
+        if (value === null) {
+            return "&ndash;";
+        }
+
+        return field.isPercent ? value.toFixed(1) : (value / MB).toFixed(2);
+    }
+
+    // Built entirely from data already in `gcs` (hiddenData) - there's no
+    // separate server-rendered payload for these at all, so this costs
+    // nothing until the Detailed tab is actually opened. Uses the
+    // .detailTable *class* (matching renderGcDetailTable's own wrapper), not
+    // an id - multiple tables share the Detailed panel now, so an id would
+    // collide.
+    function buildGenerationBreakdownTable(heapIndex, showAllFields) {
+        if (gcs.length === 0) {
+            return "<p>No GC events to display.</p>";
+        }
+
+        var fields = showAllFields ? ALL_GEN_FIELDS : COMMON_GEN_FIELDS;
+
+        var headerCells = "<th>GC Number</th><th>DateTime</th>";
+        for (var genIndex = 0; genIndex < 4; ++genIndex) {
+            for (var fieldIndex = 0; fieldIndex < fields.length; ++fieldIndex) {
+                var field = fields[fieldIndex];
+                var unit = field.isPercent ? "%" : "mb";
+                headerCells += `<th>${field.label} ${GENERATION_LABELS[genIndex]} (${unit})</th>`;
+            }
+        }
+
+        var rows = "";
+        for (var index = 0; index < gcs.length; ++index) {
+            var gcEntry = gcs[index]["data"];
+            var heaps = gcEntry["Heaps"];
+
+            var severityClass = getSeverityClass(parseFloat(gcEntry["PauseDurationMSec"]));
+            var rowClass = severityClass ? ` class="${severityClass}"` : "";
+            var rowCells = `<td>${gcEntry["Id"]}</td><td>${formatHumanDateTime(gcEntry["DateTime"])}</td>`;
+            for (var rowGenIndex = 0; rowGenIndex < 4; ++rowGenIndex) {
+                for (var rowFieldIndex = 0; rowFieldIndex < fields.length; ++rowFieldIndex) {
+                    var rowField = fields[rowFieldIndex];
+                    var value = computeGenFieldValue(heaps, heapIndex, rowGenIndex, rowField);
+                    rowCells += `<td>${formatGenFieldValue(value, rowField)}</td>`;
+                }
+            }
+
+            rows += `<tr${rowClass}>${rowCells}</tr>`;
+        }
+
+        return `<div class="detailTable"><table><tr class="tableHeader">${headerCells}</tr>${rows}</table></div>`;
+    }
+
+    // "All Heaps" first, then one table per heap in heap-number order, all
+    // stacked in the same view rather than split across separate tabs.
+    function buildAllGenerationBreakdownTables(showAllFields) {
+        var maxHeapCount = 0;
+        for (var index = 0; index < gcs.length; ++index) {
+            var heaps = gcs[index]["data"]["Heaps"];
+            if (heaps && heaps.length > maxHeapCount) {
+                maxHeapCount = heaps.length;
+            }
+        }
+
+        var html = `<h3 class="detailTableHeading">Generations: All Heaps</h3>` + buildGenerationBreakdownTable(-1, showAllFields);
+        for (var heapIndex = 0; heapIndex < maxHeapCount; ++heapIndex) {
+            html += `<h3 class="detailTableHeading">Generations: Heap ${heapIndex}</h3>` + buildGenerationBreakdownTable(heapIndex, showAllFields);
+        }
+
+        return html;
+    }
+
+    var showAllGenFields = false;
+
+    function renderGenerationBreakdownSection() {
+        document.getElementById("generationBreakdownSection").innerHTML = buildAllGenerationBreakdownTables(showAllGenFields);
+    }
+
+    var genFieldsToggle = document.getElementById("genFieldsToggle");
+    genFieldsToggle.addEventListener('click', function () {
+        showAllGenFields = !showAllGenFields;
+        genFieldsToggle.textContent = showAllGenFields ? "Show Common Fields" : "Show All Fields";
+
+        // Only the generation-breakdown tables have a curated/full mode -
+        // the GC summary table above them is unaffected, so only rebuild
+        // this section, and only if the Detailed tab has actually been
+        // opened at least once already.
+        if (detailTableInjected) {
+            renderGenerationBreakdownSection();
+        }
+    });
+
+    var tabButtons = document.getElementsByClassName("tabButton");
+    for (var tabIndex = 0; tabIndex < tabButtons.length; ++tabIndex) {
+        tabButtons[tabIndex].addEventListener('click', function (event) {
+            var targetTab = event.currentTarget.getAttribute('data-tab');
+
+            var buttons = document.getElementsByClassName("tabButton");
+            for (var buttonIndex = 0; buttonIndex < buttons.length; ++buttonIndex) {
+                buttons[buttonIndex].classList.remove('active');
+            }
+
+            var panels = document.getElementsByClassName("tabPanel");
+            for (var panelIndex = 0; panelIndex < panels.length; ++panelIndex) {
+                panels[panelIndex].classList.remove('active');
+            }
+
+            event.currentTarget.classList.add('active');
+            document.getElementById('tab-' + targetTab).classList.add('active');
+
+            // Only the Detailed tab's generation-breakdown tables have a
+            // curated/full field mode - no point showing the toggle while
+            // looking at Charts.
+            genFieldsToggle.style.display = (targetTab === 'detailed') ? 'inline-block' : 'none';
+
+            if (targetTab === 'detailed' && !detailTableInjected) {
+                var holder = document.getElementById("detailTableHtml");
+                var detailTableHtml = holder.innerHTML.slice(4, holder.innerHTML.length - 3);
+                document.getElementById('tab-detailed').innerHTML = detailTableHtml + '<div id="generationBreakdownSection"></div>';
+                renderGenerationBreakdownSection();
+                detailTableInjected = true;
+            }
+        });
     }
 
     // Handle messages sent from the extension to the webview

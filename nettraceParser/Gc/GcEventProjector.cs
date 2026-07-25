@@ -45,10 +45,15 @@ public class GcEvent
     public long GenerationSize1;
     public long GenerationSize2;
     public long GenerationSize3;
+    // POH (Pinned Object Heap) - only present when ClrGcHeapStats.Decode saw
+    // version >= 2 and a long enough payload; 0 otherwise (older runtimes
+    // that predate POH).
+    public long GenerationSize4;
     public long TotalPromotedSize0;
     public long TotalPromotedSize1;
     public long TotalPromotedSize2;
     public long TotalPromotedSize3;
+    public long TotalPromotedSize4;
     public int NumHeaps;
     public long FinalYoungestDesired;
     public List<ClrGcHeap> Heaps = new List<ClrGcHeap>();
@@ -154,10 +159,12 @@ public static class GcEventProjector
                     gcEvent.GenerationSize1 = heapStats.GenerationSize1;
                     gcEvent.GenerationSize2 = heapStats.GenerationSize2;
                     gcEvent.GenerationSize3 = heapStats.GenerationSize3;
+                    gcEvent.GenerationSize4 = heapStats.GenerationSize4;
                     gcEvent.TotalPromotedSize0 = heapStats.TotalPromotedSize0;
                     gcEvent.TotalPromotedSize1 = heapStats.TotalPromotedSize1;
                     gcEvent.TotalPromotedSize2 = heapStats.TotalPromotedSize2;
                     gcEvent.TotalPromotedSize3 = heapStats.TotalPromotedSize3;
+                    gcEvent.TotalPromotedSize4 = heapStats.TotalPromotedSize4;
                 }
             }
             else if (record.EventId == ClrGcEventIds.GCPerHeapHistory)

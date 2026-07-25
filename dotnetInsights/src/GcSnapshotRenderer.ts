@@ -1,8 +1,7 @@
 import * as vscode from 'vscode';
 
-import { GcData } from "./GcListener";
-
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
+import { formatHumanDateTime, renderGcDetailTable } from "./GcDetailTableRenderer";
 import { computeAllocationAmountStats, computePauseTimeStats } from "./GcStatsCalculations";
 
 // Renders the summary tiles + Chart.js graphs shared by every "static GC
@@ -53,10 +52,12 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     // comes from per source.
     var captureTimeRangeHtml = "";
     if (gcs.length > 0) {
-        const firstDateTime = gcs[0]["data"]["DateTime"];
-        const lastDateTime = gcs[gcs.length - 1]["data"]["DateTime"];
+        const firstDateTime = formatHumanDateTime(gcs[0]["data"]["DateTime"]);
+        const lastDateTime = formatHumanDateTime(gcs[gcs.length - 1]["data"]["DateTime"]);
         captureTimeRangeHtml = `<div id="captureTimeRange">Captured: ${firstDateTime} &ndash; ${lastDateTime}</div>`;
     }
+
+    const detailTableHtml = renderGcDetailTable(gcs);
 
     var totalNumbers = computePauseTimeStats(gcs);
 
@@ -225,17 +226,22 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
     const gcCountsByGen = JSON.stringify([gen0TimesInEachGc.length, gen1TimesInEachGc.length, gen2TimesInEachGc.length]);
 
-    var gcsToSerialize = [] as GcData[];
+    // Full per-GC data (every per-generation field included, not just what
+    // the charts currently read) - kept as full fidelity on purpose so
+    // future chart/tooltip work has everything available without needing to
+    // widen this projection again. The old GcData class wrapper added no
+    // data of its own here (timestamp/percentInGc/privateBytes/... are all
+    // live-listener-view concerns, unused by this static snapshot view), so
+    // it's dropped in favor of passing each GC's real data straight through.
+    var chartPayload = [];
     for (var index = 0; index < gcs.length; ++index) {
-        var gcDataNew = new GcData(gcs[index]);
-
-        gcsToSerialize.push(gcDataNew);
+        chartPayload.push({ data: gcs[index]["data"] });
     }
 
     var hiddenData = null;
 
     try {
-        hiddenData = JSON.stringify(gcsToSerialize);
+        hiddenData = JSON.stringify(chartPayload);
     }
     catch(e) {
         var i = 0;
@@ -280,6 +286,14 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <span style="display:none" id="gcCountsByGen"><!--${gcCountsByGen}--></span>
             <span style="display:none" id="totalTimeInEachGcJson"><!--${totalTimeInEachGcJson}--></span>
             <h2 class="divider">${gcData["processName"]}</h2>
+
+            <div class="tabBar">
+                <button class="tabButton active" data-tab="charts">Charts</button>
+                <button class="tabButton" data-tab="detailed">Detailed</button>
+                <button class="fieldToggleButton" id="genFieldsToggle" style="display:none">Show All Fields</button>
+            </div>
+
+            <div id="tab-charts" class="tabPanel active">
             ${captureTimeRangeHtml}
 
             <div id="timeSummary">Allocation Amount by Generation</div>
@@ -397,6 +411,18 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
                 ${perHeapCanvasData}
                 <script src="${chartjs}"></script>
             </div>
+            </div>
+
+            <div id="tab-detailed" class="tabPanel"></div>
+            <!-- Deferred: display:none on .tabPanel only skips layout/paint,
+                 not DOM construction - the browser would still have to parse
+                 and build a <tr>/<td> node for every GC up front if this
+                 table were inlined directly above like the other panel's
+                 content. Wrapping it in a comment (the same trick
+                 hiddenData/gcCountsByGen already use below) keeps it as
+                 inert text until snapshotGcStats.js injects it into
+                 #tab-detailed on the Detailed tab's first click. -->
+            <span style="display:none" id="detailTableHtml"><!--${detailTableHtml}--></span>
 
             <script nonce="${nonce}" src="${scriptUri}"></script>
         </body>

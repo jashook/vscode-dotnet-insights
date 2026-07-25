@@ -45,6 +45,7 @@ public static class GcJsonExporter
             data["GenerationSize1"] = gcEvent.GenerationSize1;
             data["GenerationSize2"] = gcEvent.GenerationSize2;
             data["GenerationSizeLOH"] = gcEvent.GenerationSize3;
+            data["GenerationSizePOH"] = gcEvent.GenerationSize4;
             data["Id"] = gcEvent.Id;
             // ISO-8601 (round-trip format) - directly parseable by JS's `new Date(...)`.
             // Converted to the machine's local timezone (gcEvent.Timestamp is UTC) so the
@@ -59,6 +60,7 @@ public static class GcJsonExporter
             data["TotalHeapSize"] = gcEvent.TotalHeapSize;
             data["TotalPromoted"] = gcEvent.TotalPromotedSize0;
             data["TotalPromotedLOH"] = gcEvent.TotalPromotedSize3;
+            data["TotalPromotedPOH"] = gcEvent.TotalPromotedSize4;
             data["TotalPromotedSize0"] = gcEvent.TotalPromotedSize0;
             data["TotalPromotedSize1"] = gcEvent.TotalPromotedSize1;
             data["TotalPromotedSize2"] = gcEvent.TotalPromotedSize2;
@@ -68,10 +70,20 @@ public static class GcJsonExporter
             data["Type"] = reasonName;
             data["GCDurationMSec"] = gcEvent.PauseDurationMSec;
 
+            // gcEvent.Heaps is populated in wire-arrival order (see
+            // GcEventProjector.cs's GCPerHeapHistory handling), which for a
+            // multi-heap (server GC) capture is not guaranteed to match
+            // physical heap order. Both this array's own position and the
+            // extension's per-heap charts/tables treat array position as the
+            // heap number, so sorting by the heap's own reported HeapIndex
+            // here is what makes "Heap N" actually mean heap N.
+            List<ClrGcHeap> sortedHeaps = new List<ClrGcHeap>(gcEvent.Heaps);
+            sortedHeaps.Sort((ClrGcHeap left, ClrGcHeap right) => left.HeapIndex.CompareTo(right.HeapIndex));
+
             JsonArray heapsArray = new JsonArray();
-            for (int heapIndex = 0; heapIndex < gcEvent.Heaps.Count; ++heapIndex)
+            for (int heapIndex = 0; heapIndex < sortedHeaps.Count; ++heapIndex)
             {
-                ClrGcHeap heap = gcEvent.Heaps[heapIndex];
+                ClrGcHeap heap = sortedHeaps[heapIndex];
                 JsonObject generationsObject = new JsonObject();
 
                 for (int genIndex = 0; genIndex < heap.Generations.Length; ++genIndex)
@@ -100,6 +112,7 @@ public static class GcJsonExporter
                 }
 
                 JsonObject heapObject = new JsonObject();
+                heapObject["HeapIndex"] = heap.HeapIndex;
                 heapObject["Generations"] = generationsObject;
                 heapsArray.Add(heapObject);
             }

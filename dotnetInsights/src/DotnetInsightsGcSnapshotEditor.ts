@@ -136,7 +136,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
                 var totalPromotedSizePoh = 0;
                 try {
-                    totalPromotedSizePoh = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize3"].replaceAll(',',''));
+                    totalPromotedSizePoh = parseInt(currentGc["HeapStats"][0]["$"]["TotalPromotedSize4"].replaceAll(',',''));
                 }
                 catch (e) {
 
@@ -160,6 +160,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                     "GenerationSize1": generationSize1,
                     "GenerationSize2": generationSize2,
                     "GenerationSizeLOH": generationSizeLOH,
+                    "GenerationSizePOH": generationSizePOH,
                     "Id": id,
                     "DateTime": dateTime,
                     "kind": kind,
@@ -172,6 +173,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                     "TotalHeapSize": totalHeapSize,
                     "TotalPromoted": totalPromotedSize0,
                     "TotalPromotedLOH": totalPromotedSizeLoh,
+                    "TotalPromotedPOH": totalPromotedSizePoh,
                     "TotalPromotedSize0": totalPromotedSize0,
                     "TotalPromotedSize1": totalPromotedSize1,
                     "TotalPromotedSize2": totalPromotedSize2,
@@ -181,15 +183,6 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
                 var heaps = [] as any[];
                 console.assert(currentGc["PerHeapHistories"][0]["PerHeapHistory"].length == numHeaps);
-
-                var currentHeapData : any = {
-                    "Generations": {
-                        0: null,
-                        1: null,
-                        2: null,
-                        3: null
-                    }
-                };
 
                 var tryParse = (genData: any, key: string, isNumber?: boolean | null): any => {
                     try {
@@ -208,6 +201,22 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                 for (var heapIndex = 0; heapIndex < currentGc["PerHeapHistories"][0]["PerHeapHistory"].length; ++heapIndex) {
                     var heapGenerations = [0, 1, 2, 3];
                     const currentHeap = currentGc["PerHeapHistories"][0]["PerHeapHistory"][heapIndex];
+
+                    // Declared fresh per heap - previously this object was
+                    // declared once outside the loop and mutated+pushed on
+                    // every iteration, so every entry in data["Heaps"] ended
+                    // up as the same reference holding only the last heap's
+                    // data (multi-heap/server GC captures only, invisible on
+                    // single-heap workstation GC captures).
+                    var currentHeapData : any = {
+                        "HeapIndex": heapIndex,
+                        "Generations": {
+                            0: null,
+                            1: null,
+                            2: null,
+                            3: null
+                        }
+                    };
 
                     for (var generationIndex = 0; generationIndex < heapGenerations.length; ++generationIndex) {
                         const genNumber = generationIndex;
