@@ -20,6 +20,17 @@ var allocationDatasets = {};
 
     var totalTimeInEachGcJson = JSON.parse(document.getElementById("totalTimeInEachGcJson").innerHTML.slice(4, document.getElementById("totalTimeInEachGcJson").innerHTML.length - 3));
 
+    // null when sourceFormat !== "nettrace" or the capture had zero
+    // allocation ticks - see GcSnapshotRenderer.ts's hasHeapContents.
+    // Includes every raw allocation tick (see AllocationJsonExporter.cs) -
+    // potentially tens of thousands for a busy capture - but JSON.parse
+    // itself is cheap regardless (the earlier perf work on this page found
+    // DOM construction, not JSON parsing, to be the actual cost - see
+    // detailTableHtml below), so this is still parsed eagerly like
+    // gcCountsByGen; only the chart/table DOM built from it is deferred to
+    // the "Heap Contents" nav button's first click.
+    var allocationSummaryJson = JSON.parse(document.getElementById("allocationSummaryJson").innerHTML.slice(4, document.getElementById("allocationSummaryJson").innerHTML.length - 3));
+
     // DateTime is a real calendar date/time (in the parsing machine's local
     // timezone - see GcJsonExporter.cs) for .nettrace sources, or a
     // "+elapsed since capture start" string for .gcinfo (XML) sources, which
@@ -735,6 +746,64 @@ var allocationDatasets = {};
                 document.getElementById('tab-detailed').innerHTML = detailTableHtml + '<div id="generationBreakdownSection"></div>';
                 renderGenerationBreakdownSection();
                 detailTableInjected = true;
+            }
+        });
+    }
+
+    // Left-side view switcher (GC / Heap Contents / eventually Profile) -
+    // an axis orthogonal to the tabButton/tabPanel handling above: the GC
+    // view's own Charts/Detailed tabs are unaffected and live one level
+    // deeper, inside #view-gc. Same show/hide-via-active-class mechanism,
+    // keyed on data-view/id="view-*" instead of data-tab/id="tab-*".
+    var allocationSummaryInjected = false;
+
+    var viewNavButtons = document.getElementsByClassName("viewNavButton");
+    for (var viewButtonIndex = 0; viewButtonIndex < viewNavButtons.length; ++viewButtonIndex) {
+        viewNavButtons[viewButtonIndex].addEventListener('click', function (event) {
+            var targetView = event.currentTarget.getAttribute('data-view');
+
+            var buttons = document.getElementsByClassName("viewNavButton");
+            for (var buttonIndex = 0; buttonIndex < buttons.length; ++buttonIndex) {
+                buttons[buttonIndex].classList.remove('active');
+            }
+
+            var panels = document.getElementsByClassName("viewPanel");
+            for (var panelIndex = 0; panelIndex < panels.length; ++panelIndex) {
+                panels[panelIndex].classList.remove('active');
+            }
+
+            event.currentTarget.classList.add('active');
+            document.getElementById('view-' + targetView).classList.add('active');
+
+            if (targetView === 'heapContents' && !allocationSummaryInjected) {
+                var holder = document.getElementById("allocationSummaryHtml");
+                var allocationSummaryHtml = holder.innerHTML.slice(4, holder.innerHTML.length - 3);
+
+                // Tiles -> chart canvas -> table order comes from
+                // AllocationSummaryRenderer.ts's own markup now (single
+                // source of truth) - this just injects it and wires up the
+                // chart once the canvas element actually exists in the DOM.
+                document.getElementById('view-heapContents').innerHTML = allocationSummaryHtml;
+
+                // "Allocated before this GC" reference line needs each
+                // Gen0/Gen1 GC's own start time - gcs is this file's own
+                // parsed data (allocationStats.js has no access to it), so
+                // it's extracted here and passed down as plain arrays.
+                var gen0GcTimesMSec = [];
+                var gen1GcTimesMSec = [];
+                for (var gcIndex = 0; gcIndex < gcs.length; ++gcIndex) {
+                    var gcEntry = gcs[gcIndex]["data"];
+                    if (gcEntry["generation"] === 0) {
+                        gen0GcTimesMSec.push(gcEntry["PauseStartRelativeMSec"]);
+                    } else if (gcEntry["generation"] === 1) {
+                        gen1GcTimesMSec.push(gcEntry["PauseStartRelativeMSec"]);
+                    }
+                }
+                gen0GcTimesMSec.sort(function (left, right) { return left - right; });
+                gen1GcTimesMSec.sort(function (left, right) { return left - right; });
+
+                renderAllocationTimelineChart(document.getElementById("allocationTimelineChart"), allocationSummaryJson["ticks"], gen0GcTimesMSec, gen1GcTimesMSec);
+                allocationSummaryInjected = true;
             }
         });
     }

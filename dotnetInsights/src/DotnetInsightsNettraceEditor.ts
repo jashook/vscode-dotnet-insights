@@ -110,7 +110,7 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
     private getHtmlForWebviewWrapper(document: DotnetInsightsGcDocument, webview: vscode.Webview): Thenable<string> {
         var promiseToReturn = new Promise<string>((resolve, reject) => {
             this.runNettraceParser(document.uri.fsPath).then((gcData: any) => {
-                resolve(renderGcSnapshotWebview(document, webview, this.context.extensionUri, gcData));
+                resolve(renderGcSnapshotWebview(document, webview, this.context.extensionUri, gcData, "nettrace"));
             });
         });
 

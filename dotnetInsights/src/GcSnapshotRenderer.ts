@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 
+import { renderAllocationSummaryTable } from "./AllocationSummaryRenderer";
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
 import { formatHumanDateTime, renderGcDetailTable } from "./GcDetailTableRenderer";
 import { computeAllocationAmountStats, computePauseTimeStats } from "./GcStatsCalculations";
@@ -7,10 +8,14 @@ import { computeAllocationAmountStats, computePauseTimeStats } from "./GcStatsCa
 // Renders the summary tiles + Chart.js graphs shared by every "static GC
 // snapshot" input source (DotnetInsightsGcSnapshotEditor's .gcinfo/XML path,
 // DotnetInsightsNettraceEditor's .nettrace path). gcData must already be in
-// the shape { processName, allocations, gcData: [{ data: {...} }] } - each
-// caller is responsible for getting its own input format into that shape;
-// this function doesn't care where it came from.
-export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webview: vscode.Webview, extensionUri: vscode.Uri, gcData: any): string {
+// the shape { processName, gcData: [{ data: {...} }], allocationSummary? }
+// - each caller is responsible for getting its own input format into that
+// shape; this function doesn't care where it came from. sourceFormat gates
+// nettrace-only views ("Heap Contents", and later "Profile") - it's an
+// explicit parameter rather than inferred from allocationSummary's presence
+// because a very short nettrace capture can legitimately have zero
+// allocation ticks, which would make that inference unreliable.
+export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webview: vscode.Webview, extensionUri: vscode.Uri, gcData: any, sourceFormat: "gcinfo" | "nettrace"): string {
     const defaultHtmlReturn = /* html */`
     <!DOCTYPE html>
     <html lang="en">
@@ -35,7 +40,13 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     </body>
     </html>`;
 
-    if (gcData === null || gcData["allocations"] == null || gcData["gcData"] === null) {
+    // Previously also required gcData["allocations"] != null - .gcinfo's XML
+    // path (DotnetInsightsGcSnapshotEditor.gcDataFromXml) never sets that
+    // key at all, so every successfully-parsed .gcinfo file was hitting this
+    // "corrupted" branch instead of rendering. allocationSummary (nettrace-
+    // only, see AllocationJsonExporter.cs) is optional by design, gated
+    // below via sourceFormat instead of required here.
+    if (gcData === null || gcData["gcData"] === null) {
         vscode.window.showWarningMessage(`${document.uri.fsPath} is corrupted or a incorrect type.`);
         return defaultHtmlReturn;
     }
@@ -58,6 +69,17 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     }
 
     const detailTableHtml = renderGcDetailTable(gcs);
+
+    // "Heap Contents" (allocation-tick-based type ranking) is nettrace-only:
+    // .gcinfo output never sets allocationSummary at all (see
+    // GcJsonExporter.cs), and even for nettrace input a very short capture
+    // can legitimately have zero allocation ticks - both cases mean nothing
+    // to show, so the nav button/panel are omitted entirely rather than
+    // shown empty.
+    const allocationSummary = gcData["allocationSummary"];
+    const hasHeapContents = sourceFormat === "nettrace" && allocationSummary !== null && allocationSummary !== undefined && allocationSummary["topTypes"] !== null && allocationSummary["topTypes"] !== undefined && allocationSummary["topTypes"].length > 0;
+    const allocationSummaryHtml = hasHeapContents ? renderAllocationSummaryTable(allocationSummary) : "";
+    const allocationSummaryJson = hasHeapContents ? JSON.stringify(allocationSummary) : "null";
 
     var totalNumbers = computePauseTimeStats(gcs);
 
@@ -191,6 +213,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const styleVSCodeUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'vscode.css'));
 
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'snapshotGcStats.js'));
+    const allocationScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'allocationStats.js'));
 
     const chartjs = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'chart.js', 'dist', 'Chart.min.js'));
 
@@ -285,7 +308,20 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <span style="display:none" id="hiddenData"><!--${hiddenData}--></span>
             <span style="display:none" id="gcCountsByGen"><!--${gcCountsByGen}--></span>
             <span style="display:none" id="totalTimeInEachGcJson"><!--${totalTimeInEachGcJson}--></span>
+            <span style="display:none" id="allocationSummaryJson"><!--${allocationSummaryJson}--></span>
+
+            <!-- High-level view switcher (GC / Heap Contents / eventually
+                 Profile) - browser-tab style, sitting above the file name so
+                 it doesn't consume horizontal width from the content below
+                 the way a left-nav sidebar would. -->
+            <div class="viewTabBar">
+                <button class="viewNavButton active" data-view="gc">GC</button>
+                ${hasHeapContents ? `<button class="viewNavButton" data-view="heapContents">Heap Contents</button>` : ``}
+            </div>
+
             <h2 class="divider">${gcData["processName"]}</h2>
+
+            <div id="view-gc" class="viewPanel active">
 
             <div class="tabBar">
                 <button class="tabButton active" data-tab="charts">Charts</button>
@@ -424,6 +460,13 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
                  #tab-detailed on the Detailed tab's first click. -->
             <span style="display:none" id="detailTableHtml"><!--${detailTableHtml}--></span>
 
+                </div>
+            ${hasHeapContents ? `<div id="view-heapContents" class="viewPanel"></div>
+            <!-- Same lazy-inject pattern as detailTableHtml above - constructed
+                 only on the "Heap Contents" nav button's first click. -->
+            <span style="display:none" id="allocationSummaryHtml"><!--${allocationSummaryHtml}--></span>` : ``}
+
+            <script nonce="${nonce}" src="${allocationScriptUri}"></script>
             <script nonce="${nonce}" src="${scriptUri}"></script>
         </body>
     </html>`;

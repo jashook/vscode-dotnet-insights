@@ -29,7 +29,7 @@ using System.Text.Json.Nodes;
 
 public static class GcJsonExporter
 {
-    public static void WriteToFile(string outputPath, List<GcEvent> gcEvents, string processName)
+    public static void WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, string processName)
     {
         JsonArray gcDataArray = new JsonArray();
 
@@ -126,7 +126,12 @@ public static class GcJsonExporter
 
         JsonObject root = new JsonObject();
         root["processName"] = processName;
-        root["allocations"] = new JsonArray();
+        // "allocationSummary" is only meaningful for nettrace input - the
+        // .gcinfo/XML path never sets this key, which is what the extension's
+        // GcSnapshotRenderer.ts uses (alongside its own explicit sourceFormat
+        // parameter) to decide whether the nettrace-only "Heap Contents" view
+        // has anything to show. See AllocationJsonExporter.cs.
+        root["allocationSummary"] = AllocationSummaryBuilder.Build(allocationEvents);
         root["gcData"] = gcDataArray;
 
         File.WriteAllText(outputPath, root.ToJsonString());

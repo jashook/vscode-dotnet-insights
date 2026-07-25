@@ -344,6 +344,41 @@
     text-align: center;
 }
 
+.viewTabBar
+{
+    margin-top: 1em;
+    text-align: center;
+}
+
+.viewNavButton
+{
+    background-color: rgba(174, 207, 27, 0.8);
+    border: none;
+    border-radius: 6px 6px 0 0;
+    color: white;
+    cursor: pointer;
+    display: inline-block;
+    font-size: 16px;
+    margin: 0 2px;
+    padding: 0.75em 2em;
+    width: auto;
+}
+
+.viewNavButton.active
+{
+    background-color: rgba(72, 83, 136, 0.9);
+}
+
+.viewPanel
+{
+    display: none;
+}
+
+.viewPanel.active
+{
+    display: block;
+}
+
 .tabBar
 {
     margin-top: 1em;
@@ -464,6 +499,15 @@
 .detailTable .somewhatInterestingGc
 {
     background-color: rgba(0, 0, 0, 0.247);
+}
+
+.allocationTypeTable td:first-child,
+.allocationTypeTable th:first-child
+{
+    text-align: left;
+    white-space: normal;
+    width: 30em;
+    word-break: break-word;
 }
 
 .detailTable .notSomewhatInterestingGc
