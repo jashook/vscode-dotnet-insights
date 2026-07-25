@@ -27,6 +27,17 @@ public static class AllocationSummaryBuilder
 {
     private const int TopTypesLimit = 100;
 
+    // Separate, much smaller cap than TopTypesLimit - a stacked bar chart
+    // with more than a handful of segments becomes an unreadable wall of
+    // slivers. Anything outside this top set is folded into a single
+    // "Other" column instead of being dropped.
+    private const int ChartTopTypesLimit = 8;
+
+    // 1 second, matching allocationStats.js's own DEFAULT_BUCKET_WIDTH_MSEC
+    // for the rate chart above this one - kept as an independent constant
+    // (not shared code) since one lives in C#, the other in the webview.
+    private const double TypeTimelineBucketWidthMSec = 1000;
+
     private class TypeAllocStats
     {
         public string TypeName;
@@ -95,6 +106,7 @@ public static class AllocationSummaryBuilder
         }
 
         JsonArray ticksArray = BuildTicks(allocationEvents);
+        JsonObject typeTimeline = BuildTypeTimeline(allocationEvents, sortedStats);
 
         JsonObject summary = new JsonObject();
         summary["totalSampledBytes"] = totalSampledBytes;
@@ -102,8 +114,100 @@ public static class AllocationSummaryBuilder
         summary["totalTickCount"] = allocationEvents.Count;
         summary["topTypes"] = topTypesArray;
         summary["ticks"] = ticksArray;
+        summary["typeTimeline"] = typeTimeline;
 
         return summary;
+    }
+
+    // Per-second (TypeTimelineBucketWidthMSec) bytes-by-type breakdown for
+    // the stacked bar chart under the allocation-rate chart. TypeName is
+    // deliberately not carried on individual ticks (BuildTicks/AllocationEvent
+    // - see this file's header comment), so this is the only place that
+    // needs a per-event/per-type join; the result is normalized into a
+    // shared "types" column list plus parallel per-bucket byte arrays
+    // (rather than repeating type name strings as JSON object keys in every
+    // bucket) to keep the payload compact.
+    private static JsonObject BuildTypeTimeline(List<AllocationEvent> allocationEvents, List<TypeAllocStats> sortedStats)
+    {
+        int chartTypeCount = sortedStats.Count < ChartTopTypesLimit ? sortedStats.Count : ChartTopTypesLimit;
+
+        Dictionary<string, int> columnIndexByType = new Dictionary<string, int>();
+        JsonArray typesArray = new JsonArray();
+
+        for (int typeIndex = 0; typeIndex < chartTypeCount; ++typeIndex)
+        {
+            string typeName = sortedStats[typeIndex].TypeName;
+            columnIndexByType[typeName] = typeIndex;
+            typesArray.Add(typeName);
+        }
+
+        // Always present as the last column, even if every type already fit
+        // in the chart's top set (it just stays 0 in that case) - simpler
+        // than conditionally omitting it.
+        int otherColumnIndex = chartTypeCount;
+        typesArray.Add("Other");
+
+        JsonObject result = new JsonObject();
+        result["bucketWidthMSec"] = TypeTimelineBucketWidthMSec;
+        result["types"] = typesArray;
+
+        if (allocationEvents.Count == 0)
+        {
+            result["buckets"] = new JsonArray();
+            return result;
+        }
+
+        double lastRelativeMSec = 0;
+        for (int eventIndex = 0; eventIndex < allocationEvents.Count; ++eventIndex)
+        {
+            if (allocationEvents[eventIndex].RelativeMSec > lastRelativeMSec)
+            {
+                lastRelativeMSec = allocationEvents[eventIndex].RelativeMSec;
+            }
+        }
+
+        int bucketCount = (int)(lastRelativeMSec / TypeTimelineBucketWidthMSec) + 1;
+        int columnCount = chartTypeCount + 1;
+        long[,] bytesByBucketAndType = new long[bucketCount, columnCount];
+
+        for (int eventIndex = 0; eventIndex < allocationEvents.Count; ++eventIndex)
+        {
+            AllocationEvent allocationEvent = allocationEvents[eventIndex];
+
+            int bucketIndex = (int)(allocationEvent.RelativeMSec / TypeTimelineBucketWidthMSec);
+            if (bucketIndex >= bucketCount)
+            {
+                bucketIndex = bucketCount - 1;
+            }
+
+            string typeName = string.IsNullOrEmpty(allocationEvent.TypeName) ? "<unknown>" : allocationEvent.TypeName;
+
+            int columnIndex;
+            if (!columnIndexByType.TryGetValue(typeName, out columnIndex))
+            {
+                columnIndex = otherColumnIndex;
+            }
+
+            bytesByBucketAndType[bucketIndex, columnIndex] += allocationEvent.AllocationAmount;
+        }
+
+        JsonArray bucketsArray = new JsonArray();
+        for (int bucketIndex = 0; bucketIndex < bucketCount; ++bucketIndex)
+        {
+            JsonArray bytesByTypeArray = new JsonArray();
+            for (int columnIndex = 0; columnIndex < columnCount; ++columnIndex)
+            {
+                bytesByTypeArray.Add(bytesByBucketAndType[bucketIndex, columnIndex]);
+            }
+
+            JsonObject bucketObject = new JsonObject();
+            bucketObject["bucketStartMSec"] = bucketIndex * TypeTimelineBucketWidthMSec;
+            bucketObject["bytesByType"] = bytesByTypeArray;
+            bucketsArray.Add(bucketObject);
+        }
+
+        result["buckets"] = bucketsArray;
+        return result;
     }
 
     private static int CompareByTotalBytesDescending(TypeAllocStats left, TypeAllocStats right)

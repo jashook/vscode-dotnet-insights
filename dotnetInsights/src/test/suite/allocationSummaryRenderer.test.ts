@@ -186,6 +186,32 @@ describe('AllocationSummaryRenderer', () => {
             }
         });
 
+        // Regression guard for the "Allocated by Type Over Time" stacked
+        // chart: typeTimeline's normalized types[]/bytesByType[] columns
+        // must line up 1:1, "Other" must be the last column, and the whole
+        // per-bucket/per-type matrix must reconcile exactly with
+        // totalSampledBytes (AllocationJsonExporter.cs sums the same raw
+        // events into both, so a mismatch means the bucket/column
+        // assignment has a bug, not just floating-point drift).
+        it('fixture has a typeTimeline whose bucket x type matrix sums to totalSampledBytes, with "Other" as the last column', () => {
+            const typeTimeline = allocationSummary['typeTimeline'];
+
+            assert.ok(typeTimeline !== null && typeTimeline !== undefined);
+            assert.strictEqual(typeTimeline['types'][typeTimeline['types'].length - 1], 'Other');
+            assert.ok(typeTimeline['buckets'].length > 0);
+
+            let totalBytes = 0;
+            for (const bucket of typeTimeline['buckets']) {
+                assert.strictEqual(bucket['bytesByType'].length, typeTimeline['types'].length);
+
+                for (const bytes of bucket['bytesByType']) {
+                    totalBytes += bytes;
+                }
+            }
+
+            assert.strictEqual(totalBytes, allocationSummary['totalSampledBytes']);
+        });
+
         it('renders the real top-allocating-type ranking without throwing', () => {
             const html = renderAllocationSummaryTable(allocationSummary);
 

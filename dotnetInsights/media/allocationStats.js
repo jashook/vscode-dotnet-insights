@@ -10,6 +10,25 @@
 
 var DEFAULT_BUCKET_WIDTH_MSEC = 1000;
 
+// One color per typeTimeline column, in order - typeTimeline.types is
+// always [...top ChartTopTypesLimit types, "Other"] (AllocationJsonExporter.cs),
+// so this needs at most ChartTopTypesLimit + 1 = 9 entries; the last one
+// (gray) is reserved for "Other" by always landing on that final slot.
+// Deliberately a different palette from the gen0/gen1/gen2/LOH colors used
+// elsewhere on this page - those mean "GC generation" and reusing them here
+// (for "allocated type") would be actively misleading.
+var TYPE_TIMELINE_COLORS = [
+    "rgba(31, 119, 180, 0.8)",
+    "rgba(255, 127, 14, 0.8)",
+    "rgba(44, 160, 44, 0.8)",
+    "rgba(214, 39, 40, 0.8)",
+    "rgba(148, 103, 189, 0.8)",
+    "rgba(140, 86, 75, 0.8)",
+    "rgba(227, 119, 194, 0.8)",
+    "rgba(188, 189, 34, 0.8)",
+    "rgba(127, 127, 127, 0.8)"
+];
+
 function formatElapsedMsForAllocationChart(ms) {
     if (ms < 1000) {
         return `${Math.round(ms)}ms`;
@@ -324,6 +343,97 @@ function renderAllocationTimelineChart(canvasElement, ticks, gen0GcTimesMSec, ge
                         }
 
                         return value;
+                    }
+                }
+            },
+            "maintainAspectRatio": false
+        }
+    });
+}
+
+// Stacked bar chart, one bar per bucket, one stacked segment per type -
+// against gcData["allocationSummary"]["typeTimeline"] (see
+// AllocationJsonExporter.cs's AllocationSummaryBuilder.BuildTypeTimeline).
+// Unlike renderAllocationTimelineChart above, this uses a real Chart.js
+// `bar` chart on a plain category x-axis (one label per bucket) rather than
+// a linear one - stacking genuinely needs the bar controller (there's no
+// line-based approximation for it), and the bar controller's width
+// calculation (getRuler -> scale.getPixelForValue(null, index, ...)) only
+// works correctly against a category scale, which resolves that null value
+// via index instead of trying to use it as a linear value (see
+// renderAllocationTimelineChart's own comment on why a `linear` x-axis
+// broke bars entirely). Buckets are evenly spaced by construction, so a
+// category axis loses nothing here.
+function renderAllocationTypeTimelineChart(canvasElement, typeTimeline) {
+    if (canvasElement === null || canvasElement === undefined || !typeTimeline || !typeTimeline["buckets"] || typeTimeline["buckets"].length === 0) {
+        return;
+    }
+
+    var mb = 1024 * 1024;
+    var types = typeTimeline["types"];
+    var buckets = typeTimeline["buckets"];
+
+    var labels = [];
+    for (var bucketIndex = 0; bucketIndex < buckets.length; ++bucketIndex) {
+        labels.push(formatElapsedMsForAllocationChart(buckets[bucketIndex]["bucketStartMSec"]));
+    }
+
+    var datasets = [];
+    for (var typeIndex = 0; typeIndex < types.length; ++typeIndex) {
+        var typeData = [];
+        for (var bucketIdx = 0; bucketIdx < buckets.length; ++bucketIdx) {
+            typeData.push(buckets[bucketIdx]["bytesByType"][typeIndex] / mb);
+        }
+
+        datasets.push({
+            type: 'bar',
+            label: types[typeIndex],
+            data: typeData,
+            backgroundColor: TYPE_TIMELINE_COLORS[typeIndex % TYPE_TIMELINE_COLORS.length],
+            borderWidth: 0
+        });
+    }
+
+    var context = canvasElement.getContext('2d');
+
+    new Chart(context, {
+        type: 'bar',
+        data: {
+            labels: labels,
+            datasets: datasets
+        },
+        options: {
+            title: {
+                display: true,
+                text: `Allocated by Type Over Time (per ${(typeTimeline["bucketWidthMSec"] / 1000).toFixed(0)}s)`
+            },
+            scales: {
+                xAxes: [{
+                    stacked: true,
+                    scaleLabel: {
+                        display: true,
+                        labelString: "Capture Time Elapsed"
+                    }
+                }],
+                yAxes: [{
+                    stacked: true,
+                    ticks: {
+                        beginAtZero: true,
+                        callback: function (value) {
+                            return value.toFixed(2);
+                        }
+                    },
+                    scaleLabel: {
+                        display: true,
+                        labelString: "Allocated (mb)"
+                    }
+                }]
+            },
+            tooltips: {
+                callbacks: {
+                    label: function (tooltipItem, tooltipData) {
+                        var datasetLabel = tooltipData.datasets[tooltipItem.datasetIndex].label;
+                        return `${datasetLabel}: ${parseFloat(tooltipItem.yLabel).toFixed(2)} mb`;
                     }
                 }
             },

@@ -803,6 +803,7 @@ var allocationDatasets = {};
                 gen1GcTimesMSec.sort(function (left, right) { return left - right; });
 
                 renderAllocationTimelineChart(document.getElementById("allocationTimelineChart"), allocationSummaryJson["ticks"], gen0GcTimesMSec, gen1GcTimesMSec);
+                renderAllocationTypeTimelineChart(document.getElementById("allocationTypeTimelineChart"), allocationSummaryJson["typeTimeline"]);
                 allocationSummaryInjected = true;
             }
         });

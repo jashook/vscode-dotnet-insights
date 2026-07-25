@@ -62,12 +62,14 @@ export function renderAllocationSummaryTable(allocationSummary: any): string {
     // first-column values (GC numbers) and shouldn't get that treatment.
     const tableHtml = `<div class="detailTable allocationTypeTable"><table>${header}${rows}</table></div>`;
 
-    // Chart canvas lives here (not built by client-side JS) so the tiles ->
-    // chart -> table order is a single source of truth, not split across
+    // Chart canvases live here (not built by client-side JS) so the tiles ->
+    // charts -> table order is a single source of truth, not split across
     // GcSnapshotRenderer.ts/snapshotGcStats.js. snapshotGcStats.js just
-    // injects this whole blob, then finds #allocationTimelineChart by id and
-    // renders into it.
-    const chartHtml = `<div class="gcStats"><canvas id="allocationTimelineChart"></canvas></div>`;
+    // injects this whole blob, then finds each canvas by id and renders
+    // into it. The type-breakdown chart sits directly under the rate
+    // chart - both read from allocationSummaryJson, no separate data blob.
+    const chartHtml = `<div class="gcStats"><canvas id="allocationTimelineChart"></canvas></div>
+        <div class="gcStats"><canvas id="allocationTypeTimelineChart"></canvas></div>`;
 
     return `${summaryTilesHtml}${chartHtml}${tableHtml}`;
 }
