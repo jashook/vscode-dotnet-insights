@@ -1,0 +1,4 @@
+# Downloaded VS Code instance + Electron/Chromium user-data profile used by
+# @vscode/test-electron (npm test). Regenerated fresh on every test run -
+# not source, not meant to be tracked.
+.vscode-test/

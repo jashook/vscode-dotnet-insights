@@ -207,5 +207,31 @@ describe('GcStatsCalculations', () => {
             assert.strictEqual(countByGeneration[1], 1);
             assert.strictEqual(countByGeneration[2], 20);
         });
+
+        it('reports real, chronologically increasing DateTime values anchored to the actual capture', () => {
+            // Regression guard: nettraceParser's Trace-header SyncTimeQPC field
+            // does not reliably correspond to the same instant as the per-event
+            // QPC stream on every platform (a real bug found and fixed during
+            // development - GC timestamps were coming out 3 days off from the
+            // trace's real capture time). GcEventProjector now anchors off the
+            // trace's own first event instead. This fixture was captured on
+            // 2026-07-24; asserting the year/month/day here would have caught
+            // that bug.
+            const firstDateTime = new Date(gcs[0]['data']['DateTime']);
+            assert.strictEqual(firstDateTime.getUTCFullYear(), 2026);
+            assert.strictEqual(firstDateTime.getUTCMonth(), 6); // 0-indexed: July
+            assert.strictEqual(firstDateTime.getUTCDate(), 24);
+
+            let previousTime = firstDateTime.getTime();
+            for (const gc of gcs) {
+                const currentTime = new Date(gc['data']['DateTime']).getTime();
+                assert.ok(currentTime >= previousTime, `DateTime went backwards at GC #${gc['data']['Id']}`);
+                previousTime = currentTime;
+            }
+
+            // The whole capture spans a bit over a second - not hours or days.
+            const totalSpanMs = previousTime - firstDateTime.getTime();
+            assert.ok(totalSpanMs > 0 && totalSpanMs < 60000, `expected a sub-minute capture span, got ${totalSpanMs}ms`);
+        });
     });
 });

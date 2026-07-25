@@ -142,6 +142,17 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
 
                 }
 
+                // Perfview's XML export has no absolute wall-clock anchor for the
+                // capture (unlike .nettrace, which has SyncTimeUTC) - only
+                // relative-to-capture-start numbers. Format PauseStartRelativeMSec
+                // as an elapsed-time string so there's still something meaningful
+                // to show alongside the GC number, clearly distinguished from a
+                // real calendar date by the leading "+".
+                const elapsedMs = pauseStartRelativeMSec;
+                const elapsedDate = new Date(elapsedMs);
+                const elapsedHours = Math.floor(elapsedMs / 3600000);
+                const dateTime = `+${elapsedHours.toString().padStart(2, '0')}:${elapsedDate.getUTCMinutes().toString().padStart(2, '0')}:${elapsedDate.getUTCSeconds().toString().padStart(2, '0')}.${elapsedDate.getUTCMilliseconds().toString().padStart(3, '0')}`;
+
                 var data = {
                     "Gen0MinSize": gen0MinSize,
                     "generation": parseInt(generation),
@@ -150,6 +161,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                     "GenerationSize2": generationSize2,
                     "GenerationSizeLOH": generationSizeLOH,
                     "Id": id,
+                    "DateTime": dateTime,
                     "kind": kind,
                     "NumHeaps": numHeaps,
                     "PauseDurationMSec": pauseDurationMSec,

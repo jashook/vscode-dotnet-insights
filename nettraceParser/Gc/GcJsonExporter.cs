@@ -46,6 +46,10 @@ public static class GcJsonExporter
             data["GenerationSize2"] = gcEvent.GenerationSize2;
             data["GenerationSizeLOH"] = gcEvent.GenerationSize3;
             data["Id"] = gcEvent.Id;
+            // ISO-8601 (round-trip format) - directly parseable by JS's `new Date(...)`.
+            // Converted to the machine's local timezone (gcEvent.Timestamp is UTC) so the
+            // offset in the string reflects wall-clock time here, not UTC.
+            data["DateTime"] = gcEvent.Timestamp.ToLocalTime().ToString("o");
             data["kind"] = reasonName;
             data["NumHeaps"] = gcEvent.NumHeaps;
             data["PauseDurationMSec"] = gcEvent.PauseDurationMSec;

@@ -14,6 +14,8 @@ namespace DotnetInsights.NetTrace {
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+using System;
+
 using FastSerialization;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -42,6 +44,10 @@ public class NettraceHeader : IFastSerializable, IFastSerializableVersion
     public int ProcessId { get; set; }
     public int NumberOfProcessors { get; set; }
     public int ExpectedCPUSamplingRate { get; set; }
+
+    // The wall-clock time SyncTimeQPC corresponds to - the anchor used to
+    // convert any event's own QPC timestamp into a real DateTime.
+    public DateTime SyncTimeUtc => new DateTime(this.Year, this.Month, this.Day, this.Hour, this.Minute, this.Second, this.Millisecond, DateTimeKind.Utc);
 
     public void FromStream(Deserializer deserializer)
     {

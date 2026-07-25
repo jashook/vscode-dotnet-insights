@@ -47,6 +47,17 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
     const gcs = gcData["gcData"];
 
+    // Visible (not just tooltip-on-hover) capture time range, so the GC
+    // numbers shown below have real wall-clock context without requiring
+    // interaction. See gcDataFromXml / GcJsonExporter.cs for where DateTime
+    // comes from per source.
+    var captureTimeRangeHtml = "";
+    if (gcs.length > 0) {
+        const firstDateTime = gcs[0]["data"]["DateTime"];
+        const lastDateTime = gcs[gcs.length - 1]["data"]["DateTime"];
+        captureTimeRangeHtml = `<div id="captureTimeRange">Captured: ${firstDateTime} &ndash; ${lastDateTime}</div>`;
+    }
+
     var totalNumbers = computePauseTimeStats(gcs);
 
     let gen0Numbers = computePauseTimeStats(gcs, 0);
@@ -193,6 +204,11 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
         totalCanvasData += `<div class="gcStats"><canvas id="totalGcStatsOverTime"></canvas></div>`;
     }
 
+    var pauseTimeCanvasData = "";
+    if (gcs.length > 0) {
+        pauseTimeCanvasData += `<div class="gcStats"><canvas id="totalGcPauseTimeOverTime"></canvas></div>`;
+    }
+
     var perHeapCanvasData = "";
     if (gcs.length > 0) {
         const gcData = gcs[0].data;
@@ -264,6 +280,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <span style="display:none" id="gcCountsByGen"><!--${gcCountsByGen}--></span>
             <span style="display:none" id="totalTimeInEachGcJson"><!--${totalTimeInEachGcJson}--></span>
             <h2 class="divider">${gcData["processName"]}</h2>
+            ${captureTimeRangeHtml}
 
             <div id="timeSummary">Allocation Amount by Generation</div>
 
@@ -358,7 +375,16 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
                 <script src="${chartjs}"></script>
             </div>
 
+            <h2 class="divider">GC Pause Time by Generation</h2>
+            ${captureTimeRangeHtml}
+
+            <div class="gcDataContainer" id="pauseTimeSpacer">
+                ${pauseTimeCanvasData}
+                <script src="${chartjs}"></script>
+            </div>
+
             <h2 class="divider">GC Usage Over Time</h2>
+            ${captureTimeRangeHtml}
 
             <div class="gcDataContainer" id="nextSpacer">
                 ${totalCanvasData}

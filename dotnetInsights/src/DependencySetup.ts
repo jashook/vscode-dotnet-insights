@@ -848,9 +848,12 @@ export class DependencySetup {
             osName = "linux";
         }
 
-        // Self-contained per-OS publish, same packaging convention as
-        // gcEventListener/roslynHelper.
-        const baseUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/nettraceParser-${osName}.tar.gz`;
+        // Matches roslynHelper's exact archive naming convention (x64-only
+        // per OS, verified against the real roslynHelper-osx-x64.tar.gz
+        // release asset) - see nettraceParser/pack.py, which produces
+        // archives under this same name.
+        const arch = "x64";
+        const baseUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/nettraceParser-${osName}-${arch}.tar.gz`;
 
         var success = await this.downloadAndUnzip(insights, baseUrl, unzipFolder, exeFolder, false);
         return success;

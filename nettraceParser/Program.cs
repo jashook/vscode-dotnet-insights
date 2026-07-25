@@ -29,11 +29,18 @@ if (args.Length < 1)
 string filePath = args[0];
 NettraceFile file = NettraceFile.Read(filePath);
 
+// SyncTimeUtc has been verified correct (matches captured trace files' real
+// mtimes to the second), but NettraceHeader.SyncTimeQPC's numeric
+// relationship to the per-event QPC stream does not - so the trace's own
+// first event is used as the QPC anchor for SyncTimeUtc instead. See the
+// comment on GcEventProjector.Project for the full explanation.
+long referenceQpc = file.Events.Count > 0 ? file.Events[0].TimeStampRelativeQPC : file.Header.SyncTimeQPC;
+
 int jsonArgIndex = Array.IndexOf(args, "--json");
 if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
 {
     string jsonOutputPath = args[jsonArgIndex + 1];
-    List<GcEvent> gcEventsForJson = GcEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency);
+    List<GcEvent> gcEventsForJson = GcEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);
     string processName = Path.GetFileNameWithoutExtension(filePath);
 
     GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, processName);
@@ -43,6 +50,11 @@ if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
 Console.WriteLine("== Header ==");
 Console.WriteLine($"SyncTime: {file.Header.Year}-{file.Header.Month:D2}-{file.Header.Day:D2} {file.Header.Hour:D2}:{file.Header.Minute:D2}:{file.Header.Second:D2}.{file.Header.Millisecond:D3}");
 Console.WriteLine($"QPCFrequency: {file.Header.QPCFrequency}");
+if (Environment.GetEnvironmentVariable("NETTRACE_DEBUG") != null)
+{
+    Console.WriteLine($"SyncTimeQPC (raw, header - not used for GC timestamps, see referenceQpc): {file.Header.SyncTimeQPC}");
+    Console.WriteLine($"referenceQpc (first event, used for GC timestamps): {referenceQpc}");
+}
 Console.WriteLine($"PointerSize: {file.Header.PointerSize}");
 Console.WriteLine($"ProcessId: {file.Header.ProcessId}");
 Console.WriteLine($"NumberOfProcessors: {file.Header.NumberOfProcessors}");
@@ -132,12 +144,12 @@ if (Environment.GetEnvironmentVariable("NETTRACE_DEBUG") != null)
 Console.WriteLine();
 Console.WriteLine("== GC summary ==");
 
-List<GcEvent> gcEvents = GcEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency);
+List<GcEvent> gcEvents = GcEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);
 Console.WriteLine($"Completed GCs: {gcEvents.Count}");
 
 foreach (GcEvent gcEvent in gcEvents)
 {
-    Console.WriteLine($"  GC #{gcEvent.Id} gen{gcEvent.Generation} {gcEvent.Reason} pause={gcEvent.PauseDurationMSec:F2}ms numHeaps={gcEvent.NumHeaps} totalHeapSize={gcEvent.TotalHeapSize} totalPromoted={gcEvent.TotalPromoted} heapsDecoded={gcEvent.Heaps.Count}");
+    Console.WriteLine($"  GC #{gcEvent.Id} [{gcEvent.Timestamp:O}] gen{gcEvent.Generation} {gcEvent.Reason} pause={gcEvent.PauseDurationMSec:F2}ms numHeaps={gcEvent.NumHeaps} totalHeapSize={gcEvent.TotalHeapSize} totalPromoted={gcEvent.TotalPromoted} heapsDecoded={gcEvent.Heaps.Count}");
 
     if (Environment.GetEnvironmentVariable("NETTRACE_DEBUG") != null && gcEvent.Heaps.Count > 0)
     {

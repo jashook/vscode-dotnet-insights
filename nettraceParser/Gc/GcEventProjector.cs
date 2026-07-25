@@ -19,6 +19,7 @@ namespace DotnetInsights.NetTrace.Gc {
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+using System;
 using System.Collections.Generic;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -33,6 +34,11 @@ public class GcEvent
     public double PauseDurationMSec;
     public double PauseStartRelativeMSec;
     public double PauseEndRelativeMSec;
+
+    // Wall-clock time the collection started, derived from the trace's
+    // SyncTimeUTC/SyncTimeQPC anchor (NettraceHeader) plus this GC's own QPC
+    // timestamp - not just "relative ms into the capture".
+    public DateTime Timestamp;
     public long TotalHeapSize;
     public long TotalPromoted;
     public long GenerationSize0;
@@ -56,7 +62,17 @@ public static class GcEventProjector
 {
     private const string ClrProviderName = "Microsoft-Windows-DotNETRuntime";
 
-    public static List<GcEvent> Project(IEnumerable<EventRecord> events, int pointerSize, long qpcFrequency)
+    // referenceUtc/referenceQpc anchor the wall-clock conversion: referenceQpc
+    // is whatever QPC tick value corresponds to referenceUtc. NettraceHeader's
+    // own SyncTimeQPC looks like it should be this anchor, but empirically
+    // (verified against a real capture's file mtime) its numeric relationship
+    // to the per-event QPC stream doesn't hold up on this platform - so
+    // callers pass the trace's own first event's QPC value paired with
+    // SyncTimeUtc instead, which is self-consistent by construction (both
+    // come from data already proven correct: SyncTimeUtc matched the real
+    // capture time to the second, and per-event QPC deltas are internally
+    // consistent - only the header's own SyncTimeQPC field is suspect).
+    public static List<GcEvent> Project(IEnumerable<EventRecord> events, int pointerSize, long qpcFrequency, DateTime referenceUtc, long referenceQpc)
     {
         Dictionary<int, GcEvent> gcsById = new Dictionary<int, GcEvent>();
         Dictionary<int, long> startTimeStampById = new Dictionary<int, long>();
@@ -87,6 +103,12 @@ public static class GcEventProjector
                 gcEvent.Reason = start.Reason;
                 gcEvent.Type = start.Type;
 
+                if (qpcFrequency > 0)
+                {
+                    long qpcDelta = record.TimeStampRelativeQPC - referenceQpc;
+                    gcEvent.Timestamp = referenceUtc.AddSeconds(qpcDelta / (double)qpcFrequency);
+                }
+
                 gcsById[start.Count] = gcEvent;
                 startTimeStampById[start.Count] = record.TimeStampRelativeQPC;
                 mostRecentlyStartedGcId = start.Count;
@@ -105,8 +127,16 @@ public static class GcEventProjector
                     {
                         long deltaTicks = record.TimeStampRelativeQPC - startTimeStamp;
                         gcEvent.PauseDurationMSec = deltaTicks * 1000.0 / qpcFrequency;
-                        gcEvent.PauseStartRelativeMSec = startTimeStamp * 1000.0 / qpcFrequency;
-                        gcEvent.PauseEndRelativeMSec = record.TimeStampRelativeQPC * 1000.0 / qpcFrequency;
+                        // Relative to the trace's own first event (referenceQpc), not
+                        // the raw QPC counter - record.TimeStampRelativeQPC is a raw
+                        // hardware tick value despite its name, so without subtracting
+                        // referenceQpc here these would be huge absolute-ish numbers
+                        // (e.g. "6 days elapsed" for a 1-second capture) instead of
+                        // genuinely relative-to-capture-start, which is what every
+                        // consumer of this field (including the .gcinfo/XML path,
+                        // where Perfview computes it as truly relative) expects.
+                        gcEvent.PauseStartRelativeMSec = (startTimeStamp - referenceQpc) * 1000.0 / qpcFrequency;
+                        gcEvent.PauseEndRelativeMSec = (record.TimeStampRelativeQPC - referenceQpc) * 1000.0 / qpcFrequency;
                     }
                 }
             }
