@@ -51,7 +51,13 @@ export function renderAllocationSummaryTable(allocationSummary: any): string {
         const tdLargeCount = typeStats["LargeCount"];
         const tdPinnedCount = typeStats["PinnedCount"];
 
-        rows += `<tr><td>${tdTypeName}</td><td>${tdTotalBytes}</td><td>${tdPercent}</td><td>${tdTickCount}</td><td>${tdSmallCount}</td><td>${tdLargeCount}</td><td>${tdPinnedCount}</td></tr>`;
+        // Clickable - see snapshotGcStats.js's onTypeDrillDownClick. Every
+        // row is drillable: typeDrillDown (AllocationJsonExporter.cs's
+        // WriteTypeDrillDown) is a parallel array to topTypes, one entry
+        // per row here, and every type in topTypes has at least one tick by
+        // construction, so its typeDrillDown entry always has at least the
+        // "<no stack captured>" placeholder even in the worst case.
+        rows += `<tr class="typeRow" data-type-index="${index}"><td>${tdTypeName}</td><td>${tdTotalBytes}</td><td>${tdPercent}</td><td>${tdTickCount}</td><td>${tdSmallCount}</td><td>${tdLargeCount}</td><td>${tdPinnedCount}</td></tr>`;
     }
 
     const header = `<tr class="tableHeader"><th>Type Name</th><th>Total Bytes (mb)</th><th>% of Sampled</th><th>Tick Count</th><th>Small</th><th>Large</th><th>Pinned</th></tr>`;
@@ -83,7 +89,25 @@ export function renderAllocationSummaryTable(allocationSummary: any): string {
     // there is no server-rendered HTML for it here, just the empty target
     // panel and a Drill Down/Back button pair the click handler reveals.
     const drillDownCells = allocationSummary["drillDown"] && allocationSummary["drillDown"]["cells"];
-    const hasDrillDownData = drillDownCells && Object.keys(drillDownCells).length > 0;
+    const hasCellDrillDownData = drillDownCells && Object.keys(drillDownCells).length > 0;
+
+    // typeDrillDown (whole-capture, every ranked type - see
+    // AllocationJsonExporter.cs's WriteTypeDrillDown) is a second, separate
+    // path into the same Drill Down tab, reached by clicking a row in
+    // tableHtml below instead of a stacked-chart segment - either one being
+    // present is enough to justify showing the tab/button.
+    const typeDrillDown = allocationSummary["typeDrillDown"];
+    var hasTypeDrillDownData = false;
+    if (typeDrillDown) {
+        for (var typeDrillDownIndex = 0; typeDrillDownIndex < typeDrillDown.length; ++typeDrillDownIndex) {
+            if (typeDrillDown[typeDrillDownIndex] && typeDrillDown[typeDrillDownIndex].length > 0) {
+                hasTypeDrillDownData = true;
+                break;
+            }
+        }
+    }
+
+    const hasDrillDownData = hasCellDrillDownData || hasTypeDrillDownData;
 
     const heapContentsTabBar = `
         <div class="heapContentsTabBar">

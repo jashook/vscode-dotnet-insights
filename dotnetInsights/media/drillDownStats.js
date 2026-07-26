@@ -1,23 +1,32 @@
 // Script run within the webview itself - renders the "Drill Down" tab's
-// resolved-stacks view against one cell of
-// gcData["allocationSummary"]["drillDown"]["cells"] (see
-// AllocationJsonExporter.cs's AllocationSummaryBuilder.WriteDrillDown).
-// Unlike every other table on this page, this has no server-rendered HTML
-// to lazily inject - which cell to show is only known once a
-// stacked-chart segment is actually clicked (see allocationStats.js's
-// onClick handler on the type-timeline chart), so it's built here,
-// entirely client-side, from data already present in allocationSummaryJson.
+// resolved-stacks view against either scope AllocationJsonExporter.cs's
+// AllocationSummaryBuilder exports: a single (type, 1-second bucket) chart
+// cell (gcData["allocationSummary"]["drillDown"]["cells"], reached by
+// clicking a stacked-chart segment - see allocationStats.js's onClick
+// handler), or a whole type across the entire capture
+// (gcData["allocationSummary"]["typeDrillDown"], reached by clicking a row
+// in the global ranked types table - see snapshotGcStats.js's
+// onTypeDrillDownClick). Both are just an array of {frames, totalBytes,
+// tickCount} stacks by the time they reach renderDrillDownTable below, so
+// one render path serves both entry points. Unlike every other table on
+// this page, this has no server-rendered HTML to lazily inject - which
+// scope to show is only known at click time - so it's built here, entirely
+// client-side, from data already present in allocationSummaryJson.
 //
 // Deliberately not a PerfView-style root-to-leaf call tree. The question a
-// user clicking a chart segment actually has is "which method is
-// allocating this?", not "show me every possible call path first" - so
-// this leads with a ranked list of distinct LEAF (allocating) methods.
-// Expanding a leaf reveals its callers as a real tree (one row per frame,
-// shared call prefixes merged so two paths through the same caller don't
-// duplicate rows) - but a row only gets a collapse toggle where the tree
-// actually branches. A straight, non-branching chain of callers just flows
-// as consecutive rows with no interaction required at all, since there's
-// nothing to hide.
+// user clicking a chart segment (or a row in the ranked types table) has
+// is "which method is allocating this?", not "show me every possible call
+// path first" - so this leads with a ranked list of distinct LEAF
+// (allocating) methods. Expanding a leaf reveals its callers as a real
+// tree (one row per frame, shared call prefixes merged so two paths
+// through the same caller don't duplicate rows) - but a row only gets a
+// collapse toggle where the tree actually branches. A straight,
+// non-branching chain of callers just flows as consecutive rows with no
+// interaction required at all, since there's nothing to hide. Every row
+// also shows its share of its *immediate* parent's bytes (leaf rows: share
+// of the whole scope's total; a caller row: share of the row that expanded
+// into it) - flame-graph style, not a share of the grand total at every
+// level.
 
 // Real .NET type/method names can legitimately contain HTML-significant
 // characters (compiler-generated names like "Program.<Main>$" are common -
@@ -53,16 +62,16 @@ function formatFrameHtml(rawFrameName) {
     return `<span class="methodTypePrefix">${escapeHtmlForDrillDown(typePrefix)}</span><span class="methodName">${escapeHtmlForDrillDown(methodName)}</span>`;
 }
 
-// Regroups a cell's flat list of distinct stacks (each already aggregated
-// by exact StackId - see WriteDrillDown) by their leaf (allocating) frame,
-// since several distinct call paths commonly share the same immediate
-// allocator. Returns groups sorted by total bytes descending.
-function groupStacksByLeaf(cellStacks) {
+// Regroups a flat list of distinct stacks (each already aggregated by
+// exact StackId - see WriteStackAggregate) by their leaf (allocating)
+// frame, since several distinct call paths commonly share the same
+// immediate allocator. Returns groups sorted by total bytes descending.
+function groupStacksByLeaf(stacks) {
     var groupsByLeaf = new Map();
     var leafOrder = [];
 
-    for (var stackIndex = 0; stackIndex < cellStacks.length; ++stackIndex) {
-        var stackEntry = cellStacks[stackIndex];
+    for (var stackIndex = 0; stackIndex < stacks.length; ++stackIndex) {
+        var stackEntry = stacks[stackIndex];
         var frames = stackEntry["frames"];
         var leafFrame = frames[0];
 
@@ -124,6 +133,22 @@ function buildCallerTree(paths) {
     return root;
 }
 
+// Bytes cell content for one row: the raw mb figure plus, when a parent
+// total is known, that row's share of it in parentheses - e.g.
+// "1.23 (45.6%)". Folded into the existing Bytes column as text rather
+// than a new column so every row's column widths stay identical (see
+// CALLER_TREE_COLGROUP below) regardless of nesting depth.
+function formatBytesWithPercentage(totalBytes, parentTotalBytes, mb) {
+    var bytesText = (totalBytes / mb).toFixed(2);
+
+    if (!(parentTotalBytes > 0)) {
+        return bytesText;
+    }
+
+    var percentage = (totalBytes / parentTotalBytes) * 100;
+    return `${bytesText} <span class="percentOfParent">(${percentage.toFixed(1)}%)</span>`;
+}
+
 // Shared by the outer table and every nested .callerTreeInner table so
 // their Bytes/Ticks columns land at identical widths regardless of
 // nesting depth - table-layout:fixed sizes columns from explicit <col>
@@ -144,7 +169,7 @@ var callerRowIdCounter = 0;
 // continuation with no decision to make, so that child's row is appended
 // immediately at the *same* indent level rather than opening a new nested,
 // initially-hidden section for something with nothing to hide.
-function renderCallerChainRows(node, depth, mb) {
+function renderCallerChainRows(node, depth, mb, parentTotalBytes) {
     var childEntries = Array.from(node.children.values());
     childEntries.sort(function (left, right) { return right.totalBytes - left.totalBytes; });
 
@@ -158,7 +183,7 @@ function renderCallerChainRows(node, depth, mb) {
 
     var rowHtml = `<tr class="callerRow"${hasBranch ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
         `<td style="padding-left: ${indentEm}em">${toggleHtml}${formatFrameHtml(node.frameName)}</td>` +
-        `<td>${(node.totalBytes / mb).toFixed(2)}</td>` +
+        `<td>${formatBytesWithPercentage(node.totalBytes, parentTotalBytes, mb)}</td>` +
         `<td>${node.tickCount}</td>` +
         `</tr>`;
 
@@ -166,32 +191,39 @@ function renderCallerChainRows(node, depth, mb) {
         return rowHtml;
     }
 
+    // Every child's percentage is measured against *this* node's bytes,
+    // regardless of whether this row itself is a branch point or a
+    // straight continuation - flame-graph style, one hop's share of the
+    // hop immediately before it, not a share of the overall total.
     if (childEntries.length === 1) {
-        return rowHtml + renderCallerChainRows(childEntries[0], depth, mb);
+        return rowHtml + renderCallerChainRows(childEntries[0], depth, mb, node.totalBytes);
     }
 
     var childRowsHtml = "";
     for (var childIndex = 0; childIndex < childEntries.length; ++childIndex) {
-        childRowsHtml += renderCallerChainRows(childEntries[childIndex], depth + 1, mb);
+        childRowsHtml += renderCallerChainRows(childEntries[childIndex], depth + 1, mb, node.totalBytes);
     }
 
     return rowHtml + `<tr id="${rowId}" class="callPathsDetail"><td colspan="3" class="callerTreeCell"><table class="callerTreeInner">${CALLER_TREE_COLGROUP}${childRowsHtml}</table></td></tr>`;
 }
 
-// cellStacks: gcData["allocationSummary"]["drillDown"]["cells"]["{typeIndex}:{bucketIndex}"]
-// (undefined/empty when that exact cell has no drillDown entry - e.g. every
-// tick in it landed under "Other", which isn't drillable in the first
-// place, so this shouldn't normally happen for a cell the chart actually
-// let the user click).
-function renderDrillDownTable(cellStacks, typeName, bucketLabel) {
-    const heading = `<h3 class="detailTableHeading">${escapeHtmlForDrillDown(typeName)} &mdash; ${escapeHtmlForDrillDown(bucketLabel)}</h3>`;
+// stacks: either gcData["allocationSummary"]["drillDown"]["cells"]["{typeIndex}:{bucketIndex}"]
+// (one chart cell - undefined/empty when that exact cell has no drillDown
+// entry, e.g. every tick in it landed under "Other", which isn't drillable
+// in the first place, so this shouldn't normally happen for a cell the
+// chart actually let the user click) or
+// gcData["allocationSummary"]["typeDrillDown"][typeIndex] (one type, whole
+// capture). scopeLabel is shown next to typeName in the heading - a
+// formatted bucket time for the former, "Whole Capture" for the latter.
+function renderDrillDownTable(stacks, typeName, scopeLabel) {
+    const heading = `<h3 class="detailTableHeading">${escapeHtmlForDrillDown(typeName)} &mdash; ${escapeHtmlForDrillDown(scopeLabel)}</h3>`;
 
-    if (!cellStacks || cellStacks.length === 0) {
+    if (!stacks || stacks.length === 0) {
         return `${heading}<div class="detailTable"><p>No captured stacks for this selection.</p></div>`;
     }
 
     const mb = 1024 * 1024;
-    const leafGroups = groupStacksByLeaf(cellStacks);
+    const leafGroups = groupStacksByLeaf(stacks);
     callerRowIdCounter = 0;
 
     var totalBytes = 0;
@@ -237,7 +269,7 @@ function renderDrillDownTable(cellStacks, typeName, bucketLabel) {
 
         rows += `<tr class="leafMethodRow"${isExpandable ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
             `<td>${toggleHtml}${formatFrameHtml(group.leafFrame)}${pathCountSuffix}</td>` +
-            `<td>${(group.totalBytes / mb).toFixed(2)}</td>` +
+            `<td>${formatBytesWithPercentage(group.totalBytes, totalBytes, mb)}</td>` +
             `<td>${group.tickCount}</td>` +
             `</tr>`;
 
@@ -249,10 +281,10 @@ function renderDrillDownTable(cellStacks, typeName, bucketLabel) {
         if (topLevelCallers.length === 1) {
             // Single immediate caller - straight continuation, shown
             // inline right away just like every other non-branching hop.
-            callerRowsHtml = renderCallerChainRows(topLevelCallers[0], 0, mb);
+            callerRowsHtml = renderCallerChainRows(topLevelCallers[0], 0, mb, group.totalBytes);
         } else {
             for (var callerIndex = 0; callerIndex < topLevelCallers.length; ++callerIndex) {
-                callerRowsHtml += renderCallerChainRows(topLevelCallers[callerIndex], 0, mb);
+                callerRowsHtml += renderCallerChainRows(topLevelCallers[callerIndex], 0, mb, group.totalBytes);
             }
         }
 

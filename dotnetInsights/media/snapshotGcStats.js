@@ -1174,8 +1174,24 @@ var allocationDatasets = {};
         }
     }
 
+    // Shared by both ways into the Drill Down tab (a chart-segment click and
+    // a global-table row click below) - injects the rendered table, reveals
+    // the tab button (hidden until there's actually something to show), and
+    // switches to it.
+    function showDrillDownTab(drillDownHtml) {
+        document.getElementById('heapContents-tab-drilldown').innerHTML = drillDownHtml;
+
+        var drillDownTabButton = document.getElementById('drillDownTabButton');
+        if (drillDownTabButton) {
+            drillDownTabButton.style.display = 'inline-block';
+        }
+
+        switchHeapContentsTab('drilldown');
+    }
+
     // Called from allocationStats.js's onClick handler on the type-timeline
-    // chart when a real (non-"Other") stacked segment is clicked.
+    // chart when a real (non-"Other") stacked segment is clicked. Scoped to
+    // that one (type, 1-second bucket) cell.
     function onDrillDownSegmentClick(typeIndex, bucketIndex) {
         var drillDown = allocationSummaryJson["drillDown"];
         var cellStacks = (drillDown && drillDown["cells"]) ? drillDown["cells"][typeIndex + ":" + bucketIndex] : null;
@@ -1184,14 +1200,20 @@ var allocationDatasets = {};
         var typeName = typeTimeline["types"][typeIndex];
         var bucketLabel = formatElapsedMsForAllocationChart(typeTimeline["buckets"][bucketIndex]["bucketStartMSec"]);
 
-        document.getElementById('heapContents-tab-drilldown').innerHTML = renderDrillDownTable(cellStacks, typeName, bucketLabel);
+        showDrillDownTab(renderDrillDownTable(cellStacks, typeName, bucketLabel));
+    }
 
-        var drillDownTabButton = document.getElementById('drillDownTabButton');
-        if (drillDownTabButton) {
-            drillDownTabButton.style.display = 'inline-block';
-        }
+    // Called from the click delegation in wireHeapContentsInnerTabs below
+    // when a row in the global ranked types table is clicked. Scoped to
+    // that type across the *whole* capture (AllocationJsonExporter.cs's
+    // typeDrillDown - a parallel array to topTypes), not one chart cell -
+    // merges every bucket's stacks for this type into one view.
+    function onTypeDrillDownClick(typeIndex) {
+        var typeDrillDown = allocationSummaryJson["typeDrillDown"];
+        var stacks = typeDrillDown ? typeDrillDown[typeIndex] : null;
+        var typeName = allocationSummaryJson["topTypes"][typeIndex]["TypeName"];
 
-        switchHeapContentsTab('drilldown');
+        showDrillDownTab(renderDrillDownTable(stacks, typeName, "Whole Capture"));
     }
 
     function wireHeapContentsInnerTabs() {
@@ -1205,6 +1227,23 @@ var allocationDatasets = {};
         var backToChartsButton = document.getElementById('backToChartsButton');
         if (backToChartsButton) {
             backToChartsButton.addEventListener('click', goBackToChartsView);
+        }
+
+        // Global ranked types table rows (AllocationSummaryRenderer.ts) -
+        // this table is only ever injected once (not rebuilt per click like
+        // the drill-down panel itself), so a direct listener on its
+        // container is fine here rather than needing delegation on
+        // something more stable.
+        var chartsPanel = document.getElementById('heapContents-tab-charts');
+        if (chartsPanel) {
+            chartsPanel.addEventListener('click', function (event) {
+                var typeRow = event.target.closest('.typeRow');
+                if (!typeRow) {
+                    return;
+                }
+
+                onTypeDrillDownClick(parseInt(typeRow.getAttribute('data-type-index'), 10));
+            });
         }
 
         // Event delegation, attached once to the panel itself rather than

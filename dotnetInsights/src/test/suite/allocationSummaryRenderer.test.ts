@@ -126,7 +126,10 @@ describe('AllocationSummaryRenderer', () => {
 
             const html = renderAllocationSummaryTable(summary);
 
-            const dataRowMatches = html.match(/<tr><td>/g) || [];
+            // Rows are clickable (see snapshotGcStats.js's
+            // onTypeDrillDownClick) - class="typeRow" data-type-index="N",
+            // not a bare <tr>.
+            const dataRowMatches = html.match(/<tr class="typeRow" data-type-index="\d+">/g) || [];
             assert.strictEqual(dataRowMatches.length, 2);
             assert.ok(html.includes('<td>System.Byte[]</td><td>3.00</td><td>75.00</td><td>30</td>'));
             assert.ok(html.includes('<td>System.String</td><td>1.00</td><td>25.00</td><td>10</td>'));
@@ -263,7 +266,7 @@ describe('AllocationSummaryRenderer', () => {
 
             assert.ok(html.includes('class="detailTable allocationTypeTable"'));
             assert.ok(html.includes('id="allocationTimelineChart"'));
-            assert.strictEqual((html.match(/<tr><td>/g) || []).length, allocationSummary['topTypes'].length);
+            assert.strictEqual((html.match(/<tr class="typeRow" data-type-index="\d+">/g) || []).length, allocationSummary['topTypes'].length);
         });
 
         it('fixture has a populated drillDown with real resolved method names, not every frame unresolved', () => {
@@ -292,6 +295,41 @@ describe('AllocationSummaryRenderer', () => {
 
             assert.ok(html.includes('drillDownTabButton'));
             assert.ok(html.includes('id="heapContents-tab-drilldown"'));
+        });
+
+        it('fixture has a populated typeDrillDown (whole-capture, not scoped to one bucket) with real resolved method names', () => {
+            const typeDrillDown = allocationSummary['typeDrillDown'];
+
+            assert.ok(typeDrillDown !== null && typeDrillDown !== undefined);
+            // Parallel array to topTypes - see AllocationJsonExporter.cs's
+            // WriteTypeDrillDown.
+            assert.strictEqual(typeDrillDown.length, allocationSummary['topTypes'].length);
+
+            let foundRealFrame = false;
+            for (const stacksForType of typeDrillDown) {
+                for (const stackEntry of stacksForType) {
+                    for (const frame of stackEntry['frames']) {
+                        if (!frame.startsWith('<unresolved') && frame !== '<no stack captured>') {
+                            foundRealFrame = true;
+                        }
+                    }
+                }
+            }
+
+            assert.ok(foundRealFrame, 'Expected at least one real resolved frame across all typeDrillDown entries.');
+        });
+
+        it('every rendered type row links to a non-empty typeDrillDown entry at the same index', () => {
+            const html = renderAllocationSummaryTable(allocationSummary);
+            const typeDrillDown = allocationSummary['typeDrillDown'];
+
+            const rowIndexMatches = [...html.matchAll(/data-type-index="(\d+)"/g)];
+            assert.strictEqual(rowIndexMatches.length, allocationSummary['topTypes'].length);
+
+            for (const match of rowIndexMatches) {
+                const typeIndex = parseInt(match[1], 10);
+                assert.ok(typeDrillDown[typeIndex] && typeDrillDown[typeIndex].length > 0, `typeDrillDown[${typeIndex}] should be non-empty`);
+            }
         });
     });
 });

@@ -563,6 +563,18 @@
     word-break: break-word;
 }
 
+/* Global ranked types table rows - see snapshotGcStats.js's
+   onTypeDrillDownClick. Every row is drillable (AllocationSummaryRenderer.ts). */
+.typeRow
+{
+    cursor: pointer;
+}
+
+.typeRow:hover
+{
+    background-color: lightblue;
+}
+
 .detailTable .notSomewhatInterestingGc
 {
     background-color: rgba(192, 192, 192, 0.247);
@@ -736,4 +748,19 @@
 {
     color: rgba(0, 0, 0, 0.55);
     font-style: italic;
+}
+
+.pathCount
+{
+    color: rgba(0, 0, 0, 0.55);
+    font-size: 0.9em;
+}
+
+/* A row's share of its immediate parent's bytes (flame-graph style, not a
+   share of the grand total at every level - see drillDownStats.js's
+   formatBytesWithPercentage). */
+.percentOfParent
+{
+    color: rgba(0, 0, 0, 0.55);
+    font-size: 0.9em;
 }
