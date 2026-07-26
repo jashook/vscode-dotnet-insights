@@ -24,12 +24,14 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json.Nodes;
 
+using DotnetInsights.NetTrace.Rundown;
+
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
 public static class GcJsonExporter
 {
-    public static void WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, string processName)
+    public static void WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable, string processName)
     {
         JsonArray gcDataArray = new JsonArray();
 
@@ -69,6 +71,8 @@ public static class GcJsonExporter
             // kept for consistency with what the renderer already expects.
             data["Type"] = reasonName;
             data["GCDurationMSec"] = gcEvent.PauseDurationMSec;
+            data["PinnedObjectCount"] = gcEvent.PinnedObjectCount;
+            data["GlobalMechanisms"] = (int)gcEvent.GlobalMechanisms;
 
             // gcEvent.Heaps is populated in wire-arrival order (see
             // GcEventProjector.cs's GCPerHeapHistory handling), which for a
@@ -131,7 +135,7 @@ public static class GcJsonExporter
         // GcSnapshotRenderer.ts uses (alongside its own explicit sourceFormat
         // parameter) to decide whether the nettrace-only "Heap Contents" view
         // has anything to show. See AllocationJsonExporter.cs.
-        root["allocationSummary"] = AllocationSummaryBuilder.Build(allocationEvents);
+        root["allocationSummary"] = AllocationSummaryBuilder.Build(allocationEvents, stacksById, symbolTable);
         root["gcData"] = gcDataArray;
 
         File.WriteAllText(outputPath, root.ToJsonString());

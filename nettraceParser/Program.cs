@@ -8,9 +8,10 @@
 //     DotnetInsightsGcSnapshotEditor rendering already expects) and exits
 //     quietly - this is what the extension invokes.
 //   nettraceParser <file.nettrace> [--dump-fields <EventName>]
-//     Manual verification harness (this repo has no unit test project
-//     convention): dumps the trace header, per-provider/event-name counts,
-//     a GC summary, and optionally raw decoded fields for one event name.
+//     Manual verification harness: dumps the trace header, per-provider/
+//     event-name counts, a GC summary, and optionally raw decoded fields
+//     for one event name. Real automated coverage lives in the sibling
+//     nettraceParser.Tests project (`dotnet test`), not here.
 ////////////////////////////////////////////////////////////////////////////////
 
 using System;
@@ -19,6 +20,7 @@ using System.IO;
 
 using DotnetInsights.NetTrace;
 using DotnetInsights.NetTrace.Gc;
+using DotnetInsights.NetTrace.Rundown;
 
 if (args.Length < 1)
 {
@@ -42,9 +44,10 @@ if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
     string jsonOutputPath = args[jsonArgIndex + 1];
     List<GcEvent> gcEventsForJson = GcEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);
     List<AllocationEvent> allocationEventsForJson = AllocationEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);
+    MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize);
     string processName = Path.GetFileNameWithoutExtension(filePath);
 
-    GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, processName);
+    GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, file.StacksById, symbolTable, processName);
     return;
 }
 

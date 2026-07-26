@@ -9,7 +9,10 @@
 // covered by topTypes, so it's dropped per-tick to keep the list lean) so
 // the webview can plot every individual allocation-tick event, matching how
 // GcJsonExporter.cs already ships full per-GC fidelity rather than a
-// pre-aggregated view.
+// pre-aggregated view. Also builds "drillDown": for each (type, 1-second
+// bucket) cell the stacked "Allocated by Type Over Time" chart can be
+// clicked on, the resolved call stacks (Rundown/MethodSymbolTable.cs) that
+// produced that cell's allocations - see BuildDrillDown.
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace DotnetInsights.NetTrace.Gc {
@@ -19,6 +22,8 @@ namespace DotnetInsights.NetTrace.Gc {
 
 using System.Collections.Generic;
 using System.Text.Json.Nodes;
+
+using DotnetInsights.NetTrace.Rundown;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -38,6 +43,13 @@ public static class AllocationSummaryBuilder
     // (not shared code) since one lives in C#, the other in the webview.
     private const double TypeTimelineBucketWidthMSec = 1000;
 
+    // "Other" (the catch-all column beyond ChartTopTypesLimit) is
+    // deliberately not drillable - it mixes many unrelated types together,
+    // so "the stack for Other" would misleadingly imply it's one thing.
+    // Ticks landing in that column simply aren't grouped into any drillDown
+    // cell.
+    private const int DrillDownStacksPerCellLimit = 50;
+
     private class TypeAllocStats
     {
         public string TypeName;
@@ -48,7 +60,7 @@ public static class AllocationSummaryBuilder
         public int PinnedCount;
     }
 
-    public static JsonObject Build(List<AllocationEvent> allocationEvents)
+    public static JsonObject Build(List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
     {
         Dictionary<string, TypeAllocStats> statsByType = new Dictionary<string, TypeAllocStats>();
         long totalSampledBytes = 0;
@@ -105,8 +117,12 @@ public static class AllocationSummaryBuilder
             topTypesArray.Add(typeObject);
         }
 
+        int chartTypeCount = sortedStats.Count < ChartTopTypesLimit ? sortedStats.Count : ChartTopTypesLimit;
+        Dictionary<string, int> columnIndexByType = BuildColumnIndexByType(sortedStats, chartTypeCount);
+
         JsonArray ticksArray = BuildTicks(allocationEvents);
-        JsonObject typeTimeline = BuildTypeTimeline(allocationEvents, sortedStats);
+        JsonObject typeTimeline = BuildTypeTimeline(allocationEvents, sortedStats, chartTypeCount, columnIndexByType);
+        JsonObject drillDown = BuildDrillDown(allocationEvents, chartTypeCount, columnIndexByType, stacksById, symbolTable);
 
         JsonObject summary = new JsonObject();
         summary["totalSampledBytes"] = totalSampledBytes;
@@ -115,8 +131,60 @@ public static class AllocationSummaryBuilder
         summary["topTypes"] = topTypesArray;
         summary["ticks"] = ticksArray;
         summary["typeTimeline"] = typeTimeline;
+        summary["drillDown"] = drillDown;
 
         return summary;
+    }
+
+    // Shared by BuildTypeTimeline and BuildDrillDown so both agree on
+    // exactly which types get their own column vs. fall into "Other" -
+    // single source of truth for that boundary, per this file's own header
+    // comment.
+    private static Dictionary<string, int> BuildColumnIndexByType(List<TypeAllocStats> sortedStats, int chartTypeCount)
+    {
+        Dictionary<string, int> columnIndexByType = new Dictionary<string, int>();
+
+        for (int typeIndex = 0; typeIndex < chartTypeCount; ++typeIndex)
+        {
+            columnIndexByType[sortedStats[typeIndex].TypeName] = typeIndex;
+        }
+
+        return columnIndexByType;
+    }
+
+    private static int ComputeBucketIndex(double relativeMSec, int bucketCount)
+    {
+        int bucketIndex = (int)(relativeMSec / TypeTimelineBucketWidthMSec);
+
+        if (bucketIndex >= bucketCount)
+        {
+            bucketIndex = bucketCount - 1;
+        }
+        else if (bucketIndex < 0)
+        {
+            bucketIndex = 0;
+        }
+
+        return bucketIndex;
+    }
+
+    private static int ComputeBucketCount(List<AllocationEvent> allocationEvents)
+    {
+        if (allocationEvents.Count == 0)
+        {
+            return 0;
+        }
+
+        double lastRelativeMSec = 0;
+        for (int eventIndex = 0; eventIndex < allocationEvents.Count; ++eventIndex)
+        {
+            if (allocationEvents[eventIndex].RelativeMSec > lastRelativeMSec)
+            {
+                lastRelativeMSec = allocationEvents[eventIndex].RelativeMSec;
+            }
+        }
+
+        return (int)(lastRelativeMSec / TypeTimelineBucketWidthMSec) + 1;
     }
 
     // Per-second (TypeTimelineBucketWidthMSec) bytes-by-type breakdown for
@@ -127,18 +195,12 @@ public static class AllocationSummaryBuilder
     // shared "types" column list plus parallel per-bucket byte arrays
     // (rather than repeating type name strings as JSON object keys in every
     // bucket) to keep the payload compact.
-    private static JsonObject BuildTypeTimeline(List<AllocationEvent> allocationEvents, List<TypeAllocStats> sortedStats)
+    private static JsonObject BuildTypeTimeline(List<AllocationEvent> allocationEvents, List<TypeAllocStats> sortedStats, int chartTypeCount, Dictionary<string, int> columnIndexByType)
     {
-        int chartTypeCount = sortedStats.Count < ChartTopTypesLimit ? sortedStats.Count : ChartTopTypesLimit;
-
-        Dictionary<string, int> columnIndexByType = new Dictionary<string, int>();
         JsonArray typesArray = new JsonArray();
-
         for (int typeIndex = 0; typeIndex < chartTypeCount; ++typeIndex)
         {
-            string typeName = sortedStats[typeIndex].TypeName;
-            columnIndexByType[typeName] = typeIndex;
-            typesArray.Add(typeName);
+            typesArray.Add(sortedStats[typeIndex].TypeName);
         }
 
         // Always present as the last column, even if every type already fit
@@ -151,35 +213,20 @@ public static class AllocationSummaryBuilder
         result["bucketWidthMSec"] = TypeTimelineBucketWidthMSec;
         result["types"] = typesArray;
 
-        if (allocationEvents.Count == 0)
+        int bucketCount = ComputeBucketCount(allocationEvents);
+        if (bucketCount == 0)
         {
             result["buckets"] = new JsonArray();
             return result;
         }
 
-        double lastRelativeMSec = 0;
-        for (int eventIndex = 0; eventIndex < allocationEvents.Count; ++eventIndex)
-        {
-            if (allocationEvents[eventIndex].RelativeMSec > lastRelativeMSec)
-            {
-                lastRelativeMSec = allocationEvents[eventIndex].RelativeMSec;
-            }
-        }
-
-        int bucketCount = (int)(lastRelativeMSec / TypeTimelineBucketWidthMSec) + 1;
         int columnCount = chartTypeCount + 1;
         long[,] bytesByBucketAndType = new long[bucketCount, columnCount];
 
         for (int eventIndex = 0; eventIndex < allocationEvents.Count; ++eventIndex)
         {
             AllocationEvent allocationEvent = allocationEvents[eventIndex];
-
-            int bucketIndex = (int)(allocationEvent.RelativeMSec / TypeTimelineBucketWidthMSec);
-            if (bucketIndex >= bucketCount)
-            {
-                bucketIndex = bucketCount - 1;
-            }
-
+            int bucketIndex = ComputeBucketIndex(allocationEvent.RelativeMSec, bucketCount);
             string typeName = string.IsNullOrEmpty(allocationEvent.TypeName) ? "<unknown>" : allocationEvent.TypeName;
 
             int columnIndex;
@@ -208,6 +255,111 @@ public static class AllocationSummaryBuilder
 
         result["buckets"] = bucketsArray;
         return result;
+    }
+
+    private class StackAggregate
+    {
+        public int StackId;
+        public long TotalBytes;
+        public int TickCount;
+    }
+
+    // For each (typeIndex, bucketIndex) cell the stacked chart can be
+    // clicked on, groups that cell's ticks by StackId and resolves each
+    // distinct stack once (Rundown/MethodSymbolTable.cs) - "leaf-first"
+    // frame order, matching Blocks/StackBlock.cs's own decoded IP order.
+    // "Other"-column ticks are skipped entirely (not drillable - see this
+    // file's header comment); a tick with no captured stack (StackId not in
+    // stacksById, e.g. StackId 0 or stack-walking wasn't enabled for that
+    // tick) is grouped under a synthetic "no stack captured" entry instead
+    // of being silently dropped, so cell totals still reconcile exactly
+    // with typeTimeline's own per-cell totals.
+    private static JsonObject BuildDrillDown(List<AllocationEvent> allocationEvents, int chartTypeCount, Dictionary<string, int> columnIndexByType, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
+    {
+        int bucketCount = ComputeBucketCount(allocationEvents);
+        Dictionary<string, Dictionary<int, StackAggregate>> stacksByCell = new Dictionary<string, Dictionary<int, StackAggregate>>();
+
+        if (bucketCount > 0)
+        {
+            for (int eventIndex = 0; eventIndex < allocationEvents.Count; ++eventIndex)
+            {
+                AllocationEvent allocationEvent = allocationEvents[eventIndex];
+                string typeName = string.IsNullOrEmpty(allocationEvent.TypeName) ? "<unknown>" : allocationEvent.TypeName;
+
+                int typeIndex;
+                if (!columnIndexByType.TryGetValue(typeName, out typeIndex))
+                {
+                    continue;
+                }
+
+                int bucketIndex = ComputeBucketIndex(allocationEvent.RelativeMSec, bucketCount);
+                string cellKey = $"{typeIndex}:{bucketIndex}";
+
+                Dictionary<int, StackAggregate> cellStacks;
+                if (!stacksByCell.TryGetValue(cellKey, out cellStacks))
+                {
+                    cellStacks = new Dictionary<int, StackAggregate>();
+                    stacksByCell[cellKey] = cellStacks;
+                }
+
+                // -1 is a synthetic id, distinct from any real StackId
+                // (which are always >= 0) - real StackId 0 conventionally
+                // means "no stack" too, so both land in the same bucket.
+                int stackKey = (allocationEvent.StackId == 0 || !stacksById.ContainsKey(allocationEvent.StackId)) ? -1 : allocationEvent.StackId;
+
+                StackAggregate aggregate;
+                if (!cellStacks.TryGetValue(stackKey, out aggregate))
+                {
+                    aggregate = new StackAggregate();
+                    aggregate.StackId = stackKey;
+                    cellStacks[stackKey] = aggregate;
+                }
+
+                aggregate.TotalBytes += allocationEvent.AllocationAmount;
+                ++aggregate.TickCount;
+            }
+        }
+
+        JsonObject cellsObject = new JsonObject();
+        foreach (KeyValuePair<string, Dictionary<int, StackAggregate>> cellEntry in stacksByCell)
+        {
+            List<StackAggregate> cellStackList = new List<StackAggregate>(cellEntry.Value.Values);
+            cellStackList.Sort((left, right) => right.TotalBytes.CompareTo(left.TotalBytes));
+
+            int stackCount = cellStackList.Count < DrillDownStacksPerCellLimit ? cellStackList.Count : DrillDownStacksPerCellLimit;
+            JsonArray cellArray = new JsonArray();
+
+            for (int stackIndex = 0; stackIndex < stackCount; ++stackIndex)
+            {
+                StackAggregate aggregate = cellStackList[stackIndex];
+
+                JsonArray framesArray = new JsonArray();
+                if (aggregate.StackId == -1)
+                {
+                    framesArray.Add("<no stack captured>");
+                }
+                else
+                {
+                    long[] instructionPointers = stacksById[aggregate.StackId];
+                    for (int frameIndex = 0; frameIndex < instructionPointers.Length; ++frameIndex)
+                    {
+                        framesArray.Add(symbolTable.Resolve(instructionPointers[frameIndex]));
+                    }
+                }
+
+                JsonObject stackObject = new JsonObject();
+                stackObject["frames"] = framesArray;
+                stackObject["tickCount"] = aggregate.TickCount;
+                stackObject["totalBytes"] = aggregate.TotalBytes;
+                cellArray.Add(stackObject);
+            }
+
+            cellsObject[cellEntry.Key] = cellArray;
+        }
+
+        JsonObject drillDown = new JsonObject();
+        drillDown["cells"] = cellsObject;
+        return drillDown;
     }
 
     private static int CompareByTotalBytesDescending(TypeAllocStats left, TypeAllocStats right)

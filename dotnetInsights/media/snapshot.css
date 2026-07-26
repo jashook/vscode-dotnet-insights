@@ -305,6 +305,11 @@
     margin-top: 3em;
 }
 
+#fragmentationSpacer
+{
+    margin-top: 3em;
+}
+
 .heapChartParent {
     width: 100%;
     height: 600px;
@@ -329,6 +334,54 @@
 
 #heapCharPadding {
     margin-bottom: 16em;
+}
+
+.heapSnapshotLoadRow {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 4px;
+}
+
+.loadHeapSnapshotBtn {
+    padding: 3px 10px;
+    font-size: 0.85em;
+    cursor: pointer;
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #ffffff);
+    border: none;
+    border-radius: 2px;
+    white-space: nowrap;
+}
+
+.loadHeapSnapshotBtn:hover {
+    background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+.snapshotCaptureInfo {
+    padding: 6px 0 10px 0;
+    font-size: 0.9em;
+    opacity: 0.85;
+}
+
+.snapshotProcessName {
+    font-weight: bold;
+}
+
+.freeChunkHistogramRow {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 12px;
+}
+
+.freeChunkHistogramChart {
+    flex: 1;
+    height: 220px;
+}
+
+.snapshotLoadError {
+    color: var(--vscode-errorForeground, #f44);
+    padding: 1em;
 }
 
 .spacer
@@ -513,4 +566,71 @@
 .detailTable .notSomewhatInterestingGc
 {
     background-color: rgba(192, 192, 192, 0.247);
+}
+
+.heapContentsTabBar
+{
+    margin-top: 1em;
+    text-align: center;
+}
+
+.heapContentsTabButton
+{
+    background-color: rgba(72, 83, 136, 0.8);
+    border: none;
+    border-radius: 6px 6px 0 0;
+    color: white;
+    cursor: pointer;
+    display: inline-block;
+    font-size: 15px;
+    margin: 0 2px;
+    padding: 0.6em 1.5em;
+    width: auto;
+}
+
+.heapContentsTabButton.active
+{
+    background-color: rgba(174, 207, 27, 0.9);
+}
+
+.backToChartsButton
+{
+    background-color: rgba(141, 31, 95, 0.8);
+    border: none;
+    border-radius: 6px;
+    color: white;
+    cursor: pointer;
+    display: inline-block;
+    font-size: 14px;
+    margin-left: 1em;
+    padding: 0.5em 1.5em;
+    width: auto;
+}
+
+.heapContentsTabPanel
+{
+    display: none;
+}
+
+.heapContentsTabPanel.active
+{
+    display: block;
+}
+
+.drillDownTable td:first-child
+{
+    text-align: left;
+    white-space: normal;
+    width: 40em;
+    word-break: break-word;
+}
+
+.drillDownFrame
+{
+    display: block;
+}
+
+.drillDownFrame:first-child
+{
+    font-weight: bold;
 }

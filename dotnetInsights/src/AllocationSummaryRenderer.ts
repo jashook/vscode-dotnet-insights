@@ -71,5 +71,29 @@ export function renderAllocationSummaryTable(allocationSummary: any): string {
     const chartHtml = `<div class="gcStats"><canvas id="allocationTimelineChart"></canvas></div>
         <div class="gcStats"><canvas id="allocationTypeTimelineChart"></canvas></div>`;
 
-    return `${summaryTilesHtml}${chartHtml}${tableHtml}`;
+    // "Drill Down" (clicking a stacked-chart segment shows the resolved
+    // call stacks behind that type+second - see media/drillDownStats.js)
+    // is a second inner tab within the Heap Contents view, alongside this
+    // "Charts" tab - a third, distinct navigational axis from the GC
+    // view's own Charts/Detailed tabs (.tabButton/.tabPanel) and the
+    // top-level GC/Heap Contents view switcher (.viewNavButton/.viewPanel),
+    // so it gets its own class names to avoid colliding with either.
+    // Its content is entirely client-rendered (which cell to show is only
+    // known at click time), so - unlike every other table on this page -
+    // there is no server-rendered HTML for it here, just the empty target
+    // panel and a Drill Down/Back button pair the click handler reveals.
+    const drillDownCells = allocationSummary["drillDown"] && allocationSummary["drillDown"]["cells"];
+    const hasDrillDownData = drillDownCells && Object.keys(drillDownCells).length > 0;
+
+    const heapContentsTabBar = `
+        <div class="heapContentsTabBar">
+            <button class="heapContentsTabButton active" data-heaptab="charts">Charts</button>
+            ${hasDrillDownData ? `<button class="heapContentsTabButton" id="drillDownTabButton" data-heaptab="drilldown" style="display:none">Drill Down</button>
+            <button class="backToChartsButton" id="backToChartsButton" style="display:none">&larr; Back to Charts (Backspace)</button>` : ``}
+        </div>`;
+
+    const chartsPanelHtml = `<div id="heapContents-tab-charts" class="heapContentsTabPanel active">${summaryTilesHtml}${chartHtml}${tableHtml}</div>`;
+    const drillDownPanelHtml = hasDrillDownData ? `<div id="heapContents-tab-drilldown" class="heapContentsTabPanel"></div>` : ``;
+
+    return `${heapContentsTabBar}${chartsPanelHtml}${drillDownPanelHtml}`;
 }

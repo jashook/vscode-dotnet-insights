@@ -31,6 +31,11 @@ public class NettraceFile
     public NettraceHeader Header { get; private set; }
     public Dictionary<int, EventMetadata> MetadataById { get; private set; }
     public List<EventRecord> Events { get; private set; }
+    // StackId -> raw pointer-sized instruction pointers, leaf frame first
+    // (see Blocks/StackBlock.cs). Populated regardless of whether anything
+    // in a given trace references stacks - empty, not null, when no
+    // StackBlock objects are present.
+    public Dictionary<int, long[]> StacksById { get; private set; }
     public int MetadataBlockCount { get; private set; }
     public int EventBlockCount { get; private set; }
     public int SkippedBlockCount { get; private set; }
@@ -47,6 +52,7 @@ public class NettraceFile
         NettraceFile file = new NettraceFile();
         file.MetadataById = new Dictionary<int, EventMetadata>();
         file.Events = new List<EventRecord>();
+        file.StacksById = new Dictionary<int, long[]>();
 
         NettraceHeader header = new NettraceHeader();
 
@@ -67,6 +73,11 @@ public class NettraceFile
                 deserializer.RegisterFactory("Trace", () => header);
                 deserializer.RegisterFactory("MetadataBlock", () => { ++metadataBlockCount; return new MetadataBlock(file.MetadataById); });
                 deserializer.RegisterFactory("EventBlock", () => { ++eventBlockCount; return new EventBlock(file.MetadataById, file.Events); });
+                // header.PointerSize is read here (not file.Header.PointerSize,
+                // which isn't assigned until after this whole loop finishes) -
+                // safe because GetEntryObject() below reads the Trace header
+                // (populating `header` in place) before any block factory runs.
+                deserializer.RegisterFactory("StackBlock", () => new StackBlock(file.StacksById, header.PointerSize));
                 deserializer.OnUnregisteredType = (typeName) => (() => { ++skippedBlockCount; return new SkippableBlock(); });
 
                 // GetEntryObject() reads just the Trace header. The Block sequence that

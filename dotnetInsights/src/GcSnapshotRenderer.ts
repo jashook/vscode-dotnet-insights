@@ -214,6 +214,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'snapshotGcStats.js'));
     const allocationScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'allocationStats.js'));
+    const drillDownScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'drillDownStats.js'));
 
     const chartjs = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'chart.js', 'dist', 'Chart.min.js'));
 
@@ -231,6 +232,11 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     var pauseTimeCanvasData = "";
     if (gcs.length > 0) {
         pauseTimeCanvasData += `<div class="gcStats"><canvas id="totalGcPauseTimeOverTime"></canvas></div>`;
+    }
+
+    var fragmentationCanvasData = "";
+    if (gcs.length > 0) {
+        fragmentationCanvasData = `<div class="gcStats"><canvas id="gcFragmentationOverTime"></canvas></div>`;
     }
 
     var perHeapCanvasData = "";
@@ -323,9 +329,12 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
             <div id="view-gc" class="viewPanel active">
 
+            <input type="file" id="heapSnapshotInput" accept=".json" style="display:none">
+
             <div class="tabBar">
                 <button class="tabButton active" data-tab="charts">Charts</button>
                 <button class="tabButton" data-tab="detailed">Detailed</button>
+                <button class="tabButton" id="heapSnapshotTabBtn" data-tab="heapSnapshot" style="display:none">Heap Snapshot</button>
                 <button class="fieldToggleButton" id="genFieldsToggle" style="display:none">Show All Fields</button>
             </div>
 
@@ -441,6 +450,20 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
                 <script src="${chartjs}"></script>
             </div>
 
+            <h2 class="divider">Heap Fragmentation Over Time</h2>
+            <div class="heapSnapshotLoadRow">
+                ${captureTimeRangeHtml}
+                <button id="loadHeapSnapshotBtn" class="loadHeapSnapshotBtn" title="Load a gcHeapAnalyzer JSON output to see free chunk distribution, pinned types, and LOH census">Load Heap Snapshot</button>
+            </div>
+
+            <div class="gcDataContainer" id="fragmentationSpacer">
+                ${fragmentationCanvasData}
+                <script src="${chartjs}"></script>
+            </div>
+
+            ${hasHeapContents ? `<h2 class="divider">Top LOH Allocating Types</h2>
+            <div id="lohTypesSection"></div>` : ``}
+
             <h2 class="divider">Per Heap GC Usage Over Time</h2>
 
             <div class="gcDataContainer">
@@ -450,6 +473,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             </div>
 
             <div id="tab-detailed" class="tabPanel"></div>
+            <div id="tab-heapSnapshot" class="tabPanel"></div>
             <!-- Deferred: display:none on .tabPanel only skips layout/paint,
                  not DOM construction - the browser would still have to parse
                  and build a <tr>/<td> node for every GC up front if this
@@ -467,6 +491,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <span style="display:none" id="allocationSummaryHtml"><!--${allocationSummaryHtml}--></span>` : ``}
 
             <script nonce="${nonce}" src="${allocationScriptUri}"></script>
+            <script nonce="${nonce}" src="${drillDownScriptUri}"></script>
             <script nonce="${nonce}" src="${scriptUri}"></script>
         </body>
     </html>`;

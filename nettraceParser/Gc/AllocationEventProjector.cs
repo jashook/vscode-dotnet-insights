@@ -35,6 +35,10 @@ public class AllocationEvent
     public GCAllocationKind AllocationKind;
     public string TypeName;
     public int HeapIndex;
+    // Resolves via Rundown/MethodSymbolTable.cs against Blocks/StackBlock.cs's
+    // decoded stacks (see Gc/DrillDownBuilder.cs) - 0 when the capture
+    // didn't stack-walk this particular tick.
+    public int StackId;
 }
 
 public static class AllocationEventProjector
@@ -74,6 +78,7 @@ public static class AllocationEventProjector
             allocationEvent.AllocationKind = tick.AllocationKind;
             allocationEvent.TypeName = tick.TypeName;
             allocationEvent.HeapIndex = tick.HeapIndex;
+            allocationEvent.StackId = record.StackId;
 
             if (qpcFrequency > 0)
             {

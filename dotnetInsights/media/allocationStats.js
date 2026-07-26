@@ -364,7 +364,12 @@ function renderAllocationTimelineChart(canvasElement, ticks, gen0GcTimesMSec, ge
 // renderAllocationTimelineChart's own comment on why a `linear` x-axis
 // broke bars entirely). Buckets are evenly spaced by construction, so a
 // category axis loses nothing here.
-function renderAllocationTypeTimelineChart(canvasElement, typeTimeline) {
+// onSegmentClick(typeIndex, bucketIndex) - called when a real (non-"Other")
+// stacked segment is clicked, so the caller can look up and render that
+// cell's drillDown data (see snapshotGcStats.js's view-switcher wiring and
+// drillDownStats.js's renderDrillDownTable). Optional - omit for a
+// read-only chart.
+function renderAllocationTypeTimelineChart(canvasElement, typeTimeline, onSegmentClick) {
     if (canvasElement === null || canvasElement === undefined || !typeTimeline || !typeTimeline["buckets"] || typeTimeline["buckets"].length === 0) {
         return;
     }
@@ -436,6 +441,27 @@ function renderAllocationTypeTimelineChart(canvasElement, typeTimeline) {
                         return `${datasetLabel}: ${parseFloat(tooltipItem.yLabel).toFixed(2)} mb`;
                     }
                 }
+            },
+            onClick: function (event) {
+                if (!onSegmentClick) {
+                    return;
+                }
+
+                var elements = this.getElementAtEvent(event);
+                if (!elements || elements.length === 0) {
+                    return;
+                }
+
+                var clickedTypeIndex = elements[0]._datasetIndex;
+                var clickedBucketIndex = elements[0]._index;
+
+                // Last dataset is always "Other" (AllocationJsonExporter.cs) -
+                // a heterogeneous catch-all across many types, not drillable.
+                if (clickedTypeIndex === datasets.length - 1) {
+                    return;
+                }
+
+                onSegmentClick(clickedTypeIndex, clickedBucketIndex);
             },
             "maintainAspectRatio": false
         }

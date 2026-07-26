@@ -156,6 +156,52 @@ describe('AllocationSummaryRenderer', () => {
 
             assert.ok(html.indexOf('Biggest') < html.indexOf('Smallest'));
         });
+
+        it('always renders the Charts inner tab, active by default, with its panel containing the tiles/charts/table', () => {
+            const summary = makeAllocationSummary([makeTypeEntry('System.Byte[]', 100, 1)], { totalSampledBytes: 100, totalTickCount: 1 });
+
+            const html = renderAllocationSummaryTable(summary);
+
+            assert.ok(html.includes('<button class="heapContentsTabButton active" data-heaptab="charts">Charts</button>'));
+            assert.ok(html.includes('<div id="heapContents-tab-charts" class="heapContentsTabPanel active">'));
+            assert.ok(html.includes('Sampled Allocations'));
+        });
+
+        it('omits the Drill Down tab button/panel and the Back button when allocationSummary has no drillDown data', () => {
+            const summary = makeAllocationSummary([makeTypeEntry('System.Byte[]', 100, 1)], { totalSampledBytes: 100, totalTickCount: 1 });
+
+            const html = renderAllocationSummaryTable(summary);
+
+            assert.ok(!html.includes('drillDownTabButton'));
+            assert.ok(!html.includes('backToChartsButton'));
+            assert.ok(!html.includes('heapContents-tab-drilldown'));
+        });
+
+        it('omits the Drill Down tab when drillDown.cells is present but empty', () => {
+            const summary = makeAllocationSummary([makeTypeEntry('System.Byte[]', 100, 1)], {
+                totalSampledBytes: 100,
+                totalTickCount: 1,
+                drillDown: { cells: {} }
+            });
+
+            const html = renderAllocationSummaryTable(summary);
+
+            assert.ok(!html.includes('drillDownTabButton'));
+        });
+
+        it('shows the (initially hidden) Drill Down tab button, panel, and Back button when drillDown.cells is non-empty', () => {
+            const summary = makeAllocationSummary([makeTypeEntry('System.Byte[]', 100, 1)], {
+                totalSampledBytes: 100,
+                totalTickCount: 1,
+                drillDown: { cells: { '0:0': [{ frames: ['Foo.Bar'], tickCount: 1, totalBytes: 100 }] } }
+            });
+
+            const html = renderAllocationSummaryTable(summary);
+
+            assert.ok(html.includes('<button class="heapContentsTabButton" id="drillDownTabButton" data-heaptab="drilldown" style="display:none">Drill Down</button>'));
+            assert.ok(html.includes('<div id="heapContents-tab-drilldown" class="heapContentsTabPanel"></div>'));
+            assert.ok(html.includes('id="backToChartsButton"'));
+        });
     });
 
     describe('against real nettraceParser output', () => {
@@ -218,6 +264,34 @@ describe('AllocationSummaryRenderer', () => {
             assert.ok(html.includes('class="detailTable allocationTypeTable"'));
             assert.ok(html.includes('id="allocationTimelineChart"'));
             assert.strictEqual((html.match(/<tr><td>/g) || []).length, allocationSummary['topTypes'].length);
+        });
+
+        it('fixture has a populated drillDown with real resolved method names, not every frame unresolved', () => {
+            const drillDown = allocationSummary['drillDown'];
+
+            assert.ok(drillDown !== null && drillDown !== undefined);
+            const cellKeys = Object.keys(drillDown['cells']);
+            assert.ok(cellKeys.length > 0);
+
+            let foundRealFrame = false;
+            for (const cellKey of cellKeys) {
+                for (const stackEntry of drillDown['cells'][cellKey]) {
+                    for (const frame of stackEntry['frames']) {
+                        if (!frame.startsWith('<unresolved') && frame !== '<no stack captured>') {
+                            foundRealFrame = true;
+                        }
+                    }
+                }
+            }
+
+            assert.ok(foundRealFrame, 'Expected at least one real resolved frame across all drillDown cells.');
+        });
+
+        it('renders the Drill Down tab for the real fixture (which has populated drillDown data)', () => {
+            const html = renderAllocationSummaryTable(allocationSummary);
+
+            assert.ok(html.includes('drillDownTabButton'));
+            assert.ok(html.includes('id="heapContents-tab-drilldown"'));
         });
     });
 });

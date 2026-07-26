@@ -56,6 +56,8 @@ public class GcEvent
     public long TotalPromotedSize4;
     public int NumHeaps;
     public long FinalYoungestDesired;
+    public int PinnedObjectCount;
+    public GCGlobalMechanisms GlobalMechanisms;
     public List<ClrGcHeap> Heaps = new List<ClrGcHeap>();
 
     public bool HasEnd;
@@ -165,6 +167,7 @@ public static class GcEventProjector
                     gcEvent.TotalPromotedSize2 = heapStats.TotalPromotedSize2;
                     gcEvent.TotalPromotedSize3 = heapStats.TotalPromotedSize3;
                     gcEvent.TotalPromotedSize4 = heapStats.TotalPromotedSize4;
+                    gcEvent.PinnedObjectCount = heapStats.PinnedObjectCount;
                 }
             }
             else if (record.EventId == ClrGcEventIds.GCPerHeapHistory)
@@ -199,6 +202,7 @@ public static class GcEventProjector
                     // GCGlobalHeapHistory's own Reason is the more reliable one (GCStart's
                     // Reason can be superseded by the time collection actually begins).
                     gcEvent.Reason = globalHistory.Reason;
+                    gcEvent.GlobalMechanisms = globalHistory.GlobalMechanisms;
                 }
             }
         }
