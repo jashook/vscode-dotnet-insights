@@ -621,16 +621,119 @@
 {
     text-align: left;
     white-space: normal;
-    width: 40em;
     word-break: break-word;
 }
 
-.drillDownFrame
+/* table-layout:fixed makes columns size from these <col> widths (set via
+   drillDownStats.js's CALLER_TREE_COLGROUP) instead of each row's own
+   content - both this outer table and every nested .callerTreeInner table
+   use the exact same colgroup, which is what makes a caller row's Bytes/
+   Ticks numbers actually line up under the leaf row's numbers above it.
+   The Method column is deliberately left unset in both so it can hold
+   long names, and still ends up the same width in both places since a
+   nested table's total width always matches the colspan cell containing
+   it. */
+.drillDownTable table,
+.callerTreeInner
 {
-    display: block;
+    table-layout: fixed;
+    width: auto;
 }
 
-.drillDownFrame:first-child
+.bytesColumn
+{
+    width: 9em;
+}
+
+.ticksColumn
+{
+    width: 7em;
+}
+
+.drillDownSummary
+{
+    color: rgba(0, 0, 0, 0.55);
+    margin: 0.2em 0 1em 2%;
+}
+
+/* Rows for leaf (allocating) methods - see drillDownStats.js's
+   groupStacksByLeaf - and, one level down, rows for individual caller
+   frames (renderCallerChainRows). Both use the same
+   [data-expandable="true"]/toggle/expanded convention: a row only gets a
+   toggle where the call tree actually branches (more than one next step);
+   a straight, non-branching chain of callers just flows as consecutive
+   rows with no interaction needed. */
+.leafMethodRow[data-expandable="true"],
+.callerRow[data-expandable="true"]
+{
+    cursor: pointer;
+}
+
+.leafMethodRow[data-expandable="true"]:hover,
+.callerRow[data-expandable="true"]:hover
+{
+    background-color: lightblue;
+}
+
+.leafMethodToggle
+{
+    display: inline-block;
+    width: 1.2em;
+    transition: transform 0.15s ease;
+}
+
+.leafMethodToggleEmpty
+{
+    visibility: hidden;
+}
+
+.leafMethodRow.expanded .leafMethodToggle,
+.callerRow.expanded .leafMethodToggle
+{
+    transform: rotate(90deg);
+}
+
+.callPathsDetail
+{
+    display: none;
+}
+
+.callPathsDetail.expanded
+{
+    display: table-row;
+}
+
+/* The <td> wrapping each nested level's <table> - no padding of its own so
+   the nested table's rows sit flush against the outer table, since each
+   callerRow already carries its own depth-based indent via an inline
+   padding-left style (renderCallerChainRows). */
+.callerTreeCell
+{
+    padding: 0;
+}
+
+.callerRow td
+{
+    border-top: 1px solid rgba(0, 0, 0, 0.15);
+    padding-bottom: 4px;
+    padding-top: 4px;
+    text-align: left;
+    white-space: normal;
+    word-break: break-word;
+}
+
+.methodTypePrefix
+{
+    color: rgba(0, 0, 0, 0.55);
+}
+
+.methodName
 {
     font-weight: bold;
+}
+
+.unresolvedFrame
+{
+    color: rgba(0, 0, 0, 0.55);
+    font-style: italic;
 }

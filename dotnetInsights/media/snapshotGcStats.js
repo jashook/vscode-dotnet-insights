@@ -1159,6 +1159,21 @@ var allocationDatasets = {};
         }
     }
 
+    // The Charts panel has summary tiles and the allocation-rate line chart
+    // above the stacked type-timeline (bar) chart a drill-down was reached
+    // from - just switching tabs back leaves that scrolled out of view
+    // above the fold. Scrolls it back into view so "go back" actually
+    // returns to what you were just looking at, not just the top of the
+    // panel.
+    function goBackToChartsView() {
+        switchHeapContentsTab('charts');
+
+        var stackedBarChart = document.getElementById('allocationTypeTimelineChart');
+        if (stackedBarChart) {
+            stackedBarChart.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }
+
     // Called from allocationStats.js's onClick handler on the type-timeline
     // chart when a real (non-"Other") stacked segment is clicked.
     function onDrillDownSegmentClick(typeIndex, bucketIndex) {
@@ -1189,8 +1204,32 @@ var allocationDatasets = {};
 
         var backToChartsButton = document.getElementById('backToChartsButton');
         if (backToChartsButton) {
-            backToChartsButton.addEventListener('click', function () {
-                switchHeapContentsTab('charts');
+            backToChartsButton.addEventListener('click', goBackToChartsView);
+        }
+
+        // Event delegation, attached once to the panel itself rather than
+        // per-row - drillDownStats.js's renderDrillDownTable rebuilds this
+        // panel's entire innerHTML on every chart-segment click, which
+        // would otherwise silently drop any listeners attached directly to
+        // its rows. [data-expandable="true"] marks a toggleable row at any
+        // depth - both the outer leafMethodRow and any deeper callerRow
+        // branch point use the same attribute/behavior (see
+        // drillDownStats.js's renderCallerChainRows).
+        var drillDownPanel = document.getElementById('heapContents-tab-drilldown');
+        if (drillDownPanel) {
+            drillDownPanel.addEventListener('click', function (event) {
+                var leafRow = event.target.closest('[data-expandable="true"]');
+                if (!leafRow) {
+                    return;
+                }
+
+                var detailRow = document.getElementById(leafRow.getAttribute('data-target'));
+                if (!detailRow) {
+                    return;
+                }
+
+                leafRow.classList.toggle('expanded');
+                detailRow.classList.toggle('expanded');
             });
         }
     }
@@ -1206,7 +1245,7 @@ var allocationDatasets = {};
         var drillDownPanel = document.getElementById('heapContents-tab-drilldown');
         if (drillDownPanel && drillDownPanel.classList.contains('active')) {
             event.preventDefault();
-            switchHeapContentsTab('charts');
+            goBackToChartsView();
         }
     });
 
