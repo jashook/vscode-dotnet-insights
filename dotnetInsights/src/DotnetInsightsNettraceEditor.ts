@@ -76,8 +76,20 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
         const command = `"${this.insights.nettraceParserPath}" "${nettraceFilePath}" --json "${jsonOutputPath}"`;
         this.insights.outputChannel.appendLine(command);
 
+        // Timing instrumentation - a .nettrace file's parse cost scales with
+        // total event volume (JIT/thread/allocation-tick events etc.), not
+        // just GC count, so "few GCs" alone doesn't rule this step out as
+        // the source of a slow document open. Logged to the "Dotnet
+        // Insights" output channel so it's visible without attaching a
+        // debugger or opening webview DevTools.
+        const nettraceFileSizeBytes = fs.statSync(nettraceFilePath).size;
+        const execStartMs = Date.now();
+
         var promiseToReturn = new Promise<any>((resolve, reject) => {
             child.exec(command, { maxBuffer: 512 * 1024 * 1024 }, (error: any, stdout: string, stderr: string) => {
+                const execElapsedMs = Date.now() - execStartMs;
+                this.insights.outputChannel.appendLine(`nettraceParser: ${nettraceFileSizeBytes} bytes in, subprocess took ${execElapsedMs}ms`);
+
                 if (error) {
                     this.insights.outputChannel.appendLine("Failed to execute nettraceParser.");
                     this.insights.outputChannel.appendLine(stderr);
@@ -86,8 +98,11 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
                 }
 
                 try {
+                    const readStartMs = Date.now();
                     const fileContents = fs.readFileSync(jsonOutputPath);
-                    resolve(JSON.parse(fileContents.toString()));
+                    const parsed = JSON.parse(fileContents.toString());
+                    this.insights.outputChannel.appendLine(`nettraceParser: read + JSON.parse of ${fileContents.length} bytes took ${Date.now() - readStartMs}ms`);
+                    resolve(parsed);
                 }
                 catch (e) {
                     this.insights.outputChannel.appendLine("Failed to read nettraceParser output.");
@@ -109,8 +124,14 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
 
     private getHtmlForWebviewWrapper(document: DotnetInsightsGcDocument, webview: vscode.Webview): Thenable<string> {
         var promiseToReturn = new Promise<string>((resolve, reject) => {
+            const totalStartMs = Date.now();
+
             this.runNettraceParser(document.uri.fsPath).then((gcData: any) => {
-                resolve(renderGcSnapshotWebview(document, webview, this.context.extensionUri, gcData, "nettrace"));
+                const renderStartMs = Date.now();
+                const html = renderGcSnapshotWebview(document, webview, this.context.extensionUri, gcData, "nettrace");
+                this.insights.outputChannel.appendLine(`renderGcSnapshotWebview took ${Date.now() - renderStartMs}ms`);
+                this.insights.outputChannel.appendLine(`Total document open (nettraceParser + render) took ${Date.now() - totalStartMs}ms`);
+                resolve(html);
             });
         });
 

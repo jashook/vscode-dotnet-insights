@@ -67,6 +67,24 @@ public class PayloadReader
 
     public string GetUnicodeStringAt(int offset)
     {
+        int endOffset = FindUnicodeStringEnd(offset);
+        return Encoding.Unicode.GetString(this.payload, offset, endOffset - offset);
+    }
+
+    // Byte offset immediately after a null-terminated UTF-16 string starting
+    // at offset. Scans for the terminator directly rather than decoding the
+    // string via GetUnicodeStringAt and measuring its length - callers that
+    // only need to skip past a string they've already decoded (or never
+    // need the contents of at all, e.g. ClrGcTypes.cs's TypeName) shouldn't
+    // pay for an Encoding.Unicode.GetString allocation just to find an
+    // offset.
+    public int SkipUnicodeString(int offset)
+    {
+        return FindUnicodeStringEnd(offset) + 2;
+    }
+
+    private int FindUnicodeStringEnd(int offset)
+    {
         int endOffset = offset;
 
         while (endOffset + 1 < this.payload.Length && (this.payload[endOffset] != 0 || this.payload[endOffset + 1] != 0))
@@ -74,14 +92,7 @@ public class PayloadReader
             endOffset += 2;
         }
 
-        return Encoding.Unicode.GetString(this.payload, offset, endOffset - offset);
-    }
-
-    // Byte offset immediately after a null-terminated UTF-16 string starting at offset.
-    public int SkipUnicodeString(int offset)
-    {
-        string value = GetUnicodeStringAt(offset);
-        return offset + (value.Length + 1) * 2;
+        return endOffset;
     }
 
     public int HostOffset(int offsetAssuming4ByteHost, int numberOfPointersConsumedSoFar)

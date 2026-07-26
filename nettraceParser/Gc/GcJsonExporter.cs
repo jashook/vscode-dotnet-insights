@@ -8,11 +8,15 @@
 // nesting copied from that function directly so the extension's existing
 // chart-rendering code needs no changes to consume nettrace-derived data.
 //
-// Uses System.Text.Json.Nodes (BCL, no new dependency) rather than hand-built
-// interpolated strings like HelperClasses.cs's ToJsonString() methods -
-// deliberate for this one case, since the nesting here (Heaps -> Generations
-// -> per-field) is deep enough that a string-building bug would be easy to
-// introduce and hard to spot on the consuming (TypeScript) side.
+// Writes directly into a Utf8JsonWriter (streamed straight to the output
+// file) rather than building a System.Text.Json.Nodes tree and serializing
+// it afterward - the tree-then-serialize approach was measured (dotnet-trace,
+// real 63MB/76k-allocation-tick capture) as the largest single contributor
+// to nettraceParser's wall time, mostly from AllocationSummaryBuilder's tick
+// list (see AllocationJsonExporter.cs, which this now composes with directly
+// via AllocationSummaryBuilder.Write). Utf8JsonWriter keeps the same
+// "structured, typed write calls instead of hand-built interpolated
+// strings" safety property this file originally chose JsonNode for.
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace DotnetInsights.NetTrace.Gc {
@@ -22,7 +26,7 @@ namespace DotnetInsights.NetTrace.Gc {
 
 using System.Collections.Generic;
 using System.IO;
-using System.Text.Json.Nodes;
+using System.Text.Json;
 
 using DotnetInsights.NetTrace.Rundown;
 
@@ -33,112 +37,125 @@ public static class GcJsonExporter
 {
     public static void WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable, string processName)
     {
-        JsonArray gcDataArray = new JsonArray();
-
-        for (int gcIndex = 0; gcIndex < gcEvents.Count; ++gcIndex)
+        using (FileStream fileStream = File.Create(outputPath))
+        using (Utf8JsonWriter writer = new Utf8JsonWriter(fileStream))
         {
-            GcEvent gcEvent = gcEvents[gcIndex];
-            string reasonName = gcEvent.Reason.ToString();
+            writer.WriteStartObject();
 
-            JsonObject data = new JsonObject();
-            data["Gen0MinSize"] = gcEvent.FinalYoungestDesired;
-            data["generation"] = gcEvent.Generation;
-            data["GenerationSize0"] = gcEvent.GenerationSize0;
-            data["GenerationSize1"] = gcEvent.GenerationSize1;
-            data["GenerationSize2"] = gcEvent.GenerationSize2;
-            data["GenerationSizeLOH"] = gcEvent.GenerationSize3;
-            data["GenerationSizePOH"] = gcEvent.GenerationSize4;
-            data["Id"] = gcEvent.Id;
-            // ISO-8601 (round-trip format) - directly parseable by JS's `new Date(...)`.
-            // Converted to the machine's local timezone (gcEvent.Timestamp is UTC) so the
-            // offset in the string reflects wall-clock time here, not UTC.
-            data["DateTime"] = gcEvent.Timestamp.ToLocalTime().ToString("o");
-            data["kind"] = reasonName;
-            data["NumHeaps"] = gcEvent.NumHeaps;
-            data["PauseDurationMSec"] = gcEvent.PauseDurationMSec;
-            data["PauseEndRelativeMSec"] = gcEvent.PauseEndRelativeMSec;
-            data["PauseStartRelativeMSec"] = gcEvent.PauseStartRelativeMSec;
-            data["Reason"] = reasonName;
-            data["TotalHeapSize"] = gcEvent.TotalHeapSize;
-            data["TotalPromoted"] = gcEvent.TotalPromotedSize0;
-            data["TotalPromotedLOH"] = gcEvent.TotalPromotedSize3;
-            data["TotalPromotedPOH"] = gcEvent.TotalPromotedSize4;
-            data["TotalPromotedSize0"] = gcEvent.TotalPromotedSize0;
-            data["TotalPromotedSize1"] = gcEvent.TotalPromotedSize1;
-            data["TotalPromotedSize2"] = gcEvent.TotalPromotedSize2;
-            // Matches an existing quirk in gcDataFromXml where Type reuses the
-            // Reason text rather than a true concurrent/non-concurrent label -
-            // kept for consistency with what the renderer already expects.
-            data["Type"] = reasonName;
-            data["GCDurationMSec"] = gcEvent.PauseDurationMSec;
-            data["PinnedObjectCount"] = gcEvent.PinnedObjectCount;
-            data["GlobalMechanisms"] = (int)gcEvent.GlobalMechanisms;
+            writer.WriteString("processName", processName);
 
-            // gcEvent.Heaps is populated in wire-arrival order (see
-            // GcEventProjector.cs's GCPerHeapHistory handling), which for a
-            // multi-heap (server GC) capture is not guaranteed to match
-            // physical heap order. Both this array's own position and the
-            // extension's per-heap charts/tables treat array position as the
-            // heap number, so sorting by the heap's own reported HeapIndex
-            // here is what makes "Heap N" actually mean heap N.
-            List<ClrGcHeap> sortedHeaps = new List<ClrGcHeap>(gcEvent.Heaps);
-            sortedHeaps.Sort((ClrGcHeap left, ClrGcHeap right) => left.HeapIndex.CompareTo(right.HeapIndex));
+            // "allocationSummary" is only meaningful for nettrace input - the
+            // .gcinfo/XML path never sets this key, which is what the extension's
+            // GcSnapshotRenderer.ts uses (alongside its own explicit sourceFormat
+            // parameter) to decide whether the nettrace-only "Heap Contents" view
+            // has anything to show. See AllocationJsonExporter.cs.
+            writer.WritePropertyName("allocationSummary");
+            AllocationSummaryBuilder.Write(writer, allocationEvents, stacksById, symbolTable);
 
-            JsonArray heapsArray = new JsonArray();
-            for (int heapIndex = 0; heapIndex < sortedHeaps.Count; ++heapIndex)
+            writer.WritePropertyName("gcData");
+            writer.WriteStartArray();
+
+            for (int gcIndex = 0; gcIndex < gcEvents.Count; ++gcIndex)
             {
-                ClrGcHeap heap = sortedHeaps[heapIndex];
-                JsonObject generationsObject = new JsonObject();
+                GcEvent gcEvent = gcEvents[gcIndex];
+                string reasonName = gcEvent.Reason.ToString();
 
-                for (int genIndex = 0; genIndex < heap.Generations.Length; ++genIndex)
+                writer.WriteStartObject();
+                writer.WritePropertyName("data");
+                writer.WriteStartObject();
+
+                writer.WriteNumber("Gen0MinSize", gcEvent.FinalYoungestDesired);
+                writer.WriteNumber("generation", gcEvent.Generation);
+                writer.WriteNumber("GenerationSize0", gcEvent.GenerationSize0);
+                writer.WriteNumber("GenerationSize1", gcEvent.GenerationSize1);
+                writer.WriteNumber("GenerationSize2", gcEvent.GenerationSize2);
+                writer.WriteNumber("GenerationSizeLOH", gcEvent.GenerationSize3);
+                writer.WriteNumber("GenerationSizePOH", gcEvent.GenerationSize4);
+                writer.WriteNumber("Id", gcEvent.Id);
+                // ISO-8601 (round-trip format) - directly parseable by JS's `new Date(...)`.
+                // Converted to the machine's local timezone (gcEvent.Timestamp is UTC) so the
+                // offset in the string reflects wall-clock time here, not UTC.
+                writer.WriteString("DateTime", gcEvent.Timestamp.ToLocalTime().ToString("o"));
+                writer.WriteString("kind", reasonName);
+                writer.WriteNumber("NumHeaps", gcEvent.NumHeaps);
+                writer.WriteNumber("PauseDurationMSec", gcEvent.PauseDurationMSec);
+                writer.WriteNumber("PauseEndRelativeMSec", gcEvent.PauseEndRelativeMSec);
+                writer.WriteNumber("PauseStartRelativeMSec", gcEvent.PauseStartRelativeMSec);
+                writer.WriteString("Reason", reasonName);
+                writer.WriteNumber("TotalHeapSize", gcEvent.TotalHeapSize);
+                writer.WriteNumber("TotalPromoted", gcEvent.TotalPromotedSize0);
+                writer.WriteNumber("TotalPromotedLOH", gcEvent.TotalPromotedSize3);
+                writer.WriteNumber("TotalPromotedPOH", gcEvent.TotalPromotedSize4);
+                writer.WriteNumber("TotalPromotedSize0", gcEvent.TotalPromotedSize0);
+                writer.WriteNumber("TotalPromotedSize1", gcEvent.TotalPromotedSize1);
+                writer.WriteNumber("TotalPromotedSize2", gcEvent.TotalPromotedSize2);
+                // Matches an existing quirk in gcDataFromXml where Type reuses the
+                // Reason text rather than a true concurrent/non-concurrent label -
+                // kept for consistency with what the renderer already expects.
+                writer.WriteString("Type", reasonName);
+                writer.WriteNumber("GCDurationMSec", gcEvent.PauseDurationMSec);
+                writer.WriteNumber("PinnedObjectCount", gcEvent.PinnedObjectCount);
+                writer.WriteNumber("GlobalMechanisms", (int)gcEvent.GlobalMechanisms);
+
+                // gcEvent.Heaps is populated in wire-arrival order (see
+                // GcEventProjector.cs's GCPerHeapHistory handling), which for a
+                // multi-heap (server GC) capture is not guaranteed to match
+                // physical heap order. Both this array's own position and the
+                // extension's per-heap charts/tables treat array position as the
+                // heap number, so sorting by the heap's own reported HeapIndex
+                // here is what makes "Heap N" actually mean heap N.
+                List<ClrGcHeap> sortedHeaps = new List<ClrGcHeap>(gcEvent.Heaps);
+                sortedHeaps.Sort((ClrGcHeap left, ClrGcHeap right) => left.HeapIndex.CompareTo(right.HeapIndex));
+
+                writer.WritePropertyName("Heaps");
+                writer.WriteStartArray();
+                for (int heapIndex = 0; heapIndex < sortedHeaps.Count; ++heapIndex)
                 {
-                    ClrGcGeneration gen = heap.Generations[genIndex];
+                    ClrGcHeap heap = sortedHeaps[heapIndex];
 
-                    JsonObject genObject = new JsonObject();
-                    genObject["Fragmentation"] = gen.Fragmentation;
-                    genObject["FreeListSpaceAfter"] = gen.FreeListSpaceAfter;
-                    genObject["FreeListSpaceBefore"] = gen.FreeListSpaceBefore;
-                    genObject["FreeObjSpaceAfter"] = gen.FreeObjSpaceAfter;
-                    genObject["FreeObjSpaceBefore"] = gen.FreeObjSpaceBefore;
-                    genObject["Id"] = genIndex;
-                    genObject["In"] = gen.In;
-                    genObject["NewAllocation"] = gen.NewAllocation;
-                    genObject["NonePinnedSurv"] = gen.NonePinnedSurv;
-                    genObject["ObjSizeAfter"] = gen.ObjSizeAfter;
-                    genObject["ObjSpaceBefore"] = gen.ObjSpaceBefore;
-                    genObject["Out"] = gen.Out;
-                    genObject["PinnedSurv"] = gen.PinnedSurv;
-                    genObject["SizeAfter"] = gen.SizeAfter;
-                    genObject["SizeBefore"] = gen.SizeBefore;
-                    genObject["SurvRate"] = gen.SurvRate;
+                    writer.WriteStartObject();
+                    writer.WriteNumber("HeapIndex", heap.HeapIndex);
 
-                    generationsObject[genIndex.ToString()] = genObject;
+                    writer.WritePropertyName("Generations");
+                    writer.WriteStartObject();
+                    for (int genIndex = 0; genIndex < heap.Generations.Length; ++genIndex)
+                    {
+                        ClrGcGeneration gen = heap.Generations[genIndex];
+
+                        writer.WritePropertyName(genIndex.ToString());
+                        writer.WriteStartObject();
+                        writer.WriteNumber("Fragmentation", gen.Fragmentation);
+                        writer.WriteNumber("FreeListSpaceAfter", gen.FreeListSpaceAfter);
+                        writer.WriteNumber("FreeListSpaceBefore", gen.FreeListSpaceBefore);
+                        writer.WriteNumber("FreeObjSpaceAfter", gen.FreeObjSpaceAfter);
+                        writer.WriteNumber("FreeObjSpaceBefore", gen.FreeObjSpaceBefore);
+                        writer.WriteNumber("Id", genIndex);
+                        writer.WriteNumber("In", gen.In);
+                        writer.WriteNumber("NewAllocation", gen.NewAllocation);
+                        writer.WriteNumber("NonePinnedSurv", gen.NonePinnedSurv);
+                        writer.WriteNumber("ObjSizeAfter", gen.ObjSizeAfter);
+                        writer.WriteNumber("ObjSpaceBefore", gen.ObjSpaceBefore);
+                        writer.WriteNumber("Out", gen.Out);
+                        writer.WriteNumber("PinnedSurv", gen.PinnedSurv);
+                        writer.WriteNumber("SizeAfter", gen.SizeAfter);
+                        writer.WriteNumber("SizeBefore", gen.SizeBefore);
+                        writer.WriteNumber("SurvRate", gen.SurvRate);
+                        writer.WriteEndObject();
+                    }
+                    writer.WriteEndObject();
+
+                    writer.WriteEndObject();
                 }
+                writer.WriteEndArray();
 
-                JsonObject heapObject = new JsonObject();
-                heapObject["HeapIndex"] = heap.HeapIndex;
-                heapObject["Generations"] = generationsObject;
-                heapsArray.Add(heapObject);
+                writer.WriteEndObject();
+                writer.WriteEndObject();
             }
 
-            data["Heaps"] = heapsArray;
+            writer.WriteEndArray();
 
-            JsonObject entry = new JsonObject();
-            entry["data"] = data;
-            gcDataArray.Add(entry);
+            writer.WriteEndObject();
         }
-
-        JsonObject root = new JsonObject();
-        root["processName"] = processName;
-        // "allocationSummary" is only meaningful for nettrace input - the
-        // .gcinfo/XML path never sets this key, which is what the extension's
-        // GcSnapshotRenderer.ts uses (alongside its own explicit sourceFormat
-        // parameter) to decide whether the nettrace-only "Heap Contents" view
-        // has anything to show. See AllocationJsonExporter.cs.
-        root["allocationSummary"] = AllocationSummaryBuilder.Build(allocationEvents, stacksById, symbolTable);
-        root["gcData"] = gcDataArray;
-
-        File.WriteAllText(outputPath, root.ToJsonString());
     }
 }
 

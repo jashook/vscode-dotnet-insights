@@ -797,6 +797,17 @@ export class DependencySetup {
         return success;
     }
 
+    // nettraceParser/roslynHelper/gcEventListener each publish both x64 and
+    // arm64 self-contained builds (see each tool's pack.py) - running the
+    // x64 build under Rosetta/emulation on a native arm64 host works, but
+    // measurably slower (no translation needed for a native build). Only
+    // "arm64" gets its own asset; every other process.arch value (x64,
+    // ia32, arm, ...) falls back to the existing x64 asset, matching this
+    // code's behavior before arm64 builds existed.
+    private getToolArch(): string {
+        return process.arch === "arm64" ? "arm64" : "x64";
+    }
+
     private async downloadGcMonitorExe(insights: DotnetInsights, versionNumber: string, unzipFolder: string) : Promise<boolean> {
         const exeFolder = unzipFolder;
 
@@ -820,8 +831,12 @@ export class DependencySetup {
             osName = "linux";
         }
 
-        const arch = "x64";
-        const baseUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/gcEventListener-${osName}.tar.gz`;
+        // gcEventListener-{osName}-{arch}.tar.gz - renamed from the older
+        // gcEventListener-{osName}.tar.gz (no arch component, back when the
+        // only variant ever published was implicitly x64) now that arm64
+        // builds exist too - see gcEventListener/pack.py.
+        const arch = this.getToolArch();
+        const baseUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/gcEventListener-${osName}-${arch}.tar.gz`;
 
         var success = await this.downloadAndUnzip(insights, baseUrl, unzipFolder, exeFolder, false);
         return success;
@@ -848,11 +863,10 @@ export class DependencySetup {
             osName = "linux";
         }
 
-        // Matches roslynHelper's exact archive naming convention (x64-only
-        // per OS, verified against the real roslynHelper-osx-x64.tar.gz
-        // release asset) - see nettraceParser/pack.py, which produces
-        // archives under this same name.
-        const arch = "x64";
+        // Matches roslynHelper's exact archive naming convention - see
+        // nettraceParser/pack.py, which produces archives under this same
+        // name for both x64 and arm64.
+        const arch = this.getToolArch();
         const baseUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/nettraceParser-${osName}-${arch}.tar.gz`;
 
         var success = await this.downloadAndUnzip(insights, baseUrl, unzipFolder, exeFolder, false);
@@ -880,7 +894,7 @@ export class DependencySetup {
             osName = "linux";
         }
 
-        const arch = "x64";
+        const arch = this.getToolArch();
         const baseUrl = `https://github.com/jashook/vscode-dotnet-insights/releases/download/${versionNumber}/roslynHelper-${osName}-${arch}.tar.gz`;
 
         var success = await this.downloadAndUnzip(insights, baseUrl, unzipFolder, exeFolder, false);

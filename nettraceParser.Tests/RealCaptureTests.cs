@@ -18,6 +18,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 using DotnetInsights.NetTrace;
@@ -45,6 +46,23 @@ public class RealCaptureTests
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize);
 
         return (gcEvents, allocationEvents, file.StacksById, symbolTable);
+    }
+
+    // AllocationSummaryBuilder.Write streams directly to a Utf8JsonWriter
+    // (see AllocationJsonExporter.cs for why) rather than returning a
+    // JsonObject - write to an in-memory buffer and parse it back so these
+    // tests can keep asserting against the real output shape.
+    private static JsonObject BuildAllocationSummary(List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
+    {
+        using (MemoryStream stream = new MemoryStream())
+        {
+            using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
+            {
+                AllocationSummaryBuilder.Write(writer, allocationEvents, stacksById, symbolTable);
+            }
+
+            return (JsonObject)JsonNode.Parse(stream.ToArray());
+        }
     }
 
     [Fact]
@@ -159,7 +177,7 @@ public class RealCaptureTests
     {
         (_, List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable) = ProjectFixture();
 
-        JsonObject summary = AllocationSummaryBuilder.Build(allocationEvents, stacksById, symbolTable);
+        JsonObject summary = BuildAllocationSummary(allocationEvents, stacksById, symbolTable);
 
         long totalSampledBytes = summary["totalSampledBytes"].GetValue<long>();
         Assert.True(totalSampledBytes > 1_000_000_000L, $"Expected >1GB sampled, got {totalSampledBytes}");
@@ -189,7 +207,7 @@ public class RealCaptureTests
         // silently failed to resolve anything).
         (_, List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable) = ProjectFixture();
 
-        JsonObject summary = AllocationSummaryBuilder.Build(allocationEvents, stacksById, symbolTable);
+        JsonObject summary = BuildAllocationSummary(allocationEvents, stacksById, symbolTable);
         JsonObject cells = summary["drillDown"]["cells"].AsObject();
 
         Assert.True(cells.Count > 0, "Expected at least one drillDown cell for this capture.");

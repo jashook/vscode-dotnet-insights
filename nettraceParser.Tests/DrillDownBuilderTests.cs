@@ -17,6 +17,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 using DotnetInsights.NetTrace.Gc;
@@ -41,6 +43,23 @@ public class DrillDownBuilderTests
             RelativeMSec = relativeMSec,
             StackId = stackId
         };
+    }
+
+    // AllocationSummaryBuilder.Write streams directly to a Utf8JsonWriter
+    // (see AllocationJsonExporter.cs for why) rather than returning a
+    // JsonObject - write to an in-memory buffer and parse it back so these
+    // tests can keep asserting against the real output shape.
+    private static JsonObject Build(List<AllocationEvent> events, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
+    {
+        using (MemoryStream stream = new MemoryStream())
+        {
+            using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
+            {
+                AllocationSummaryBuilder.Write(writer, events, stacksById, symbolTable);
+            }
+
+            return (JsonObject)JsonNode.Parse(stream.ToArray());
+        }
     }
 
     private static EventRecord MakeRundownEvent(long startAddress, int size, string name)
@@ -81,7 +100,7 @@ public class DrillDownBuilderTests
             MakeRundownEvent(2000, 10, "MethodTwenty")
         }, pointerSize: 8);
 
-        JsonObject summary = AllocationSummaryBuilder.Build(events, stacksById, symbolTable);
+        JsonObject summary = Build(events, stacksById, symbolTable);
         JsonObject cells = summary["drillDown"]["cells"].AsObject();
 
         // Only one type -> typeIndex 0. bucketWidthMSec=1000, so 100ms is
@@ -116,7 +135,7 @@ public class DrillDownBuilderTests
         Dictionary<int, long[]> stacksById = new Dictionary<int, long[]> { { 1, new long[] { 5000 } } };
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord> { MakeRundownEvent(5000, 10, "Method") }, pointerSize: 8);
 
-        JsonObject summary = AllocationSummaryBuilder.Build(events, stacksById, symbolTable);
+        JsonObject summary = Build(events, stacksById, symbolTable);
         JsonObject cells = summary["drillDown"]["cells"].AsObject();
 
         // Eight real types -> eight cells ("0:0".."7:0"), nothing for Type8.
@@ -147,7 +166,7 @@ public class DrillDownBuilderTests
         };
 
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8);
-        JsonObject summary = AllocationSummaryBuilder.Build(events, new Dictionary<int, long[]>(), symbolTable);
+        JsonObject summary = Build(events, new Dictionary<int, long[]>(), symbolTable);
 
         JsonArray cellStacks = summary["drillDown"]["cells"]["0:0"].AsArray();
 
@@ -171,7 +190,7 @@ public class DrillDownBuilderTests
         }
 
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8);
-        JsonObject summary = AllocationSummaryBuilder.Build(events, stacksById, symbolTable);
+        JsonObject summary = Build(events, stacksById, symbolTable);
 
         JsonArray cellStacks = summary["drillDown"]["cells"]["0:0"].AsArray();
 
@@ -197,7 +216,7 @@ public class DrillDownBuilderTests
         Dictionary<int, long[]> stacksById = new Dictionary<int, long[]> { { 1, new long[] { 100 } }, { 2, new long[] { 200 } } };
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8);
 
-        JsonObject summary = AllocationSummaryBuilder.Build(events, stacksById, symbolTable);
+        JsonObject summary = Build(events, stacksById, symbolTable);
         JsonObject typeTimeline = summary["typeTimeline"].AsObject();
         JsonObject cells = summary["drillDown"]["cells"].AsObject();
 

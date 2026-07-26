@@ -15,6 +15,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 using System.Collections.Generic;
+using System.IO;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 using DotnetInsights.NetTrace.Gc;
@@ -54,9 +56,21 @@ public class AllocationSummaryBuilderTests
         return MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8);
     }
 
+    // AllocationSummaryBuilder.Write streams directly to a Utf8JsonWriter
+    // (see AllocationJsonExporter.cs for why) rather than returning a
+    // JsonObject - write to an in-memory buffer and parse it back so these
+    // tests can keep asserting against the real output shape.
     private static JsonObject Build(List<AllocationEvent> events)
     {
-        return AllocationSummaryBuilder.Build(events, EmptyStacksById(), EmptySymbolTable());
+        using (MemoryStream stream = new MemoryStream())
+        {
+            using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
+            {
+                AllocationSummaryBuilder.Write(writer, events, EmptyStacksById(), EmptySymbolTable());
+            }
+
+            return (JsonObject)JsonNode.Parse(stream.ToArray());
+        }
     }
 
     [Fact]

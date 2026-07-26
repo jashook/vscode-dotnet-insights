@@ -13,6 +13,18 @@
 // bucket) cell the stacked "Allocated by Type Over Time" chart can be
 // clicked on, the resolved call stacks (Rundown/MethodSymbolTable.cs) that
 // produced that cell's allocations - see BuildDrillDown.
+//
+// Writes directly into a Utf8JsonWriter rather than building a
+// System.Text.Json.Nodes.JsonObject/JsonArray tree first - a real capture's
+// ticks list can be tens of thousands of entries, and materializing one
+// boxed JsonObject per tick (plus per-field JsonValue wrappers) before ever
+// serializing anything was measured (dotnet-trace, real 63MB/76k-tick
+// capture) as the single largest contributor to nettraceParser's wall time,
+// dwarfing both the binary decode step and the GC-event projection. This
+// still gets the same "structured, typed write calls instead of hand-built
+// interpolated strings" safety property this file's sibling
+// (GcJsonExporter.cs) originally chose JsonNode for - Utf8JsonWriter is the
+// same BCL, just without the intermediate object graph.
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace DotnetInsights.NetTrace.Gc {
@@ -21,7 +33,7 @@ namespace DotnetInsights.NetTrace.Gc {
 ////////////////////////////////////////////////////////////////////////////////
 
 using System.Collections.Generic;
-using System.Text.Json.Nodes;
+using System.Text.Json;
 
 using DotnetInsights.NetTrace.Rundown;
 
@@ -60,7 +72,10 @@ public static class AllocationSummaryBuilder
         public int PinnedCount;
     }
 
-    public static JsonObject Build(List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
+    // Writes the "allocationSummary" object (start-to-end, including its own
+    // enclosing braces) directly to writer - callers just do
+    // writer.WritePropertyName("allocationSummary"); AllocationSummaryBuilder.Write(writer, ...);
+    public static void Write(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
     {
         Dictionary<string, TypeAllocStats> statsByType = new Dictionary<string, TypeAllocStats>();
         long totalSampledBytes = 0;
@@ -100,43 +115,46 @@ public static class AllocationSummaryBuilder
         List<TypeAllocStats> sortedStats = new List<TypeAllocStats>(statsByType.Values);
         sortedStats.Sort(CompareByTotalBytesDescending);
 
-        JsonArray topTypesArray = new JsonArray();
         int topTypesCount = sortedStats.Count < TopTypesLimit ? sortedStats.Count : TopTypesLimit;
+        int chartTypeCount = sortedStats.Count < ChartTopTypesLimit ? sortedStats.Count : ChartTopTypesLimit;
+        Dictionary<string, int> columnIndexByType = BuildColumnIndexByType(sortedStats, chartTypeCount);
 
+        writer.WriteStartObject();
+
+        writer.WriteNumber("totalSampledBytes", totalSampledBytes);
+        writer.WriteNumber("distinctTypeCount", statsByType.Count);
+        writer.WriteNumber("totalTickCount", allocationEvents.Count);
+
+        writer.WritePropertyName("topTypes");
+        writer.WriteStartArray();
         for (int typeIndex = 0; typeIndex < topTypesCount; ++typeIndex)
         {
             TypeAllocStats stats = sortedStats[typeIndex];
 
-            JsonObject typeObject = new JsonObject();
-            typeObject["TypeName"] = stats.TypeName;
-            typeObject["TotalBytes"] = stats.TotalBytes;
-            typeObject["TickCount"] = stats.TickCount;
-            typeObject["SmallCount"] = stats.SmallCount;
-            typeObject["LargeCount"] = stats.LargeCount;
-            typeObject["PinnedCount"] = stats.PinnedCount;
-            topTypesArray.Add(typeObject);
+            writer.WriteStartObject();
+            writer.WriteString("TypeName", stats.TypeName);
+            writer.WriteNumber("TotalBytes", stats.TotalBytes);
+            writer.WriteNumber("TickCount", stats.TickCount);
+            writer.WriteNumber("SmallCount", stats.SmallCount);
+            writer.WriteNumber("LargeCount", stats.LargeCount);
+            writer.WriteNumber("PinnedCount", stats.PinnedCount);
+            writer.WriteEndObject();
         }
+        writer.WriteEndArray();
 
-        int chartTypeCount = sortedStats.Count < ChartTopTypesLimit ? sortedStats.Count : ChartTopTypesLimit;
-        Dictionary<string, int> columnIndexByType = BuildColumnIndexByType(sortedStats, chartTypeCount);
+        writer.WritePropertyName("ticks");
+        WriteTicks(writer, allocationEvents);
 
-        JsonArray ticksArray = BuildTicks(allocationEvents);
-        JsonObject typeTimeline = BuildTypeTimeline(allocationEvents, sortedStats, chartTypeCount, columnIndexByType);
-        JsonObject drillDown = BuildDrillDown(allocationEvents, chartTypeCount, columnIndexByType, stacksById, symbolTable);
+        writer.WritePropertyName("typeTimeline");
+        WriteTypeTimeline(writer, allocationEvents, sortedStats, chartTypeCount, columnIndexByType);
 
-        JsonObject summary = new JsonObject();
-        summary["totalSampledBytes"] = totalSampledBytes;
-        summary["distinctTypeCount"] = statsByType.Count;
-        summary["totalTickCount"] = allocationEvents.Count;
-        summary["topTypes"] = topTypesArray;
-        summary["ticks"] = ticksArray;
-        summary["typeTimeline"] = typeTimeline;
-        summary["drillDown"] = drillDown;
+        writer.WritePropertyName("drillDown");
+        WriteDrillDown(writer, allocationEvents, chartTypeCount, columnIndexByType, stacksById, symbolTable);
 
-        return summary;
+        writer.WriteEndObject();
     }
 
-    // Shared by BuildTypeTimeline and BuildDrillDown so both agree on
+    // Shared by WriteTypeTimeline and WriteDrillDown so both agree on
     // exactly which types get their own column vs. fall into "Other" -
     // single source of truth for that boundary, per this file's own header
     // comment.
@@ -189,35 +207,39 @@ public static class AllocationSummaryBuilder
 
     // Per-second (TypeTimelineBucketWidthMSec) bytes-by-type breakdown for
     // the stacked bar chart under the allocation-rate chart. TypeName is
-    // deliberately not carried on individual ticks (BuildTicks/AllocationEvent
+    // deliberately not carried on individual ticks (WriteTicks/AllocationEvent
     // - see this file's header comment), so this is the only place that
     // needs a per-event/per-type join; the result is normalized into a
     // shared "types" column list plus parallel per-bucket byte arrays
     // (rather than repeating type name strings as JSON object keys in every
     // bucket) to keep the payload compact.
-    private static JsonObject BuildTypeTimeline(List<AllocationEvent> allocationEvents, List<TypeAllocStats> sortedStats, int chartTypeCount, Dictionary<string, int> columnIndexByType)
+    private static void WriteTypeTimeline(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, List<TypeAllocStats> sortedStats, int chartTypeCount, Dictionary<string, int> columnIndexByType)
     {
-        JsonArray typesArray = new JsonArray();
+        writer.WriteStartObject();
+        writer.WriteNumber("bucketWidthMSec", TypeTimelineBucketWidthMSec);
+
+        writer.WritePropertyName("types");
+        writer.WriteStartArray();
         for (int typeIndex = 0; typeIndex < chartTypeCount; ++typeIndex)
         {
-            typesArray.Add(sortedStats[typeIndex].TypeName);
+            writer.WriteStringValue(sortedStats[typeIndex].TypeName);
         }
 
         // Always present as the last column, even if every type already fit
         // in the chart's top set (it just stays 0 in that case) - simpler
         // than conditionally omitting it.
         int otherColumnIndex = chartTypeCount;
-        typesArray.Add("Other");
-
-        JsonObject result = new JsonObject();
-        result["bucketWidthMSec"] = TypeTimelineBucketWidthMSec;
-        result["types"] = typesArray;
+        writer.WriteStringValue("Other");
+        writer.WriteEndArray();
 
         int bucketCount = ComputeBucketCount(allocationEvents);
         if (bucketCount == 0)
         {
-            result["buckets"] = new JsonArray();
-            return result;
+            writer.WritePropertyName("buckets");
+            writer.WriteStartArray();
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+            return;
         }
 
         int columnCount = chartTypeCount + 1;
@@ -238,23 +260,26 @@ public static class AllocationSummaryBuilder
             bytesByBucketAndType[bucketIndex, columnIndex] += allocationEvent.AllocationAmount;
         }
 
-        JsonArray bucketsArray = new JsonArray();
+        writer.WritePropertyName("buckets");
+        writer.WriteStartArray();
         for (int bucketIndex = 0; bucketIndex < bucketCount; ++bucketIndex)
         {
-            JsonArray bytesByTypeArray = new JsonArray();
+            writer.WriteStartObject();
+            writer.WriteNumber("bucketStartMSec", bucketIndex * TypeTimelineBucketWidthMSec);
+
+            writer.WritePropertyName("bytesByType");
+            writer.WriteStartArray();
             for (int columnIndex = 0; columnIndex < columnCount; ++columnIndex)
             {
-                bytesByTypeArray.Add(bytesByBucketAndType[bucketIndex, columnIndex]);
+                writer.WriteNumberValue(bytesByBucketAndType[bucketIndex, columnIndex]);
             }
+            writer.WriteEndArray();
 
-            JsonObject bucketObject = new JsonObject();
-            bucketObject["bucketStartMSec"] = bucketIndex * TypeTimelineBucketWidthMSec;
-            bucketObject["bytesByType"] = bytesByTypeArray;
-            bucketsArray.Add(bucketObject);
+            writer.WriteEndObject();
         }
+        writer.WriteEndArray();
 
-        result["buckets"] = bucketsArray;
-        return result;
+        writer.WriteEndObject();
     }
 
     private class StackAggregate
@@ -274,10 +299,19 @@ public static class AllocationSummaryBuilder
     // tick) is grouped under a synthetic "no stack captured" entry instead
     // of being silently dropped, so cell totals still reconcile exactly
     // with typeTimeline's own per-cell totals.
-    private static JsonObject BuildDrillDown(List<AllocationEvent> allocationEvents, int chartTypeCount, Dictionary<string, int> columnIndexByType, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
+    private static void WriteDrillDown(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, int chartTypeCount, Dictionary<string, int> columnIndexByType, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
     {
         int bucketCount = ComputeBucketCount(allocationEvents);
-        Dictionary<string, Dictionary<int, StackAggregate>> stacksByCell = new Dictionary<string, Dictionary<int, StackAggregate>>();
+
+        // Keyed by (typeIndex, bucketIndex) as a value-type tuple, not the
+        // formatted "typeIndex:bucketIndex" string used in the JSON output -
+        // this loop runs once per tick (tens of thousands for a busy
+        // capture), and a string-interpolate-then-hash per tick was measured
+        // (dotnet-trace, real 76k-tick capture) as a meaningful chunk of this
+        // method's cost. The formatted string is built once per distinct
+        // cell instead, in the write loop below - there are far fewer cells
+        // than ticks.
+        Dictionary<(int TypeIndex, int BucketIndex), Dictionary<int, StackAggregate>> stacksByCell = new Dictionary<(int, int), Dictionary<int, StackAggregate>>();
 
         if (bucketCount > 0)
         {
@@ -293,7 +327,7 @@ public static class AllocationSummaryBuilder
                 }
 
                 int bucketIndex = ComputeBucketIndex(allocationEvent.RelativeMSec, bucketCount);
-                string cellKey = $"{typeIndex}:{bucketIndex}";
+                (int TypeIndex, int BucketIndex) cellKey = (typeIndex, bucketIndex);
 
                 Dictionary<int, StackAggregate> cellStacks;
                 if (!stacksByCell.TryGetValue(cellKey, out cellStacks))
@@ -320,46 +354,52 @@ public static class AllocationSummaryBuilder
             }
         }
 
-        JsonObject cellsObject = new JsonObject();
-        foreach (KeyValuePair<string, Dictionary<int, StackAggregate>> cellEntry in stacksByCell)
+        writer.WriteStartObject();
+        writer.WritePropertyName("cells");
+        writer.WriteStartObject();
+
+        foreach (KeyValuePair<(int TypeIndex, int BucketIndex), Dictionary<int, StackAggregate>> cellEntry in stacksByCell)
         {
             List<StackAggregate> cellStackList = new List<StackAggregate>(cellEntry.Value.Values);
             cellStackList.Sort((left, right) => right.TotalBytes.CompareTo(left.TotalBytes));
 
             int stackCount = cellStackList.Count < DrillDownStacksPerCellLimit ? cellStackList.Count : DrillDownStacksPerCellLimit;
-            JsonArray cellArray = new JsonArray();
+
+            writer.WritePropertyName($"{cellEntry.Key.TypeIndex}:{cellEntry.Key.BucketIndex}");
+            writer.WriteStartArray();
 
             for (int stackIndex = 0; stackIndex < stackCount; ++stackIndex)
             {
                 StackAggregate aggregate = cellStackList[stackIndex];
 
-                JsonArray framesArray = new JsonArray();
+                writer.WriteStartObject();
+
+                writer.WritePropertyName("frames");
+                writer.WriteStartArray();
                 if (aggregate.StackId == -1)
                 {
-                    framesArray.Add("<no stack captured>");
+                    writer.WriteStringValue("<no stack captured>");
                 }
                 else
                 {
                     long[] instructionPointers = stacksById[aggregate.StackId];
                     for (int frameIndex = 0; frameIndex < instructionPointers.Length; ++frameIndex)
                     {
-                        framesArray.Add(symbolTable.Resolve(instructionPointers[frameIndex]));
+                        writer.WriteStringValue(symbolTable.Resolve(instructionPointers[frameIndex]));
                     }
                 }
+                writer.WriteEndArray();
 
-                JsonObject stackObject = new JsonObject();
-                stackObject["frames"] = framesArray;
-                stackObject["tickCount"] = aggregate.TickCount;
-                stackObject["totalBytes"] = aggregate.TotalBytes;
-                cellArray.Add(stackObject);
+                writer.WriteNumber("tickCount", aggregate.TickCount);
+                writer.WriteNumber("totalBytes", aggregate.TotalBytes);
+                writer.WriteEndObject();
             }
 
-            cellsObject[cellEntry.Key] = cellArray;
+            writer.WriteEndArray();
         }
 
-        JsonObject drillDown = new JsonObject();
-        drillDown["cells"] = cellsObject;
-        return drillDown;
+        writer.WriteEndObject();
+        writer.WriteEndObject();
     }
 
     private static int CompareByTotalBytesDescending(TypeAllocStats left, TypeAllocStats right)
@@ -370,24 +410,24 @@ public static class AllocationSummaryBuilder
     // Sorted by RelativeMSec defensively (matches GcJsonExporter.cs's own
     // heap-sort-before-serializing precedent) rather than trusting wire
     // order to already be time-ordered.
-    private static JsonArray BuildTicks(List<AllocationEvent> allocationEvents)
+    private static void WriteTicks(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents)
     {
         List<AllocationEvent> sortedEvents = new List<AllocationEvent>(allocationEvents);
         sortedEvents.Sort(CompareByRelativeMSecAscending);
 
-        JsonArray ticksArray = new JsonArray();
+        writer.WriteStartArray();
 
         for (int eventIndex = 0; eventIndex < sortedEvents.Count; ++eventIndex)
         {
             AllocationEvent allocationEvent = sortedEvents[eventIndex];
 
-            JsonObject tickObject = new JsonObject();
-            tickObject["RelativeMSec"] = allocationEvent.RelativeMSec;
-            tickObject["AllocationAmount"] = allocationEvent.AllocationAmount;
-            ticksArray.Add(tickObject);
+            writer.WriteStartObject();
+            writer.WriteNumber("RelativeMSec", allocationEvent.RelativeMSec);
+            writer.WriteNumber("AllocationAmount", allocationEvent.AllocationAmount);
+            writer.WriteEndObject();
         }
 
-        return ticksArray;
+        writer.WriteEndArray();
     }
 
     private static int CompareByRelativeMSecAscending(AllocationEvent left, AllocationEvent right)

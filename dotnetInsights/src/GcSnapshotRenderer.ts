@@ -79,7 +79,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const allocationSummary = gcData["allocationSummary"];
     const hasHeapContents = sourceFormat === "nettrace" && allocationSummary !== null && allocationSummary !== undefined && allocationSummary["topTypes"] !== null && allocationSummary["topTypes"] !== undefined && allocationSummary["topTypes"].length > 0;
     const allocationSummaryHtml = hasHeapContents ? renderAllocationSummaryTable(allocationSummary) : "";
-    const allocationSummaryJson = hasHeapContents ? JSON.stringify(allocationSummary) : "null";
+    const allocationSummaryJson = escapeJsonForInlineScript(hasHeapContents ? JSON.stringify(allocationSummary) : "null");
 
     var totalNumbers = computePauseTimeStats(gcs);
 
@@ -253,7 +253,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
         }
     }
 
-    const gcCountsByGen = JSON.stringify([gen0TimesInEachGc.length, gen1TimesInEachGc.length, gen2TimesInEachGc.length]);
+    const gcCountsByGen = escapeJsonForInlineScript(JSON.stringify([gen0TimesInEachGc.length, gen1TimesInEachGc.length, gen2TimesInEachGc.length]));
 
     // Full per-GC data (every per-generation field included, not just what
     // the charts currently read) - kept as full fidelity on purpose so
@@ -270,7 +270,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     var hiddenData = null;
 
     try {
-        hiddenData = JSON.stringify(chartPayload);
+        hiddenData = escapeJsonForInlineScript(JSON.stringify(chartPayload));
     }
     catch(e) {
         var i = 0;
@@ -282,7 +282,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
         gen2TotalTimeInGc
     ];
 
-    const totalTimeInEachGcJson = JSON.stringify(totalTimeInEachGc);
+    const totalTimeInEachGcJson = escapeJsonForInlineScript(JSON.stringify(totalTimeInEachGc));
 
     // Allocations
 
@@ -311,10 +311,10 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <link href="${styleVSCodeUri}" rel="stylesheet" />
         </head>
         <body>
-            <span style="display:none" id="hiddenData"><!--${hiddenData}--></span>
-            <span style="display:none" id="gcCountsByGen"><!--${gcCountsByGen}--></span>
-            <span style="display:none" id="totalTimeInEachGcJson"><!--${totalTimeInEachGcJson}--></span>
-            <span style="display:none" id="allocationSummaryJson"><!--${allocationSummaryJson}--></span>
+            <script type="application/json" id="hiddenData">${hiddenData}</script>
+            <script type="application/json" id="gcCountsByGen">${gcCountsByGen}</script>
+            <script type="application/json" id="totalTimeInEachGcJson">${totalTimeInEachGcJson}</script>
+            <script type="application/json" id="allocationSummaryJson">${allocationSummaryJson}</script>
 
             <!-- High-level view switcher (GC / Heap Contents / eventually
                  Profile) - browser-tab style, sitting above the file name so
@@ -431,6 +431,13 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
             <div class="gcDataContainer">
                 ${canvasData}
+                <!-- Load Chart.js exactly once, here, before it's needed by
+                     any inline chart-building code below. It used to be
+                     re-declared after every gcDataContainer div further down
+                     this page (5 copies total) - since none of those tags had
+                     async/defer, the browser fetched and fully executed the
+                     whole library 5 times on every load, blocking HTML
+                     parsing each time regardless of capture size. -->
                 <script src="${chartjs}"></script>
             </div>
 
@@ -439,7 +446,6 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
             <div class="gcDataContainer" id="pauseTimeSpacer">
                 ${pauseTimeCanvasData}
-                <script src="${chartjs}"></script>
             </div>
 
             <h2 class="divider">GC Usage Over Time</h2>
@@ -447,7 +453,6 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
             <div class="gcDataContainer" id="nextSpacer">
                 ${totalCanvasData}
-                <script src="${chartjs}"></script>
             </div>
 
             <h2 class="divider">Heap Fragmentation Over Time</h2>
@@ -458,7 +463,6 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
             <div class="gcDataContainer" id="fragmentationSpacer">
                 ${fragmentationCanvasData}
-                <script src="${chartjs}"></script>
             </div>
 
             ${hasHeapContents ? `<h2 class="divider">Top LOH Allocating Types</h2>
@@ -468,7 +472,6 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
             <div class="gcDataContainer">
                 ${perHeapCanvasData}
-                <script src="${chartjs}"></script>
             </div>
             </div>
 
@@ -497,6 +500,16 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     </html>`;
 
     return htmlToReturn;
+}
+
+// A `<script type="application/json">` tag's raw-text parsing only looks for
+// the literal byte sequence "</script" to find its end - a "<" from embedded
+// data (e.g. a "</script>" substring inside a GC Reason/Type string) would
+// otherwise truncate the tag early. `<` is a valid JSON string escape
+// for "<" that JSON.parse decodes transparently, so this is safe to apply to
+// any JSON.stringify output before embedding it in a script tag.
+export function escapeJsonForInlineScript(json: string): string {
+    return json.replace(/</g, '\\u003c');
 }
 
 export function getNonce() {

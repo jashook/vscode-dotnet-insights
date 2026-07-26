@@ -11,14 +11,14 @@ var allocationDatasets = {};
     const vscode = acquireVsCodeApi();
   
     console.time("gcParsing");
-    var gcs = JSON.parse(document.getElementById("hiddenData").innerHTML.slice(4, document.getElementById("hiddenData").innerHTML.length - 3));
+    var gcs = JSON.parse(document.getElementById("hiddenData").textContent);
     console.timeEnd("gcParsing");
 
     console.time("gcCountsByGenParsing");
-    var gcCountsByGen = JSON.parse(document.getElementById("gcCountsByGen").innerHTML.slice(4, document.getElementById("gcCountsByGen").innerHTML.length - 3));
+    var gcCountsByGen = JSON.parse(document.getElementById("gcCountsByGen").textContent);
     console.timeEnd("gcCountsByGenParsing");
 
-    var totalTimeInEachGcJson = JSON.parse(document.getElementById("totalTimeInEachGcJson").innerHTML.slice(4, document.getElementById("totalTimeInEachGcJson").innerHTML.length - 3));
+    var totalTimeInEachGcJson = JSON.parse(document.getElementById("totalTimeInEachGcJson").textContent);
 
     // null when sourceFormat !== "nettrace" or the capture had zero
     // allocation ticks - see GcSnapshotRenderer.ts's hasHeapContents.
@@ -29,7 +29,7 @@ var allocationDatasets = {};
     // detailTableHtml below), so this is still parsed eagerly like
     // gcCountsByGen; only the chart/table DOM built from it is deferred to
     // the "Heap Contents" nav button's first click.
-    var allocationSummaryJson = JSON.parse(document.getElementById("allocationSummaryJson").innerHTML.slice(4, document.getElementById("allocationSummaryJson").innerHTML.length - 3));
+    var allocationSummaryJson = JSON.parse(document.getElementById("allocationSummaryJson").textContent);
 
     // DateTime is a real calendar date/time (in the parsing machine's local
     // timezone - see GcJsonExporter.cs) for .nettrace sources, or a
@@ -136,6 +136,7 @@ var allocationDatasets = {};
             }]
         },
         options: {
+            animation: { duration: 0 },
             "maintainAspectRatio": false
         }
     });
@@ -175,6 +176,7 @@ var allocationDatasets = {};
                     }
                 }],
             },
+            animation: { duration: 0 },
             "maintainAspectRatio": false,
         }
     });
@@ -284,7 +286,9 @@ var allocationDatasets = {};
                     ],
                     borderColor: "rgba(220, 53, 69, 1)",
                     borderWidth: 1,
-                    lineTension: 0
+                    lineTension: 0,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: 'Gen 0',
@@ -293,7 +297,9 @@ var allocationDatasets = {};
                         "rgba(72, 83, 136, 0.2)",
                     ],
                     borderWidth: 1,
-                    lineTension: 0
+                    lineTension: 0,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: "Gen 1",
@@ -302,7 +308,9 @@ var allocationDatasets = {};
                         "rgba(96, 165, 69, 0.2)",
                     ],
                     borderWidth: 1,
-                    lineTension: 0
+                    lineTension: 0,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: "Gen 2",
@@ -311,7 +319,9 @@ var allocationDatasets = {};
                         "rgba(141, 31, 95, 0.2)",
                     ],
                     borderWidth: 1,
-                    lineTension: 0
+                    lineTension: 0,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: "LOH",
@@ -320,7 +330,9 @@ var allocationDatasets = {};
                         "rgba(201, 221, 84, 0.2)"
                     ],
                     borderWidth: 1,
-                    lineTension: 0
+                    lineTension: 0,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 }
             ]},
             options: {
@@ -366,6 +378,7 @@ var allocationDatasets = {};
                         title: pauseTimeTooltipTitle
                     }
                 },
+                animation: { duration: 0 },
                 "maintainAspectRatio": false,
             }
     });
@@ -400,15 +413,19 @@ var allocationDatasets = {};
                     backgroundColor: [
                         "rgba(72, 83, 136, 0.2)",
                     ],
-                    borderWidth: 1
-                }, 
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
+                },
                 {
                     label: "Gen 1",
                     data: totalGen1DataSet,
                     backgroundColor: [
                         "rgba(96, 165, 69, 0.2)",
                     ],
-                    borderWidth: 1
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: "Gen 2",
@@ -416,7 +433,9 @@ var allocationDatasets = {};
                     backgroundColor: [
                         "rgba(141, 31, 95, 0.2)",
                     ],
-                    borderWidth: 1
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: "LOH",
@@ -424,7 +443,9 @@ var allocationDatasets = {};
                     backgroundColor: [
                         "rgba(201, 221, 84, 0.2)"
                     ],
-                    borderWidth: 1
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 }
             ]},
             options: {
@@ -448,11 +469,17 @@ var allocationDatasets = {};
                         title: gcTooltipTitle
                     }
                 },
+                animation: { duration: 0 },
                 "maintainAspectRatio": false,
             }
     });
 
     if (document.getElementById("gcFragmentationOverTime")) {
+      // The fragmentation chart is below the fold - deferring its GC x heap x
+      // gen dataset computation to after the above-fold charts have painted
+      // avoids blocking the initial render for work the user may not
+      // immediately scroll to see.
+      requestAnimationFrame(function () {
         var fragGen0Dataset = [];
         var fragGen1Dataset = [];
         var fragGen2Dataset = [];
@@ -511,7 +538,8 @@ var allocationDatasets = {};
                         borderWidth: 2,
                         yAxisID: 'fragPct',
                         fill: false,
-                        pointRadius: 2
+                        pointRadius: 2,
+                        pointHoverRadius: 4
                     },
                     {
                         label: 'Gen 0',
@@ -521,7 +549,8 @@ var allocationDatasets = {};
                         borderWidth: 1,
                         yAxisID: 'fragPct',
                         fill: false,
-                        pointRadius: 2
+                        pointRadius: 2,
+                        pointHoverRadius: 4
                     },
                     {
                         label: 'Gen 1',
@@ -531,7 +560,8 @@ var allocationDatasets = {};
                         borderWidth: 1,
                         yAxisID: 'fragPct',
                         fill: false,
-                        pointRadius: 2
+                        pointRadius: 2,
+                        pointHoverRadius: 4
                     },
                     {
                         label: 'Gen 2',
@@ -541,7 +571,8 @@ var allocationDatasets = {};
                         borderWidth: 1,
                         yAxisID: 'fragPct',
                         fill: false,
-                        pointRadius: 2
+                        pointRadius: 2,
+                        pointHoverRadius: 4
                     },
                     {
                         label: 'LOH',
@@ -551,7 +582,8 @@ var allocationDatasets = {};
                         borderWidth: 1,
                         yAxisID: 'fragPct',
                         fill: false,
-                        pointRadius: 2
+                        pointRadius: 2,
+                        pointHoverRadius: 4
                     },
                     {
                         label: 'Pinned Objects',
@@ -562,7 +594,8 @@ var allocationDatasets = {};
                         borderDash: [4, 4],
                         yAxisID: 'pinnedCount',
                         fill: false,
-                        pointRadius: 2
+                        pointRadius: 2,
+                        pointHoverRadius: 4
                     },
                     {
                         label: 'Compaction',
@@ -618,9 +651,11 @@ var allocationDatasets = {};
                         title: gcTooltipTitle
                     }
                 },
+                animation: { duration: 0 },
                 maintainAspectRatio: false
             }
         });
+      });
     }
 
     var lohTypesSection = document.getElementById("lohTypesSection");
@@ -700,15 +735,19 @@ var allocationDatasets = {};
                     backgroundColor: [
                         'rgba(54, 162, 235, 0.2)',
                     ],
-                    borderWidth: 1
-                }, 
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
+                },
                 {
                     label: "Gen 1",
                     data: gen1DataSet,
                     backgroundColor: [
                         'rgba(75, 192, 192, 0.2)'
                     ],
-                    borderWidth: 1
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: "Gen 2",
@@ -716,7 +755,9 @@ var allocationDatasets = {};
                     backgroundColor: [
                         'rgba(153, 102, 255, 0.2)'
                     ],
-                    borderWidth: 1
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: "LOH",
@@ -724,7 +765,9 @@ var allocationDatasets = {};
                     backgroundColor: [
                         'rgba(255, 206, 86, 0.2)'
                     ],
-                    borderWidth: 1
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 }
             ]},
             options: {
@@ -748,6 +791,7 @@ var allocationDatasets = {};
                         title: gcTooltipTitle
                     }
                 },
+                animation: { duration: 0 },
                 "maintainAspectRatio": false,
             }
         });
@@ -755,8 +799,30 @@ var allocationDatasets = {};
 
     var heapCharts = document.getElementsByClassName("heapChart");
 
-    for (var index = 0; index < heapCharts.length; ++index) {
-        setChart(index);
+    // Server GC traces can have 16+ heaps, each getting its own Chart.js
+    // instance - building all of them synchronously on load is expensive and
+    // most users never scroll down to see every heap. Defer each chart's
+    // construction until its canvas actually scrolls into view.
+    if ('IntersectionObserver' in window) {
+        var heapChartObserver = new IntersectionObserver(function (entries, observer) {
+            for (var entryIndex = 0; entryIndex < entries.length; ++entryIndex) {
+                var entry = entries[entryIndex];
+                if (entry.isIntersecting) {
+                    var heapIndex = parseInt(entry.target.getAttribute('data-heap-index'), 10);
+                    setChart(heapIndex);
+                    observer.unobserve(entry.target);
+                }
+            }
+        }, { rootMargin: '200px' });
+
+        for (var heapObserveIndex = 0; heapObserveIndex < heapCharts.length; ++heapObserveIndex) {
+            heapCharts[heapObserveIndex].setAttribute('data-heap-index', heapObserveIndex);
+            heapChartObserver.observe(heapCharts[heapObserveIndex]);
+        }
+    } else {
+        for (var index = 0; index < heapCharts.length; ++index) {
+            setChart(index);
+        }
     }
 
     // The Detailed tab's markup arrives as inert commented-out text (see
@@ -983,7 +1049,20 @@ var allocationDatasets = {};
             if (targetTab === 'detailed' && !detailTableInjected) {
                 var holder = document.getElementById("detailTableHtml");
                 var detailTableHtml = holder.innerHTML.slice(4, holder.innerHTML.length - 3);
-                document.getElementById('tab-detailed').innerHTML = detailTableHtml + '<div id="generationBreakdownSection"></div>';
+                var detailedPanel = document.getElementById('tab-detailed');
+                detailedPanel.innerHTML = detailTableHtml + '<div id="generationBreakdownSection"></div>';
+
+                // GcDetailTableRenderer.ts emits the raw DateTime string on
+                // each cell rather than pre-formatting it - formatting 1000+
+                // rows via Intl.DateTimeFormat is cheap once, here, on first
+                // open, but was costing that same work on every
+                // extension-host render when done server-side.
+                var dateTimeCells = detailedPanel.getElementsByClassName("gcDateTimeCell");
+                for (var dateTimeCellIndex = 0; dateTimeCellIndex < dateTimeCells.length; ++dateTimeCellIndex) {
+                    var dateTimeCell = dateTimeCells[dateTimeCellIndex];
+                    dateTimeCell.textContent = formatHumanDateTime(dateTimeCell.getAttribute('data-raw'));
+                }
+
                 renderGenerationBreakdownSection();
                 detailTableInjected = true;
             }
@@ -1302,6 +1381,7 @@ var allocationDatasets = {};
                     title: { display: true, text: 'Free Chunks by Count' },
                     scales: { xAxes: [{ ticks: { beginAtZero: true } }] },
                     legend: { display: false },
+                    animation: { duration: 0 },
                     maintainAspectRatio: false
                 }
             });
@@ -1331,6 +1411,7 @@ var allocationDatasets = {};
                         }]
                     },
                     legend: { display: false },
+                    animation: { duration: 0 },
                     maintainAspectRatio: false
                 }
             });
