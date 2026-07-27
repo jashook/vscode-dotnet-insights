@@ -6,12 +6,22 @@
 // handler), or a whole type across the entire capture
 // (gcData["allocationSummary"]["typeDrillDown"], reached by clicking a row
 // in the global ranked types table - see snapshotGcStats.js's
-// onTypeDrillDownClick). Both are just an array of {frames, totalBytes,
-// tickCount} stacks by the time they reach renderDrillDownTable below, so
-// one render path serves both entry points. Unlike every other table on
-// this page, this has no server-rendered HTML to lazily inject - which
-// scope to show is only known at click time - so it's built here, entirely
-// client-side, from data already present in allocationSummaryJson.
+// onTypeDrillDownClick). Both are a { totalBytes, totalTickCount,
+// distinctStackCount, stacks: [{frames, totalBytes, tickCount}, ...] }
+// object by the time they reach renderDrillDownTable below, so one render
+// path serves both entry points. totalBytes/totalTickCount/distinctStackCount
+// are the TRUE totals across every distinct call stack the C# side
+// aggregated, computed BEFORE WriteCellDrillDown/WriteTypeDrillDown cap the
+// "stacks" array at DrillDownStacksPerCellLimit/DrillDownStacksPerTypeLimit -
+// summing only the (possibly truncated) stacks array instead would silently
+// shrink both the displayed total and every percentage's denominator below
+// the real total the chart bar was drawn from, which is exactly what made
+// the drill-down view's percentages disagree with the bar's actual size on
+// captures with many distinct call sites for one type/cell. Unlike every
+// other table on this page, this has no server-rendered HTML to lazily
+// inject - which scope to show is only known at click time - so it's built
+// here, entirely client-side, from data already present in
+// allocationSummaryJson.
 //
 // Deliberately not a PerfView-style root-to-leaf call tree. The question a
 // user clicking a chart segment (or a row in the ranked types table) has
@@ -207,17 +217,20 @@ function renderCallerChainRows(node, depth, mb, parentTotalBytes) {
     return rowHtml + `<tr id="${rowId}" class="callPathsDetail"><td colspan="3" class="callerTreeCell"><table class="callerTreeInner">${CALLER_TREE_COLGROUP}${childRowsHtml}</table></td></tr>`;
 }
 
-// stacks: either gcData["allocationSummary"]["drillDown"]["cells"]["{typeIndex}:{bucketIndex}"]
+// entry: either gcData["allocationSummary"]["drillDown"]["cells"]["{typeIndex}:{bucketIndex}"]
 // (one chart cell - undefined/empty when that exact cell has no drillDown
 // entry, e.g. every tick in it landed under "Other", which isn't drillable
 // in the first place, so this shouldn't normally happen for a cell the
 // chart actually let the user click) or
 // gcData["allocationSummary"]["typeDrillDown"][typeIndex] (one type, whole
-// capture). scopeLabel is shown next to typeName in the heading - a
-// formatted bucket time for the former, "Whole Capture" for the latter.
-function renderDrillDownTable(stacks, typeName, scopeLabel) {
+// capture) - both a { totalBytes, totalTickCount, distinctStackCount,
+// stacks } object (see this file's header comment). scopeLabel is shown
+// next to typeName in the heading - a formatted bucket time for the
+// former, "Whole Capture" for the latter.
+function renderDrillDownTable(entry, typeName, scopeLabel) {
     const heading = `<h3 class="detailTableHeading">${escapeHtmlForDrillDown(typeName)} &mdash; ${escapeHtmlForDrillDown(scopeLabel)}</h3>`;
 
+    const stacks = entry && entry["stacks"];
     if (!stacks || stacks.length === 0) {
         return `${heading}<div class="detailTable"><p>No captured stacks for this selection.</p></div>`;
     }
@@ -226,15 +239,22 @@ function renderDrillDownTable(stacks, typeName, scopeLabel) {
     const leafGroups = groupStacksByLeaf(stacks);
     callerRowIdCounter = 0;
 
-    var totalBytes = 0;
-    var totalTicks = 0;
-    for (var totalsIndex = 0; totalsIndex < leafGroups.length; ++totalsIndex) {
-        totalBytes += leafGroups[totalsIndex].totalBytes;
-        totalTicks += leafGroups[totalsIndex].tickCount;
-    }
+    // The true scope totals (every distinct call stack the C# side
+    // aggregated, before it capped the "stacks" array) - NOT a sum over
+    // leafGroups, which only covers what's actually shown when the array
+    // was truncated. Every percentage below is measured against totalBytes
+    // so it stays consistent with the chart bar this table was opened
+    // from, even when some long-tail stacks aren't individually listed.
+    const totalBytes = entry["totalBytes"];
+    const totalTicks = entry["totalTickCount"];
+    const distinctStackCount = entry["distinctStackCount"];
+    const isTruncated = distinctStackCount > stacks.length;
 
     const methodWord = leafGroups.length === 1 ? "method" : "methods";
-    const summary = `<p class="drillDownSummary">${totalTicks.toLocaleString()} ticks, ${(totalBytes / mb).toFixed(2)} MB across ${leafGroups.length} allocating ${methodWord}.</p>`;
+    const truncationNote = isTruncated
+        ? ` <span class="drillDownTruncationNote">(showing top ${stacks.length.toLocaleString()} of ${distinctStackCount.toLocaleString()} distinct call stacks by bytes - some long-tail stacks aren't individually listed below, but are still counted in every total/percentage.)</span>`
+        : ``;
+    const summary = `<p class="drillDownSummary">${totalTicks.toLocaleString()} ticks, ${(totalBytes / mb).toFixed(2)} MB across ${leafGroups.length} allocating ${methodWord}.${truncationNote}</p>`;
 
     var rows = "";
     for (var rowIndex = 0; rowIndex < leafGroups.length; ++rowIndex) {

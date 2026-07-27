@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 
 import { renderAllocationSummaryTable } from "./AllocationSummaryRenderer";
+import { adaptivelyBucketTicks } from "./AllocationTicksBucketer";
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
 import { formatHumanDateTime, renderGcDetailTable } from "./GcDetailTableRenderer";
 import { computeAllocationAmountStats, computePauseTimeStats } from "./GcStatsCalculations";
@@ -79,7 +80,19 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const allocationSummary = gcData["allocationSummary"];
     const hasHeapContents = sourceFormat === "nettrace" && allocationSummary !== null && allocationSummary !== undefined && allocationSummary["topTypes"] !== null && allocationSummary["topTypes"] !== undefined && allocationSummary["topTypes"].length > 0;
     const allocationSummaryHtml = hasHeapContents ? renderAllocationSummaryTable(allocationSummary) : "";
-    const allocationSummaryJson = escapeJsonForInlineScript(hasHeapContents ? JSON.stringify(allocationSummary) : "null");
+
+    // Ticks are bucketed (only when the raw count is large enough to
+    // matter - see AllocationTicksBucketer.ts) before ever being
+    // stringified into the webview's HTML: a heavily-allocating capture's
+    // raw tick count can be in the millions, and both this JSON.stringify
+    // (plus the webview's own JSON.parse of it) and allocationStats.js's
+    // per-GC-boundary summation over the raw array scale with that count -
+    // left unbucketed, either can hang the page well before any chart
+    // renders.
+    const allocationSummaryForWebview = hasHeapContents && allocationSummary["ticks"]
+        ? { ...allocationSummary, ticks: adaptivelyBucketTicks(allocationSummary["ticks"]) }
+        : allocationSummary;
+    const allocationSummaryJson = escapeJsonForInlineScript(hasHeapContents ? JSON.stringify(allocationSummaryForWebview) : "null");
 
     var totalNumbers = computePauseTimeStats(gcs);
 

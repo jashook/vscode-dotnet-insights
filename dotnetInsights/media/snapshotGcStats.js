@@ -1194,13 +1194,13 @@ var allocationDatasets = {};
     // that one (type, 1-second bucket) cell.
     function onDrillDownSegmentClick(typeIndex, bucketIndex) {
         var drillDown = allocationSummaryJson["drillDown"];
-        var cellStacks = (drillDown && drillDown["cells"]) ? drillDown["cells"][typeIndex + ":" + bucketIndex] : null;
+        var cellEntry = (drillDown && drillDown["cells"]) ? drillDown["cells"][typeIndex + ":" + bucketIndex] : null;
 
         var typeTimeline = allocationSummaryJson["typeTimeline"];
         var typeName = typeTimeline["types"][typeIndex];
         var bucketLabel = formatElapsedMsForAllocationChart(typeTimeline["buckets"][bucketIndex]["bucketStartMSec"]);
 
-        showDrillDownTab(renderDrillDownTable(cellStacks, typeName, bucketLabel));
+        showDrillDownTab(renderDrillDownTable(cellEntry, typeName, bucketLabel));
     }
 
     // Called from the click delegation in wireHeapContentsInnerTabs below
@@ -1210,10 +1210,10 @@ var allocationDatasets = {};
     // merges every bucket's stacks for this type into one view.
     function onTypeDrillDownClick(typeIndex) {
         var typeDrillDown = allocationSummaryJson["typeDrillDown"];
-        var stacks = typeDrillDown ? typeDrillDown[typeIndex] : null;
+        var typeEntry = typeDrillDown ? typeDrillDown[typeIndex] : null;
         var typeName = allocationSummaryJson["topTypes"][typeIndex]["TypeName"];
 
-        showDrillDownTab(renderDrillDownTable(stacks, typeName, "Whole Capture"));
+        showDrillDownTab(renderDrillDownTable(typeEntry, typeName, "Whole Capture"));
     }
 
     function wireHeapContentsInnerTabs() {

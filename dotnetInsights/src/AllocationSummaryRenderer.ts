@@ -100,7 +100,8 @@ export function renderAllocationSummaryTable(allocationSummary: any): string {
     var hasTypeDrillDownData = false;
     if (typeDrillDown) {
         for (var typeDrillDownIndex = 0; typeDrillDownIndex < typeDrillDown.length; ++typeDrillDownIndex) {
-            if (typeDrillDown[typeDrillDownIndex] && typeDrillDown[typeDrillDownIndex].length > 0) {
+            var typeDrillDownEntry = typeDrillDown[typeDrillDownIndex];
+            if (typeDrillDownEntry && typeDrillDownEntry["stacks"] && typeDrillDownEntry["stacks"].length > 0) {
                 hasTypeDrillDownData = true;
                 break;
             }

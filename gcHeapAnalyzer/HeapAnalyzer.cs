@@ -29,6 +29,7 @@ namespace DotnetInsights.GcHeapAnalyzer {
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using Microsoft.Diagnostics.Runtime;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -61,6 +62,9 @@ public static class HeapAnalyzer
 
     private static FragmentationReport Analyze(int pid)
     {
+        Stopwatch totalStopwatch = Stopwatch.StartNew();
+        Stopwatch phaseStopwatch = Stopwatch.StartNew();
+
         Console.Error.WriteLine($"Attaching to process {pid}...");
 
         using DataTarget target = DataTarget.AttachToProcess(pid, suspend: true);
@@ -70,8 +74,14 @@ public static class HeapAnalyzer
             throw new InvalidOperationException($"No CLR runtime found in process {pid}. Is this a managed .NET process?");
         }
 
+        long attachMs = phaseStopwatch.ElapsedMilliseconds;
+        phaseStopwatch.Restart();
+
         ClrRuntime runtime = target.ClrVersions[0].CreateRuntime();
         ClrHeap heap = runtime.Heap;
+
+        long createRuntimeMs = phaseStopwatch.ElapsedMilliseconds;
+        phaseStopwatch.Restart();
 
         string processName = GetProcessName(pid);
         Console.Error.WriteLine($"Walking heap ({heap.Segments.Length} segment(s)) — process suspended...");
@@ -91,6 +101,7 @@ public static class HeapAnalyzer
 
         int totalSegments = 0;
         long totalCommitted = 0;
+        long totalObjectsWalked = 0;
 
         foreach (ClrSegment segment in heap.Segments)
         {
@@ -112,6 +123,8 @@ public static class HeapAnalyzer
 
             foreach (ClrObject obj in segment.EnumerateObjects())
             {
+                ++totalObjectsWalked;
+
                 if (!obj.IsValid)
                 {
                     continue;
@@ -157,12 +170,18 @@ public static class HeapAnalyzer
             }
         }
 
+        long walkMs = phaseStopwatch.ElapsedMilliseconds;
+        phaseStopwatch.Restart();
+
         // Pinned handle enumeration — separate from the object walk since
         // GCHandles can reference objects in any generation (a gen0 object
         // pinned by an async I/O operation is as interesting as a gen2 one).
         int pinnedCount = 0;
+        long totalHandlesWalked = 0;
         foreach (ClrHandle handle in runtime.EnumerateHandles())
         {
+            ++totalHandlesWalked;
+
             if (handle.HandleKind != ClrHandleKind.Pinned && handle.HandleKind != ClrHandleKind.AsyncPinned)
             {
                 continue;
@@ -192,6 +211,9 @@ public static class HeapAnalyzer
             ++pinnedStat.Count;
             pinnedStat.TotalBytes += (long)obj.Size;
         }
+
+        long handleMs = phaseStopwatch.ElapsedMilliseconds;
+        phaseStopwatch.Restart();
 
         // Compute derived fields
         long totalFree = 0;
@@ -248,7 +270,19 @@ public static class HeapAnalyzer
 
         report.TopLohTypes = sortedLoh;
 
+        long postProcessMs = phaseStopwatch.ElapsedMilliseconds;
+        long totalMs = totalStopwatch.ElapsedMilliseconds;
+
+        double objectsPerSecond = walkMs > 0 ? totalObjectsWalked / (walkMs / 1000.0) : totalObjectsWalked;
+        double handlesPerSecond = handleMs > 0 ? totalHandlesWalked / (handleMs / 1000.0) : totalHandlesWalked;
+
         Console.Error.WriteLine("Analysis complete.");
+        Console.Error.WriteLine(
+            $"Timing: attach={attachMs}ms createRuntime={createRuntimeMs}ms " +
+            $"objectWalk={walkMs}ms ({totalObjectsWalked} objects, {objectsPerSecond:F0}/s) " +
+            $"handleWalk={handleMs}ms ({totalHandlesWalked} handles, {handlesPerSecond:F0}/s) " +
+            $"postProcess={postProcessMs}ms total={totalMs}ms");
+
         return report;
     }
 

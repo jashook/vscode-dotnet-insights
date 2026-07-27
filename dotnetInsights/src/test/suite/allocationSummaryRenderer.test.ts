@@ -196,7 +196,7 @@ describe('AllocationSummaryRenderer', () => {
             const summary = makeAllocationSummary([makeTypeEntry('System.Byte[]', 100, 1)], {
                 totalSampledBytes: 100,
                 totalTickCount: 1,
-                drillDown: { cells: { '0:0': [{ frames: ['Foo.Bar'], tickCount: 1, totalBytes: 100 }] } }
+                drillDown: { cells: { '0:0': { totalBytes: 100, totalTickCount: 1, distinctStackCount: 1, stacks: [{ frames: ['Foo.Bar'], tickCount: 1, totalBytes: 100 }] } } }
             });
 
             const html = renderAllocationSummaryTable(summary);
@@ -278,7 +278,7 @@ describe('AllocationSummaryRenderer', () => {
 
             let foundRealFrame = false;
             for (const cellKey of cellKeys) {
-                for (const stackEntry of drillDown['cells'][cellKey]) {
+                for (const stackEntry of drillDown['cells'][cellKey]['stacks']) {
                     for (const frame of stackEntry['frames']) {
                         if (!frame.startsWith('<unresolved') && frame !== '<no stack captured>') {
                             foundRealFrame = true;
@@ -306,8 +306,8 @@ describe('AllocationSummaryRenderer', () => {
             assert.strictEqual(typeDrillDown.length, allocationSummary['topTypes'].length);
 
             let foundRealFrame = false;
-            for (const stacksForType of typeDrillDown) {
-                for (const stackEntry of stacksForType) {
+            for (const typeEntry of typeDrillDown) {
+                for (const stackEntry of typeEntry['stacks']) {
                     for (const frame of stackEntry['frames']) {
                         if (!frame.startsWith('<unresolved') && frame !== '<no stack captured>') {
                             foundRealFrame = true;
@@ -319,6 +319,25 @@ describe('AllocationSummaryRenderer', () => {
             assert.ok(foundRealFrame, 'Expected at least one real resolved frame across all typeDrillDown entries.');
         });
 
+        // Regression guard for the truncation bug: totalBytes must reflect
+        // EVERY distinct call stack the C# side aggregated for a type, not
+        // just the (possibly capped) ones listed in "stacks" - otherwise
+        // the Drill Down view's percentages silently disagree with the
+        // ranked table row / chart bar they were opened from. Below the
+        // cap distinctStackCount === stacks.length, so this also holds
+        // trivially there; it's the >cap case this guards against.
+        it('every typeDrillDown entry\'s totalBytes/totalTickCount match the corresponding topTypes row exactly', () => {
+            const typeDrillDown = allocationSummary['typeDrillDown'];
+            const topTypes = allocationSummary['topTypes'];
+
+            for (let typeIndex = 0; typeIndex < topTypes.length; ++typeIndex) {
+                const typeEntry = typeDrillDown[typeIndex];
+                assert.strictEqual(typeEntry['totalBytes'], topTypes[typeIndex]['TotalBytes'], `typeDrillDown[${typeIndex}].totalBytes should match topTypes[${typeIndex}].TotalBytes`);
+                assert.strictEqual(typeEntry['totalTickCount'], topTypes[typeIndex]['TickCount'], `typeDrillDown[${typeIndex}].totalTickCount should match topTypes[${typeIndex}].TickCount`);
+                assert.ok(typeEntry['distinctStackCount'] >= typeEntry['stacks'].length);
+            }
+        });
+
         it('every rendered type row links to a non-empty typeDrillDown entry at the same index', () => {
             const html = renderAllocationSummaryTable(allocationSummary);
             const typeDrillDown = allocationSummary['typeDrillDown'];
@@ -328,7 +347,7 @@ describe('AllocationSummaryRenderer', () => {
 
             for (const match of rowIndexMatches) {
                 const typeIndex = parseInt(match[1], 10);
-                assert.ok(typeDrillDown[typeIndex] && typeDrillDown[typeIndex].length > 0, `typeDrillDown[${typeIndex}] should be non-empty`);
+                assert.ok(typeDrillDown[typeIndex] && typeDrillDown[typeIndex]['stacks'].length > 0, `typeDrillDown[${typeIndex}] should be non-empty`);
             }
         });
     });

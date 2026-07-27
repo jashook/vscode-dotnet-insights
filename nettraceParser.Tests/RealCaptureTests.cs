@@ -215,7 +215,7 @@ public class RealCaptureTests
         bool foundRealFrame = false;
         foreach (KeyValuePair<string, JsonNode> cellEntry in cells)
         {
-            foreach (JsonNode stackEntry in cellEntry.Value.AsArray())
+            foreach (JsonNode stackEntry in cellEntry.Value["stacks"].AsArray())
             {
                 foreach (JsonNode frame in stackEntry["frames"].AsArray())
                 {

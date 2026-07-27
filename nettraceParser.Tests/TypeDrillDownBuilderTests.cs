@@ -113,11 +113,15 @@ public class TypeDrillDownBuilderTests
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord> { MakeRundownEvent(1000, 10, "Method") }, pointerSize: 8);
 
         JsonObject summary = Build(events, stacksById, symbolTable);
-        JsonArray stacksForTypeA = summary["typeDrillDown"][0].AsArray();
+        JsonObject typeAEntry = summary["typeDrillDown"][0].AsObject();
+        JsonArray stacksForTypeA = typeAEntry["stacks"].AsArray();
 
         Assert.Single(stacksForTypeA);
         Assert.Equal(350, stacksForTypeA[0]["totalBytes"].GetValue<long>());
         Assert.Equal(2, stacksForTypeA[0]["tickCount"].GetValue<int>());
+        Assert.Equal(350, typeAEntry["totalBytes"].GetValue<long>());
+        Assert.Equal(2, typeAEntry["totalTickCount"].GetValue<int>());
+        Assert.Equal(1, typeAEntry["distinctStackCount"].GetValue<int>());
 
         // Contrast: the same two ticks landed in two separate drillDown cells.
         JsonObject cells = summary["drillDown"]["cells"].AsObject();
@@ -149,7 +153,7 @@ public class TypeDrillDownBuilderTests
         Assert.Equal(8, cells.Count);
 
         // ...but its typeDrillDown entry (index 8, last-ranked) is still populated.
-        JsonArray lastTypeStacks = typeDrillDown[8].AsArray();
+        JsonArray lastTypeStacks = typeDrillDown[8]["stacks"].AsArray();
         Assert.Single(lastTypeStacks);
         Assert.Equal(100, lastTypeStacks[0]["totalBytes"].GetValue<long>());
     }
@@ -170,7 +174,7 @@ public class TypeDrillDownBuilderTests
         }, pointerSize: 8);
 
         JsonObject summary = Build(events, stacksById, symbolTable);
-        JsonArray frames = summary["typeDrillDown"][0][0]["frames"].AsArray();
+        JsonArray frames = summary["typeDrillDown"][0]["stacks"][0]["frames"].AsArray();
 
         Assert.Equal("Leaf", frames[0].GetValue<string>());
         Assert.Equal("Caller", frames[1].GetValue<string>());
@@ -188,7 +192,7 @@ public class TypeDrillDownBuilderTests
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8);
         JsonObject summary = Build(events, new Dictionary<int, long[]>(), symbolTable);
 
-        JsonArray stacks = summary["typeDrillDown"][0].AsArray();
+        JsonArray stacks = summary["typeDrillDown"][0]["stacks"].AsArray();
 
         Assert.Single(stacks);
         Assert.Equal(300, stacks[0]["totalBytes"].GetValue<long>());
@@ -197,7 +201,7 @@ public class TypeDrillDownBuilderTests
     }
 
     [Fact]
-    public void TypeDrillDown_CapsStacksPerTypeAtOneHundredKeepingTheLargestByBytes()
+    public void TypeDrillDown_CapsStacksPerTypeAtOneHundredKeepingTheLargestByBytesButTotalsStillReflectAllOfThem()
     {
         List<AllocationEvent> events = new List<AllocationEvent>();
         Dictionary<int, long[]> stacksById = new Dictionary<int, long[]>();
@@ -212,12 +216,32 @@ public class TypeDrillDownBuilderTests
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8);
         JsonObject summary = Build(events, stacksById, symbolTable);
 
-        JsonArray stacks = summary["typeDrillDown"][0].AsArray();
+        JsonObject typeAEntry = summary["typeDrillDown"][0].AsObject();
+        JsonArray stacks = typeAEntry["stacks"].AsArray();
 
         Assert.Equal(100, stacks.Count);
         Assert.Equal(999, stacks[0]["totalBytes"].GetValue<long>());
         long smallestKept = stacks[stacks.Count - 1]["totalBytes"].GetValue<long>();
         Assert.True(smallestKept >= 899, $"Expected the smallest kept stack to still be >= 899, got {smallestKept}");
+
+        // Same reconciliation guarantee as the per-cell cap
+        // (DrillDownBuilderTests.Build_DrillDown_CapsStacksPerCellAtFiftyKeepingTheLargestByBytes) -
+        // topTypes[0].TotalBytes (the number the global table and its chart
+        // bars are built from) must match typeDrillDown[0].totalBytes
+        // exactly, even though the "stacks" array itself only lists the top
+        // 100 of the 110 distinct call stacks that produced it.
+        Assert.Equal(110, typeAEntry["distinctStackCount"].GetValue<int>());
+        Assert.Equal(110, typeAEntry["totalTickCount"].GetValue<int>());
+
+        long trueTotalBytes = 0;
+        for (int stackId = 1; stackId <= 110; ++stackId)
+        {
+            trueTotalBytes += 1000 - stackId;
+        }
+
+        long topTypesTotalBytes = summary["topTypes"][0]["TotalBytes"].GetValue<long>();
+        Assert.Equal(trueTotalBytes, topTypesTotalBytes);
+        Assert.Equal(topTypesTotalBytes, typeAEntry["totalBytes"].GetValue<long>());
     }
 
     [Fact]

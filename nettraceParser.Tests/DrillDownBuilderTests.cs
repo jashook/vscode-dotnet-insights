@@ -105,8 +105,12 @@ public class DrillDownBuilderTests
 
         // Only one type -> typeIndex 0. bucketWidthMSec=1000, so 100ms is
         // bucket 0 and 1500ms is bucket 1.
-        JsonArray bucket0Stacks = cells["0:0"].AsArray();
+        JsonObject bucket0Cell = cells["0:0"].AsObject();
+        JsonArray bucket0Stacks = bucket0Cell["stacks"].AsArray();
         Assert.Equal(2, bucket0Stacks.Count);
+        Assert.Equal(2, bucket0Cell["distinctStackCount"].GetValue<int>());
+        Assert.Equal(350, bucket0Cell["totalBytes"].GetValue<long>());
+        Assert.Equal(3, bucket0Cell["totalTickCount"].GetValue<int>());
         // Sorted descending by totalBytes: the aggregated stackId=10 (300)
         // before stackId=20 (50).
         Assert.Equal(300, bucket0Stacks[0]["totalBytes"].GetValue<long>());
@@ -115,9 +119,10 @@ public class DrillDownBuilderTests
         Assert.Equal(50, bucket0Stacks[1]["totalBytes"].GetValue<long>());
         Assert.Equal("MethodTwenty", bucket0Stacks[1]["frames"][0].GetValue<string>());
 
-        JsonArray bucket1Stacks = cells["0:1"].AsArray();
+        JsonArray bucket1Stacks = cells["0:1"]["stacks"].AsArray();
         Assert.Single(bucket1Stacks);
         Assert.Equal(999, bucket1Stacks[0]["totalBytes"].GetValue<long>());
+        Assert.Equal(999, cells["0:1"]["totalBytes"].GetValue<long>());
     }
 
     [Fact]
@@ -144,7 +149,7 @@ public class DrillDownBuilderTests
         int totalDrillDownTickCount = 0;
         foreach (KeyValuePair<string, JsonNode> cellEntry in cells)
         {
-            foreach (JsonNode stackEntry in cellEntry.Value.AsArray())
+            foreach (JsonNode stackEntry in cellEntry.Value["stacks"].AsArray())
             {
                 totalDrillDownTickCount += stackEntry["tickCount"].GetValue<int>();
             }
@@ -168,7 +173,7 @@ public class DrillDownBuilderTests
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8);
         JsonObject summary = Build(events, new Dictionary<int, long[]>(), symbolTable);
 
-        JsonArray cellStacks = summary["drillDown"]["cells"]["0:0"].AsArray();
+        JsonArray cellStacks = summary["drillDown"]["cells"]["0:0"]["stacks"].AsArray();
 
         Assert.Single(cellStacks);
         Assert.Equal(300, cellStacks[0]["totalBytes"].GetValue<long>());
@@ -192,7 +197,8 @@ public class DrillDownBuilderTests
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8);
         JsonObject summary = Build(events, stacksById, symbolTable);
 
-        JsonArray cellStacks = summary["drillDown"]["cells"]["0:0"].AsArray();
+        JsonObject cell = summary["drillDown"]["cells"]["0:0"].AsObject();
+        JsonArray cellStacks = cell["stacks"].AsArray();
 
         Assert.Equal(50, cellStacks.Count);
         // Largest kept (stackId=1, amount=999) must be first (descending sort).
@@ -201,6 +207,30 @@ public class DrillDownBuilderTests
         // amounts 949 down to 940).
         long smallestKept = cellStacks[cellStacks.Count - 1]["totalBytes"].GetValue<long>();
         Assert.True(smallestKept >= 950, $"Expected the smallest kept stack to still be >= 950, got {smallestKept}");
+
+        // The whole point of shipping totalBytes/totalTickCount/
+        // distinctStackCount alongside the capped array: they must reflect
+        // ALL 60 distinct stacks, not just the 50 that made the cut - this
+        // is what lets a consumer's percentages agree with the chart bar
+        // even when a cell has more distinct call stacks than the cap.
+        long trueTotalBytes = 0;
+        for (int stackId = 1; stackId <= 60; ++stackId)
+        {
+            trueTotalBytes += 1000 - stackId;
+        }
+
+        Assert.Equal(60, cell["distinctStackCount"].GetValue<int>());
+        Assert.Equal(60, cell["totalTickCount"].GetValue<int>());
+        Assert.Equal(trueTotalBytes, cell["totalBytes"].GetValue<long>());
+
+        long summedCappedStacksOnly = 0;
+        foreach (JsonNode stackEntry in cellStacks)
+        {
+            summedCappedStacksOnly += stackEntry["totalBytes"].GetValue<long>();
+        }
+
+        Assert.True(summedCappedStacksOnly < cell["totalBytes"].GetValue<long>(),
+            "Summing only the capped stacks array should undercount the true cell total once the cap is exceeded.");
     }
 
     [Fact]
@@ -241,7 +271,7 @@ public class DrillDownBuilderTests
     private static long SumCellBytes(JsonObject cells, string cellKey)
     {
         long total = 0;
-        foreach (JsonNode stackEntry in cells[cellKey].AsArray())
+        foreach (JsonNode stackEntry in cells[cellKey]["stacks"].AsArray())
         {
             total += stackEntry["totalBytes"].GetValue<long>();
         }

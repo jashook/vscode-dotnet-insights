@@ -668,6 +668,16 @@
     margin: 0.2em 0 1em 2%;
 }
 
+/* Shown only when a cell/type has more distinct call stacks than
+   AllocationJsonExporter.cs's per-cell/per-type cap - flags that some
+   long-tail stacks aren't individually listed even though they're still
+   counted in the summary total and every row's percentage. */
+.drillDownTruncationNote
+{
+    color: rgba(0, 0, 0, 0.45);
+    font-style: italic;
+}
+
 /* Rows for leaf (allocating) methods - see drillDownStats.js's
    groupStacksByLeaf - and, one level down, rows for individual caller
    frames (renderCallerChainRows). Both use the same

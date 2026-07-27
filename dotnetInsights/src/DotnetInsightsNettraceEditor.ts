@@ -8,6 +8,7 @@ import * as vscode from 'vscode';
 import { DotnetInsights } from "./dotnetInsights";
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
 import { renderGcSnapshotWebview } from "./GcSnapshotRenderer";
+import { readNettraceJson } from "./NettraceJsonStreamReader";
 
 // Opens a .nettrace file, shells out to the nettraceParser tool to decode it
 // into the same JSON shape DotnetInsightsGcSnapshotEditor's XML path produces
@@ -97,25 +98,34 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
                     return;
                 }
 
-                try {
-                    const readStartMs = Date.now();
-                    const fileContents = fs.readFileSync(jsonOutputPath);
-                    const parsed = JSON.parse(fileContents.toString());
-                    this.insights.outputChannel.appendLine(`nettraceParser: read + JSON.parse of ${fileContents.length} bytes took ${Date.now() - readStartMs}ms`);
+                // A plain fs.readFileSync(...).toString() + JSON.parse(...)
+                // here previously threw "Cannot create a string longer than
+                // 0x1fffffe8 characters" for a heavily-allocating capture's
+                // output (696MB in one real case) - Node's own maximum
+                // string length, not a slowness problem. See
+                // NettraceJsonStreamReader.ts for the streaming replacement
+                // that never materializes the full file as one string.
+                const readStartMs = Date.now();
+
+                readNettraceJson(jsonOutputPath).then((parsed) => {
+                    this.insights.outputChannel.appendLine(`nettraceParser: streamed JSON read took ${Date.now() - readStartMs}ms`);
                     resolve(parsed);
-                }
-                catch (e) {
+                }).catch((e: any) => {
+                    // Logged in full this time - the previous approach
+                    // swallowed the exception entirely, which made an
+                    // oversized-output crash indistinguishable in the UI
+                    // from an actually corrupted/wrong-type file.
                     this.insights.outputChannel.appendLine("Failed to read nettraceParser output.");
+                    this.insights.outputChannel.appendLine(e && e.stack ? e.stack : String(e));
                     resolve(null);
-                }
-                finally {
+                }).finally(() => {
                     try {
                         fs.unlinkSync(jsonOutputPath);
                     }
                     catch (e) {
                         // Best effort cleanup.
                     }
-                }
+                });
             });
         });
 

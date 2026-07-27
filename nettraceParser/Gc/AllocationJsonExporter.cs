@@ -446,6 +446,13 @@ public static class AllocationSummaryBuilder
     // For each (typeIndex, bucketIndex) cell the stacked chart can be
     // clicked on, the resolved call stacks that produced that cell's
     // allocations, ranked by bytes and capped at DrillDownStacksPerCellLimit.
+    // Also writes the cell's true totalBytes/totalTickCount/distinctStackCount
+    // (summed over every distinct stack, before the cap is applied) - a cell
+    // with more than DrillDownStacksPerCellLimit distinct call stacks would
+    // otherwise have no way for a consumer to recover its real total (the
+    // one the chart bar was actually drawn from) from the capped list alone,
+    // which previously made the drill-down view's own displayed percentages
+    // silently disagree with the bar they were opened from.
     private static void WriteCellDrillDown(Utf8JsonWriter writer, Dictionary<(int TypeIndex, int BucketIndex), Dictionary<int, StackAggregate>> stacksByCell, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
     {
         writer.WriteStartObject();
@@ -457,15 +464,29 @@ public static class AllocationSummaryBuilder
             List<StackAggregate> cellStackList = new List<StackAggregate>(cellEntry.Value.Values);
             cellStackList.Sort((left, right) => right.TotalBytes.CompareTo(left.TotalBytes));
 
+            long cellTotalBytes = 0;
+            int cellTotalTickCount = 0;
+            for (int stackIndex = 0; stackIndex < cellStackList.Count; ++stackIndex)
+            {
+                cellTotalBytes += cellStackList[stackIndex].TotalBytes;
+                cellTotalTickCount += cellStackList[stackIndex].TickCount;
+            }
+
             int stackCount = cellStackList.Count < DrillDownStacksPerCellLimit ? cellStackList.Count : DrillDownStacksPerCellLimit;
 
             writer.WritePropertyName($"{cellEntry.Key.TypeIndex}:{cellEntry.Key.BucketIndex}");
+            writer.WriteStartObject();
+            writer.WriteNumber("totalBytes", cellTotalBytes);
+            writer.WriteNumber("totalTickCount", cellTotalTickCount);
+            writer.WriteNumber("distinctStackCount", cellStackList.Count);
+            writer.WritePropertyName("stacks");
             writer.WriteStartArray();
             for (int stackIndex = 0; stackIndex < stackCount; ++stackIndex)
             {
                 WriteStackAggregate(writer, cellStackList[stackIndex], stacksById, symbolTable);
             }
             writer.WriteEndArray();
+            writer.WriteEndObject();
         }
 
         writer.WriteEndObject();
@@ -478,7 +499,12 @@ public static class AllocationSummaryBuilder
     // and capped at DrillDownStacksPerTypeLimit - unlike "drillDown" above,
     // not scoped to a single 1-second bucket. Lets the global ranked types
     // table link a type directly to its full allocating call stacks, not
-    // just whichever one chart segment happened to be clicked.
+    // just whichever one chart segment happened to be clicked. Also writes
+    // the type's true totalBytes/totalTickCount/distinctStackCount (summed
+    // before the cap is applied) for the same reason WriteCellDrillDown
+    // does - a type with more distinct call stacks than the cap needs a way
+    // to recover its real (topTypes-matching) total from something other
+    // than summing the possibly-truncated stacks array.
     private static void WriteTypeDrillDown(Utf8JsonWriter writer, Dictionary<int, StackAggregate>[] stacksByType, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
     {
         writer.WriteStartArray();
@@ -487,21 +513,45 @@ public static class AllocationSummaryBuilder
         {
             Dictionary<int, StackAggregate> typeStacks = stacksByType[typeIndex];
 
-            writer.WriteStartArray();
+            writer.WriteStartObject();
 
             if (typeStacks != null)
             {
                 List<StackAggregate> stackList = new List<StackAggregate>(typeStacks.Values);
                 stackList.Sort((left, right) => right.TotalBytes.CompareTo(left.TotalBytes));
 
+                long typeTotalBytes = 0;
+                int typeTotalTickCount = 0;
+                for (int stackIndex = 0; stackIndex < stackList.Count; ++stackIndex)
+                {
+                    typeTotalBytes += stackList[stackIndex].TotalBytes;
+                    typeTotalTickCount += stackList[stackIndex].TickCount;
+                }
+
+                writer.WriteNumber("totalBytes", typeTotalBytes);
+                writer.WriteNumber("totalTickCount", typeTotalTickCount);
+                writer.WriteNumber("distinctStackCount", stackList.Count);
+
                 int stackCount = stackList.Count < DrillDownStacksPerTypeLimit ? stackList.Count : DrillDownStacksPerTypeLimit;
+                writer.WritePropertyName("stacks");
+                writer.WriteStartArray();
                 for (int stackIndex = 0; stackIndex < stackCount; ++stackIndex)
                 {
                     WriteStackAggregate(writer, stackList[stackIndex], stacksById, symbolTable);
                 }
+                writer.WriteEndArray();
+            }
+            else
+            {
+                writer.WriteNumber("totalBytes", 0);
+                writer.WriteNumber("totalTickCount", 0);
+                writer.WriteNumber("distinctStackCount", 0);
+                writer.WritePropertyName("stacks");
+                writer.WriteStartArray();
+                writer.WriteEndArray();
             }
 
-            writer.WriteEndArray();
+            writer.WriteEndObject();
         }
 
         writer.WriteEndArray();
