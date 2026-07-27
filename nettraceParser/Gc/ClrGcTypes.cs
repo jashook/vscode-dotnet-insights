@@ -22,6 +22,7 @@ namespace DotnetInsights.NetTrace.Gc {
 ////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Collections.Generic;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -212,37 +213,91 @@ public class ClrGcGlobalHeapHistory
     }
 }
 
-public class ClrGcAllocationTick
+// A readonly struct, not a class: AllocationEventProjector.Project decodes
+// one of these per candidate GCAllocationTick event - 11.9M times for a
+// real 5-minute capture, immediately copying its fields into an
+// AllocationEvent and discarding it. At ~40 bytes (over the struct-passing
+// convention's 16-byte threshold) it's returned by value once per Decode
+// call rather than held/passed around, so the one-time copy cost is
+// negligible next to the 11.9M heap allocations this replaces.
+public readonly struct ClrGcAllocationTick
 {
-    public int AllocationAmount;
-    public GCAllocationKind AllocationKind;
-    public int ClrInstanceID;
-    public long AllocationAmount64;
-    public string TypeName;
-    public int HeapIndex;
+    public readonly int AllocationAmount;
+    public readonly GCAllocationKind AllocationKind;
+    public readonly int ClrInstanceID;
+    public readonly long AllocationAmount64;
+    public readonly long TypeID;
+    public readonly string TypeName;
+    public readonly int HeapIndex;
 
-    public static ClrGcAllocationTick Decode(PayloadReader reader, int version)
+    private ClrGcAllocationTick(int allocationAmount, GCAllocationKind allocationKind, int clrInstanceID, long allocationAmount64, long typeID, string typeName, int heapIndex)
     {
-        ClrGcAllocationTick data = new ClrGcAllocationTick();
-        data.AllocationAmount = reader.GetInt32At(0);
-        data.AllocationKind = (GCAllocationKind)reader.GetInt32At(4);
+        this.AllocationAmount = allocationAmount;
+        this.AllocationKind = allocationKind;
+        this.ClrInstanceID = clrInstanceID;
+        this.AllocationAmount64 = allocationAmount64;
+        this.TypeID = typeID;
+        this.TypeName = typeName;
+        this.HeapIndex = heapIndex;
+    }
+
+    // typeNameCache is optional (null skips caching entirely, matching the
+    // old unconditional-decode behavior) - callers processing a whole
+    // capture's worth of ticks should pass one shared Dictionary<long,
+    // string> across every Decode call. TypeID (a MethodTable pointer,
+    // stable for a type's lifetime in the process) is the same for every
+    // tick of a given type, but a real capture with millions of ticks
+    // typically has only a handful of distinct allocated types - profiling
+    // a real 5-minute/11.9M-tick capture showed Encoding.Unicode.GetString
+    // (called unconditionally here before caching existed) as one of the
+    // single largest contributors to nettraceParser's wall time, decoding
+    // and allocating the same handful of strings millions of times over.
+    // SkipUnicodeString still runs unconditionally on a cache hit (to find
+    // HeapIndex's offset past the variable-length string) but that's a
+    // cheap byte scan for a null terminator, not a decode+allocation - see
+    // its own doc comment on PayloadReader.
+    public static ClrGcAllocationTick Decode(PayloadReader reader, int version, Dictionary<long, string> typeNameCache = null)
+    {
+        int allocationAmount = reader.GetInt32At(0);
+        GCAllocationKind allocationKind = (GCAllocationKind)reader.GetInt32At(4);
+        int clrInstanceID = 0;
+        long allocationAmount64 = 0;
+        long typeID = 0;
+        string typeName = null;
+        int heapIndex = 0;
 
         if (version >= 1 && reader.Length >= 10)
         {
-            data.ClrInstanceID = reader.GetInt16At(8);
+            clrInstanceID = reader.GetInt16At(8);
         }
 
         if (version >= 2 && reader.Length > 18)
         {
-            data.AllocationAmount64 = reader.GetInt64At(10);
+            allocationAmount64 = reader.GetInt64At(10);
 
-            // TypeID (pointer-sized, unused here) at offset 18; TypeName follows immediately.
+            typeID = reader.GetAddressAt(18);
+
             int typeNameOffset = 18 + reader.PointerSize;
-            data.TypeName = reader.GetUnicodeStringAt(typeNameOffset);
-            data.HeapIndex = reader.GetInt32At(reader.SkipUnicodeString(typeNameOffset));
+
+            string cachedTypeName;
+            if (typeNameCache != null && typeNameCache.TryGetValue(typeID, out cachedTypeName))
+            {
+                typeName = cachedTypeName;
+            }
+            else
+            {
+                typeName = reader.GetUnicodeStringAt(typeNameOffset);
+
+                if (typeNameCache != null)
+                {
+                    typeNameCache[typeID] = typeName;
+                }
+            }
+
+            heapIndex = reader.GetInt32At(reader.SkipUnicodeString(typeNameOffset));
         }
 
-        return data;
+        return new ClrGcAllocationTick(allocationAmount, allocationKind, clrInstanceID, allocationAmount64, typeID, typeName, heapIndex);
     }
 }
 

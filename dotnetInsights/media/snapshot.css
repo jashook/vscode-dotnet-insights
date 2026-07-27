@@ -305,6 +305,11 @@
     margin-top: 3em;
 }
 
+#fragmentationSpacer
+{
+    margin-top: 3em;
+}
+
 .heapChartParent {
     width: 100%;
     height: 600px;
@@ -331,6 +336,54 @@
     margin-bottom: 16em;
 }
 
+.heapSnapshotLoadRow {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 4px;
+}
+
+.loadHeapSnapshotBtn {
+    padding: 3px 10px;
+    font-size: 0.85em;
+    cursor: pointer;
+    background: var(--vscode-button-background, #0e639c);
+    color: var(--vscode-button-foreground, #ffffff);
+    border: none;
+    border-radius: 2px;
+    white-space: nowrap;
+}
+
+.loadHeapSnapshotBtn:hover {
+    background: var(--vscode-button-hoverBackground, #1177bb);
+}
+
+.snapshotCaptureInfo {
+    padding: 6px 0 10px 0;
+    font-size: 0.9em;
+    opacity: 0.85;
+}
+
+.snapshotProcessName {
+    font-weight: bold;
+}
+
+.freeChunkHistogramRow {
+    display: flex;
+    gap: 16px;
+    margin-bottom: 12px;
+}
+
+.freeChunkHistogramChart {
+    flex: 1;
+    height: 220px;
+}
+
+.snapshotLoadError {
+    color: var(--vscode-errorForeground, #f44);
+    padding: 1em;
+}
+
 .spacer
 {
     margin-top: 3em;
@@ -342,6 +395,41 @@
     margin-top: 1em;
     font-size: 16px;
     text-align: center;
+}
+
+.viewTabBar
+{
+    margin-top: 1em;
+    text-align: center;
+}
+
+.viewNavButton
+{
+    background-color: rgba(174, 207, 27, 0.8);
+    border: none;
+    border-radius: 6px 6px 0 0;
+    color: white;
+    cursor: pointer;
+    display: inline-block;
+    font-size: 16px;
+    margin: 0 2px;
+    padding: 0.75em 2em;
+    width: auto;
+}
+
+.viewNavButton.active
+{
+    background-color: rgba(72, 83, 136, 0.9);
+}
+
+.viewPanel
+{
+    display: none;
+}
+
+.viewPanel.active
+{
+    display: block;
 }
 
 .tabBar
@@ -466,7 +554,223 @@
     background-color: rgba(0, 0, 0, 0.247);
 }
 
+.allocationTypeTable td:first-child,
+.allocationTypeTable th:first-child
+{
+    text-align: left;
+    white-space: normal;
+    width: 30em;
+    word-break: break-word;
+}
+
+/* Global ranked types table rows - see snapshotGcStats.js's
+   onTypeDrillDownClick. Every row is drillable (AllocationSummaryRenderer.ts). */
+.typeRow
+{
+    cursor: pointer;
+}
+
+.typeRow:hover
+{
+    background-color: lightblue;
+}
+
 .detailTable .notSomewhatInterestingGc
 {
     background-color: rgba(192, 192, 192, 0.247);
+}
+
+.heapContentsTabBar
+{
+    margin-top: 1em;
+    text-align: center;
+}
+
+.heapContentsTabButton
+{
+    background-color: rgba(72, 83, 136, 0.8);
+    border: none;
+    border-radius: 6px 6px 0 0;
+    color: white;
+    cursor: pointer;
+    display: inline-block;
+    font-size: 15px;
+    margin: 0 2px;
+    padding: 0.6em 1.5em;
+    width: auto;
+}
+
+.heapContentsTabButton.active
+{
+    background-color: rgba(174, 207, 27, 0.9);
+}
+
+.backToChartsButton
+{
+    background-color: rgba(141, 31, 95, 0.8);
+    border: none;
+    border-radius: 6px;
+    color: white;
+    cursor: pointer;
+    display: inline-block;
+    font-size: 14px;
+    margin-left: 1em;
+    padding: 0.5em 1.5em;
+    width: auto;
+}
+
+.heapContentsTabPanel
+{
+    display: none;
+}
+
+.heapContentsTabPanel.active
+{
+    display: block;
+}
+
+.drillDownTable td:first-child
+{
+    text-align: left;
+    white-space: normal;
+    word-break: break-word;
+}
+
+/* table-layout:fixed makes columns size from these <col> widths (set via
+   drillDownStats.js's CALLER_TREE_COLGROUP) instead of each row's own
+   content - both this outer table and every nested .callerTreeInner table
+   use the exact same colgroup, which is what makes a caller row's Bytes/
+   Ticks numbers actually line up under the leaf row's numbers above it.
+   The Method column is deliberately left unset in both so it can hold
+   long names, and still ends up the same width in both places since a
+   nested table's total width always matches the colspan cell containing
+   it. */
+.drillDownTable table,
+.callerTreeInner
+{
+    table-layout: fixed;
+    width: auto;
+}
+
+.bytesColumn
+{
+    width: 9em;
+}
+
+.ticksColumn
+{
+    width: 7em;
+}
+
+.drillDownSummary
+{
+    color: rgba(0, 0, 0, 0.55);
+    margin: 0.2em 0 1em 2%;
+}
+
+/* Shown only when a cell/type has more distinct call stacks than
+   AllocationJsonExporter.cs's per-cell/per-type cap - flags that some
+   long-tail stacks aren't individually listed even though they're still
+   counted in the summary total and every row's percentage. */
+.drillDownTruncationNote
+{
+    color: rgba(0, 0, 0, 0.45);
+    font-style: italic;
+}
+
+/* Rows for leaf (allocating) methods - see drillDownStats.js's
+   groupStacksByLeaf - and, one level down, rows for individual caller
+   frames (renderCallerChainRows). Both use the same
+   [data-expandable="true"]/toggle/expanded convention: a row only gets a
+   toggle where the call tree actually branches (more than one next step);
+   a straight, non-branching chain of callers just flows as consecutive
+   rows with no interaction needed. */
+.leafMethodRow[data-expandable="true"],
+.callerRow[data-expandable="true"]
+{
+    cursor: pointer;
+}
+
+.leafMethodRow[data-expandable="true"]:hover,
+.callerRow[data-expandable="true"]:hover
+{
+    background-color: lightblue;
+}
+
+.leafMethodToggle
+{
+    display: inline-block;
+    width: 1.2em;
+    transition: transform 0.15s ease;
+}
+
+.leafMethodToggleEmpty
+{
+    visibility: hidden;
+}
+
+.leafMethodRow.expanded .leafMethodToggle,
+.callerRow.expanded .leafMethodToggle
+{
+    transform: rotate(90deg);
+}
+
+.callPathsDetail
+{
+    display: none;
+}
+
+.callPathsDetail.expanded
+{
+    display: table-row;
+}
+
+/* The <td> wrapping each nested level's <table> - no padding of its own so
+   the nested table's rows sit flush against the outer table, since each
+   callerRow already carries its own depth-based indent via an inline
+   padding-left style (renderCallerChainRows). */
+.callerTreeCell
+{
+    padding: 0;
+}
+
+.callerRow td
+{
+    border-top: 1px solid rgba(0, 0, 0, 0.15);
+    padding-bottom: 4px;
+    padding-top: 4px;
+    text-align: left;
+    white-space: normal;
+    word-break: break-word;
+}
+
+.methodTypePrefix
+{
+    color: rgba(0, 0, 0, 0.55);
+}
+
+.methodName
+{
+    font-weight: bold;
+}
+
+.unresolvedFrame
+{
+    color: rgba(0, 0, 0, 0.55);
+    font-style: italic;
+}
+
+.pathCount
+{
+    color: rgba(0, 0, 0, 0.55);
+    font-size: 0.9em;
+}
+
+/* A row's share of its immediate parent's bytes (flame-graph style, not a
+   share of the grand total at every level - see drillDownStats.js's
+   formatBytesWithPercentage). */
+.percentOfParent
+{
+    color: rgba(0, 0, 0, 0.55);
+    font-size: 0.9em;
 }

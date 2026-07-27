@@ -75,10 +75,15 @@ describe('GcDetailTableRenderer', () => {
             assert.strictEqual((html.match(/\(kb\)/g) || []).length, 0);
         });
 
-        it('includes a DateTime column formatted via formatHumanDateTime', () => {
+        // DateTime is emitted raw (data-raw attribute, empty cell text) here
+        // rather than pre-formatted - formatting happens client-side in
+        // snapshotGcStats.js, once, when the Detailed tab is first opened,
+        // instead of on every extension-host render (see the comment above
+        // tdDateTimeRaw in GcDetailTableRenderer.ts).
+        it('includes a DateTime column carrying the raw value in a data-raw attribute, not pre-formatted text', () => {
             const html = renderGcDetailTable([makeGc(1, 1)]);
 
-            assert.ok(/<td>21-Jul-2026 \d{2}:42:13 (AM|PM) [A-Z]+<\/td>/.test(html));
+            assert.ok(html.includes('<td class="gcDateTimeCell" data-raw="2026-07-21T15:42:13.3255649-07:00"></td>'));
         });
 
         it('renders GenerationSizePOH as a real value, not the old NYI placeholder', () => {

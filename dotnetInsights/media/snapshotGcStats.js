@@ -11,14 +11,25 @@ var allocationDatasets = {};
     const vscode = acquireVsCodeApi();
   
     console.time("gcParsing");
-    var gcs = JSON.parse(document.getElementById("hiddenData").innerHTML.slice(4, document.getElementById("hiddenData").innerHTML.length - 3));
+    var gcs = JSON.parse(document.getElementById("hiddenData").textContent);
     console.timeEnd("gcParsing");
 
     console.time("gcCountsByGenParsing");
-    var gcCountsByGen = JSON.parse(document.getElementById("gcCountsByGen").innerHTML.slice(4, document.getElementById("gcCountsByGen").innerHTML.length - 3));
+    var gcCountsByGen = JSON.parse(document.getElementById("gcCountsByGen").textContent);
     console.timeEnd("gcCountsByGenParsing");
 
-    var totalTimeInEachGcJson = JSON.parse(document.getElementById("totalTimeInEachGcJson").innerHTML.slice(4, document.getElementById("totalTimeInEachGcJson").innerHTML.length - 3));
+    var totalTimeInEachGcJson = JSON.parse(document.getElementById("totalTimeInEachGcJson").textContent);
+
+    // null when sourceFormat !== "nettrace" or the capture had zero
+    // allocation ticks - see GcSnapshotRenderer.ts's hasHeapContents.
+    // Includes every raw allocation tick (see AllocationJsonExporter.cs) -
+    // potentially tens of thousands for a busy capture - but JSON.parse
+    // itself is cheap regardless (the earlier perf work on this page found
+    // DOM construction, not JSON parsing, to be the actual cost - see
+    // detailTableHtml below), so this is still parsed eagerly like
+    // gcCountsByGen; only the chart/table DOM built from it is deferred to
+    // the "Heap Contents" nav button's first click.
+    var allocationSummaryJson = JSON.parse(document.getElementById("allocationSummaryJson").textContent);
 
     // DateTime is a real calendar date/time (in the parsing machine's local
     // timezone - see GcJsonExporter.cs) for .nettrace sources, or a
@@ -125,6 +136,7 @@ var allocationDatasets = {};
             }]
         },
         options: {
+            animation: { duration: 0 },
             "maintainAspectRatio": false
         }
     });
@@ -164,6 +176,7 @@ var allocationDatasets = {};
                     }
                 }],
             },
+            animation: { duration: 0 },
             "maintainAspectRatio": false,
         }
     });
@@ -188,26 +201,47 @@ var allocationDatasets = {};
     // -> (end, 0). Consecutive pulses' flanking zeros are equal (both 0), so
     // Chart.js draws a flat baseline between them that's exactly as wide as
     // the real gap.
-    var buildPauseTimePulses = function (matches) {
-        var points = [];
-        for (var index = 0; index < gcs.length; ++index) {
-            var pulseGcData = gcs[index]["data"];
-            if (!matches(pulseGcData)) {
-                continue;
-            }
+    // Single pass over gcs builds all five pause-time pulse arrays at once,
+    // replacing five separate O(n) passes through buildPauseTimePulses.
+    // Point objects are shared across arrays (they're never mutated).
+    // Returns [total, gen0, gen1, gen2, loh].
+    var buildAllPauseTimePulses = function () {
+        var totalPoints = [];
+        var gen0Points = [];
+        var gen1Points = [];
+        var gen2Points = [];
+        var lohPoints = [];
 
+        for (var pulseIndex = 0; pulseIndex < gcs.length; ++pulseIndex) {
+            var pulseGcData = gcs[pulseIndex]["data"];
             var startMs = pulseGcData["PauseStartRelativeMSec"];
             var endMs = pulseGcData["PauseEndRelativeMSec"];
             var pauseMs = pulseGcData["PauseDurationMSec"];
-            var gcId = pulseGcData["Id"];
-            var gcDateTime = pulseGcData["DateTime"];
+            var pulseGcId = pulseGcData["Id"];
+            var pulseDateTime = pulseGcData["DateTime"];
 
-            points.push({ x: startMs, y: 0, gcId: gcId, dateTime: gcDateTime, isGap: true });
-            points.push({ x: startMs, y: pauseMs, gcId: gcId, dateTime: gcDateTime, isGap: false });
-            points.push({ x: endMs, y: pauseMs, gcId: gcId, dateTime: gcDateTime, isGap: false });
-            points.push({ x: endMs, y: 0, gcId: gcId, dateTime: gcDateTime, isGap: true });
+            var ptRise  = { x: startMs, y: 0,       gcId: pulseGcId, dateTime: pulseDateTime, isGap: true };
+            var ptTop0  = { x: startMs, y: pauseMs,  gcId: pulseGcId, dateTime: pulseDateTime, isGap: false };
+            var ptTop1  = { x: endMs,   y: pauseMs,  gcId: pulseGcId, dateTime: pulseDateTime, isGap: false };
+            var ptFall  = { x: endMs,   y: 0,        gcId: pulseGcId, dateTime: pulseDateTime, isGap: true };
+
+            totalPoints.push(ptRise, ptTop0, ptTop1, ptFall);
+
+            var generation = pulseGcData["generation"];
+            if (generation === 0) {
+                gen0Points.push(ptRise, ptTop0, ptTop1, ptFall);
+            } else if (generation === 1) {
+                gen1Points.push(ptRise, ptTop0, ptTop1, ptFall);
+            } else if (generation === 2) {
+                gen2Points.push(ptRise, ptTop0, ptTop1, ptFall);
+            }
+
+            if (lohTriggerReasons[pulseGcData["Reason"]] === true) {
+                lohPoints.push(ptRise, ptTop0, ptTop1, ptFall);
+            }
         }
-        return points;
+
+        return [totalPoints, gen0Points, gen1Points, gen2Points, lohPoints];
     };
 
     var formatElapsedMs = function (ms) {
@@ -239,54 +273,66 @@ var allocationDatasets = {};
         return lines;
     };
 
+    var pauseTimePulses = buildAllPauseTimePulses();
+
     var totalGcPauseTimeOverTimeChart = new Chart(totalGcPauseTimeOverTimeContext, {
         type: 'line',
             data: {
                 datasets: [{
                     label: 'Total Blocking Time',
-                    data: buildPauseTimePulses(function () { return true; }),
+                    data: pauseTimePulses[0],
                     backgroundColor: [
                         "rgba(220, 53, 69, 0.2)",
                     ],
                     borderColor: "rgba(220, 53, 69, 1)",
                     borderWidth: 1,
-                    lineTension: 0
+                    lineTension: 0,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: 'Gen 0',
-                    data: buildPauseTimePulses(function (d) { return d["generation"] === 0; }),
+                    data: pauseTimePulses[1],
                     backgroundColor: [
                         "rgba(72, 83, 136, 0.2)",
                     ],
                     borderWidth: 1,
-                    lineTension: 0
+                    lineTension: 0,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: "Gen 1",
-                    data: buildPauseTimePulses(function (d) { return d["generation"] === 1; }),
+                    data: pauseTimePulses[2],
                     backgroundColor: [
                         "rgba(96, 165, 69, 0.2)",
                     ],
                     borderWidth: 1,
-                    lineTension: 0
+                    lineTension: 0,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: "Gen 2",
-                    data: buildPauseTimePulses(function (d) { return d["generation"] === 2; }),
+                    data: pauseTimePulses[3],
                     backgroundColor: [
                         "rgba(141, 31, 95, 0.2)",
                     ],
                     borderWidth: 1,
-                    lineTension: 0
+                    lineTension: 0,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: "LOH",
-                    data: buildPauseTimePulses(function (d) { return lohTriggerReasons[d["Reason"]] === true; }),
+                    data: pauseTimePulses[4],
                     backgroundColor: [
                         "rgba(201, 221, 84, 0.2)"
                     ],
                     borderWidth: 1,
-                    lineTension: 0
+                    lineTension: 0,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 }
             ]},
             options: {
@@ -332,6 +378,7 @@ var allocationDatasets = {};
                         title: pauseTimeTooltipTitle
                     }
                 },
+                animation: { duration: 0 },
                 "maintainAspectRatio": false,
             }
     });
@@ -366,15 +413,19 @@ var allocationDatasets = {};
                     backgroundColor: [
                         "rgba(72, 83, 136, 0.2)",
                     ],
-                    borderWidth: 1
-                }, 
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
+                },
                 {
                     label: "Gen 1",
                     data: totalGen1DataSet,
                     backgroundColor: [
                         "rgba(96, 165, 69, 0.2)",
                     ],
-                    borderWidth: 1
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: "Gen 2",
@@ -382,7 +433,9 @@ var allocationDatasets = {};
                     backgroundColor: [
                         "rgba(141, 31, 95, 0.2)",
                     ],
-                    borderWidth: 1
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: "LOH",
@@ -390,7 +443,9 @@ var allocationDatasets = {};
                     backgroundColor: [
                         "rgba(201, 221, 84, 0.2)"
                     ],
-                    borderWidth: 1
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 }
             ]},
             options: {
@@ -414,9 +469,240 @@ var allocationDatasets = {};
                         title: gcTooltipTitle
                     }
                 },
+                animation: { duration: 0 },
                 "maintainAspectRatio": false,
             }
     });
+
+    if (document.getElementById("gcFragmentationOverTime")) {
+      // The fragmentation chart is below the fold - deferring its GC x heap x
+      // gen dataset computation to after the above-fold charts have painted
+      // avoids blocking the initial render for work the user may not
+      // immediately scroll to see.
+      requestAnimationFrame(function () {
+        var fragGen0Dataset = [];
+        var fragGen1Dataset = [];
+        var fragGen2Dataset = [];
+        var fragLohDataset = [];
+        var fragTotalDataset = [];
+        var pinnedCountDataset = [];
+        var compactionMarkerDataset = [];
+
+        for (var fragIndex = 0; fragIndex < gcs.length; ++fragIndex) {
+            var fragGcData = gcs[fragIndex]["data"];
+            var fragHeaps = fragGcData["Heaps"];
+
+            var fragByGen = [0, 0, 0, 0];
+            var sizeAfterByGen = [0, 0, 0, 0];
+
+            for (var fragHeapIndex = 0; fragHeapIndex < fragHeaps.length; ++fragHeapIndex) {
+                var fragGens = fragHeaps[fragHeapIndex]["Generations"];
+                for (var genIdx = 0; genIdx < 4; ++genIdx) {
+                    var fragGen = fragGens[genIdx];
+                    if (fragGen) {
+                        fragByGen[genIdx] += parseFloat(fragGen["Fragmentation"]) || 0;
+                        sizeAfterByGen[genIdx] += parseFloat(fragGen["SizeAfter"]) || 0;
+                    }
+                }
+            }
+
+            var totalHeapSizeBytes = parseFloat(fragGcData["TotalHeapSize"]) || 0;
+            var totalFragBytes = fragByGen[0] + fragByGen[1] + fragByGen[2] + fragByGen[3];
+
+            fragGen0Dataset.push(sizeAfterByGen[0] > 0 ? (fragByGen[0] / sizeAfterByGen[0]) * 100 : 0);
+            fragGen1Dataset.push(sizeAfterByGen[1] > 0 ? (fragByGen[1] / sizeAfterByGen[1]) * 100 : 0);
+            fragGen2Dataset.push(sizeAfterByGen[2] > 0 ? (fragByGen[2] / sizeAfterByGen[2]) * 100 : 0);
+            fragLohDataset.push(sizeAfterByGen[3] > 0 ? (fragByGen[3] / sizeAfterByGen[3]) * 100 : 0);
+            fragTotalDataset.push(totalHeapSizeBytes > 0 ? (totalFragBytes / totalHeapSizeBytes) * 100 : 0);
+
+            pinnedCountDataset.push(parseInt(fragGcData["PinnedObjectCount"]) || 0);
+
+            var mechanisms = parseInt(fragGcData["GlobalMechanisms"]) || 0;
+            // GCGlobalMechanisms.Compaction = 0x2
+            compactionMarkerDataset.push((mechanisms & 0x2) !== 0 ? 2 : null);
+        }
+
+        var gcFragmentationOverTime = document.getElementById("gcFragmentationOverTime");
+        var gcFragmentationContext = gcFragmentationOverTime.getContext('2d');
+
+        var gcFragmentationChart = new Chart(gcFragmentationContext, {
+            type: 'line',
+            data: {
+                labels: chartLabels,
+                datasets: [
+                    {
+                        label: 'Total',
+                        data: fragTotalDataset,
+                        borderColor: "rgba(220, 53, 69, 1)",
+                        backgroundColor: "rgba(220, 53, 69, 0.05)",
+                        borderWidth: 2,
+                        yAxisID: 'fragPct',
+                        fill: false,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    },
+                    {
+                        label: 'Gen 0',
+                        data: fragGen0Dataset,
+                        borderColor: "rgba(72, 83, 136, 1)",
+                        backgroundColor: "rgba(72, 83, 136, 0.05)",
+                        borderWidth: 1,
+                        yAxisID: 'fragPct',
+                        fill: false,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    },
+                    {
+                        label: 'Gen 1',
+                        data: fragGen1Dataset,
+                        borderColor: "rgba(96, 165, 69, 1)",
+                        backgroundColor: "rgba(96, 165, 69, 0.05)",
+                        borderWidth: 1,
+                        yAxisID: 'fragPct',
+                        fill: false,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    },
+                    {
+                        label: 'Gen 2',
+                        data: fragGen2Dataset,
+                        borderColor: "rgba(141, 31, 95, 1)",
+                        backgroundColor: "rgba(141, 31, 95, 0.05)",
+                        borderWidth: 1,
+                        yAxisID: 'fragPct',
+                        fill: false,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    },
+                    {
+                        label: 'LOH',
+                        data: fragLohDataset,
+                        borderColor: "rgba(201, 221, 84, 1)",
+                        backgroundColor: "rgba(201, 221, 84, 0.05)",
+                        borderWidth: 1,
+                        yAxisID: 'fragPct',
+                        fill: false,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    },
+                    {
+                        label: 'Pinned Objects',
+                        data: pinnedCountDataset,
+                        borderColor: "rgba(255, 165, 0, 0.8)",
+                        backgroundColor: "rgba(255, 165, 0, 0.05)",
+                        borderWidth: 1,
+                        borderDash: [4, 4],
+                        yAxisID: 'pinnedCount',
+                        fill: false,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    },
+                    {
+                        label: 'Compaction',
+                        data: compactionMarkerDataset,
+                        backgroundColor: "rgba(255, 165, 0, 0.9)",
+                        borderColor: "rgba(255, 165, 0, 1)",
+                        pointRadius: 8,
+                        pointStyle: 'triangle',
+                        showLine: false,
+                        yAxisID: 'fragPct',
+                        fill: false
+                    }
+                ]
+            },
+            options: {
+                title: {
+                    display: true,
+                    text: 'Heap Fragmentation by Generation'
+                },
+                scales: {
+                    yAxes: [
+                        {
+                            id: 'fragPct',
+                            position: 'left',
+                            ticks: {
+                                beginAtZero: true,
+                                max: 100,
+                                callback: function (value) { return value + '%'; }
+                            },
+                            scaleLabel: {
+                                display: true,
+                                labelString: 'Fragmentation %'
+                            }
+                        },
+                        {
+                            id: 'pinnedCount',
+                            position: 'right',
+                            ticks: {
+                                beginAtZero: true
+                            },
+                            scaleLabel: {
+                                display: true,
+                                labelString: 'Pinned Object Count'
+                            },
+                            gridLines: {
+                                drawOnChartArea: false
+                            }
+                        }
+                    ]
+                },
+                tooltips: {
+                    callbacks: {
+                        title: gcTooltipTitle
+                    }
+                },
+                animation: { duration: 0 },
+                maintainAspectRatio: false
+            }
+        });
+      });
+    }
+
+    var lohTypesSection = document.getElementById("lohTypesSection");
+    if (lohTypesSection && allocationSummaryJson && allocationSummaryJson["topTypes"]) {
+        var lohTypes = [];
+        var topTypes = allocationSummaryJson["topTypes"];
+
+        for (var topTypeIndex = 0; topTypeIndex < topTypes.length; ++topTypeIndex) {
+            if (topTypes[topTypeIndex]["LargeCount"] > 0) {
+                lohTypes.push(topTypes[topTypeIndex]);
+            }
+        }
+
+        lohTypes.sort(function (leftType, rightType) { return rightType["LargeCount"] - leftType["LargeCount"]; });
+
+        if (lohTypes.length === 0) {
+            lohTypesSection.innerHTML = '<p>No LOH allocations detected in this capture.</p>';
+        } else {
+            var lohMb = 1024 * 1024;
+            var lohKb = 1024;
+
+            var lohHeaderCells = '<th>Type</th><th>LOH Ticks</th><th>Small Ticks</th><th>Pinned Ticks</th><th>Total Ticks</th><th>Total Sampled Bytes (all kinds)</th>';
+            var lohRows = '';
+
+            for (var lohIndex = 0; lohIndex < lohTypes.length; ++lohIndex) {
+                var lohType = lohTypes[lohIndex];
+                var totalBytes = lohType["TotalBytes"];
+                var bytesLabel = totalBytes >= lohMb
+                    ? (totalBytes / lohMb).toFixed(2) + ' MB'
+                    : (totalBytes / lohKb).toFixed(2) + ' KB';
+
+                lohRows += '<tr>' +
+                    '<td>' + lohType["TypeName"] + '</td>' +
+                    '<td>' + lohType["LargeCount"] + '</td>' +
+                    '<td>' + lohType["SmallCount"] + '</td>' +
+                    '<td>' + lohType["PinnedCount"] + '</td>' +
+                    '<td>' + lohType["TickCount"] + '</td>' +
+                    '<td>' + bytesLabel + '</td>' +
+                    '</tr>';
+            }
+
+            lohTypesSection.innerHTML = '<div class="detailTable"><table>' +
+                '<tr class="tableHeader">' + lohHeaderCells + '</tr>' +
+                lohRows +
+                '</table></div>';
+        }
+    }
 
     const setChart = (passedHeapIndex) => {
         var gen0DataSet = [];
@@ -449,15 +735,19 @@ var allocationDatasets = {};
                     backgroundColor: [
                         'rgba(54, 162, 235, 0.2)',
                     ],
-                    borderWidth: 1
-                }, 
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
+                },
                 {
                     label: "Gen 1",
                     data: gen1DataSet,
                     backgroundColor: [
                         'rgba(75, 192, 192, 0.2)'
                     ],
-                    borderWidth: 1
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: "Gen 2",
@@ -465,7 +755,9 @@ var allocationDatasets = {};
                     backgroundColor: [
                         'rgba(153, 102, 255, 0.2)'
                     ],
-                    borderWidth: 1
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 },
                 {
                     label: "LOH",
@@ -473,7 +765,9 @@ var allocationDatasets = {};
                     backgroundColor: [
                         'rgba(255, 206, 86, 0.2)'
                     ],
-                    borderWidth: 1
+                    borderWidth: 1,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
                 }
             ]},
             options: {
@@ -497,6 +791,7 @@ var allocationDatasets = {};
                         title: gcTooltipTitle
                     }
                 },
+                animation: { duration: 0 },
                 "maintainAspectRatio": false,
             }
         });
@@ -504,8 +799,30 @@ var allocationDatasets = {};
 
     var heapCharts = document.getElementsByClassName("heapChart");
 
-    for (var index = 0; index < heapCharts.length; ++index) {
-        setChart(index);
+    // Server GC traces can have 16+ heaps, each getting its own Chart.js
+    // instance - building all of them synchronously on load is expensive and
+    // most users never scroll down to see every heap. Defer each chart's
+    // construction until its canvas actually scrolls into view.
+    if ('IntersectionObserver' in window) {
+        var heapChartObserver = new IntersectionObserver(function (entries, observer) {
+            for (var entryIndex = 0; entryIndex < entries.length; ++entryIndex) {
+                var entry = entries[entryIndex];
+                if (entry.isIntersecting) {
+                    var heapIndex = parseInt(entry.target.getAttribute('data-heap-index'), 10);
+                    setChart(heapIndex);
+                    observer.unobserve(entry.target);
+                }
+            }
+        }, { rootMargin: '200px' });
+
+        for (var heapObserveIndex = 0; heapObserveIndex < heapCharts.length; ++heapObserveIndex) {
+            heapCharts[heapObserveIndex].setAttribute('data-heap-index', heapObserveIndex);
+            heapChartObserver.observe(heapCharts[heapObserveIndex]);
+        }
+    } else {
+        for (var index = 0; index < heapCharts.length; ++index) {
+            setChart(index);
+        }
     }
 
     // The Detailed tab's markup arrives as inert commented-out text (see
@@ -732,10 +1049,543 @@ var allocationDatasets = {};
             if (targetTab === 'detailed' && !detailTableInjected) {
                 var holder = document.getElementById("detailTableHtml");
                 var detailTableHtml = holder.innerHTML.slice(4, holder.innerHTML.length - 3);
-                document.getElementById('tab-detailed').innerHTML = detailTableHtml + '<div id="generationBreakdownSection"></div>';
+                var detailedPanel = document.getElementById('tab-detailed');
+                detailedPanel.innerHTML = detailTableHtml + '<div id="generationBreakdownSection"></div>';
+
+                // GcDetailTableRenderer.ts emits the raw DateTime string on
+                // each cell rather than pre-formatting it - formatting 1000+
+                // rows via Intl.DateTimeFormat is cheap once, here, on first
+                // open, but was costing that same work on every
+                // extension-host render when done server-side.
+                var dateTimeCells = detailedPanel.getElementsByClassName("gcDateTimeCell");
+                for (var dateTimeCellIndex = 0; dateTimeCellIndex < dateTimeCells.length; ++dateTimeCellIndex) {
+                    var dateTimeCell = dateTimeCells[dateTimeCellIndex];
+                    dateTimeCell.textContent = formatHumanDateTime(dateTimeCell.getAttribute('data-raw'));
+                }
+
                 renderGenerationBreakdownSection();
                 detailTableInjected = true;
             }
+        });
+    }
+
+    // Left-side view switcher (GC / Heap Contents / eventually Profile) -
+    // an axis orthogonal to the tabButton/tabPanel handling above: the GC
+    // view's own Charts/Detailed tabs are unaffected and live one level
+    // deeper, inside #view-gc. Same show/hide-via-active-class mechanism,
+    // keyed on data-view/id="view-*" instead of data-tab/id="tab-*".
+    var allocationSummaryInjected = false;
+
+    var viewNavButtons = document.getElementsByClassName("viewNavButton");
+    for (var viewButtonIndex = 0; viewButtonIndex < viewNavButtons.length; ++viewButtonIndex) {
+        viewNavButtons[viewButtonIndex].addEventListener('click', function (event) {
+            var targetView = event.currentTarget.getAttribute('data-view');
+
+            var buttons = document.getElementsByClassName("viewNavButton");
+            for (var buttonIndex = 0; buttonIndex < buttons.length; ++buttonIndex) {
+                buttons[buttonIndex].classList.remove('active');
+            }
+
+            var panels = document.getElementsByClassName("viewPanel");
+            for (var panelIndex = 0; panelIndex < panels.length; ++panelIndex) {
+                panels[panelIndex].classList.remove('active');
+            }
+
+            event.currentTarget.classList.add('active');
+            document.getElementById('view-' + targetView).classList.add('active');
+
+            if (targetView === 'heapContents' && !allocationSummaryInjected) {
+                var holder = document.getElementById("allocationSummaryHtml");
+                var allocationSummaryHtml = holder.innerHTML.slice(4, holder.innerHTML.length - 3);
+
+                // Tiles -> chart canvas -> table order comes from
+                // AllocationSummaryRenderer.ts's own markup now (single
+                // source of truth) - this just injects it and wires up the
+                // chart once the canvas element actually exists in the DOM.
+                document.getElementById('view-heapContents').innerHTML = allocationSummaryHtml;
+
+                // "Allocated before this GC" reference line needs each
+                // Gen0/Gen1 GC's own start time - gcs is this file's own
+                // parsed data (allocationStats.js has no access to it), so
+                // it's extracted here and passed down as plain arrays.
+                var gen0GcTimesMSec = [];
+                var gen1GcTimesMSec = [];
+                for (var gcIndex = 0; gcIndex < gcs.length; ++gcIndex) {
+                    var gcEntry = gcs[gcIndex]["data"];
+                    if (gcEntry["generation"] === 0) {
+                        gen0GcTimesMSec.push(gcEntry["PauseStartRelativeMSec"]);
+                    } else if (gcEntry["generation"] === 1) {
+                        gen1GcTimesMSec.push(gcEntry["PauseStartRelativeMSec"]);
+                    }
+                }
+                gen0GcTimesMSec.sort(function (left, right) { return left - right; });
+                gen1GcTimesMSec.sort(function (left, right) { return left - right; });
+
+                renderAllocationTimelineChart(document.getElementById("allocationTimelineChart"), allocationSummaryJson["ticks"], gen0GcTimesMSec, gen1GcTimesMSec);
+                renderAllocationTypeTimelineChart(document.getElementById("allocationTypeTimelineChart"), allocationSummaryJson["typeTimeline"], onDrillDownSegmentClick);
+                wireHeapContentsInnerTabs();
+                allocationSummaryInjected = true;
+            }
+        });
+    }
+
+    // "Charts"/"Drill Down" inner tabs within the Heap Contents view - a
+    // third, distinct navigational axis from the GC view's own
+    // Charts/Detailed tabs (.tabButton/.tabPanel) and the top-level
+    // GC/Heap Contents view switcher (.viewNavButton/.viewPanel) just
+    // above, so it's keyed on its own heapContentsTabButton/
+    // heapContentsTabPanel classes and "heapContents-tab-*" ids to avoid
+    // colliding with either. Wired once, right after
+    // AllocationSummaryRenderer.ts's markup is injected above (the buttons
+    // don't exist in the DOM before that).
+    function switchHeapContentsTab(targetTab) {
+        var buttons = document.getElementsByClassName("heapContentsTabButton");
+        for (var buttonIndex = 0; buttonIndex < buttons.length; ++buttonIndex) {
+            buttons[buttonIndex].classList.remove('active');
+            if (buttons[buttonIndex].getAttribute('data-heaptab') === targetTab) {
+                buttons[buttonIndex].classList.add('active');
+            }
+        }
+
+        var panels = document.getElementsByClassName("heapContentsTabPanel");
+        for (var panelIndex = 0; panelIndex < panels.length; ++panelIndex) {
+            panels[panelIndex].classList.remove('active');
+        }
+        document.getElementById('heapContents-tab-' + targetTab).classList.add('active');
+
+        var backButton = document.getElementById('backToChartsButton');
+        if (backButton) {
+            backButton.style.display = (targetTab === 'drilldown') ? 'inline-block' : 'none';
+        }
+    }
+
+    // The Charts panel has summary tiles and the allocation-rate line chart
+    // above the stacked type-timeline (bar) chart a drill-down was reached
+    // from - just switching tabs back leaves that scrolled out of view
+    // above the fold. Scrolls it back into view so "go back" actually
+    // returns to what you were just looking at, not just the top of the
+    // panel.
+    function goBackToChartsView() {
+        switchHeapContentsTab('charts');
+
+        var stackedBarChart = document.getElementById('allocationTypeTimelineChart');
+        if (stackedBarChart) {
+            stackedBarChart.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }
+
+    // Shared by both ways into the Drill Down tab (a chart-segment click and
+    // a global-table row click below) - injects the rendered table, reveals
+    // the tab button (hidden until there's actually something to show), and
+    // switches to it.
+    function showDrillDownTab(drillDownHtml) {
+        document.getElementById('heapContents-tab-drilldown').innerHTML = drillDownHtml;
+
+        var drillDownTabButton = document.getElementById('drillDownTabButton');
+        if (drillDownTabButton) {
+            drillDownTabButton.style.display = 'inline-block';
+        }
+
+        switchHeapContentsTab('drilldown');
+    }
+
+    // Called from allocationStats.js's onClick handler on the type-timeline
+    // chart when a real (non-"Other") stacked segment is clicked. Scoped to
+    // that one (type, 1-second bucket) cell.
+    function onDrillDownSegmentClick(typeIndex, bucketIndex) {
+        var drillDown = allocationSummaryJson["drillDown"];
+        var cellEntry = (drillDown && drillDown["cells"]) ? drillDown["cells"][typeIndex + ":" + bucketIndex] : null;
+
+        var typeTimeline = allocationSummaryJson["typeTimeline"];
+        var typeName = typeTimeline["types"][typeIndex];
+        var bucketLabel = formatElapsedMsForAllocationChart(typeTimeline["buckets"][bucketIndex]["bucketStartMSec"]);
+
+        showDrillDownTab(renderDrillDownTable(cellEntry, typeName, bucketLabel));
+    }
+
+    // Called from the click delegation in wireHeapContentsInnerTabs below
+    // when a row in the global ranked types table is clicked. Scoped to
+    // that type across the *whole* capture (AllocationJsonExporter.cs's
+    // typeDrillDown - a parallel array to topTypes), not one chart cell -
+    // merges every bucket's stacks for this type into one view.
+    function onTypeDrillDownClick(typeIndex) {
+        var typeDrillDown = allocationSummaryJson["typeDrillDown"];
+        var typeEntry = typeDrillDown ? typeDrillDown[typeIndex] : null;
+        var typeName = allocationSummaryJson["topTypes"][typeIndex]["TypeName"];
+
+        showDrillDownTab(renderDrillDownTable(typeEntry, typeName, "Whole Capture"));
+    }
+
+    function wireHeapContentsInnerTabs() {
+        var heapContentsTabButtons = document.getElementsByClassName("heapContentsTabButton");
+        for (var tabButtonIndex = 0; tabButtonIndex < heapContentsTabButtons.length; ++tabButtonIndex) {
+            heapContentsTabButtons[tabButtonIndex].addEventListener('click', function (event) {
+                switchHeapContentsTab(event.currentTarget.getAttribute('data-heaptab'));
+            });
+        }
+
+        var backToChartsButton = document.getElementById('backToChartsButton');
+        if (backToChartsButton) {
+            backToChartsButton.addEventListener('click', goBackToChartsView);
+        }
+
+        // Global ranked types table rows (AllocationSummaryRenderer.ts) -
+        // this table is only ever injected once (not rebuilt per click like
+        // the drill-down panel itself), so a direct listener on its
+        // container is fine here rather than needing delegation on
+        // something more stable.
+        var chartsPanel = document.getElementById('heapContents-tab-charts');
+        if (chartsPanel) {
+            chartsPanel.addEventListener('click', function (event) {
+                var typeRow = event.target.closest('.typeRow');
+                if (!typeRow) {
+                    return;
+                }
+
+                onTypeDrillDownClick(parseInt(typeRow.getAttribute('data-type-index'), 10));
+            });
+        }
+
+        // Event delegation, attached once to the panel itself rather than
+        // per-row - drillDownStats.js's renderDrillDownTable rebuilds this
+        // panel's entire innerHTML on every chart-segment click, which
+        // would otherwise silently drop any listeners attached directly to
+        // its rows. [data-expandable="true"] marks a toggleable row at any
+        // depth - both the outer leafMethodRow and any deeper callerRow
+        // branch point use the same attribute/behavior (see
+        // drillDownStats.js's renderCallerChainRows).
+        var drillDownPanel = document.getElementById('heapContents-tab-drilldown');
+        if (drillDownPanel) {
+            drillDownPanel.addEventListener('click', function (event) {
+                var leafRow = event.target.closest('[data-expandable="true"]');
+                if (!leafRow) {
+                    return;
+                }
+
+                var detailRow = document.getElementById(leafRow.getAttribute('data-target'));
+                if (!detailRow) {
+                    return;
+                }
+
+                leafRow.classList.toggle('expanded');
+                detailRow.classList.toggle('expanded');
+            });
+        }
+    }
+
+    // Backspace returns to Charts, but only while the Drill Down tab is
+    // actually the active one - otherwise this would hijack Backspace
+    // everywhere else on the page for no reason.
+    document.addEventListener('keydown', function (event) {
+        if (event.key !== 'Backspace') {
+            return;
+        }
+
+        var drillDownPanel = document.getElementById('heapContents-tab-drilldown');
+        if (drillDownPanel && drillDownPanel.classList.contains('active')) {
+            event.preventDefault();
+            goBackToChartsView();
+        }
+    });
+
+    // ── Heap Snapshot (gcHeapAnalyzer output) ────────────────────────────────
+    // File is read entirely in the webview via FileReader — no extension-host
+    // round-trip needed. The tab button is hidden until a snapshot is loaded.
+
+    var formatBytes = function (bytes) {
+        if (bytes >= 1073741824) { return (bytes / 1073741824).toFixed(1) + ' GB'; }
+        if (bytes >= 1048576)    { return (bytes / 1048576).toFixed(1) + ' MB'; }
+        if (bytes >= 1024)       { return (bytes / 1024).toFixed(1) + ' KB'; }
+        return bytes + ' B';
+    };
+
+    var fragPctClass = function (pct) {
+        if (pct > 40) { return 'expensiveGc'; }
+        if (pct > 20) { return 'warnGc'; }
+        if (pct > 10) { return 'interstingGc'; }
+        return '';
+    };
+
+    var buildSnapshotSummaryHtml = function (snapshot) {
+        var summary = snapshot.summary;
+        return '<div class="snapshotCaptureInfo">' +
+            '<span class="snapshotProcessName">' + snapshot.processName + '</span>' +
+            ' &mdash; captured ' + formatHumanDateTime(snapshot.captureTimeUtc) +
+            '</div>' +
+            '<div class="summaryGcDiv">' +
+                '<div class="total">' +
+                    '<div>Heap</div>' +
+                    '<div>Committed<span>' + formatBytes(summary.totalCommittedBytes) + '</span></div>' +
+                    '<div>Live<span>' + formatBytes(summary.totalObjectBytes) + '</span></div>' +
+                    '<div>Free<span>' + formatBytes(summary.totalFreeBytes) + '</span></div>' +
+                    '<div>Frag %<span class="' + fragPctClass(summary.fragmentationPct) + '">' + summary.fragmentationPct.toFixed(1) + '%</span></div>' +
+                '</div>' +
+                '<div class="gen0">' +
+                    '<div>Holes</div>' +
+                    '<div>Total Chunks<span>' + snapshot.freeChunks.totalCount + '</span></div>' +
+                    '<div>Large (&ge;85 KB)<span>' + snapshot.freeChunks.largeChunks.length + '</span></div>' +
+                    '<div>Pinned Objects<span>' + summary.pinnedObjectCount + '</span></div>' +
+                    '<div>Segments<span>' + summary.segmentCount + '</span></div>' +
+                '</div>' +
+            '</div>';
+    };
+
+    var buildGenerationTableHtml = function (generations) {
+        var header = '<tr class="tableHeader">' +
+            '<th>Generation</th><th>Committed</th><th>Live</th><th>Free</th>' +
+            '<th>Frag %</th><th>Segments</th><th>Free Chunks</th></tr>';
+        var rows = '';
+        for (var genIdx = 0; genIdx < generations.length; ++genIdx) {
+            var gen = generations[genIdx];
+            if (gen.committedBytes === 0 && gen.generation === 4) { continue; }
+            rows += '<tr>' +
+                '<td>' + gen.label + '</td>' +
+                '<td>' + formatBytes(gen.committedBytes) + '</td>' +
+                '<td>' + formatBytes(gen.objectBytes) + '</td>' +
+                '<td>' + formatBytes(gen.freeBytes) + '</td>' +
+                '<td class="' + fragPctClass(gen.fragmentationPct) + '">' + gen.fragmentationPct.toFixed(1) + '%</td>' +
+                '<td>' + gen.segmentCount + '</td>' +
+                '<td>' + gen.freeChunkCount + '</td>' +
+                '</tr>';
+        }
+        return '<div class="detailTable"><table>' + header + rows + '</table></div>';
+    };
+
+    var buildFreeChunkTableHtml = function (freeChunks) {
+        var header = '<tr class="tableHeader">' +
+            '<th>Size Range</th><th>Count</th><th>Total Free</th><th>% of Free</th></tr>';
+        var rows = '';
+        for (var bucketIdx = 0; bucketIdx < freeChunks.histogram.length; ++bucketIdx) {
+            var bucket = freeChunks.histogram[bucketIdx];
+            var pct = freeChunks.totalFreeBytes > 0
+                ? ((bucket.totalBytes / freeChunks.totalFreeBytes) * 100).toFixed(1)
+                : '0.0';
+            rows += '<tr>' +
+                '<td>' + bucket.label + '</td>' +
+                '<td>' + bucket.count + '</td>' +
+                '<td>' + formatBytes(bucket.totalBytes) + '</td>' +
+                '<td>' + pct + '%</td>' +
+                '</tr>';
+        }
+        return '<div class="detailTable"><table>' + header + rows + '</table></div>';
+    };
+
+    var buildLargeChunksTableHtml = function (largeChunks) {
+        var GEN_LABELS = ['Gen0', 'Gen1', 'Gen2', 'LOH', 'POH'];
+        var displayChunks = largeChunks.length > 50 ? largeChunks.slice(0, 50) : largeChunks;
+        var header = '<tr class="tableHeader"><th>Address</th><th>Size</th><th>Generation</th></tr>';
+        var rows = '';
+        for (var chunkIdx = 0; chunkIdx < displayChunks.length; ++chunkIdx) {
+            var chunk = displayChunks[chunkIdx];
+            var genLabel = (chunk.generation >= 0 && chunk.generation < GEN_LABELS.length)
+                ? GEN_LABELS[chunk.generation] : 'Gen' + chunk.generation;
+            rows += '<tr>' +
+                '<td><code>' + chunk.address + '</code></td>' +
+                '<td>' + formatBytes(chunk.sizeBytes) + '</td>' +
+                '<td>' + genLabel + '</td>' +
+                '</tr>';
+        }
+        var note = largeChunks.length > 50
+            ? '<p style="margin-top:4px;font-style:italic">Showing first 50 of ' + largeChunks.length + ' large chunks.</p>'
+            : '';
+        return '<div class="detailTable"><table>' + header + rows + '</table></div>' + note;
+    };
+
+    var buildPinnedTableHtml = function (pinnedObjects) {
+        var GEN_LABELS = ['Gen0', 'Gen1', 'Gen2', 'LOH', 'POH'];
+        var header = '<tr class="tableHeader"><th>Type</th><th>Generation</th><th>Count</th><th>Total Size</th></tr>';
+        var rows = '';
+        for (var pinnedIdx = 0; pinnedIdx < pinnedObjects.length; ++pinnedIdx) {
+            var pinned = pinnedObjects[pinnedIdx];
+            var genLabel = (pinned.generation >= 0 && pinned.generation < GEN_LABELS.length)
+                ? GEN_LABELS[pinned.generation] : 'Gen' + pinned.generation;
+            rows += '<tr>' +
+                '<td>' + pinned.typeName + '</td>' +
+                '<td>' + genLabel + '</td>' +
+                '<td>' + pinned.count + '</td>' +
+                '<td>' + formatBytes(pinned.totalBytes) + '</td>' +
+                '</tr>';
+        }
+        return '<div class="detailTable"><table>' + header + rows + '</table></div>';
+    };
+
+    var buildLohTypeTableHtml = function (topLohTypes) {
+        var header = '<tr class="tableHeader"><th>Type</th><th>Count</th><th>Total Size</th></tr>';
+        var rows = '';
+        for (var lohTypeIdx = 0; lohTypeIdx < topLohTypes.length; ++lohTypeIdx) {
+            var lohType = topLohTypes[lohTypeIdx];
+            rows += '<tr>' +
+                '<td>' + lohType.typeName + '</td>' +
+                '<td>' + lohType.count + '</td>' +
+                '<td>' + formatBytes(lohType.totalBytes) + '</td>' +
+                '</tr>';
+        }
+        return '<div class="detailTable"><table>' + header + rows + '</table></div>';
+    };
+
+    var buildFreeChunkCharts = function (histogram) {
+        var bucketLabels = [];
+        var countData = [];
+        var bytesData = [];
+
+        for (var bucketIdx = 0; bucketIdx < histogram.length; ++bucketIdx) {
+            bucketLabels.push(histogram[bucketIdx].label);
+            countData.push(histogram[bucketIdx].count);
+            bytesData.push(histogram[bucketIdx].totalBytes);
+        }
+
+        var chartColors = [
+            'rgba(72, 83, 136, 0.6)',
+            'rgba(96, 165, 69, 0.6)',
+            'rgba(141, 31, 95, 0.6)',
+            'rgba(220, 53, 69, 0.6)',
+            'rgba(201, 221, 84, 0.6)'
+        ];
+
+        var countCanvas = document.getElementById('freeChunkCountChart');
+        if (countCanvas) {
+            new Chart(countCanvas.getContext('2d'), {
+                type: 'horizontalBar',
+                data: {
+                    labels: bucketLabels,
+                    datasets: [{
+                        label: 'Count',
+                        data: countData,
+                        backgroundColor: chartColors,
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    title: { display: true, text: 'Free Chunks by Count' },
+                    scales: { xAxes: [{ ticks: { beginAtZero: true } }] },
+                    legend: { display: false },
+                    animation: { duration: 0 },
+                    maintainAspectRatio: false
+                }
+            });
+        }
+
+        var bytesCanvas = document.getElementById('freeChunkBytesChart');
+        if (bytesCanvas) {
+            new Chart(bytesCanvas.getContext('2d'), {
+                type: 'horizontalBar',
+                data: {
+                    labels: bucketLabels,
+                    datasets: [{
+                        label: 'Bytes',
+                        data: bytesData,
+                        backgroundColor: chartColors,
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    title: { display: true, text: 'Free Space by Size Bucket' },
+                    scales: {
+                        xAxes: [{
+                            ticks: {
+                                beginAtZero: true,
+                                callback: function (value) { return formatBytes(value); }
+                            }
+                        }]
+                    },
+                    legend: { display: false },
+                    animation: { duration: 0 },
+                    maintainAspectRatio: false
+                }
+            });
+        }
+    };
+
+    var renderHeapSnapshot = function (snapshot) {
+        var panel = document.getElementById('tab-heapSnapshot');
+        if (!panel) { return; }
+
+        var html = buildSnapshotSummaryHtml(snapshot);
+
+        html += '<h3 class="detailTableHeading">Generation Breakdown</h3>';
+        html += buildGenerationTableHtml(snapshot.generations);
+
+        html += '<h3 class="detailTableHeading">Free Chunk Distribution</h3>';
+        html += '<div class="freeChunkHistogramRow">' +
+                    '<div class="freeChunkHistogramChart"><canvas id="freeChunkCountChart"></canvas></div>' +
+                    '<div class="freeChunkHistogramChart"><canvas id="freeChunkBytesChart"></canvas></div>' +
+                '</div>';
+        html += buildFreeChunkTableHtml(snapshot.freeChunks);
+
+        if (snapshot.freeChunks.largeChunks.length > 0) {
+            html += '<h3 class="detailTableHeading">Large Free Holes (&ge; 85 KB) &mdash; ' +
+                    snapshot.freeChunks.largeChunks.length + ' total</h3>';
+            html += buildLargeChunksTableHtml(snapshot.freeChunks.largeChunks);
+        }
+
+        if (snapshot.pinnedObjects && snapshot.pinnedObjects.length > 0) {
+            html += '<h3 class="detailTableHeading">Pinned Object Types</h3>';
+            html += buildPinnedTableHtml(snapshot.pinnedObjects);
+        } else {
+            html += '<h3 class="detailTableHeading">Pinned Objects</h3><p>No pinned objects detected.</p>';
+        }
+
+        if (snapshot.topLohTypes && snapshot.topLohTypes.length > 0) {
+            html += '<h3 class="detailTableHeading">Top LOH Types</h3>';
+            html += buildLohTypeTableHtml(snapshot.topLohTypes);
+        }
+
+        panel.innerHTML = html;
+        buildFreeChunkCharts(snapshot.freeChunks.histogram);
+
+        var tabBtn = document.getElementById('heapSnapshotTabBtn');
+        if (tabBtn) {
+            tabBtn.style.display = 'inline-block';
+            tabBtn.click();
+        }
+    };
+
+    var loadHeapSnapshotBtn = document.getElementById('loadHeapSnapshotBtn');
+    var heapSnapshotInput = document.getElementById('heapSnapshotInput');
+
+    if (loadHeapSnapshotBtn && heapSnapshotInput) {
+        loadHeapSnapshotBtn.addEventListener('click', function () {
+            heapSnapshotInput.click();
+        });
+
+        heapSnapshotInput.addEventListener('change', function (event) {
+            var file = event.target.files[0];
+            if (!file) { return; }
+
+            var reader = new FileReader();
+            reader.onload = function (loadEvent) {
+                var snapshot;
+                var showSnapshotLoadError = function (msg) {
+                    var snapshotPanel = document.getElementById('tab-heapSnapshot');
+                    if (snapshotPanel) {
+                        snapshotPanel.innerHTML = '<p class="snapshotLoadError">' + msg + '</p>';
+                    }
+                    var snapshotTabBtn = document.getElementById('heapSnapshotTabBtn');
+                    if (snapshotTabBtn) {
+                        snapshotTabBtn.style.display = 'inline-block';
+                        snapshotTabBtn.click();
+                    }
+                };
+
+                try {
+                    snapshot = JSON.parse(loadEvent.target.result);
+                } catch (parseErr) {
+                    showSnapshotLoadError('Could not parse heap snapshot: ' + parseErr.message);
+                    return;
+                }
+
+                if (!snapshot.summary || !snapshot.generations || !snapshot.freeChunks) {
+                    showSnapshotLoadError('File does not appear to be a gcHeapAnalyzer output (missing summary / generations / freeChunks).');
+                    return;
+                }
+
+                renderHeapSnapshot(snapshot);
+
+                // Allow reloading a different snapshot
+                heapSnapshotInput.value = '';
+            };
+
+            reader.readAsText(file);
         });
     }
 

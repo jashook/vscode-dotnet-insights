@@ -6,6 +6,25 @@
     <WarningLevel>3</WarningLevel>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <DefineConstants>FASTSERIALIZATION_PUBLIC;STREAMREADER_PUBLIC</DefineConstants>
+    <!--
+      Workstation GC's gen0 budget is sized adaptively from recent allocation
+      rate. This tool reads a whole capture into one big byte[] up front then
+      holds a single List<EventRecord> (a struct, ~70 bytes/element - one
+      ~1GB contiguous array for a real 5-minute/14.8M-event capture) alive
+      across every projection pass. A full/gen2 GC landing while that array
+      is live has to scan (and potentially compact) the whole thing - under
+      Workstation GC this was measured adding 1-2+ SECONDS to
+      GcEventProjector.Project alone (a loop that otherwise runs in ~25ms),
+      because the array is large enough relative to Workstation GC's
+      allocation-rate-adaptive gen0 budget to provoke a full collection mid-run.
+      Server GC's much larger, throughput-oriented segment sizing avoided
+      triggering any gen0/1/2 collection at all during the same run -
+      verified via GC.CollectionCount before/after. Appropriate here since
+      this is a short-lived batch CLI process, not a latency-sensitive
+      service where Server GC's larger memory footprint would be a concern.
+    -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
   </PropertyGroup>
 
 </Project>

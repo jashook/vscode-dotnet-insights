@@ -63,7 +63,14 @@ export function renderGcDetailTable(gcs: any[]): string {
         const pauseTime = parseFloat(gcData["PauseDurationMSec"]);
 
         const tdId = gcData["Id"];
-        const tdDateTime = formatHumanDateTime(gcData["DateTime"]);
+        // Raw string, not pre-formatted here - formatHumanDateTime calls
+        // Intl.DateTimeFormat.formatToParts, which for a 1000-GC capture
+        // means 1000 Intl calls on *every* extension-host render of this
+        // webview, even though the table itself is injected lazily behind
+        // the Detailed tab's first click (see detailTableHtml below).
+        // snapshotGcStats.js's own formatHumanDateTime does the actual
+        // formatting client-side, once, at that same lazy-inject point.
+        const tdDateTimeRaw = gcData["DateTime"];
         const tdGen = gcData["generation"];
         const tdType = gcData["Type"];
         const tdPauseTime = pauseTime.toFixed(2);
@@ -96,7 +103,7 @@ export function renderGcDetailTable(gcs: any[]): string {
             severityClass = ` class="notSomewhatInterestingGc"`;
         }
 
-        rows += `<tr${severityClass}><td>${tdId}</td><td>${tdDateTime}</td><td>${tdGen}</td><td>${tdType}</td><td>${tdPauseTime}</td><td>${tdReason}</td><td>${tdGen0Size}</td><td>${tdGen1Size}</td><td>${tdGen2Size}</td><td>${tdLohSize}</td><td>${tdPohSize}</td><td>${tdTotalHeapSize}</td><td>${tdGen0MinSize}</td><td>${tdTotalPromotedSize0}</td><td>${tdTotalPromotedSize1}</td><td>${tdTotalPromotedSize2}</td></tr>`;
+        rows += `<tr${severityClass}><td>${tdId}</td><td class="gcDateTimeCell" data-raw="${tdDateTimeRaw}"></td><td>${tdGen}</td><td>${tdType}</td><td>${tdPauseTime}</td><td>${tdReason}</td><td>${tdGen0Size}</td><td>${tdGen1Size}</td><td>${tdGen2Size}</td><td>${tdLohSize}</td><td>${tdPohSize}</td><td>${tdTotalHeapSize}</td><td>${tdGen0MinSize}</td><td>${tdTotalPromotedSize0}</td><td>${tdTotalPromotedSize1}</td><td>${tdTotalPromotedSize2}</td></tr>`;
     }
 
     const header = `<tr class="tableHeader"><th>GC Number</th><th>DateTime</th><th>Collection Generation</th><th>Type</th><th>Pause Time (mSec)</th><th>Reason</th><th>Generation 0 Size (mb)</th><th>Generation 1 Size (mb)</th><th>Generation 2 Size (mb)</th><th>LOH Size (mb)</th><th>POH Size (mb)</th><th>Total Heap Size (mb)</th><th>Gen 0 Min Budget (mb)</th><th>Promoted Gen0 (mb)</th><th>Promoted Gen1 (mb)</th><th>Promoted Gen2 (mb)</th></tr>`;

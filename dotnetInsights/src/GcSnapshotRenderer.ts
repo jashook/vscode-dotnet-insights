@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 
+import { renderAllocationSummaryTable } from "./AllocationSummaryRenderer";
+import { adaptivelyBucketTicks } from "./AllocationTicksBucketer";
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
 import { formatHumanDateTime, renderGcDetailTable } from "./GcDetailTableRenderer";
 import { computeAllocationAmountStats, computePauseTimeStats } from "./GcStatsCalculations";
@@ -7,10 +9,14 @@ import { computeAllocationAmountStats, computePauseTimeStats } from "./GcStatsCa
 // Renders the summary tiles + Chart.js graphs shared by every "static GC
 // snapshot" input source (DotnetInsightsGcSnapshotEditor's .gcinfo/XML path,
 // DotnetInsightsNettraceEditor's .nettrace path). gcData must already be in
-// the shape { processName, allocations, gcData: [{ data: {...} }] } - each
-// caller is responsible for getting its own input format into that shape;
-// this function doesn't care where it came from.
-export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webview: vscode.Webview, extensionUri: vscode.Uri, gcData: any): string {
+// the shape { processName, gcData: [{ data: {...} }], allocationSummary? }
+// - each caller is responsible for getting its own input format into that
+// shape; this function doesn't care where it came from. sourceFormat gates
+// nettrace-only views ("Heap Contents", and later "Profile") - it's an
+// explicit parameter rather than inferred from allocationSummary's presence
+// because a very short nettrace capture can legitimately have zero
+// allocation ticks, which would make that inference unreliable.
+export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webview: vscode.Webview, extensionUri: vscode.Uri, gcData: any, sourceFormat: "gcinfo" | "nettrace"): string {
     const defaultHtmlReturn = /* html */`
     <!DOCTYPE html>
     <html lang="en">
@@ -35,7 +41,13 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     </body>
     </html>`;
 
-    if (gcData === null || gcData["allocations"] == null || gcData["gcData"] === null) {
+    // Previously also required gcData["allocations"] != null - .gcinfo's XML
+    // path (DotnetInsightsGcSnapshotEditor.gcDataFromXml) never sets that
+    // key at all, so every successfully-parsed .gcinfo file was hitting this
+    // "corrupted" branch instead of rendering. allocationSummary (nettrace-
+    // only, see AllocationJsonExporter.cs) is optional by design, gated
+    // below via sourceFormat instead of required here.
+    if (gcData === null || gcData["gcData"] === null) {
         vscode.window.showWarningMessage(`${document.uri.fsPath} is corrupted or a incorrect type.`);
         return defaultHtmlReturn;
     }
@@ -59,6 +71,29 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
     const detailTableHtml = renderGcDetailTable(gcs);
 
+    // "Heap Contents" (allocation-tick-based type ranking) is nettrace-only:
+    // .gcinfo output never sets allocationSummary at all (see
+    // GcJsonExporter.cs), and even for nettrace input a very short capture
+    // can legitimately have zero allocation ticks - both cases mean nothing
+    // to show, so the nav button/panel are omitted entirely rather than
+    // shown empty.
+    const allocationSummary = gcData["allocationSummary"];
+    const hasHeapContents = sourceFormat === "nettrace" && allocationSummary !== null && allocationSummary !== undefined && allocationSummary["topTypes"] !== null && allocationSummary["topTypes"] !== undefined && allocationSummary["topTypes"].length > 0;
+    const allocationSummaryHtml = hasHeapContents ? renderAllocationSummaryTable(allocationSummary) : "";
+
+    // Ticks are bucketed (only when the raw count is large enough to
+    // matter - see AllocationTicksBucketer.ts) before ever being
+    // stringified into the webview's HTML: a heavily-allocating capture's
+    // raw tick count can be in the millions, and both this JSON.stringify
+    // (plus the webview's own JSON.parse of it) and allocationStats.js's
+    // per-GC-boundary summation over the raw array scale with that count -
+    // left unbucketed, either can hang the page well before any chart
+    // renders.
+    const allocationSummaryForWebview = hasHeapContents && allocationSummary["ticks"]
+        ? { ...allocationSummary, ticks: adaptivelyBucketTicks(allocationSummary["ticks"]) }
+        : allocationSummary;
+    const allocationSummaryJson = escapeJsonForInlineScript(hasHeapContents ? JSON.stringify(allocationSummaryForWebview) : "null");
+
     var totalNumbers = computePauseTimeStats(gcs);
 
     let gen0Numbers = computePauseTimeStats(gcs, 0);
@@ -71,9 +106,16 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     var allocationAmountGen2 = computeAllocationAmountStats(gcs, 2);
     var allocationAmountLOH = computeAllocationAmountStats(gcs, 3);
 
+    // dataValue is the single unit label for every row (Total/Largest/
+    // Smallest/Average/Median) in every one of these tiles. Both
+    // thresholds below used to convert only index [0] (Total) on the
+    // second pass, while updating a *separate* label (totalTotalValue)
+    // that only Total's row read - so a large enough capture could show
+    // "Total: 1417.77 gb" right next to "Average: 425.75 mb" despite both
+    // numbers being individually correct (425.75 MB * 3410 GCs / 1024 ==
+    // 1417.77 GB), which reads as wildly inconsistent at a glance. All
+    // five fields now scale together so a tile is always in one unit.
     var dataValue = "kb";
-
-    var totalTotalValue = "mb";
 
     if (allocationAmountTotal[1][0].toFixed(2).length > 8) {
         dataValue = "mb";
@@ -110,14 +152,42 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     }
 
     if (allocationAmountTotal[1][0].toFixed(2).length > 8) {
-        totalTotalValue = "gb";
+        dataValue = "gb";
 
         allocationAmountTotal[1][0] /= 1024;
+        allocationAmountTotal[1][1] /= 1024;
+        allocationAmountTotal[1][2] /= 1024;
+        allocationAmountTotal[1][3] /= 1024;
+        allocationAmountTotal[1][4] /= 1024;
+
         allocationAmountGen0[1][0] /= 1024;
+        allocationAmountGen0[1][1] /= 1024;
+        allocationAmountGen0[1][2] /= 1024;
+        allocationAmountGen0[1][3] /= 1024;
+        allocationAmountGen0[1][4] /= 1024;
+
         allocationAmountGen1[1][0] /= 1024;
+        allocationAmountGen1[1][1] /= 1024;
+        allocationAmountGen1[1][2] /= 1024;
+        allocationAmountGen1[1][3] /= 1024;
+        allocationAmountGen1[1][4] /= 1024;
+
         allocationAmountGen2[1][0] /= 1024;
+        allocationAmountGen2[1][1] /= 1024;
+        allocationAmountGen2[1][2] /= 1024;
+        allocationAmountGen2[1][3] /= 1024;
+        allocationAmountGen2[1][4] /= 1024;
+
         allocationAmountLOH[1][0] /= 1024;
+        allocationAmountLOH[1][1] /= 1024;
+        allocationAmountLOH[1][2] /= 1024;
+        allocationAmountLOH[1][3] /= 1024;
+        allocationAmountLOH[1][4] /= 1024;
     }
+
+    // Kept as a separate name for the template below (Total's own row used
+    // a distinct variable historically) but always equal to dataValue now.
+    var totalTotalValue = dataValue;
 
     var allocTotal = allocationAmountTotal[1][0].toFixed(2);
     var allocAverage = allocationAmountTotal[1][1].toFixed(2);
@@ -191,6 +261,8 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const styleVSCodeUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'vscode.css'));
 
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'snapshotGcStats.js'));
+    const allocationScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'allocationStats.js'));
+    const drillDownScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'drillDownStats.js'));
 
     const chartjs = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'chart.js', 'dist', 'Chart.min.js'));
 
@@ -210,6 +282,11 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
         pauseTimeCanvasData += `<div class="gcStats"><canvas id="totalGcPauseTimeOverTime"></canvas></div>`;
     }
 
+    var fragmentationCanvasData = "";
+    if (gcs.length > 0) {
+        fragmentationCanvasData = `<div class="gcStats"><canvas id="gcFragmentationOverTime"></canvas></div>`;
+    }
+
     var perHeapCanvasData = "";
     if (gcs.length > 0) {
         const gcData = gcs[0].data;
@@ -224,7 +301,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
         }
     }
 
-    const gcCountsByGen = JSON.stringify([gen0TimesInEachGc.length, gen1TimesInEachGc.length, gen2TimesInEachGc.length]);
+    const gcCountsByGen = escapeJsonForInlineScript(JSON.stringify([gen0TimesInEachGc.length, gen1TimesInEachGc.length, gen2TimesInEachGc.length]));
 
     // Full per-GC data (every per-generation field included, not just what
     // the charts currently read) - kept as full fidelity on purpose so
@@ -241,7 +318,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     var hiddenData = null;
 
     try {
-        hiddenData = JSON.stringify(chartPayload);
+        hiddenData = escapeJsonForInlineScript(JSON.stringify(chartPayload));
     }
     catch(e) {
         var i = 0;
@@ -253,7 +330,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
         gen2TotalTimeInGc
     ];
 
-    const totalTimeInEachGcJson = JSON.stringify(totalTimeInEachGc);
+    const totalTimeInEachGcJson = escapeJsonForInlineScript(JSON.stringify(totalTimeInEachGc));
 
     // Allocations
 
@@ -282,14 +359,30 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <link href="${styleVSCodeUri}" rel="stylesheet" />
         </head>
         <body>
-            <span style="display:none" id="hiddenData"><!--${hiddenData}--></span>
-            <span style="display:none" id="gcCountsByGen"><!--${gcCountsByGen}--></span>
-            <span style="display:none" id="totalTimeInEachGcJson"><!--${totalTimeInEachGcJson}--></span>
+            <script type="application/json" id="hiddenData">${hiddenData}</script>
+            <script type="application/json" id="gcCountsByGen">${gcCountsByGen}</script>
+            <script type="application/json" id="totalTimeInEachGcJson">${totalTimeInEachGcJson}</script>
+            <script type="application/json" id="allocationSummaryJson">${allocationSummaryJson}</script>
+
+            <!-- High-level view switcher (GC / Heap Contents / eventually
+                 Profile) - browser-tab style, sitting above the file name so
+                 it doesn't consume horizontal width from the content below
+                 the way a left-nav sidebar would. -->
+            <div class="viewTabBar">
+                <button class="viewNavButton active" data-view="gc">GC</button>
+                ${hasHeapContents ? `<button class="viewNavButton" data-view="heapContents">Heap Contents</button>` : ``}
+            </div>
+
             <h2 class="divider">${gcData["processName"]}</h2>
+
+            <div id="view-gc" class="viewPanel active">
+
+            <input type="file" id="heapSnapshotInput" accept=".json" style="display:none">
 
             <div class="tabBar">
                 <button class="tabButton active" data-tab="charts">Charts</button>
                 <button class="tabButton" data-tab="detailed">Detailed</button>
+                <button class="tabButton" id="heapSnapshotTabBtn" data-tab="heapSnapshot" style="display:none">Heap Snapshot</button>
                 <button class="fieldToggleButton" id="genFieldsToggle" style="display:none">Show All Fields</button>
             </div>
 
@@ -386,6 +479,13 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
             <div class="gcDataContainer">
                 ${canvasData}
+                <!-- Load Chart.js exactly once, here, before it's needed by
+                     any inline chart-building code below. It used to be
+                     re-declared after every gcDataContainer div further down
+                     this page (5 copies total) - since none of those tags had
+                     async/defer, the browser fetched and fully executed the
+                     whole library 5 times on every load, blocking HTML
+                     parsing each time regardless of capture size. -->
                 <script src="${chartjs}"></script>
             </div>
 
@@ -394,7 +494,6 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
             <div class="gcDataContainer" id="pauseTimeSpacer">
                 ${pauseTimeCanvasData}
-                <script src="${chartjs}"></script>
             </div>
 
             <h2 class="divider">GC Usage Over Time</h2>
@@ -402,18 +501,30 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
             <div class="gcDataContainer" id="nextSpacer">
                 ${totalCanvasData}
-                <script src="${chartjs}"></script>
             </div>
+
+            <h2 class="divider">Heap Fragmentation Over Time</h2>
+            <div class="heapSnapshotLoadRow">
+                ${captureTimeRangeHtml}
+                <button id="loadHeapSnapshotBtn" class="loadHeapSnapshotBtn" title="Load a gcHeapAnalyzer JSON output to see free chunk distribution, pinned types, and LOH census">Load Heap Snapshot</button>
+            </div>
+
+            <div class="gcDataContainer" id="fragmentationSpacer">
+                ${fragmentationCanvasData}
+            </div>
+
+            ${hasHeapContents ? `<h2 class="divider">Top LOH Allocating Types</h2>
+            <div id="lohTypesSection"></div>` : ``}
 
             <h2 class="divider">Per Heap GC Usage Over Time</h2>
 
             <div class="gcDataContainer">
                 ${perHeapCanvasData}
-                <script src="${chartjs}"></script>
             </div>
             </div>
 
             <div id="tab-detailed" class="tabPanel"></div>
+            <div id="tab-heapSnapshot" class="tabPanel"></div>
             <!-- Deferred: display:none on .tabPanel only skips layout/paint,
                  not DOM construction - the browser would still have to parse
                  and build a <tr>/<td> node for every GC up front if this
@@ -424,11 +535,29 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
                  #tab-detailed on the Detailed tab's first click. -->
             <span style="display:none" id="detailTableHtml"><!--${detailTableHtml}--></span>
 
+                </div>
+            ${hasHeapContents ? `<div id="view-heapContents" class="viewPanel"></div>
+            <!-- Same lazy-inject pattern as detailTableHtml above - constructed
+                 only on the "Heap Contents" nav button's first click. -->
+            <span style="display:none" id="allocationSummaryHtml"><!--${allocationSummaryHtml}--></span>` : ``}
+
+            <script nonce="${nonce}" src="${allocationScriptUri}"></script>
+            <script nonce="${nonce}" src="${drillDownScriptUri}"></script>
             <script nonce="${nonce}" src="${scriptUri}"></script>
         </body>
     </html>`;
 
     return htmlToReturn;
+}
+
+// A `<script type="application/json">` tag's raw-text parsing only looks for
+// the literal byte sequence "</script" to find its end - a "<" from embedded
+// data (e.g. a "</script>" substring inside a GC Reason/Type string) would
+// otherwise truncate the tag early. `<` is a valid JSON string escape
+// for "<" that JSON.parse decodes transparently, so this is safe to apply to
+// any JSON.stringify output before embedding it in a script tag.
+export function escapeJsonForInlineScript(json: string): string {
+    return json.replace(/</g, '\\u003c');
 }
 
 export function getNonce() {

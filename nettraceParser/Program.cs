@@ -8,17 +8,20 @@
 //     DotnetInsightsGcSnapshotEditor rendering already expects) and exits
 //     quietly - this is what the extension invokes.
 //   nettraceParser <file.nettrace> [--dump-fields <EventName>]
-//     Manual verification harness (this repo has no unit test project
-//     convention): dumps the trace header, per-provider/event-name counts,
-//     a GC summary, and optionally raw decoded fields for one event name.
+//     Manual verification harness: dumps the trace header, per-provider/
+//     event-name counts, a GC summary, and optionally raw decoded fields
+//     for one event name. Real automated coverage lives in the sibling
+//     nettraceParser.Tests project (`dotnet test`), not here.
 ////////////////////////////////////////////////////////////////////////////////
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 
 using DotnetInsights.NetTrace;
 using DotnetInsights.NetTrace.Gc;
+using DotnetInsights.NetTrace.Rundown;
 
 if (args.Length < 1)
 {
@@ -27,7 +30,14 @@ if (args.Length < 1)
 }
 
 string filePath = args[0];
+
+Stopwatch totalStopwatch = Stopwatch.StartNew();
+Stopwatch phaseStopwatch = Stopwatch.StartNew();
+
 NettraceFile file = NettraceFile.Read(filePath);
+
+long readMs = phaseStopwatch.ElapsedMilliseconds;
+phaseStopwatch.Restart();
 
 // SyncTimeUtc has been verified correct (matches captured trace files' real
 // mtimes to the second), but NettraceHeader.SyncTimeQPC's numeric
@@ -40,10 +50,38 @@ int jsonArgIndex = Array.IndexOf(args, "--json");
 if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
 {
     string jsonOutputPath = args[jsonArgIndex + 1];
+    // Sits next to jsonOutputPath by a fixed naming convention rather than
+    // being embedded as a path in the JSON itself - the caller (the VS Code
+    // extension, see DotnetInsightsNettraceEditor.ts) already knows
+    // jsonOutputPath and can derive this the same way, so nothing needs to
+    // round-trip a filesystem path through the JSON payload.
+    string ticksBinaryPath = Path.ChangeExtension(jsonOutputPath, ".ticks.bin");
+
     List<GcEvent> gcEventsForJson = GcEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);
+    long gcProjectMs = phaseStopwatch.ElapsedMilliseconds;
+    phaseStopwatch.Restart();
+
+    List<AllocationEvent> allocationEventsForJson = AllocationEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);
+    long allocationProjectMs = phaseStopwatch.ElapsedMilliseconds;
+    phaseStopwatch.Restart();
+
+    MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize);
+    long symbolTableMs = phaseStopwatch.ElapsedMilliseconds;
+    phaseStopwatch.Restart();
+
     string processName = Path.GetFileNameWithoutExtension(filePath);
 
-    GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, processName);
+    GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, file.StacksById, symbolTable, processName, ticksBinaryPath);
+    long jsonExportMs = phaseStopwatch.ElapsedMilliseconds;
+
+    long totalMs = totalStopwatch.ElapsedMilliseconds;
+
+    Console.Error.WriteLine(
+        $"Timing: read={readMs}ms ({file.Events.Count} events) " +
+        $"gcProject={gcProjectMs}ms ({gcEventsForJson.Count} GCs) " +
+        $"allocationProject={allocationProjectMs}ms ({allocationEventsForJson.Count} ticks) " +
+        $"symbolTable={symbolTableMs}ms jsonExport={jsonExportMs}ms total={totalMs}ms");
+
     return;
 }
 
@@ -132,7 +170,7 @@ if (Environment.GetEnvironmentVariable("NETTRACE_DEBUG") != null)
         eventIdCounts.TryGetValue(record.EventId, out int c);
         eventIdCounts[record.EventId] = c + 1;
         eventIdVersion[record.EventId] = record.Version;
-        eventIdPayloadLen[record.EventId] = record.PayloadBytes.Length;
+        eventIdPayloadLen[record.EventId] = record.PayloadLength;
     }
 
     foreach (KeyValuePair<int, int> kv in eventIdCounts)
@@ -156,7 +194,7 @@ foreach (GcEvent gcEvent in gcEvents)
         ClrGcHeap heap = gcEvent.Heaps[0];
         for (int genIndex = 0; genIndex < heap.Generations.Length; ++genIndex)
         {
-            ClrGcGeneration gen = heap.Generations[genIndex];
+            ref readonly ClrGcGeneration gen = ref heap.Generations[genIndex];
             Console.WriteLine($"    heap0 gen{genIndex}: SizeBefore={gen.SizeBefore} SizeAfter={gen.SizeAfter} NewAllocation={gen.NewAllocation} SurvRate={gen.SurvRate} In={gen.In} Out={gen.Out}");
         }
     }

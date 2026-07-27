@@ -21,49 +21,65 @@ namespace DotnetInsights.NetTrace.Gc {
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+using System;
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
 // Field names/semantics match gcEventListener/HelperClasses.cs's Generation
 // class exactly - both ultimately derive from the same CLR ETW manifest.
-public class ClrGcGeneration
+//
+// A readonly struct, not a class: ClrGcHeap.Generations is an array of
+// these (up to 4 per heap, 8 heaps, one call per GC - ~274,000 instances
+// for a real 5-minute capture), so this array is now one contiguous
+// allocation instead of N separate small-object allocations. At 120 bytes
+// (15 longs) this is well over the struct-passing convention's 16-byte
+// threshold - callers reading many fields in a loop (GcJsonExporter.cs,
+// Program.cs's debug dump) should hold it via a `ref readonly` local
+// rather than copying it out of the array.
+public readonly struct ClrGcGeneration
 {
-    public long SizeBefore;
-    public long SizeAfter;
-    public long ObjSpaceBefore;
-    public long Fragmentation;
-    public long FreeListSpaceBefore;
-    public long FreeListSpaceAfter;
-    public long FreeObjSpaceBefore;
-    public long FreeObjSpaceAfter;
-    public long ObjSizeAfter;
-    public long In;
-    public long Out;
-    public long NewAllocation;
-    public long SurvRate;
-    public long PinnedSurv;
-    public long NonePinnedSurv;
+    public readonly long SizeBefore;
+    public readonly long SizeAfter;
+    public readonly long ObjSpaceBefore;
+    public readonly long Fragmentation;
+    public readonly long FreeListSpaceBefore;
+    public readonly long FreeListSpaceAfter;
+    public readonly long FreeObjSpaceBefore;
+    public readonly long FreeObjSpaceAfter;
+    public readonly long ObjSizeAfter;
+    public readonly long In;
+    public readonly long Out;
+    public readonly long NewAllocation;
+    public readonly long SurvRate;
+    public readonly long PinnedSurv;
+    public readonly long NonePinnedSurv;
 
-    // genDataArray holds the 10 pointer-sized fields for one generation, in
-    // the Version>=3 GCPerHeapHistoryGenData order.
-    public static ClrGcGeneration Decode(long[] genDataArray)
+    // genData holds the 10 pointer-sized fields for one generation, in the
+    // Version>=3 GCPerHeapHistoryGenData order.
+    public ClrGcGeneration(ReadOnlySpan<long> genData)
     {
-        ClrGcGeneration gen = new ClrGcGeneration();
-        gen.SizeBefore = genDataArray[0];
-        gen.FreeListSpaceBefore = genDataArray[1];
-        gen.FreeObjSpaceBefore = genDataArray[2];
-        gen.SizeAfter = genDataArray[3];
-        gen.FreeListSpaceAfter = genDataArray[4];
-        gen.FreeObjSpaceAfter = genDataArray[5];
-        gen.In = genDataArray[6];
-        gen.PinnedSurv = genDataArray[7];
-        gen.NonePinnedSurv = genDataArray[8];
-        gen.NewAllocation = genDataArray[9]; // "Budget" in TraceEvent - historically renamed NewAllocation for the XML/JSON output.
+        this.SizeBefore = genData[0];
+        this.FreeListSpaceBefore = genData[1];
+        this.FreeObjSpaceBefore = genData[2];
+        this.SizeAfter = genData[3];
+        this.FreeListSpaceAfter = genData[4];
+        this.FreeObjSpaceAfter = genData[5];
+        this.In = genData[6];
+        this.PinnedSurv = genData[7];
+        this.NonePinnedSurv = genData[8];
+        this.NewAllocation = genData[9]; // "Budget" in TraceEvent - historically renamed NewAllocation for the XML/JSON output.
 
-        gen.ObjSpaceBefore = gen.SizeBefore - gen.FreeListSpaceBefore - gen.FreeObjSpaceBefore;
-        gen.Fragmentation = gen.FreeListSpaceAfter + gen.FreeObjSpaceAfter;
-        gen.ObjSizeAfter = gen.SizeAfter - gen.Fragmentation;
-        gen.Out = gen.PinnedSurv + gen.NonePinnedSurv;
-        gen.SurvRate = gen.ObjSpaceBefore == 0 ? 0 : (long)((double)gen.Out * 100.0 / (double)gen.ObjSpaceBefore);
+        this.ObjSpaceBefore = this.SizeBefore - this.FreeListSpaceBefore - this.FreeObjSpaceBefore;
+        this.Fragmentation = this.FreeListSpaceAfter + this.FreeObjSpaceAfter;
+        this.ObjSizeAfter = this.SizeAfter - this.Fragmentation;
+        this.Out = this.PinnedSurv + this.NonePinnedSurv;
+        this.SurvRate = this.ObjSpaceBefore == 0 ? 0 : (long)((double)this.Out * 100.0 / (double)this.ObjSpaceBefore);
+    }
 
-        return gen;
+    public static ClrGcGeneration Decode(ReadOnlySpan<long> genData)
+    {
+        return new ClrGcGeneration(genData);
     }
 }
 
@@ -96,10 +112,16 @@ public class ClrGcHeap
         int generationsToDecode = count < 4 ? count : 4;
         heap.Generations = new ClrGcGeneration[generationsToDecode];
 
+        // Declared once, outside the loop (never stackalloc inside a loop -
+        // see CLAUDE.md's stackalloc convention), and fully overwritten
+        // then consumed each iteration before the next one starts, so
+        // reusing the same 80-byte stack buffer across all
+        // (at most 4) generations is safe.
+        Span<long> genDataArray = stackalloc long[10];
+
         for (int genIndex = 0; genIndex < generationsToDecode; ++genIndex)
         {
             int genOffset = genDataStart + (sizeOfGenData * genIndex);
-            long[] genDataArray = new long[10];
 
             for (int entryIndex = 0; entryIndex < 10; ++entryIndex)
             {

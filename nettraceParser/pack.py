@@ -4,7 +4,7 @@
 # roslynHelper's exact archive layout and naming convention (verified against
 # the real roslynHelper-osx-x64.tar.gz release asset):
 #
-#   nettraceParser-{osName}-x64.tar.gz
+#   nettraceParser-{osName}-{arch}.tar.gz
 #     nettraceParser/                    <- single top-level folder
 #       nettraceParser                   <- self-contained apphost executable
 #       nettraceParser.dll
@@ -23,8 +23,8 @@
 #
 # Usage: ./pack.py [output-dir] [rid...]
 #   output-dir defaults to ./artifacts
-#   rid... defaults to all three below; pass specific RIDs to build a subset,
-#   e.g. ./pack.py ./artifacts osx-x64
+#   rid... defaults to all targets below; pass specific RIDs to build a
+#   subset, e.g. ./pack.py ./artifacts osx-arm64
 ################################################################################
 
 import argparse
@@ -37,11 +37,16 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT = SCRIPT_DIR / "nettraceParser.csproj"
 
-# rid -> osName, matching roslynHelper-{osName}-x64.tar.gz / gcEventListener-{osName}.tar.gz.
+# rid -> (osName, arch), matching roslynHelper-{osName}-{arch}.tar.gz /
+# gcEventListener-{osName}-{arch}.tar.gz. arch is "x64" or "arm64" -
+# DependencySetup.ts picks between them via process.arch at download time.
 ALL_TARGETS = {
-    "osx-x64": "osx",
-    "linux-x64": "linux",
-    "win-x64": "win",
+    "osx-x64": ("osx", "x64"),
+    "osx-arm64": ("osx", "arm64"),
+    "linux-x64": ("linux", "x64"),
+    "linux-arm64": ("linux", "arm64"),
+    "win-x64": ("win", "x64"),
+    "win-arm64": ("win", "arm64"),
 }
 
 
@@ -72,7 +77,7 @@ def package(publish_dir: Path, archive_path: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Package nettraceParser release archives.")
     parser.add_argument("output_dir", nargs="?", default=str(SCRIPT_DIR / "artifacts"))
-    parser.add_argument("rids", nargs="*", help="Specific RIDs to build (default: osx-x64, linux-x64, win-x64)")
+    parser.add_argument("rids", nargs="*", help="Specific RIDs to build (default: all of " + ", ".join(ALL_TARGETS) + ")")
     args = parser.parse_args()
 
     if args.rids:
@@ -91,9 +96,9 @@ def main() -> int:
 
     publish_root = output_dir / "publish"
 
-    for rid, os_name in targets.items():
+    for rid, (os_name, arch) in targets.items():
         publish_dir = publish_root / rid / "nettraceParser"
-        archive_path = output_dir / f"nettraceParser-{os_name}-x64.tar.gz"
+        archive_path = output_dir / f"nettraceParser-{os_name}-{arch}.tar.gz"
 
         publish(rid, publish_dir)
         package(publish_dir, archive_path)

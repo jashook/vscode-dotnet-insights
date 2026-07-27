@@ -8,6 +8,7 @@ import * as vscode from 'vscode';
 import { DotnetInsights } from "./dotnetInsights";
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
 import { renderGcSnapshotWebview } from "./GcSnapshotRenderer";
+import { readNettraceJson, ticksBinaryPathFor } from "./NettraceJsonStreamReader";
 
 // Opens a .nettrace file, shells out to the nettraceParser tool to decode it
 // into the same JSON shape DotnetInsightsGcSnapshotEditor's XML path produces
@@ -76,8 +77,20 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
         const command = `"${this.insights.nettraceParserPath}" "${nettraceFilePath}" --json "${jsonOutputPath}"`;
         this.insights.outputChannel.appendLine(command);
 
+        // Timing instrumentation - a .nettrace file's parse cost scales with
+        // total event volume (JIT/thread/allocation-tick events etc.), not
+        // just GC count, so "few GCs" alone doesn't rule this step out as
+        // the source of a slow document open. Logged to the "Dotnet
+        // Insights" output channel so it's visible without attaching a
+        // debugger or opening webview DevTools.
+        const nettraceFileSizeBytes = fs.statSync(nettraceFilePath).size;
+        const execStartMs = Date.now();
+
         var promiseToReturn = new Promise<any>((resolve, reject) => {
             child.exec(command, { maxBuffer: 512 * 1024 * 1024 }, (error: any, stdout: string, stderr: string) => {
+                const execElapsedMs = Date.now() - execStartMs;
+                this.insights.outputChannel.appendLine(`nettraceParser: ${nettraceFileSizeBytes} bytes in, subprocess took ${execElapsedMs}ms`);
+
                 if (error) {
                     this.insights.outputChannel.appendLine("Failed to execute nettraceParser.");
                     this.insights.outputChannel.appendLine(stderr);
@@ -85,22 +98,48 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
                     return;
                 }
 
-                try {
-                    const fileContents = fs.readFileSync(jsonOutputPath);
-                    resolve(JSON.parse(fileContents.toString()));
-                }
-                catch (e) {
+                // A plain fs.readFileSync(...).toString() + JSON.parse(...)
+                // used to throw "Cannot create a string longer than
+                // 0x1fffffe8 characters" for a heavily-allocating capture's
+                // output (696MB in one real case) - Node's own maximum
+                // string length. That's no longer a concern: nettraceParser
+                // now writes the allocation-tick array as a separate binary
+                // sidecar file instead of inline JSON (see
+                // AllocationJsonExporter.cs's WriteTicks), which drops the
+                // JSON itself under 100MB even for the same capture - see
+                // NettraceJsonStreamReader.ts for the read side of both files.
+                const readStartMs = Date.now();
+                const ticksBinaryPath = ticksBinaryPathFor(jsonOutputPath);
+
+                readNettraceJson(jsonOutputPath).then((parsed) => {
+                    this.insights.outputChannel.appendLine(`nettraceParser: JSON + ticks binary read took ${Date.now() - readStartMs}ms`);
+                    resolve(parsed);
+                }).catch((e: any) => {
+                    // Logged in full this time - the previous approach
+                    // swallowed the exception entirely, which made an
+                    // oversized-output crash indistinguishable in the UI
+                    // from an actually corrupted/wrong-type file.
                     this.insights.outputChannel.appendLine("Failed to read nettraceParser output.");
+                    this.insights.outputChannel.appendLine(e && e.stack ? e.stack : String(e));
                     resolve(null);
-                }
-                finally {
+                }).finally(() => {
                     try {
                         fs.unlinkSync(jsonOutputPath);
                     }
                     catch (e) {
                         // Best effort cleanup.
                     }
-                }
+
+                    try {
+                        fs.unlinkSync(ticksBinaryPath);
+                    }
+                    catch (e) {
+                        // Best effort cleanup - won't exist for a .gcinfo/XML
+                        // source (that path never calls this function at
+                        // all) or if nettraceParser itself failed before
+                        // writing anything.
+                    }
+                });
             });
         });
 
@@ -109,8 +148,14 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
 
     private getHtmlForWebviewWrapper(document: DotnetInsightsGcDocument, webview: vscode.Webview): Thenable<string> {
         var promiseToReturn = new Promise<string>((resolve, reject) => {
+            const totalStartMs = Date.now();
+
             this.runNettraceParser(document.uri.fsPath).then((gcData: any) => {
-                resolve(renderGcSnapshotWebview(document, webview, this.context.extensionUri, gcData));
+                const renderStartMs = Date.now();
+                const html = renderGcSnapshotWebview(document, webview, this.context.extensionUri, gcData, "nettrace");
+                this.insights.outputChannel.appendLine(`renderGcSnapshotWebview took ${Date.now() - renderStartMs}ms`);
+                this.insights.outputChannel.appendLine(`Total document open (nettraceParser + render) took ${Date.now() - totalStartMs}ms`);
+                resolve(html);
             });
         });
 

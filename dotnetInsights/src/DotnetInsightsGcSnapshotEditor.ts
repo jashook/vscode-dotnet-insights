@@ -309,7 +309,7 @@ export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEdit
                     }
                 }
 
-                resolve(renderGcSnapshotWebview(document, webview, this.context.extensionUri, gcData));
+                resolve(renderGcSnapshotWebview(document, webview, this.context.extensionUri, gcData, "gcinfo"));
             });
         })
 

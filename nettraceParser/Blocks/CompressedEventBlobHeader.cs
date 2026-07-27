@@ -53,14 +53,31 @@ public class CompressedEventBlobDecoderState
     public int PayloadSize;
 }
 
-public class CompressedEventBlobHeader
+// A readonly struct, not a class: EventBlock.FromStream constructs one per
+// event (14.8M times for a real 5-minute capture) as a short-lived local
+// whose fields get copied out immediately - never stored long-term, never
+// passed to another method (if a future caller needs to pass this as a
+// parameter, note it's ~30 bytes, over the struct-passing convention's
+// 16-byte threshold, and should take it by `in`). No call site relies on
+// reference semantics.
+public readonly struct CompressedEventBlobHeader
 {
-    public int MetadataId;
-    public long ThreadId;
-    public int StackId;
-    public long TimeStamp;
-    public bool IsSorted;
-    public int PayloadSize;
+    public readonly int MetadataId;
+    public readonly long ThreadId;
+    public readonly int StackId;
+    public readonly long TimeStamp;
+    public readonly bool IsSorted;
+    public readonly int PayloadSize;
+
+    private CompressedEventBlobHeader(int metadataId, long threadId, int stackId, long timeStamp, bool isSorted, int payloadSize)
+    {
+        this.MetadataId = metadataId;
+        this.ThreadId = threadId;
+        this.StackId = stackId;
+        this.TimeStamp = timeStamp;
+        this.IsSorted = isSorted;
+        this.PayloadSize = payloadSize;
+    }
 
     public static CompressedEventBlobHeader Read(IStreamReader reader, CompressedEventBlobDecoderState state)
     {
@@ -108,15 +125,7 @@ public class CompressedEventBlobHeader
             state.PayloadSize = (int)VarIntReader.ReadVarUInt32(reader);
         }
 
-        CompressedEventBlobHeader header = new CompressedEventBlobHeader();
-        header.MetadataId = state.MetadataId;
-        header.ThreadId = state.ThreadId;
-        header.StackId = state.StackId;
-        header.TimeStamp = state.TimeStamp;
-        header.IsSorted = isSorted;
-        header.PayloadSize = state.PayloadSize;
-
-        return header;
+        return new CompressedEventBlobHeader(state.MetadataId, state.ThreadId, state.StackId, state.TimeStamp, isSorted, state.PayloadSize);
     }
 
     private static Guid ReadGuid(IStreamReader reader)
