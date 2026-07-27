@@ -51,28 +51,53 @@ public class NettraceFile
 
         NettraceFile file = new NettraceFile();
         file.MetadataById = new Dictionary<int, EventMetadata>();
-        file.Events = new List<EventRecord>();
+        // EventRecord is a struct (~70 bytes) - without a capacity hint this
+        // list regrows via doubling as EventBlock.FromStream adds all 14.8M+
+        // events for a real 5-minute capture, and each doubling now copies a
+        // much larger element than the old 8-byte class reference. ~70
+        // bytes/event is this parser's own measured ratio on a real 1GB/
+        // 14.8M-event capture (compressed-header event blobs plus payload,
+        // averaged across the whole file) - not exact for every capture, but
+        // close enough to skip most of the early resizes; a wrong guess still
+        // falls back to normal doubling for the remainder.
+        const int EstimatedBytesPerEvent = 70;
+        int estimatedEventCount = (int)Math.Min(fileBytes.Length / EstimatedBytesPerEvent, int.MaxValue);
+        file.Events = new List<EventRecord>(estimatedEventCount);
         file.StacksById = new Dictionary<int, long[]>();
 
         NettraceHeader header = new NettraceHeader();
 
-        // Deserializer/IOStreamStreamReader track their own logical position starting
-        // at 0 and seek the underlying stream from there - they have no notion of a
-        // pre-existing offset. So rather than handing them a stream we've already
-        // advanced past the nettrace-specific 8-byte magic, we hand them a fresh
-        // stream whose position 0 already IS file offset 8 (the true start of the
-        // generic FastSerialization content).
+        // IOStreamStreamReader (the previous reader here) copies data twice per
+        // event: once from fileBytes into its own internal Fill()'d buffer, then
+        // again out of that buffer into whatever the caller reads into (e.g.
+        // EventBlock.FromStream's per-event payload array). fileBytes is already
+        // the entire file resident in memory (File.ReadAllBytes above), so that
+        // first copy is pure overhead. MemoryStreamReader instead reads directly
+        // out of fileBytes with no intermediate buffer at all.
+        //
+        // MemoryStreamReader(data, start, length, settings)'s `length` parameter
+        // is actually an absolute end-position bound (endPosition = length), not
+        // a count relative to `start` - confirmed by the single-array constructor
+        // MemoryStreamReader(data, settings) delegating as
+        // this(data, 0, data.Length, settings), which only makes sense under that
+        // reading. So skipping the 8-byte "Nettrace" magic is start=8 with the
+        // bound left at fileBytes.Length (not fileBytes.Length - 8), which also
+        // means Current/position values from this reader are already absolute
+        // byte offsets into fileBytes - exactly what EventBlock.FromStream needs
+        // to record a zero-copy (offset, length) slice for each event's payload
+        // instead of allocating and copying a dedicated byte[] per event.
         int metadataBlockCount = 0;
         int eventBlockCount = 0;
         int skippedBlockCount = 0;
 
-        using (MemoryStream contentStream = new MemoryStream(fileBytes, ExpectedMagic.Length, fileBytes.Length - ExpectedMagic.Length, writable: false))
         {
-            using (Deserializer deserializer = new Deserializer(contentStream, filePath, SerializationSettings.Default))
+            MemoryStreamReader reader = new MemoryStreamReader(fileBytes, ExpectedMagic.Length, fileBytes.Length, SerializationSettings.Default);
+
+            using (Deserializer deserializer = new Deserializer(reader, filePath))
             {
                 deserializer.RegisterFactory("Trace", () => header);
                 deserializer.RegisterFactory("MetadataBlock", () => { ++metadataBlockCount; return new MetadataBlock(file.MetadataById); });
-                deserializer.RegisterFactory("EventBlock", () => { ++eventBlockCount; return new EventBlock(file.MetadataById, file.Events); });
+                deserializer.RegisterFactory("EventBlock", () => { ++eventBlockCount; return new EventBlock(file.MetadataById, file.Events, fileBytes); });
                 // header.PointerSize is read here (not file.Header.PointerSize,
                 // which isn't assigned until after this whole loop finishes) -
                 // safe because GetEntryObject() below reads the Trace header

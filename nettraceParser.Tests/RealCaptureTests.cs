@@ -54,14 +54,29 @@ public class RealCaptureTests
     // tests can keep asserting against the real output shape.
     private static JsonObject BuildAllocationSummary(List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
     {
-        using (MemoryStream stream = new MemoryStream())
-        {
-            using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
-            {
-                AllocationSummaryBuilder.Write(writer, allocationEvents, stacksById, symbolTable);
-            }
+        // ticks is now a binary sidecar file (see AllocationJsonExporter.cs's
+        // WriteTicks) - this file's tests don't assert on ticks directly, so
+        // the temp file just needs a valid path to write to and cleanup.
+        string ticksBinaryPath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".bin");
 
-            return (JsonObject)JsonNode.Parse(stream.ToArray());
+        try
+        {
+            using (MemoryStream stream = new MemoryStream())
+            {
+                using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
+                {
+                    AllocationSummaryBuilder.Write(writer, allocationEvents, stacksById, symbolTable, ticksBinaryPath);
+                }
+
+                return (JsonObject)JsonNode.Parse(stream.ToArray());
+            }
+        }
+        finally
+        {
+            if (File.Exists(ticksBinaryPath))
+            {
+                File.Delete(ticksBinaryPath);
+            }
         }
     }
 

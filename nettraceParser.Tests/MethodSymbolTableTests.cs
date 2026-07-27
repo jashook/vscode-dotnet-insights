@@ -132,13 +132,9 @@ public class MethodSymbolTableTests
     [Fact]
     public void MethodSymbolTable_Build_IgnoresEventsFromOtherProviders()
     {
-        EventRecord foreignEvent = new EventRecord
-        {
-            ProviderName = "Some-Other-Provider",
-            EventId = ClrRundownEventIds.MethodDCStartVerbose,
-            Version = 1,
-            PayloadBytes = MakeMethodDCStartVerbosePayload(1, 2, 1000, 100, 0x06000001, 0, "T", "M", "sig", 8)
-        };
+        byte[] foreignPayload = MakeMethodDCStartVerbosePayload(1, 2, 1000, 100, 0x06000001, 0, "T", "M", "sig", 8);
+
+        EventRecord foreignEvent = new EventRecord("Some-Other-Provider", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackId: 0, fields: null, foreignPayload, payloadOffset: 0, foreignPayload.Length);
 
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord> { foreignEvent }, pointerSize: 8);
 
@@ -147,13 +143,9 @@ public class MethodSymbolTableTests
 
     private static EventRecord MakeRundownEvent(long startAddress, int size, string name)
     {
-        return new EventRecord
-        {
-            ProviderName = "Microsoft-Windows-DotNETRuntimeRundown",
-            EventId = ClrRundownEventIds.MethodDCStartVerbose,
-            Version = 1,
-            PayloadBytes = MakeMethodDCStartVerbosePayload(1, 2, startAddress, size, 0x06000001, 0, "", name, "sig", 8)
-        };
+        byte[] payload = MakeMethodDCStartVerbosePayload(1, 2, startAddress, size, 0x06000001, 0, "", name, "sig", 8);
+
+        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackId: 0, fields: null, payload, payloadOffset: 0, payload.Length);
     }
 
     [Fact]

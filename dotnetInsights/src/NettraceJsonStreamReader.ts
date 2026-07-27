@@ -1,53 +1,68 @@
+import * as fs from "fs";
+
 import { adaptivelyBucketTicks } from "./AllocationTicksBucketer";
-import { parseTicksFile } from "./TicksFastParser";
 
-// nettraceParser's raw JSON output can exceed Node's own maximum string
-// length for a heavily-allocating capture (a real 5-minute capture with
-// ~12M allocation ticks produced a 696MB file, against a ~537M-character
-// V8 string ceiling) - reading it via fs.readFileSync(...).toString() +
-// JSON.parse(...) (DotnetInsightsNettraceEditor.ts's previous approach)
-// throws "Cannot create a string longer than 0x1fffffe8 characters",
-// which was being silently swallowed and reported to the user as a
-// generic "corrupted or incorrect type" error, masking the real cause.
+// nettraceParser's raw JSON output used to be able to exceed Node's own
+// maximum string length for a heavily-allocating capture (a real 5-minute
+// capture with ~12M allocation ticks produced a 696MB file, against a
+// ~537M-character V8 string ceiling) - reading it via
+// fs.readFileSync(...).toString() + JSON.parse(...)
+// (DotnetInsightsNettraceEditor.ts's original approach) threw "Cannot
+// create a string longer than 0x1fffffe8 characters", which was being
+// silently swallowed and reported to the user as a generic "corrupted or
+// incorrect type" error, masking the real cause.
 //
-// Two earlier approaches were tried and measured against a real
-// 696MB/11.9M-tick capture before landing on TicksFastParser.ts's
-// hand-rolled scanner:
-//   1. stream-json's "idiomatic" chain([createReadStream, parser(), ...])
-//      + .on('data', ...), two passes (ignore the ticks array while
-//      assembling everything else, then read it) - ~54s, >55% of it in
-//      stream-chain's generic per-token dispatch machinery.
-//   2. stream-json's own documented "fast path", parseFile()+pipe()/
-//      drain() with the work as an in-pipe stage instead of an external
-//      event listener - ~52s, a marginal ~5% improvement. Profiling
-//      showed the same dispatch machinery still dominant either way: the
-//      real cost is tokenizing ~72M JSON tokens per pass through a
-//      general-purpose recursive tokenizer, not which driver API sits on
-//      top of it, and two passes doubles that.
-// TicksFastParser.ts replaces both with a single pass that never
-// generically tokenizes the ticks array at all - see its own header
-// comment for why that's safe here (nettraceParser is the only producer
-// of this exact, fixed shape).
+// That problem no longer exists: AllocationJsonExporter.cs's WriteTicks now
+// writes the allocation-tick array (the thing that was 571MB of the 696MB
+// total) to a separate binary sidecar file next to the JSON instead of
+// inline, dropping the JSON itself to under 100MB even for the same
+// capture - comfortably under the V8 string limit again, and fast enough
+// to read as a single string + JSON.parse() without a streaming parser.
+// (This file previously contained a hand-rolled streaming JSON scanner,
+// TicksFastParser.ts, built specifically to avoid materializing that now-
+// gone giant inline array; it's no longer needed and was deleted along
+// with this file's old approach.)
+//
+// The binary format itself is documented in AllocationJsonExporter.cs's
+// WriteTicks: fixed 12-byte records (4-byte little-endian int32
+// RelativeMSec in whole milliseconds, 8-byte little-endian int64
+// AllocationAmount), record count and size mirrored into the JSON's
+// "ticks" descriptor object so this reader never has to guess or hardcode
+// them independently of the writer.
 export async function readNettraceJson(jsonFilePath: string): Promise<any> {
-    const rawTicks: Array<{ RelativeMSec: number; AllocationAmount: number }> = [];
+    const mainDocument = JSON.parse(fs.readFileSync(jsonFilePath).toString());
 
-    const { prefix, suffix } = await parseTicksFile(jsonFilePath, (relativeMSec, allocationAmount) => {
-        rawTicks.push({ RelativeMSec: relativeMSec, AllocationAmount: allocationAmount });
-    });
-
-    // prefix ends with the ticks array's opening "[" and suffix begins
-    // with its closing "]", so concatenating them directly reconstructs
-    // valid JSON with an empty ticks array - collecting all raw ticks
-    // into a plain array first and only then bucketing (rather than
-    // bucketing inline while scanning) is deliberate: simple array
-    // pushes are cheap regardless of count, and this reuses
-    // AllocationTicksBucketer.ts's already-tested adaptive bucketing
-    // instead of a third reimplementation of the same logic.
-    const mainDocument = JSON.parse(prefix + suffix);
-
-    if (mainDocument?.["allocationSummary"]) {
-        mainDocument["allocationSummary"]["ticks"] = adaptivelyBucketTicks(rawTicks);
+    const allocationSummary = mainDocument?.["allocationSummary"];
+    if (allocationSummary && allocationSummary["ticks"] && typeof allocationSummary["ticks"] === "object") {
+        const ticksDescriptor = allocationSummary["ticks"];
+        const ticksBinaryPath = ticksBinaryPathFor(jsonFilePath);
+        const rawTicks = readTicksBinary(ticksBinaryPath, ticksDescriptor["recordCount"], ticksDescriptor["bytesPerRecord"]);
+        allocationSummary["ticks"] = adaptivelyBucketTicks(rawTicks);
     }
 
     return mainDocument;
+}
+
+// Mirrors Program.cs's own Path.ChangeExtension(jsonOutputPath, ".ticks.bin")
+// convention exactly - the sidecar's path is never embedded in the JSON
+// itself (see WriteTicks's own comment), just derivable the same way by
+// whoever already knows jsonFilePath.
+export function ticksBinaryPathFor(jsonFilePath: string): string {
+    const lastDot = jsonFilePath.lastIndexOf(".");
+    const withoutExtension = lastDot === -1 ? jsonFilePath : jsonFilePath.substring(0, lastDot);
+    return `${withoutExtension}.ticks.bin`;
+}
+
+function readTicksBinary(ticksBinaryPath: string, recordCount: number, bytesPerRecord: number): Array<{ RelativeMSec: number; AllocationAmount: number }> {
+    const buffer = fs.readFileSync(ticksBinaryPath);
+    const ticks: Array<{ RelativeMSec: number; AllocationAmount: number }> = new Array(recordCount);
+
+    for (let recordIndex = 0; recordIndex < recordCount; ++recordIndex) {
+        const offset = recordIndex * bytesPerRecord;
+        const relativeMSec = buffer.readInt32LE(offset);
+        const allocationAmount = buffer.readBigInt64LE(offset + 4);
+        ticks[recordIndex] = { RelativeMSec: relativeMSec, AllocationAmount: Number(allocationAmount) };
+    }
+
+    return ticks;
 }

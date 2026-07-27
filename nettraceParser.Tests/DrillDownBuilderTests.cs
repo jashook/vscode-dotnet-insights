@@ -35,14 +35,7 @@ public class DrillDownBuilderTests
 {
     private static AllocationEvent MakeEvent(string typeName, long amount, double relativeMSec, int stackId)
     {
-        return new AllocationEvent
-        {
-            TypeName = typeName,
-            AllocationAmount = amount,
-            AllocationKind = GCAllocationKind.Small,
-            RelativeMSec = relativeMSec,
-            StackId = stackId
-        };
+        return new AllocationEvent(default, relativeMSec, amount, GCAllocationKind.Small, typeName, heapIndex: 0, stackId: stackId);
     }
 
     // AllocationSummaryBuilder.Write streams directly to a Utf8JsonWriter
@@ -51,30 +44,41 @@ public class DrillDownBuilderTests
     // tests can keep asserting against the real output shape.
     private static JsonObject Build(List<AllocationEvent> events, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
     {
-        using (MemoryStream stream = new MemoryStream())
-        {
-            using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
-            {
-                AllocationSummaryBuilder.Write(writer, events, stacksById, symbolTable);
-            }
+        // ticks is now a binary sidecar file (see AllocationJsonExporter.cs's
+        // WriteTicks) - this file's tests don't assert on ticks directly, so
+        // the temp file just needs a valid path to write to and cleanup.
+        string ticksBinaryPath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".bin");
 
-            return (JsonObject)JsonNode.Parse(stream.ToArray());
+        try
+        {
+            using (MemoryStream stream = new MemoryStream())
+            {
+                using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
+                {
+                    AllocationSummaryBuilder.Write(writer, events, stacksById, symbolTable, ticksBinaryPath);
+                }
+
+                return (JsonObject)JsonNode.Parse(stream.ToArray());
+            }
+        }
+        finally
+        {
+            if (File.Exists(ticksBinaryPath))
+            {
+                File.Delete(ticksBinaryPath);
+            }
         }
     }
 
     private static EventRecord MakeRundownEvent(long startAddress, int size, string name)
     {
-        return new EventRecord
-        {
-            ProviderName = "Microsoft-Windows-DotNETRuntimeRundown",
-            EventId = ClrRundownEventIds.MethodDCStartVerbose,
-            Version = 1,
-            PayloadBytes = new PayloadBuilder()
-                .WriteAddress(1, 8).WriteAddress(2, 8).WriteAddress(startAddress, 8)
-                .WriteInt32(size).WriteInt32(0x06000001).WriteInt32(0)
-                .WriteUnicodeString("").WriteUnicodeString(name).WriteUnicodeString("sig")
-                .ToArray()
-        };
+        byte[] payload = new PayloadBuilder()
+            .WriteAddress(1, 8).WriteAddress(2, 8).WriteAddress(startAddress, 8)
+            .WriteInt32(size).WriteInt32(0x06000001).WriteInt32(0)
+            .WriteUnicodeString("").WriteUnicodeString(name).WriteUnicodeString("sig")
+            .ToArray();
+
+        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackId: 0, fields: null, payload, payloadOffset: 0, payload.Length);
     }
 
     [Fact]

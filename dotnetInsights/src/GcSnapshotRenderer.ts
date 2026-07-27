@@ -106,9 +106,16 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     var allocationAmountGen2 = computeAllocationAmountStats(gcs, 2);
     var allocationAmountLOH = computeAllocationAmountStats(gcs, 3);
 
+    // dataValue is the single unit label for every row (Total/Largest/
+    // Smallest/Average/Median) in every one of these tiles. Both
+    // thresholds below used to convert only index [0] (Total) on the
+    // second pass, while updating a *separate* label (totalTotalValue)
+    // that only Total's row read - so a large enough capture could show
+    // "Total: 1417.77 gb" right next to "Average: 425.75 mb" despite both
+    // numbers being individually correct (425.75 MB * 3410 GCs / 1024 ==
+    // 1417.77 GB), which reads as wildly inconsistent at a glance. All
+    // five fields now scale together so a tile is always in one unit.
     var dataValue = "kb";
-
-    var totalTotalValue = "mb";
 
     if (allocationAmountTotal[1][0].toFixed(2).length > 8) {
         dataValue = "mb";
@@ -145,14 +152,42 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     }
 
     if (allocationAmountTotal[1][0].toFixed(2).length > 8) {
-        totalTotalValue = "gb";
+        dataValue = "gb";
 
         allocationAmountTotal[1][0] /= 1024;
+        allocationAmountTotal[1][1] /= 1024;
+        allocationAmountTotal[1][2] /= 1024;
+        allocationAmountTotal[1][3] /= 1024;
+        allocationAmountTotal[1][4] /= 1024;
+
         allocationAmountGen0[1][0] /= 1024;
+        allocationAmountGen0[1][1] /= 1024;
+        allocationAmountGen0[1][2] /= 1024;
+        allocationAmountGen0[1][3] /= 1024;
+        allocationAmountGen0[1][4] /= 1024;
+
         allocationAmountGen1[1][0] /= 1024;
+        allocationAmountGen1[1][1] /= 1024;
+        allocationAmountGen1[1][2] /= 1024;
+        allocationAmountGen1[1][3] /= 1024;
+        allocationAmountGen1[1][4] /= 1024;
+
         allocationAmountGen2[1][0] /= 1024;
+        allocationAmountGen2[1][1] /= 1024;
+        allocationAmountGen2[1][2] /= 1024;
+        allocationAmountGen2[1][3] /= 1024;
+        allocationAmountGen2[1][4] /= 1024;
+
         allocationAmountLOH[1][0] /= 1024;
+        allocationAmountLOH[1][1] /= 1024;
+        allocationAmountLOH[1][2] /= 1024;
+        allocationAmountLOH[1][3] /= 1024;
+        allocationAmountLOH[1][4] /= 1024;
     }
+
+    // Kept as a separate name for the template below (Total's own row used
+    // a distinct variable historically) but always equal to dataValue now.
+    var totalTotalValue = dataValue;
 
     var allocTotal = allocationAmountTotal[1][0].toFixed(2);
     var allocAverage = allocationAmountTotal[1][1].toFixed(2);

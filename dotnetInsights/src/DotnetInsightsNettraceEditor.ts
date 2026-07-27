@@ -8,7 +8,7 @@ import * as vscode from 'vscode';
 import { DotnetInsights } from "./dotnetInsights";
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
 import { renderGcSnapshotWebview } from "./GcSnapshotRenderer";
-import { readNettraceJson } from "./NettraceJsonStreamReader";
+import { readNettraceJson, ticksBinaryPathFor } from "./NettraceJsonStreamReader";
 
 // Opens a .nettrace file, shells out to the nettraceParser tool to decode it
 // into the same JSON shape DotnetInsightsGcSnapshotEditor's XML path produces
@@ -99,16 +99,20 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
                 }
 
                 // A plain fs.readFileSync(...).toString() + JSON.parse(...)
-                // here previously threw "Cannot create a string longer than
+                // used to throw "Cannot create a string longer than
                 // 0x1fffffe8 characters" for a heavily-allocating capture's
                 // output (696MB in one real case) - Node's own maximum
-                // string length, not a slowness problem. See
-                // NettraceJsonStreamReader.ts for the streaming replacement
-                // that never materializes the full file as one string.
+                // string length. That's no longer a concern: nettraceParser
+                // now writes the allocation-tick array as a separate binary
+                // sidecar file instead of inline JSON (see
+                // AllocationJsonExporter.cs's WriteTicks), which drops the
+                // JSON itself under 100MB even for the same capture - see
+                // NettraceJsonStreamReader.ts for the read side of both files.
                 const readStartMs = Date.now();
+                const ticksBinaryPath = ticksBinaryPathFor(jsonOutputPath);
 
                 readNettraceJson(jsonOutputPath).then((parsed) => {
-                    this.insights.outputChannel.appendLine(`nettraceParser: streamed JSON read took ${Date.now() - readStartMs}ms`);
+                    this.insights.outputChannel.appendLine(`nettraceParser: JSON + ticks binary read took ${Date.now() - readStartMs}ms`);
                     resolve(parsed);
                 }).catch((e: any) => {
                     // Logged in full this time - the previous approach
@@ -124,6 +128,16 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
                     }
                     catch (e) {
                         // Best effort cleanup.
+                    }
+
+                    try {
+                        fs.unlinkSync(ticksBinaryPath);
+                    }
+                    catch (e) {
+                        // Best effort cleanup - won't exist for a .gcinfo/XML
+                        // source (that path never calls this function at
+                        // all) or if nettraceParser itself failed before
+                        // writing anything.
                     }
                 });
             });

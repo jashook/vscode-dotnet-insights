@@ -4,10 +4,14 @@
 // Notes:
 // The first concrete consumer of the generic EventRecord stream: filters the
 // CLR runtime provider's GC events and correlates GCStart/GCEnd/GCHeapStats/
-// GCGlobalHeapHistory (matched by their shared Count/Id field, exactly how
-// gcEventListener's EventPipeBasedListener.PublishClient correlates the same
-// events from TraceEvent's live callbacks) into one GcEvent per completed
-// collection.
+// GCPerHeapHistory/GCGlobalHeapHistory into one GcEvent per completed
+// collection. Only GCStart/GCEnd carry an explicit correlation id (Count) -
+// GCHeapStats/GCPerHeapHistory/GCGlobalHeapHistory don't, and are instead
+// resolved via a per-generation pending queue keyed by GCGlobalHeapHistory's
+// own CondemnedGeneration field. See Project's comment for why (verified
+// against a real 8-heap Server GC capture: neither "most recently started
+// GC" nor a single shared FIFO queue disambiguate a slow background gen2
+// GC's bookkeeping from overlapping foreground gen0/1 GCs correctly).
 //
 // Adding a future event type (JIT, a different provider, whatever comes
 // next) means writing a new sibling projector against the same EventRecord
@@ -21,6 +25,7 @@ namespace DotnetInsights.NetTrace.Gc {
 
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -79,26 +84,111 @@ public static class GcEventProjector
     // come from data already proven correct: SyncTimeUtc matched the real
     // capture time to the second, and per-event QPC deltas are internally
     // consistent - only the header's own SyncTimeQPC field is suspect).
-    public static List<GcEvent> Project(IEnumerable<EventRecord> events, int pointerSize, long qpcFrequency, DateTime referenceUtc, long referenceQpc)
+    // How many concurrently in-flight GCs of one generation (started, no
+    // GlobalHeapHistory seen yet) a per-generation pending queue tolerates
+    // before assuming the oldest one is never going to get one (a dropped
+    // event) and evicting it rather than blocking that generation's future
+    // heap history behind it forever. Purely a "never block forever" safety
+    // valve - a queue of pending ints is negligible memory regardless of
+    // size, so this stays generous.
+    private const int MaxPendingHeapHistoryGcs = 1000;
+
+    public static List<GcEvent> Project(List<EventRecord> events, int pointerSize, long qpcFrequency, DateTime referenceUtc, long referenceQpc)
     {
         Dictionary<int, GcEvent> gcsById = new Dictionary<int, GcEvent>();
         Dictionary<int, long> startTimeStampById = new Dictionary<int, long>();
 
-        // GCHeapStats/GCGlobalHeapHistory/GCPerHeapHistory don't carry the GC's own
-        // Count/Id - empirically (verified against a real capture) they're emitted
-        // as part of finishing up a collection's bookkeeping, which can land either
-        // side of GCEnd on the wire. So "most recently started GC" is the reliable
-        // correlation key, not "most recently started and not yet ended".
-        int mostRecentlyStartedGcId = -1;
+        // Events are NOT guaranteed to arrive in this list in true
+        // chronological (QPC) order - verified against a real Server GC
+        // capture (8 heaps) where a GC's own GCStart appeared *after*
+        // GCEnd/GCHeapStats events for a later-numbered GC with an earlier
+        // true relative QPC. EventPipe writes per-thread/per-buffer event
+        // blocks that get interleaved in the file by flush order, not
+        // global time order - AllocationJsonExporter.cs's WriteTicks
+        // already discovered the same thing and sorts defensively before
+        // writing. Every correlation heuristic below assumes true
+        // chronological order, so the GC-relevant subset is sorted here
+        // first (a stable sort - ties broken by original position - since
+        // same-QPC events should keep their relative wire order).
+        //
+        // Filtered to just the 5 GC-relevant event IDs before sorting
+        // (not all ~15M events in a busy capture, most of which are
+        // AllocationTick) so the sort itself stays cheap - a real 5-minute
+        // capture with millions of allocation ticks had only ~109,000
+        // GC-relevant events.
+        // (EventRecord, int) is a ~78-byte value tuple - without a capacity
+        // hint this list regrows via doubling as matching events are added,
+        // and each doubling now copies a much larger element than when
+        // EventRecord was an 8-byte class reference. events.Count / 128 is a
+        // rough estimate matching this file's own documented ratio above
+        // (~109,000 GC-relevant events out of millions of total events on a
+        // real 5-minute capture) - not exact for every capture, but close
+        // enough to skip most of the early resizes.
+        List<(EventRecord Record, int OriginalIndex)> gcRelevantEvents = new List<(EventRecord, int)>(events.Count / 128);
 
-        foreach (EventRecord record in events)
+        // EventRecord is a struct (~70 bytes) - events is always the whole
+        // capture's event list (14.8M+ for a real 5-minute capture), so this
+        // scan is iterated as a Span over the List<T>'s backing array (no
+        // per-element copy through a boxed/virtual IEnumerable<T> enumerator,
+        // which measurably regressed once EventRecord stopped being a cheap
+        // 8-byte class reference) rather than a plain `foreach`.
+        Span<EventRecord> eventsSpan = CollectionsMarshal.AsSpan(events);
+        for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
+            ref readonly EventRecord record = ref eventsSpan[eventIndex];
+
             if (record.ProviderName != ClrProviderName)
             {
                 continue;
             }
 
-            PayloadReader reader = new PayloadReader(record.PayloadBytes, pointerSize);
+            if (record.EventId == ClrGcEventIds.GCStart || record.EventId == ClrGcEventIds.GCEnd ||
+                record.EventId == ClrGcEventIds.GCHeapStats || record.EventId == ClrGcEventIds.GCPerHeapHistory ||
+                record.EventId == ClrGcEventIds.GCGlobalHeapHistory)
+            {
+                gcRelevantEvents.Add((record, eventIndex));
+            }
+        }
+
+        gcRelevantEvents.Sort((left, right) =>
+        {
+            int comparison = left.Record.TimeStampRelativeQPC.CompareTo(right.Record.TimeStampRelativeQPC);
+            return comparison != 0 ? comparison : left.OriginalIndex.CompareTo(right.OriginalIndex);
+        });
+
+        // GCHeapStats/GCGlobalHeapHistory/GCPerHeapHistory don't carry the GC's
+        // own Count/Id, so they must be correlated by inference. Two earlier
+        // approaches failed against a real 8-heap Server GC capture:
+        //   1. A single "most recently started GC" global - breaks the
+        //      instant a background/gen2 GC's bookkeeping is still pending
+        //      when any other GC starts.
+        //   2. A single global FIFO of pending GCs (oldest-pending gets the
+        //      next heap-history event) - better, but still wrong: tracing
+        //      the actual event order showed a GC's own GlobalHeapHistory/
+        //      HeapStats can arrive attributed to the *previous* GC's still-
+        //      open slot, because GCEnd does not reliably close out a GC's
+        //      bookkeeping window - only a fundamentally different signal
+        //      does (see below). A single FIFO has no way to tell "this
+        //      batch is for a different GC" apart from "this batch is late".
+        //
+        // Fix: GCGlobalHeapHistory's own payload carries CondemnedGeneration
+        // - which generation this specific accounting batch belongs to.
+        // Tracking pending GCs *per generation* (keyed by GCStart's Depth)
+        // and using CondemnedGeneration to pick the right generation's
+        // queue when GlobalHeapHistory arrives resolves the ambiguity a
+        // single shared queue/pointer can't: a slow background gen2 GC and
+        // fast foreground gen0/1 GCs no longer compete for the same slot.
+        // GlobalHeapHistory reliably precedes that GC's own PerHeapHistory/
+        // HeapStats in the wire order (verified against the real capture),
+        // so resolving + dequeuing on GlobalHeapHistory and caching the
+        // result as "the current batch's target" correctly routes the
+        // PerHeapHistory/HeapStats events that immediately follow it.
+        Dictionary<int, Queue<int>> pendingByGeneration = new Dictionary<int, Queue<int>>();
+        int currentBatchGcId = -1;
+
+        foreach ((EventRecord record, int _) in gcRelevantEvents)
+        {
+            PayloadReader reader = new PayloadReader(record.PayloadBuffer, record.PayloadOffset, record.PayloadLength, pointerSize);
 
             if (record.EventId == ClrGcEventIds.GCStart)
             {
@@ -118,7 +208,15 @@ public static class GcEventProjector
 
                 gcsById[start.Count] = gcEvent;
                 startTimeStampById[start.Count] = record.TimeStampRelativeQPC;
-                mostRecentlyStartedGcId = start.Count;
+
+                Queue<int> generationQueue;
+                if (!pendingByGeneration.TryGetValue(start.Depth, out generationQueue))
+                {
+                    generationQueue = new Queue<int>();
+                    pendingByGeneration[start.Depth] = generationQueue;
+                }
+
+                generationQueue.Enqueue(start.Count);
             }
             else if (record.EventId == ClrGcEventIds.GCEnd)
             {
@@ -152,7 +250,7 @@ public static class GcEventProjector
                 ClrGcHeapStats heapStats = ClrGcHeapStats.Decode(reader, record.Version);
 
                 GcEvent gcEvent;
-                if (gcsById.TryGetValue(mostRecentlyStartedGcId, out gcEvent))
+                if (currentBatchGcId >= 0 && gcsById.TryGetValue(currentBatchGcId, out gcEvent))
                 {
                     gcEvent.HasHeapStats = true;
                     gcEvent.TotalHeapSize = heapStats.TotalHeapSize;
@@ -175,7 +273,7 @@ public static class GcEventProjector
                 ClrGcHeap heap = ClrGcHeap.Decode(reader, record.Version);
 
                 GcEvent gcEvent;
-                if (heap != null && gcsById.TryGetValue(mostRecentlyStartedGcId, out gcEvent))
+                if (heap != null && currentBatchGcId >= 0 && gcsById.TryGetValue(currentBatchGcId, out gcEvent))
                 {
                     for (int heapIndex = gcEvent.Heaps.Count - 1; heapIndex >= 0; --heapIndex)
                     {
@@ -192,8 +290,10 @@ public static class GcEventProjector
             {
                 ClrGcGlobalHeapHistory globalHistory = ClrGcGlobalHeapHistory.Decode(reader, record.Version);
 
-                GcEvent gcEvent;
-                if (gcsById.TryGetValue(mostRecentlyStartedGcId, out gcEvent))
+                GcEvent gcEvent = ResolveNextInGeneration(pendingByGeneration, gcsById, globalHistory.CondemnedGeneration);
+                currentBatchGcId = gcEvent != null ? gcEvent.Id : -1;
+
+                if (gcEvent != null)
                 {
                     gcEvent.HasGlobalHeapHistory = true;
                     gcEvent.NumHeaps = globalHistory.NumHeaps;
@@ -217,7 +317,45 @@ public static class GcEventProjector
         }
 
         completed.Sort((left, right) => left.Id.CompareTo(right.Id));
+
         return completed;
+    }
+
+    // Resolves and immediately dequeues the oldest pending GC of the given
+    // generation (evicting stale front entries first - an id enqueued at
+    // GCStart that either never resolves in gcsById, which shouldn't
+    // happen, or has sat at the front of its generation's queue longer
+    // than MaxPendingHeapHistoryGcs allows, implying its own
+    // GlobalHeapHistory was dropped rather than merely delayed). Called
+    // once per GCGlobalHeapHistory event - GCPerHeapHistory/GCHeapStats
+    // don't carry a generation of their own, so they aren't resolved
+    // independently; they route to whatever this call most recently
+    // returned (see currentBatchGcId in Project).
+    private static GcEvent ResolveNextInGeneration(Dictionary<int, Queue<int>> pendingByGeneration, Dictionary<int, GcEvent> gcsById, int generation)
+    {
+        Queue<int> generationQueue;
+        if (!pendingByGeneration.TryGetValue(generation, out generationQueue))
+        {
+            return null;
+        }
+
+        while (generationQueue.Count > MaxPendingHeapHistoryGcs)
+        {
+            generationQueue.Dequeue();
+        }
+
+        while (generationQueue.Count > 0)
+        {
+            int candidateId = generationQueue.Dequeue();
+
+            GcEvent candidate;
+            if (gcsById.TryGetValue(candidateId, out candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return null;
     }
 }
 

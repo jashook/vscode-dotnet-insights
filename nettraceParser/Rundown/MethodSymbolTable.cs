@@ -16,7 +16,9 @@ namespace DotnetInsights.NetTrace.Rundown {
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 
 using DotnetInsights.NetTrace.Gc;
 
@@ -41,18 +43,27 @@ public class MethodSymbolTable
         this.sortedRanges = sortedRanges;
     }
 
-    public static MethodSymbolTable Build(IEnumerable<EventRecord> events, int pointerSize)
+    public static MethodSymbolTable Build(List<EventRecord> events, int pointerSize)
     {
         List<MethodRange> ranges = new List<MethodRange>();
 
-        foreach (EventRecord record in events)
+        // EventRecord is a struct (~70 bytes) - events is the whole capture's
+        // event list (14.8M+ for a real 5-minute capture), so this is
+        // iterated as a Span over the List<T>'s backing array rather than a
+        // plain `foreach` - see GcEventProjector.Project's own comment on
+        // why a boxed/virtual IEnumerable<T> enumerator regressed here once
+        // EventRecord stopped being a cheap 8-byte class reference.
+        Span<EventRecord> eventsSpan = CollectionsMarshal.AsSpan(events);
+        for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
+            ref readonly EventRecord record = ref eventsSpan[eventIndex];
+
             if (record.ProviderName != ClrRundownProviderName || record.EventId != ClrRundownEventIds.MethodDCStartVerbose)
             {
                 continue;
             }
 
-            PayloadReader reader = new PayloadReader(record.PayloadBytes, pointerSize);
+            PayloadReader reader = new PayloadReader(record.PayloadBuffer, record.PayloadOffset, record.PayloadLength, pointerSize);
             ClrMethodRecord method = ClrMethodRecord.Decode(reader);
 
             if (method == null || method.MethodSize <= 0)

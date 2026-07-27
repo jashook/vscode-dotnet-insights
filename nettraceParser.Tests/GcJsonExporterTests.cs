@@ -43,10 +43,15 @@ public class GcJsonExporterTests
     private static JsonObject WriteAndParse(List<GcEvent> gcEvents)
     {
         string outputPath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".json");
+        // ticks is now a binary sidecar file (see AllocationJsonExporter.cs's
+        // WriteTicks) - this file's tests don't assert on ticks directly
+        // (allocationEvents is always empty here), so the temp file just
+        // needs a valid path to write to and cleanup.
+        string ticksBinaryPath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".bin");
 
         try
         {
-            GcJsonExporter.WriteToFile(outputPath, gcEvents, new List<AllocationEvent>(), new Dictionary<int, long[]>(), MethodSymbolTable.Build(new List<EventRecord>(), 8), processName: "test-process");
+            GcJsonExporter.WriteToFile(outputPath, gcEvents, new List<AllocationEvent>(), new Dictionary<int, long[]>(), MethodSymbolTable.Build(new List<EventRecord>(), 8), processName: "test-process", ticksBinaryPath);
             string json = File.ReadAllText(outputPath);
             return (JsonObject)JsonNode.Parse(json);
         }
@@ -55,6 +60,11 @@ public class GcJsonExporterTests
             if (File.Exists(outputPath))
             {
                 File.Delete(outputPath);
+            }
+
+            if (File.Exists(ticksBinaryPath))
+            {
+                File.Delete(ticksBinaryPath);
             }
         }
     }

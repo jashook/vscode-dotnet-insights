@@ -23,22 +23,45 @@ namespace DotnetInsights.NetTrace.Gc {
 
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-public class AllocationEvent
+// A readonly struct, not a class: AllocationEventProjector.Project constructs
+// one per allocation tick - 11.9M times for a real 5-minute capture, all held
+// in one List<AllocationEvent> for the rest of the program's life (unlike
+// PayloadReader/ClrGcAllocationTick, which are short-lived per-call values).
+// At ~48 bytes (over the struct-passing convention's 16-byte threshold),
+// AllocationJsonExporter.cs's several full passes over that list should
+// index it directly (list[i], or a `foreach` binding a `ref readonly` where
+// the compiler allows it) rather than copying elements out into locals
+// repeatedly. No call site relies on reference semantics (no null checks,
+// no identity comparisons), so this is a drop-in change that trades 11.9M+
+// heap allocations for one contiguous array's worth of stack-sized values.
+public readonly struct AllocationEvent
 {
-    public DateTime Timestamp;
-    public double RelativeMSec;
-    public long AllocationAmount;
-    public GCAllocationKind AllocationKind;
-    public string TypeName;
-    public int HeapIndex;
+    public readonly DateTime Timestamp;
+    public readonly double RelativeMSec;
+    public readonly long AllocationAmount;
+    public readonly GCAllocationKind AllocationKind;
+    public readonly string TypeName;
+    public readonly int HeapIndex;
     // Resolves via Rundown/MethodSymbolTable.cs against Blocks/StackBlock.cs's
     // decoded stacks (see Gc/DrillDownBuilder.cs) - 0 when the capture
     // didn't stack-walk this particular tick.
-    public int StackId;
+    public readonly int StackId;
+
+    public AllocationEvent(DateTime timestamp, double relativeMSec, long allocationAmount, GCAllocationKind allocationKind, string typeName, int heapIndex, int stackId)
+    {
+        this.Timestamp = timestamp;
+        this.RelativeMSec = relativeMSec;
+        this.AllocationAmount = allocationAmount;
+        this.AllocationKind = allocationKind;
+        this.TypeName = typeName;
+        this.HeapIndex = heapIndex;
+        this.StackId = stackId;
+    }
 }
 
 public static class AllocationEventProjector
@@ -49,12 +72,38 @@ public static class AllocationEventProjector
     // shape as GcEventProjector.Project - same reasoning applies (the
     // trace's own first event is the QPC anchor, not NettraceHeader's
     // SyncTimeQPC; see Program.cs's referenceQpc comment).
-    public static List<AllocationEvent> Project(IEnumerable<EventRecord> events, int pointerSize, long qpcFrequency, DateTime referenceUtc, long referenceQpc)
+    public static List<AllocationEvent> Project(List<EventRecord> events, int pointerSize, long qpcFrequency, DateTime referenceUtc, long referenceQpc)
     {
-        List<AllocationEvent> result = new List<AllocationEvent>();
+        // AllocationEvent is a struct (~48 bytes) - without a capacity hint
+        // this list regrows via doubling as ticks are decoded (11.9M of
+        // 14.8M total events on a real 5-minute capture are allocation
+        // ticks - a much higher fraction than GC-relevant events), and each
+        // doubling copies a much larger element than the old 8-byte class
+        // reference, plus a write-barrier-tracked copy since AllocationEvent
+        // carries a TypeName string reference. events.Count / 2 is a
+        // conservative estimate (real ratio measured at ~80%) that still
+        // avoids most of the early resizes without grossly over-allocating
+        // for captures with fewer ticks.
+        List<AllocationEvent> result = new List<AllocationEvent>(events.Count / 2);
 
-        foreach (EventRecord record in events)
+        // Shared across every tick decoded below - see ClrGcAllocationTick.
+        // Decode's own comment: a real capture's ticks typically span only
+        // a handful of distinct types, so this turns millions of redundant
+        // Encoding.Unicode.GetString decodes into a handful.
+        Dictionary<long, string> typeNameCache = new Dictionary<long, string>();
+
+        // EventRecord is a struct (~70 bytes) - events is the whole capture's
+        // event list (14.8M+ for a real 5-minute capture), so this is
+        // iterated as a Span over the List<T>'s backing array rather than a
+        // plain `foreach`, matching GcEventProjector.Project's own reasoning
+        // (a boxed/virtual IEnumerable<T> enumerator copying a large struct
+        // per element measurably regressed once EventRecord stopped being a
+        // cheap 8-byte class reference).
+        Span<EventRecord> eventsSpan = CollectionsMarshal.AsSpan(events);
+        for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
+            ref readonly EventRecord record = ref eventsSpan[eventIndex];
+
             if (record.ProviderName != ClrProviderName)
             {
                 continue;
@@ -65,29 +114,20 @@ public static class AllocationEventProjector
                 continue;
             }
 
-            PayloadReader reader = new PayloadReader(record.PayloadBytes, pointerSize);
-            ClrGcAllocationTick tick = ClrGcAllocationTick.Decode(reader, record.Version);
+            PayloadReader reader = new PayloadReader(record.PayloadBuffer, record.PayloadOffset, record.PayloadLength, pointerSize);
+            ClrGcAllocationTick tick = ClrGcAllocationTick.Decode(reader, record.Version, typeNameCache);
 
-            if (tick == null)
-            {
-                continue;
-            }
-
-            AllocationEvent allocationEvent = new AllocationEvent();
-            allocationEvent.AllocationAmount = tick.AllocationAmount64;
-            allocationEvent.AllocationKind = tick.AllocationKind;
-            allocationEvent.TypeName = tick.TypeName;
-            allocationEvent.HeapIndex = tick.HeapIndex;
-            allocationEvent.StackId = record.StackId;
+            DateTime timestamp = default;
+            double relativeMSec = default;
 
             if (qpcFrequency > 0)
             {
                 long qpcDelta = record.TimeStampRelativeQPC - referenceQpc;
-                allocationEvent.Timestamp = referenceUtc.AddSeconds(qpcDelta / (double)qpcFrequency);
-                allocationEvent.RelativeMSec = qpcDelta * 1000.0 / qpcFrequency;
+                timestamp = referenceUtc.AddSeconds(qpcDelta / (double)qpcFrequency);
+                relativeMSec = qpcDelta * 1000.0 / qpcFrequency;
             }
 
-            result.Add(allocationEvent);
+            result.Add(new AllocationEvent(timestamp, relativeMSec, tick.AllocationAmount64, tick.AllocationKind, tick.TypeName, tick.HeapIndex, record.StackId));
         }
 
         return result;

@@ -14,6 +14,8 @@
 // re-sorted by RelativeMSec regardless of input order.
 ////////////////////////////////////////////////////////////////////////////////
 
+using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
@@ -33,14 +35,7 @@ public class AllocationSummaryBuilderTests
 {
     private static AllocationEvent MakeEvent(string typeName, long amount, GCAllocationKind kind, double relativeMSec)
     {
-        return new AllocationEvent
-        {
-            TypeName = typeName,
-            AllocationAmount = amount,
-            AllocationKind = kind,
-            RelativeMSec = relativeMSec,
-            HeapIndex = 0
-        };
+        return new AllocationEvent(default, relativeMSec, amount, kind, typeName, heapIndex: 0, stackId: 0);
     }
 
     // These tests don't exercise stack resolution (see
@@ -60,16 +55,75 @@ public class AllocationSummaryBuilderTests
     // (see AllocationJsonExporter.cs for why) rather than returning a
     // JsonObject - write to an in-memory buffer and parse it back so these
     // tests can keep asserting against the real output shape.
+    //
+    // ticks is now a binary sidecar file (see WriteTicks), not inline JSON -
+    // this helper reads that file back and reconstructs the old
+    // [{RelativeMSec, AllocationAmount}, ...] JsonArray shape in place of
+    // the small {format, recordCount, bytesPerRecord} descriptor object
+    // Write() actually emits, so every existing ticks[...] assertion below
+    // needed no changes.
     private static JsonObject Build(List<AllocationEvent> events)
     {
+        string ticksBinaryPath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".bin");
+
+        try
+        {
+            JsonObject summary;
+
+            using (MemoryStream stream = new MemoryStream())
+            {
+                using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
+                {
+                    AllocationSummaryBuilder.Write(writer, events, EmptyStacksById(), EmptySymbolTable(), ticksBinaryPath);
+                }
+
+                summary = (JsonObject)JsonNode.Parse(stream.ToArray());
+            }
+
+            summary["ticks"] = ReadTicksBinaryAsJsonArray(ticksBinaryPath);
+            return summary;
+        }
+        finally
+        {
+            if (File.Exists(ticksBinaryPath))
+            {
+                File.Delete(ticksBinaryPath);
+            }
+        }
+    }
+
+    // Builds real JSON text and parses it back (rather than assembling a
+    // JsonArray directly via JsonValue.Create) so the resulting nodes are
+    // JsonElement-backed exactly like every other node in the parsed
+    // summary - matches existing assertions like ticks[0]["RelativeMSec"]
+    // .GetValue<double>() against a value this format stores as an integer,
+    // which a CLR-value-backed JsonValue<int> does not support widening for
+    // the same way a parsed JsonElement does.
+    private static JsonArray ReadTicksBinaryAsJsonArray(string ticksBinaryPath)
+    {
+        byte[] bytes = File.ReadAllBytes(ticksBinaryPath);
+
         using (MemoryStream stream = new MemoryStream())
         {
             using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
             {
-                AllocationSummaryBuilder.Write(writer, events, EmptyStacksById(), EmptySymbolTable());
+                writer.WriteStartArray();
+
+                for (int offset = 0; offset < bytes.Length; offset += 12)
+                {
+                    int relativeMSec = BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(offset, 4));
+                    long allocationAmount = BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(offset + 4, 8));
+
+                    writer.WriteStartObject();
+                    writer.WriteNumber("RelativeMSec", relativeMSec);
+                    writer.WriteNumber("AllocationAmount", allocationAmount);
+                    writer.WriteEndObject();
+                }
+
+                writer.WriteEndArray();
             }
 
-            return (JsonObject)JsonNode.Parse(stream.ToArray());
+            return (JsonArray)JsonNode.Parse(stream.ToArray());
         }
     }
 
@@ -161,6 +215,59 @@ public class AllocationSummaryBuilderTests
         Assert.Equal(20, ticks[0]["AllocationAmount"].GetValue<long>());
         Assert.Equal(20.0, ticks[1]["RelativeMSec"].GetValue<double>());
         Assert.Equal(30.0, ticks[2]["RelativeMSec"].GetValue<double>());
+    }
+
+    // Pins the wire format itself (WriteTicks writes a binary sidecar file,
+    // not inline JSON - see its own comment for why), bypassing the Build()
+    // helper's reconstruction so the raw {format, recordCount,
+    // bytesPerRecord} descriptor and the sidecar file's actual bytes are
+    // both checked directly, the same way PayloadReaderTests.cs/
+    // ClrGcTypesTests.cs pin other byte-level formats in this codebase.
+    [Fact]
+    public void Build_WritesTicksDescriptorAndMatchingBinarySidecarFile()
+    {
+        List<AllocationEvent> events = new List<AllocationEvent>
+        {
+            MakeEvent("A", 12345, GCAllocationKind.Small, 10.4),
+            MakeEvent("B", 67890, GCAllocationKind.Large, 20.6)
+        };
+
+        string ticksBinaryPath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".bin");
+
+        try
+        {
+            JsonObject summary;
+            using (MemoryStream stream = new MemoryStream())
+            {
+                using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
+                {
+                    AllocationSummaryBuilder.Write(writer, events, EmptyStacksById(), EmptySymbolTable(), ticksBinaryPath);
+                }
+
+                summary = (JsonObject)JsonNode.Parse(stream.ToArray());
+            }
+
+            JsonObject ticksDescriptor = summary["ticks"].AsObject();
+            Assert.Equal("binary-v1", ticksDescriptor["format"].GetValue<string>());
+            Assert.Equal(2, ticksDescriptor["recordCount"].GetValue<int>());
+            Assert.Equal(12, ticksDescriptor["bytesPerRecord"].GetValue<int>());
+
+            byte[] bytes = File.ReadAllBytes(ticksBinaryPath);
+            Assert.Equal(24, bytes.Length);
+
+            // Sorted ascending by RelativeMSec (10.4 rounds to 10, 20.6 rounds to 21).
+            Assert.Equal(10, BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(0, 4)));
+            Assert.Equal(12345L, BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(4, 8)));
+            Assert.Equal(21, BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan(12, 4)));
+            Assert.Equal(67890L, BinaryPrimitives.ReadInt64LittleEndian(bytes.AsSpan(16, 8)));
+        }
+        finally
+        {
+            if (File.Exists(ticksBinaryPath))
+            {
+                File.Delete(ticksBinaryPath);
+            }
+        }
     }
 
     [Fact]

@@ -37,7 +37,11 @@ namespace DotnetInsights.NetTrace.Gc {
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 
 using DotnetInsights.NetTrace.Rundown;
@@ -86,14 +90,34 @@ public static class AllocationSummaryBuilder
     // Writes the "allocationSummary" object (start-to-end, including its own
     // enclosing braces) directly to writer - callers just do
     // writer.WritePropertyName("allocationSummary"); AllocationSummaryBuilder.Write(writer, ...);
-    public static void Write(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
+    //
+    // ticksBinaryPath: see WriteTicks - the ticks array (11.9M+ entries on a
+    // real 5-minute capture) is written to this separate binary sidecar
+    // file instead of as JSON, with only a small descriptor object left in
+    // the JSON output pointing at it (by convention/caller-known path, not
+    // embedded - see Program.cs).
+    public static void Write(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable, string ticksBinaryPath)
     {
+        // Sorted once, in place, up front - every pass below (including
+        // WriteTicks, which used to make its own defensive copy+sort just
+        // for itself) is order-independent except WriteTicks' own output
+        // order, so one shared sort replaces what was previously a separate
+        // ~11.9M-element copy+sort pass late in this method. Also makes
+        // ComputeBucketCount below O(1) (the last element is now the max
+        // RelativeMSec) instead of an O(n) scan - and it no longer needs to
+        // run twice (once each for WriteTypeTimeline and
+        // BuildDrillDownAggregates).
+        allocationEvents.Sort(CompareByRelativeMSecAscending);
+
+        int bucketCount = allocationEvents.Count == 0 ? 0 : ComputeBucketIndex(allocationEvents[allocationEvents.Count - 1].RelativeMSec, int.MaxValue) + 1;
+
         Dictionary<string, TypeAllocStats> statsByType = new Dictionary<string, TypeAllocStats>();
         long totalSampledBytes = 0;
 
-        for (int eventIndex = 0; eventIndex < allocationEvents.Count; ++eventIndex)
+        Span<AllocationEvent> allocationEventsSpan = CollectionsMarshal.AsSpan(allocationEvents);
+        for (int eventIndex = 0; eventIndex < allocationEventsSpan.Length; ++eventIndex)
         {
-            AllocationEvent allocationEvent = allocationEvents[eventIndex];
+            ref readonly AllocationEvent allocationEvent = ref allocationEventsSpan[eventIndex];
             string typeName = string.IsNullOrEmpty(allocationEvent.TypeName) ? "<unknown>" : allocationEvent.TypeName;
 
             TypeAllocStats stats;
@@ -160,15 +184,15 @@ public static class AllocationSummaryBuilder
         writer.WriteEndArray();
 
         writer.WritePropertyName("ticks");
-        WriteTicks(writer, allocationEvents);
+        WriteTicks(writer, allocationEvents, ticksBinaryPath);
 
         writer.WritePropertyName("typeTimeline");
-        WriteTypeTimeline(writer, allocationEvents, sortedStats, chartTypeCount, columnIndexByType);
+        WriteTypeTimeline(writer, allocationEvents, sortedStats, chartTypeCount, columnIndexByType, bucketCount);
 
         // Single pass over every tick builds both drill-down shapes at once
         // (see BuildDrillDownAggregates) - cheaper than two independent
         // O(totalTicks) passes now that there are two things to aggregate.
-        DrillDownAggregates aggregates = BuildDrillDownAggregates(allocationEvents, columnIndexByType, typeIndexByName, topTypesCount, stacksById);
+        DrillDownAggregates aggregates = BuildDrillDownAggregates(allocationEvents, columnIndexByType, typeIndexByName, topTypesCount, stacksById, bucketCount);
 
         writer.WritePropertyName("drillDown");
         WriteCellDrillDown(writer, aggregates.ByCell, stacksById, symbolTable);
@@ -211,25 +235,6 @@ public static class AllocationSummaryBuilder
         return bucketIndex;
     }
 
-    private static int ComputeBucketCount(List<AllocationEvent> allocationEvents)
-    {
-        if (allocationEvents.Count == 0)
-        {
-            return 0;
-        }
-
-        double lastRelativeMSec = 0;
-        for (int eventIndex = 0; eventIndex < allocationEvents.Count; ++eventIndex)
-        {
-            if (allocationEvents[eventIndex].RelativeMSec > lastRelativeMSec)
-            {
-                lastRelativeMSec = allocationEvents[eventIndex].RelativeMSec;
-            }
-        }
-
-        return (int)(lastRelativeMSec / TypeTimelineBucketWidthMSec) + 1;
-    }
-
     // Per-second (TypeTimelineBucketWidthMSec) bytes-by-type breakdown for
     // the stacked bar chart under the allocation-rate chart. TypeName is
     // deliberately not carried on individual ticks (WriteTicks/AllocationEvent
@@ -238,7 +243,7 @@ public static class AllocationSummaryBuilder
     // shared "types" column list plus parallel per-bucket byte arrays
     // (rather than repeating type name strings as JSON object keys in every
     // bucket) to keep the payload compact.
-    private static void WriteTypeTimeline(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, List<TypeAllocStats> sortedStats, int chartTypeCount, Dictionary<string, int> columnIndexByType)
+    private static void WriteTypeTimeline(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, List<TypeAllocStats> sortedStats, int chartTypeCount, Dictionary<string, int> columnIndexByType, int bucketCount)
     {
         writer.WriteStartObject();
         writer.WriteNumber("bucketWidthMSec", TypeTimelineBucketWidthMSec);
@@ -257,7 +262,6 @@ public static class AllocationSummaryBuilder
         writer.WriteStringValue("Other");
         writer.WriteEndArray();
 
-        int bucketCount = ComputeBucketCount(allocationEvents);
         if (bucketCount == 0)
         {
             writer.WritePropertyName("buckets");
@@ -270,9 +274,10 @@ public static class AllocationSummaryBuilder
         int columnCount = chartTypeCount + 1;
         long[,] bytesByBucketAndType = new long[bucketCount, columnCount];
 
-        for (int eventIndex = 0; eventIndex < allocationEvents.Count; ++eventIndex)
+        Span<AllocationEvent> allocationEventsSpan = CollectionsMarshal.AsSpan(allocationEvents);
+        for (int eventIndex = 0; eventIndex < allocationEventsSpan.Length; ++eventIndex)
         {
-            AllocationEvent allocationEvent = allocationEvents[eventIndex];
+            ref readonly AllocationEvent allocationEvent = ref allocationEventsSpan[eventIndex];
             int bucketIndex = ComputeBucketIndex(allocationEvent.RelativeMSec, bucketCount);
             string typeName = string.IsNullOrEmpty(allocationEvent.TypeName) ? "<unknown>" : allocationEvent.TypeName;
 
@@ -337,10 +342,8 @@ public static class AllocationSummaryBuilder
     // for "no stack captured" (StackId 0, or stack-walking wasn't enabled
     // for that tick) - grouped instead of silently dropped, so totals still
     // reconcile exactly with typeTimeline's own per-cell totals.
-    private static DrillDownAggregates BuildDrillDownAggregates(List<AllocationEvent> allocationEvents, Dictionary<string, int> columnIndexByType, Dictionary<string, int> typeIndexByName, int topTypesCount, Dictionary<int, long[]> stacksById)
+    private static DrillDownAggregates BuildDrillDownAggregates(List<AllocationEvent> allocationEvents, Dictionary<string, int> columnIndexByType, Dictionary<string, int> typeIndexByName, int topTypesCount, Dictionary<int, long[]> stacksById, int bucketCount)
     {
-        int bucketCount = ComputeBucketCount(allocationEvents);
-
         DrillDownAggregates aggregates = new DrillDownAggregates();
         // Keyed by (typeIndex, bucketIndex) as a value-type tuple, not the
         // formatted "typeIndex:bucketIndex" string used in the JSON output -
@@ -351,9 +354,10 @@ public static class AllocationSummaryBuilder
         aggregates.ByCell = new Dictionary<(int, int), Dictionary<int, StackAggregate>>();
         aggregates.ByType = new Dictionary<int, StackAggregate>[topTypesCount];
 
-        for (int eventIndex = 0; eventIndex < allocationEvents.Count; ++eventIndex)
+        Span<AllocationEvent> allocationEventsSpan = CollectionsMarshal.AsSpan(allocationEvents);
+        for (int eventIndex = 0; eventIndex < allocationEventsSpan.Length; ++eventIndex)
         {
-            AllocationEvent allocationEvent = allocationEvents[eventIndex];
+            ref readonly AllocationEvent allocationEvent = ref allocationEventsSpan[eventIndex];
             string typeName = string.IsNullOrEmpty(allocationEvent.TypeName) ? "<unknown>" : allocationEvent.TypeName;
 
             // -1 is a synthetic id, distinct from any real StackId (which
@@ -562,27 +566,76 @@ public static class AllocationSummaryBuilder
         return right.TotalBytes.CompareTo(left.TotalBytes);
     }
 
-    // Sorted by RelativeMSec defensively (matches GcJsonExporter.cs's own
-    // heap-sort-before-serializing precedent) rather than trusting wire
-    // order to already be time-ordered.
-    private static void WriteTicks(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents)
+    // One tick record: 4 bytes RelativeMSec (int32, rounded milliseconds)
+    // + 8 bytes AllocationAmount (int64), little-endian.
+    private const int TickRecordSize = 12;
+
+    // Buffered in TickWriteBufferRecordCapacity-record chunks rather than
+    // one small write per tick - same "few large writes beat many small
+    // ones" reasoning as NettraceFile.Read's 16MB read buffer.
+    private const int TickWriteBufferRecordCapacity = 65536;
+
+    // allocationEvents is already sorted by RelativeMSec ascending (Write
+    // sorts it in place up front - matches GcJsonExporter.cs's own
+    // heap-sort-before-serializing precedent of not trusting wire order to
+    // already be time-ordered) - no separate copy+sort needed here.
+    //
+    // The ticks array (11.9M+ entries on a real 5-minute capture) is
+    // written to a binary sidecar file instead of as JSON text. Measured
+    // (dotnet-trace, this same real capture) as the largest remaining cost
+    // in JSON export even after every other tuning pass: ~800ms sorting
+    // (unavoidable - needed for chronological output in any format) plus,
+    // specific to JSON text, ~900ms of Grisu3 floating-point formatting for
+    // RelativeMSec and ~300ms of integer-to-decimal-text formatting for
+    // AllocationAmount, on top of ~4x more bytes actually written/read
+    // to/from disk than a packed binary representation needs (a JSON tick
+    // object like {"RelativeMSec":123456,"AllocationAmount":78901} is ~48
+    // text bytes vs. this format's fixed 12 bytes/record). RelativeMSec is
+    // rounded to the nearest whole millisecond - every consumer
+    // (allocationStats.js's rate chart, AllocationTicksBucketer.ts, the raw
+    // scatter view) only ever floors/buckets this value at
+    // millisecond-or-coarser granularity, so sub-millisecond precision was
+    // never observable even before this format change.
+    //
+    // The JSON output gets only a small descriptor object here (format tag
+    // + record count/size for the reader to size its buffer up front) -
+    // not the sidecar's path, which is derived by the caller from the same
+    // convention it used to name ticksBinaryPath in the first place (see
+    // Program.cs) rather than round-tripped through the JSON.
+    private static void WriteTicks(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, string ticksBinaryPath)
     {
-        List<AllocationEvent> sortedEvents = new List<AllocationEvent>(allocationEvents);
-        sortedEvents.Sort(CompareByRelativeMSecAscending);
+        byte[] buffer = new byte[TickRecordSize * TickWriteBufferRecordCapacity];
+        int bufferOffset = 0;
 
-        writer.WriteStartArray();
-
-        for (int eventIndex = 0; eventIndex < sortedEvents.Count; ++eventIndex)
+        using (FileStream fileStream = File.Create(ticksBinaryPath))
         {
-            AllocationEvent allocationEvent = sortedEvents[eventIndex];
+            Span<AllocationEvent> allocationEventsSpan = CollectionsMarshal.AsSpan(allocationEvents);
+            for (int eventIndex = 0; eventIndex < allocationEventsSpan.Length; ++eventIndex)
+            {
+                ref readonly AllocationEvent allocationEvent = ref allocationEventsSpan[eventIndex];
 
-            writer.WriteStartObject();
-            writer.WriteNumber("RelativeMSec", allocationEvent.RelativeMSec);
-            writer.WriteNumber("AllocationAmount", allocationEvent.AllocationAmount);
-            writer.WriteEndObject();
+                BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(bufferOffset, 4), (int)Math.Round(allocationEvent.RelativeMSec));
+                BinaryPrimitives.WriteInt64LittleEndian(buffer.AsSpan(bufferOffset + 4, 8), allocationEvent.AllocationAmount);
+                bufferOffset += TickRecordSize;
+
+                if (bufferOffset == buffer.Length)
+                {
+                    fileStream.Write(buffer, 0, bufferOffset);
+                    bufferOffset = 0;
+                }
+            }
+
+            if (bufferOffset > 0)
+            {
+                fileStream.Write(buffer, 0, bufferOffset);
+            }
         }
 
-        writer.WriteEndArray();
+        writer.WriteStartObject();
+        writer.WriteString("format", "binary-v1");
+        writer.WriteNumber("recordCount", allocationEvents.Count);
+        writer.WriteNumber("bytesPerRecord", TickRecordSize);
+        writer.WriteEndObject();
     }
 
     private static int CompareByRelativeMSecAscending(AllocationEvent left, AllocationEvent right)
