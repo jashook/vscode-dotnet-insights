@@ -305,9 +305,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
     var insights = new DotnetInsights(outputChannel);
     const lastestVersionNumber = "0.8.3";
-    const latestListenerVersionNumber = "1.6.0";
-    const latestRoslynVersionNumber = "1.6.0";
-    const latestNettraceParserVersionNumber = "1.6.0";
+    const latestListenerVersionNumber = "1.6.2";
+    const latestRoslynVersionNumber = "1.6.2";
+    const latestNettraceParserVersionNumber = "1.6.2";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;
