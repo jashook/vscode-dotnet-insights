@@ -41,7 +41,7 @@ public static class HeapAnalyzer
     // Free chunks at or above this threshold are individually catalogued.
     private const long LargeChunkThresholdBytes = 85_000;
 
-    private const int TopLohTypeLimit = 50;
+    private const int TopTypeLimit = 50;
 
     public static bool TryAnalyze(int pid, out FragmentationReport report, out string errorMessage)
     {
@@ -97,7 +97,15 @@ public static class HeapAnalyzer
         List<LargeFreeChunk> largeChunks = new List<LargeFreeChunk>();
 
         Dictionary<string, PinnedTypeStat> pinnedByKey = new Dictionary<string, PinnedTypeStat>();
-        Dictionary<string, LohTypeStat> lohByType = new Dictionary<string, LohTypeStat>();
+        Dictionary<string, TypeStat> lohByType = new Dictionary<string, TypeStat>();
+        // POH objects don't necessarily have a Pinned/AsyncPinned GCHandle at
+        // all - GC.AllocateArray<T>(pinned: true) lives on this heap and is
+        // non-relocatable by residency alone, no handle required - so
+        // PinnedObjects (handle-enumeration-based, see below) can't be relied
+        // on to show what's actually occupying the Pinned Object Heap. This
+        // mirrors lohByType exactly for the same reason LOH gets one: without
+        // it, the report can say POH is fragmented but never say why.
+        Dictionary<string, TypeStat> pohByType = new Dictionary<string, TypeStat>();
 
         int totalSegments = 0;
         long totalCommitted = 0;
@@ -153,19 +161,20 @@ public static class HeapAnalyzer
                         });
                     }
                 }
-                else if (objGen == 3)
+                else if (objGen == 3 || objGen == 4)
                 {
                     string typeName = obj.Type?.Name ?? "<unknown>";
+                    Dictionary<string, TypeStat> typesByName = objGen == 3 ? lohByType : pohByType;
 
-                    LohTypeStat lohStat;
-                    if (!lohByType.TryGetValue(typeName, out lohStat))
+                    TypeStat typeStat;
+                    if (!typesByName.TryGetValue(typeName, out typeStat))
                     {
-                        lohStat = new LohTypeStat { TypeName = typeName };
-                        lohByType[typeName] = lohStat;
+                        typeStat = new TypeStat { TypeName = typeName };
+                        typesByName[typeName] = typeStat;
                     }
 
-                    ++lohStat.Count;
-                    lohStat.TotalBytes += objSize;
+                    ++typeStat.Count;
+                    typeStat.TotalBytes += objSize;
                 }
             }
         }
@@ -261,14 +270,23 @@ public static class HeapAnalyzer
         sortedPinned.Sort((left, right) => right.Count.CompareTo(left.Count));
         report.PinnedObjects = sortedPinned;
 
-        List<LohTypeStat> sortedLoh = new List<LohTypeStat>(lohByType.Values);
+        List<TypeStat> sortedLoh = new List<TypeStat>(lohByType.Values);
         sortedLoh.Sort((left, right) => right.TotalBytes.CompareTo(left.TotalBytes));
-        if (sortedLoh.Count > TopLohTypeLimit)
+        if (sortedLoh.Count > TopTypeLimit)
         {
-            sortedLoh.RemoveRange(TopLohTypeLimit, sortedLoh.Count - TopLohTypeLimit);
+            sortedLoh.RemoveRange(TopTypeLimit, sortedLoh.Count - TopTypeLimit);
         }
 
         report.TopLohTypes = sortedLoh;
+
+        List<TypeStat> sortedPoh = new List<TypeStat>(pohByType.Values);
+        sortedPoh.Sort((left, right) => right.TotalBytes.CompareTo(left.TotalBytes));
+        if (sortedPoh.Count > TopTypeLimit)
+        {
+            sortedPoh.RemoveRange(TopTypeLimit, sortedPoh.Count - TopTypeLimit);
+        }
+
+        report.TopPohTypes = sortedPoh;
 
         long postProcessMs = phaseStopwatch.ElapsedMilliseconds;
         long totalMs = totalStopwatch.ElapsedMilliseconds;

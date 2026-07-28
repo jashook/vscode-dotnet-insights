@@ -113,16 +113,24 @@ three separate things over the suspended heap:
      size is both rare and directly actionable (it's large enough to satisfy
      a future large-object allocation without growing the heap, if the
      allocator can find it).
-   - **Live LOH objects** are aggregated by type name into a top-50-by-bytes
-     ranking (`topLohTypes`) - LOH fragmentation is almost always driven by a
-     small number of types allocating variably-sized buffers.
+   - **Live LOH and POH objects** are each aggregated by type name into their
+     own top-50-by-bytes ranking (`topLohTypes` / `topPohTypes`) - LOH/POH
+     fragmentation is almost always driven by a small number of types
+     allocating variably-sized buffers.
 2. **Pinned handle enumeration**, done as a separate pass over
    `runtime.EnumerateHandles()` (`Pinned`/`AsyncPinned` kinds only) rather than
    folded into the object walk, because a GC handle can pin an object in *any*
    generation, not just the one you'd expect. Each pinned object's segment is
    resolved back to a generation and grouped by `(TypeName, Generation)` -
    this is the report's most direct answer to "what's actually preventing
-   compaction," since pinned objects can't be moved.
+   compaction," since pinned objects can't be moved. **This is a different
+   thing from POH residency**: an object allocated via
+   `GC.AllocateArray<T>(pinned: true)` lives on the Pinned Object Heap and is
+   non-relocatable by residency alone - it needs no `GCHandle` at all, so it
+   will not appear in `pinnedObjects` even though it's just as "pinned" in
+   effect. `topPohTypes` is what actually shows what occupies POH; an empty
+   `pinnedObjects` list does not mean POH is empty or unfragmented - check
+   `generations[4]` and `topPohTypes` for that.
 3. **Derived roll-ups**: per-generation `FragmentationPct = FreeBytes /
    CommittedBytes * 100`, plus a `Summary` object with the same numbers
    totaled across the whole heap.
@@ -147,13 +155,14 @@ three separate things over the suspended heap:
     "largeChunks": [{ "address": "0x7f...", "sizeBytes": ..., "generation": 3 }]
   },
   "pinnedObjects": [{ "typeName": "System.Byte[]", "generation": 2, "count": ..., "totalBytes": ... }],
-  "topLohTypes":   [{ "typeName": "System.Byte[]", "count": ..., "totalBytes": ... }]
+  "topLohTypes":   [{ "typeName": "System.Byte[]", "count": ..., "totalBytes": ... }],
+  "topPohTypes":   [{ "typeName": "System.Threading.OverlappedData", "count": ..., "totalBytes": ... }]
 }
 ```
 
 All byte fields are raw, unscaled bytes. `largeChunks`/`pinnedObjects` are
 sorted descending by size/count so the biggest offenders are first;
-`topLohTypes` is capped at 50 entries.
+`topLohTypes`/`topPohTypes` are each capped at 50 entries.
 
 ### Why ClrMD instead of an event trace?
 

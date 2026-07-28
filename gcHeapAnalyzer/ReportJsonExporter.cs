@@ -20,7 +20,8 @@
 //       largeChunks: [{ address, sizeBytes, generation }]
 //     },
 //     pinnedObjects: [{ typeName, generation, count, totalBytes }],
-//     topLohTypes:   [{ typeName, count, totalBytes }]
+//     topLohTypes:   [{ typeName, count, totalBytes }],
+//     topPohTypes:   [{ typeName, count, totalBytes }]
 //   }
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -48,7 +49,8 @@ public static class ReportJsonExporter
         root["generations"] = SerializeGenerations(report.Generations);
         root["freeChunks"] = SerializeFreeChunks(report.FreeChunks);
         root["pinnedObjects"] = SerializePinnedObjects(report.PinnedObjects);
-        root["topLohTypes"] = SerializeLohTypes(report.TopLohTypes);
+        root["topLohTypes"] = SerializeTypeStats(report.TopLohTypes);
+        root["topPohTypes"] = SerializeTypeStats(report.TopPohTypes);
 
         return root.ToJsonString();
     }
@@ -141,13 +143,16 @@ public static class ReportJsonExporter
         return arr;
     }
 
-    private static JsonArray SerializeLohTypes(List<LohTypeStat> lohTypes)
+    // Shared by topLohTypes and topPohTypes - both are plain type-ranked
+    // lists with no generation field of their own (each list is already
+    // scoped to one heap).
+    private static JsonArray SerializeTypeStats(List<TypeStat> typeStats)
     {
         JsonArray arr = new JsonArray();
 
-        for (int lohIndex = 0; lohIndex < lohTypes.Count; ++lohIndex)
+        for (int typeIndex = 0; typeIndex < typeStats.Count; ++typeIndex)
         {
-            LohTypeStat stat = lohTypes[lohIndex];
+            TypeStat stat = typeStats[typeIndex];
             JsonObject obj = new JsonObject();
             obj["typeName"] = stat.TypeName;
             obj["count"] = stat.Count;

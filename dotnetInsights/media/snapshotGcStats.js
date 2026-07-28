@@ -1409,15 +1409,18 @@ var allocationDatasets = {};
         return '<div class="detailTable"><table>' + header + rows + '</table></div>';
     };
 
-    var buildLohTypeTableHtml = function (topLohTypes) {
+    // Shared by the Top LOH Types and Top POH Types tables - both are plain
+    // type-ranked lists with the same {typeName, count, totalBytes} shape
+    // (see ReportJsonExporter.cs's SerializeTypeStats, which writes both).
+    var buildTypeStatTableHtml = function (typeStats) {
         var header = '<tr class="tableHeader"><th>Type</th><th>Count</th><th>Total Size</th></tr>';
         var rows = '';
-        for (var lohTypeIdx = 0; lohTypeIdx < topLohTypes.length; ++lohTypeIdx) {
-            var lohType = topLohTypes[lohTypeIdx];
+        for (var typeIdx = 0; typeIdx < typeStats.length; ++typeIdx) {
+            var typeStat = typeStats[typeIdx];
             rows += '<tr>' +
-                '<td>' + lohType.typeName + '</td>' +
-                '<td>' + lohType.count + '</td>' +
-                '<td>' + formatBytes(lohType.totalBytes) + '</td>' +
+                '<td>' + typeStat.typeName + '</td>' +
+                '<td>' + typeStat.count + '</td>' +
+                '<td>' + formatBytes(typeStat.totalBytes) + '</td>' +
                 '</tr>';
         }
         return '<div class="detailTable"><table>' + header + rows + '</table></div>';
@@ -1527,7 +1530,12 @@ var allocationDatasets = {};
 
         if (snapshot.topLohTypes && snapshot.topLohTypes.length > 0) {
             html += '<h3 class="detailTableHeading">Top LOH Types</h3>';
-            html += buildLohTypeTableHtml(snapshot.topLohTypes);
+            html += buildTypeStatTableHtml(snapshot.topLohTypes);
+        }
+
+        if (snapshot.topPohTypes && snapshot.topPohTypes.length > 0) {
+            html += '<h3 class="detailTableHeading">Top POH Types</h3>';
+            html += buildTypeStatTableHtml(snapshot.topPohTypes);
         }
 
         panel.innerHTML = html;

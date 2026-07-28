@@ -34,6 +34,7 @@ public class SampleReportGeneratorTests
         Assert.NotNull(report.FreeChunks);
         Assert.NotNull(report.PinnedObjects);
         Assert.NotNull(report.TopLohTypes);
+        Assert.NotNull(report.TopPohTypes);
     }
 
     [Fact]
@@ -172,6 +173,18 @@ public class SampleReportGeneratorTests
         FragmentationReport report = SampleReportGenerator.Generate();
 
         Assert.True(report.TopLohTypes.Count > 0);
+    }
+
+    // This sample's POH generation stats (Generations[4]) are all zero - no
+    // POH activity in this synthetic scenario - so TopPohTypes should be
+    // present but empty, not null and not populated with unrelated data.
+    [Fact]
+    public void Generate_TopPohTypesListIsPresentButEmptyForZeroPohActivity()
+    {
+        FragmentationReport report = SampleReportGenerator.Generate();
+
+        Assert.NotNull(report.TopPohTypes);
+        Assert.Empty(report.TopPohTypes);
     }
 
     [Fact]

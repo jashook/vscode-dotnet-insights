@@ -74,10 +74,15 @@ public class ReportJsonExporterTests
             new PinnedTypeStat { TypeName = "System.String", Generation = 1, Count = 1, TotalBytes = 512 }
         };
 
-        report.TopLohTypes = new List<LohTypeStat>
+        report.TopLohTypes = new List<TypeStat>
         {
-            new LohTypeStat { TypeName = "System.Byte[]",   Count = 12, TotalBytes = 204_800 },
-            new LohTypeStat { TypeName = "System.Object[]", Count = 3,  TotalBytes = 49_152 }
+            new TypeStat { TypeName = "System.Byte[]",   Count = 12, TotalBytes = 204_800 },
+            new TypeStat { TypeName = "System.Object[]", Count = 3,  TotalBytes = 49_152 }
+        };
+
+        report.TopPohTypes = new List<TypeStat>
+        {
+            new TypeStat { TypeName = "System.Threading.OverlappedData", Count = 5, TotalBytes = 40_960 }
         };
 
         return report;
@@ -197,6 +202,24 @@ public class ReportJsonExporterTests
         Assert.Equal("System.Byte[]", (string)firstEntry["typeName"]);
         Assert.Equal(12, (int)firstEntry["count"]);
         Assert.Equal(204_800, (long)firstEntry["totalBytes"]);
+    }
+
+    // Regression coverage for a real gap: TopPohTypes and TopLohTypes are
+    // serialized by the same shared helper (SerializeTypeStats) but are
+    // separate lists on FragmentationReport - this pins that topPohTypes
+    // isn't accidentally aliased to (or omitted in favor of) topLohTypes.
+    [Fact]
+    public void ToJson_IncludesTopPohTypesWithTypeNameCountAndTotalBytes()
+    {
+        JsonObject root = ParseReport(MakeMinimalReport());
+        JsonArray topPohTypes = (JsonArray)root["topPohTypes"];
+
+        Assert.Single(topPohTypes);
+
+        JsonObject firstEntry = (JsonObject)topPohTypes[0];
+        Assert.Equal("System.Threading.OverlappedData", (string)firstEntry["typeName"]);
+        Assert.Equal(5, (int)firstEntry["count"]);
+        Assert.Equal(40_960, (long)firstEntry["totalBytes"]);
     }
 
     [Fact]
