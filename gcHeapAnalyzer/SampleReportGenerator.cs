@@ -150,14 +150,20 @@ public static class SampleReportGenerator
             new PinnedTypeStat { TypeName = "System.Object[]", Generation = 2, Count =  1, TotalBytes =      4_096 }
         };
 
-        report.TopLohTypes = new List<LohTypeStat>
+        report.TopLohTypes = new List<TypeStat>
         {
-            new LohTypeStat { TypeName = "System.Byte[]",                 Count = 892, TotalBytes = 89_128_960 },
-            new LohTypeStat { TypeName = "System.Object[]",               Count =  44, TotalBytes = 14_680_064 },
-            new LohTypeStat { TypeName = "System.Char[]",                 Count =  18, TotalBytes =  4_718_592 },
-            new LohTypeStat { TypeName = "System.Int32[]",                Count =   6, TotalBytes =  2_097_152 },
-            new LohTypeStat { TypeName = "System.Collections.Generic.Dictionary`2+Entry[System.String,System.Object]", Count = 3, TotalBytes = 1_835_008 }
+            new TypeStat { TypeName = "System.Byte[]",                 Count = 892, TotalBytes = 89_128_960 },
+            new TypeStat { TypeName = "System.Object[]",               Count =  44, TotalBytes = 14_680_064 },
+            new TypeStat { TypeName = "System.Char[]",                 Count =  18, TotalBytes =  4_718_592 },
+            new TypeStat { TypeName = "System.Int32[]",                Count =   6, TotalBytes =  2_097_152 },
+            new TypeStat { TypeName = "System.Collections.Generic.Dictionary`2+Entry[System.String,System.Object]", Count = 3, TotalBytes = 1_835_008 }
         };
+
+        // Empty, not omitted - matches this sample's POH generation stats
+        // above (all zero: this synthetic scenario has no Pinned Object
+        // Heap activity at all), and keeps the JSON shape consistent with a
+        // real capture where the key is always present even when empty.
+        report.TopPohTypes = new List<TypeStat>();
 
         return report;
     }

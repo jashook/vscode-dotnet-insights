@@ -261,6 +261,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const styleVSCodeUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'vscode.css'));
 
     const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'snapshotGcStats.js'));
+    const chartZoomScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'chartZoomHelper.js'));
     const allocationScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'allocationStats.js'));
     const drillDownScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'drillDownStats.js'));
 
@@ -541,6 +542,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
                  only on the "Heap Contents" nav button's first click. -->
             <span style="display:none" id="allocationSummaryHtml"><!--${allocationSummaryHtml}--></span>` : ``}
 
+            <script nonce="${nonce}" src="${chartZoomScriptUri}"></script>
             <script nonce="${nonce}" src="${allocationScriptUri}"></script>
             <script nonce="${nonce}" src="${drillDownScriptUri}"></script>
             <script nonce="${nonce}" src="${scriptUri}"></script>

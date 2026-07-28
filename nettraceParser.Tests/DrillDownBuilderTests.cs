@@ -33,9 +33,9 @@ namespace DotnetInsights.NetTrace.Tests {
 
 public class DrillDownBuilderTests
 {
-    private static AllocationEvent MakeEvent(string typeName, long amount, double relativeMSec, int stackId)
+    private static AllocationEvent MakeEvent(string typeName, long amount, double relativeMSec, int stackId, GCAllocationKind kind = GCAllocationKind.Small)
     {
-        return new AllocationEvent(default, relativeMSec, amount, GCAllocationKind.Small, typeName, heapIndex: 0, stackId: stackId);
+        return new AllocationEvent(default, relativeMSec, amount, kind, typeName, heapIndex: 0, stackId: stackId);
     }
 
     // AllocationSummaryBuilder.Write streams directly to a Utf8JsonWriter
@@ -270,6 +270,50 @@ public class DrillDownBuilderTests
         long typeBTimelineBytes = typeTimeline["buckets"][1]["bytesByType"][typeBIndex].GetValue<long>();
         Assert.Equal(typeBTimelineBytes, typeBCellBytes);
         Assert.Equal(500, typeBCellBytes);
+    }
+
+    // Confirms a specific, explicitly requested guarantee: when the webview's
+    // "LOH Only" filter is active, the drill-down stacks it shows must come
+    // only from Large-kind ticks - not a mix of Small/Large stacks for the
+    // same type. WriteTypeBreakdown builds "loh"'s drillDown/typeDrillDown
+    // from a Large-kind-filtered event list (see AllocationJsonExporter.cs's
+    // Write), so a stack that only ever appears on Small-kind ticks for this
+    // type must be entirely absent from loh.drillDown/loh.typeDrillDown,
+    // even though it's present in the unfiltered top-level drillDown.
+    [Fact]
+    public void Build_LohDrillDownOnlyIncludesStacksFromLargeKindTicks()
+    {
+        List<AllocationEvent> events = new List<AllocationEvent>
+        {
+            // stackId 1: only ever a Small-kind tick for TypeA - must not
+            // appear anywhere under "loh".
+            MakeEvent("TypeA", 100, relativeMSec: 0, stackId: 1, kind: GCAllocationKind.Small),
+            // stackId 2: a Large-kind tick for TypeA - must appear under "loh".
+            MakeEvent("TypeA", 5000, relativeMSec: 0, stackId: 2, kind: GCAllocationKind.Large)
+        };
+
+        Dictionary<int, long[]> stacksById = new Dictionary<int, long[]> { { 1, new long[] { 100 } }, { 2, new long[] { 200 } } };
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8);
+
+        JsonObject summary = Build(events, stacksById, symbolTable);
+
+        // Unfiltered (top-level) drillDown sees both stacks.
+        JsonObject allCell = summary["drillDown"]["cells"]["0:0"].AsObject();
+        Assert.Equal(2, allCell["distinctStackCount"].GetValue<int>());
+
+        // "loh" drillDown/typeDrillDown must only see the Large-kind stack.
+        JsonObject loh = summary["loh"].AsObject();
+        JsonObject lohCell = loh["drillDown"]["cells"]["0:0"].AsObject();
+        Assert.Equal(1, lohCell["distinctStackCount"].GetValue<int>());
+        Assert.Equal(5000, lohCell["totalBytes"].GetValue<long>());
+
+        JsonArray lohStacks = lohCell["stacks"].AsArray();
+        Assert.Single(lohStacks);
+        Assert.Equal(5000, lohStacks[0]["totalBytes"].GetValue<long>());
+
+        JsonArray lohTypeDrillDown = loh["typeDrillDown"].AsArray();
+        Assert.Single(lohTypeDrillDown);
+        Assert.Equal(5000, lohTypeDrillDown[0]["totalBytes"].GetValue<long>());
     }
 
     private static long SumCellBytes(JsonObject cells, string cellKey)

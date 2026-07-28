@@ -1076,6 +1076,112 @@ var allocationDatasets = {};
     // keyed on data-view/id="view-*" instead of data-tab/id="tab-*".
     var allocationSummaryInjected = false;
 
+    // Drag-to-zoom state for the Heap Contents charts (see
+    // chartZoomHelper.js) - both the allocation-rate chart and whichever
+    // type-timeline chart(s) are currently rendered share one zoom range,
+    // so dragging a selection on any one of them re-renders all of them to
+    // the same [startMSec, endMSec) window. null means "full capture, not
+    // zoomed". Backspace resets straight back to null (not a step-by-step
+    // undo stack) - see the keydown listener further below.
+    var heapContentsZoomRange = null;
+
+    // { chart, zoomHandle } for every currently-rendered Heap Contents
+    // chart - detached/destroyed and rebuilt on every zoom change (renderHeapContentsCharts
+    // below), since the same <canvas> elements persist across zoom changes
+    // and stale listeners/instances would otherwise pile up on them.
+    var heapContentsChartHandles = [];
+
+    // Computed once, the first time the Heap Contents view is opened - gcs
+    // doesn't change after that, so there's no need to recompute this on
+    // every zoom change.
+    var gen0GcTimesMSecForCharts = null;
+    var gen1GcTimesMSecForCharts = null;
+
+    function destroyHeapContentsCharts() {
+        for (var handleIndex = 0; handleIndex < heapContentsChartHandles.length; ++handleIndex) {
+            var handle = heapContentsChartHandles[handleIndex];
+            if (handle.zoomHandle) {
+                handle.zoomHandle.detach();
+            }
+            handle.chart.destroy();
+        }
+        heapContentsChartHandles = [];
+    }
+
+    function onHeapContentsRangeSelected(startMSec, endMSec) {
+        renderHeapContentsCharts({ startMSec: startMSec, endMSec: endMSec });
+    }
+
+    function updateZoomStatusUi(zoomRange) {
+        var statusBar = document.getElementById("allocationZoomStatus");
+        if (!statusBar) {
+            return;
+        }
+
+        if (!zoomRange) {
+            statusBar.style.display = "none";
+            return;
+        }
+
+        statusBar.style.display = "block";
+        var label = statusBar.getElementsByClassName("allocationZoomStatusLabel")[0];
+        if (label) {
+            label.textContent = "Zoomed: " + formatElapsedMsForAllocationChart(zoomRange.startMSec) +
+                " – " + formatElapsedMsForAllocationChart(zoomRange.endMSec) + " (Backspace to reset)";
+        }
+    }
+
+    // Shared by the initial Heap Contents open and every subsequent zoom
+    // change (drag-select or Backspace reset) - zoomRange is null for the
+    // full, unzoomed capture.
+    function renderHeapContentsCharts(zoomRange) {
+        destroyHeapContentsCharts();
+        heapContentsZoomRange = zoomRange;
+        updateZoomStatusUi(zoomRange);
+
+        var zoomOptionsForRate = { range: zoomRange, onRangeSelected: onHeapContentsRangeSelected };
+        var rateChartHandle = renderAllocationTimelineChart(
+            document.getElementById("allocationTimelineChart"),
+            allocationSummaryJson["ticks"],
+            gen0GcTimesMSecForCharts,
+            gen1GcTimesMSecForCharts,
+            zoomOptionsForRate);
+        if (rateChartHandle) {
+            heapContentsChartHandles.push(rateChartHandle);
+        }
+
+        // "all" and (if present) "loh" stacked charts are both built up
+        // front, not lazily on toggle - see AllocationSummaryRenderer.ts's
+        // renderTypeBreakdownPanel. Each gets its own onSegmentClick
+        // closure bound to its own scope object so onDrillDownSegmentClick
+        // doesn't need any global "which view is active" state to resolve
+        // the right drillDown/typeTimeline data.
+        var allChartHandle = renderAllocationTypeTimelineChart(
+            document.getElementById("allocationTypeTimelineChart-all"),
+            allocationSummaryJson["typeTimeline"],
+            function (typeIndex, bucketIndex) {
+                onDrillDownSegmentClick(typeIndex, bucketIndex, allocationSummaryJson, "All Types");
+            },
+            { range: zoomRange, onRangeSelected: onHeapContentsRangeSelected });
+        if (allChartHandle) {
+            heapContentsChartHandles.push(allChartHandle);
+        }
+
+        var lohSummary = allocationSummaryJson["loh"];
+        if (lohSummary && lohSummary["topTypes"] && lohSummary["topTypes"].length > 0) {
+            var lohChartHandle = renderAllocationTypeTimelineChart(
+                document.getElementById("allocationTypeTimelineChart-loh"),
+                lohSummary["typeTimeline"],
+                function (typeIndex, bucketIndex) {
+                    onDrillDownSegmentClick(typeIndex, bucketIndex, lohSummary, "LOH Only");
+                },
+                { range: zoomRange, onRangeSelected: onHeapContentsRangeSelected });
+            if (lohChartHandle) {
+                heapContentsChartHandles.push(lohChartHandle);
+            }
+        }
+    }
+
     var viewNavButtons = document.getElementsByClassName("viewNavButton");
     for (var viewButtonIndex = 0; viewButtonIndex < viewNavButtons.length; ++viewButtonIndex) {
         viewNavButtons[viewButtonIndex].addEventListener('click', function (event) {
@@ -1108,21 +1214,21 @@ var allocationDatasets = {};
                 // Gen0/Gen1 GC's own start time - gcs is this file's own
                 // parsed data (allocationStats.js has no access to it), so
                 // it's extracted here and passed down as plain arrays.
-                var gen0GcTimesMSec = [];
-                var gen1GcTimesMSec = [];
+                gen0GcTimesMSecForCharts = [];
+                gen1GcTimesMSecForCharts = [];
                 for (var gcIndex = 0; gcIndex < gcs.length; ++gcIndex) {
                     var gcEntry = gcs[gcIndex]["data"];
                     if (gcEntry["generation"] === 0) {
-                        gen0GcTimesMSec.push(gcEntry["PauseStartRelativeMSec"]);
+                        gen0GcTimesMSecForCharts.push(gcEntry["PauseStartRelativeMSec"]);
                     } else if (gcEntry["generation"] === 1) {
-                        gen1GcTimesMSec.push(gcEntry["PauseStartRelativeMSec"]);
+                        gen1GcTimesMSecForCharts.push(gcEntry["PauseStartRelativeMSec"]);
                     }
                 }
-                gen0GcTimesMSec.sort(function (left, right) { return left - right; });
-                gen1GcTimesMSec.sort(function (left, right) { return left - right; });
+                gen0GcTimesMSecForCharts.sort(function (left, right) { return left - right; });
+                gen1GcTimesMSecForCharts.sort(function (left, right) { return left - right; });
 
-                renderAllocationTimelineChart(document.getElementById("allocationTimelineChart"), allocationSummaryJson["ticks"], gen0GcTimesMSec, gen1GcTimesMSec);
-                renderAllocationTypeTimelineChart(document.getElementById("allocationTypeTimelineChart"), allocationSummaryJson["typeTimeline"], onDrillDownSegmentClick);
+                renderHeapContentsCharts(null);
+
                 wireHeapContentsInnerTabs();
                 allocationSummaryInjected = true;
             }
@@ -1168,7 +1274,9 @@ var allocationDatasets = {};
     function goBackToChartsView() {
         switchHeapContentsTab('charts');
 
-        var stackedBarChart = document.getElementById('allocationTypeTimelineChart');
+        var activeViewButton = document.querySelector('.allocationViewButton.active');
+        var activeScope = activeViewButton ? activeViewButton.getAttribute('data-allocview') : 'all';
+        var stackedBarChart = document.getElementById('allocationTypeTimelineChart-' + activeScope);
         if (stackedBarChart) {
             stackedBarChart.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
@@ -1191,29 +1299,34 @@ var allocationDatasets = {};
 
     // Called from allocationStats.js's onClick handler on the type-timeline
     // chart when a real (non-"Other") stacked segment is clicked. Scoped to
-    // that one (type, 1-second bucket) cell.
-    function onDrillDownSegmentClick(typeIndex, bucketIndex) {
-        var drillDown = allocationSummaryJson["drillDown"];
+    // that one (type, 1-second bucket) cell. summaryScope is either
+    // allocationSummaryJson (the "all" chart) or allocationSummaryJson.loh
+    // (the "LOH Only" chart) - each chart's onSegmentClick closure binds its
+    // own scope (see the renderAllocationTypeTimelineChart calls above), so
+    // this never has to guess which toggle state is currently active.
+    function onDrillDownSegmentClick(typeIndex, bucketIndex, summaryScope, filterLabel) {
+        var drillDown = summaryScope["drillDown"];
         var cellEntry = (drillDown && drillDown["cells"]) ? drillDown["cells"][typeIndex + ":" + bucketIndex] : null;
 
-        var typeTimeline = allocationSummaryJson["typeTimeline"];
+        var typeTimeline = summaryScope["typeTimeline"];
         var typeName = typeTimeline["types"][typeIndex];
         var bucketLabel = formatElapsedMsForAllocationChart(typeTimeline["buckets"][bucketIndex]["bucketStartMSec"]);
 
-        showDrillDownTab(renderDrillDownTable(cellEntry, typeName, bucketLabel));
+        showDrillDownTab(renderDrillDownTable(cellEntry, typeName, bucketLabel, filterLabel));
     }
 
     // Called from the click delegation in wireHeapContentsInnerTabs below
-    // when a row in the global ranked types table is clicked. Scoped to
-    // that type across the *whole* capture (AllocationJsonExporter.cs's
-    // typeDrillDown - a parallel array to topTypes), not one chart cell -
-    // merges every bucket's stacks for this type into one view.
-    function onTypeDrillDownClick(typeIndex) {
-        var typeDrillDown = allocationSummaryJson["typeDrillDown"];
+    // when a row in a ranked types table (either the "all" or "loh" one -
+    // see summaryScope) is clicked. Scoped to that type across the *whole*
+    // capture (AllocationJsonExporter.cs's typeDrillDown - a parallel array
+    // to topTypes), not one chart cell - merges every bucket's stacks for
+    // this type into one view.
+    function onTypeDrillDownClick(typeIndex, summaryScope, filterLabel) {
+        var typeDrillDown = summaryScope["typeDrillDown"];
         var typeEntry = typeDrillDown ? typeDrillDown[typeIndex] : null;
-        var typeName = allocationSummaryJson["topTypes"][typeIndex]["TypeName"];
+        var typeName = summaryScope["topTypes"][typeIndex]["TypeName"];
 
-        showDrillDownTab(renderDrillDownTable(typeEntry, typeName, "Whole Capture"));
+        showDrillDownTab(renderDrillDownTable(typeEntry, typeName, "Whole Capture", filterLabel));
     }
 
     function wireHeapContentsInnerTabs() {
@@ -1229,11 +1342,24 @@ var allocationDatasets = {};
             backToChartsButton.addEventListener('click', goBackToChartsView);
         }
 
-        // Global ranked types table rows (AllocationSummaryRenderer.ts) -
-        // this table is only ever injected once (not rebuilt per click like
-        // the drill-down panel itself), so a direct listener on its
-        // container is fine here rather than needing delegation on
-        // something more stable.
+        // Click equivalent of the Backspace zoom-reset (see the keydown
+        // listener further below) - for anyone who doesn't know/want to use
+        // the keyboard shortcut. Only visible while a zoom is actually
+        // applied (see updateZoomStatusUi).
+        var resetZoomButton = document.getElementById('resetZoomButton');
+        if (resetZoomButton) {
+            resetZoomButton.addEventListener('click', function () {
+                renderHeapContentsCharts(null);
+            });
+        }
+
+        // Ranked types table rows (AllocationSummaryRenderer.ts) - both the
+        // "all" and "loh" tables are only ever injected once (not rebuilt
+        // per click like the drill-down panel itself), so a direct listener
+        // on their shared container is fine here rather than needing
+        // delegation on something more stable. data-scope on each row (see
+        // renderTypeBreakdownPanel) picks which summary object
+        // (allocationSummaryJson or its .loh) the click resolves against.
         var chartsPanel = document.getElementById('heapContents-tab-charts');
         if (chartsPanel) {
             chartsPanel.addEventListener('click', function (event) {
@@ -1242,7 +1368,33 @@ var allocationDatasets = {};
                     return;
                 }
 
-                onTypeDrillDownClick(parseInt(typeRow.getAttribute('data-type-index'), 10));
+                var isLohRow = typeRow.getAttribute('data-scope') === 'loh';
+                var rowScope = isLohRow ? allocationSummaryJson["loh"] : allocationSummaryJson;
+                onTypeDrillDownClick(parseInt(typeRow.getAttribute('data-type-index'), 10), rowScope, isLohRow ? "LOH Only" : "All Types");
+            });
+        }
+
+        // "All Types" / "LOH Only" filter toggle (only rendered at all when
+        // allocationSummary.loh has data - see AllocationSummaryRenderer.ts).
+        // A pure CSS show/hide between the two pre-rendered panels/charts,
+        // not a re-render - both charts already exist by the time this is
+        // wired up.
+        var allocationViewButtons = document.getElementsByClassName("allocationViewButton");
+        for (var allocViewIdx = 0; allocViewIdx < allocationViewButtons.length; ++allocViewIdx) {
+            allocationViewButtons[allocViewIdx].addEventListener('click', function (event) {
+                var targetScope = event.currentTarget.getAttribute('data-allocview');
+
+                var buttons = document.getElementsByClassName("allocationViewButton");
+                for (var buttonIndex = 0; buttonIndex < buttons.length; ++buttonIndex) {
+                    buttons[buttonIndex].classList.remove('active');
+                }
+                event.currentTarget.classList.add('active');
+
+                var panels = document.getElementsByClassName("allocationViewPanel");
+                for (var panelIndex = 0; panelIndex < panels.length; ++panelIndex) {
+                    panels[panelIndex].classList.remove('active');
+                }
+                document.getElementById('allocView-' + targetScope).classList.add('active');
             });
         }
 
@@ -1273,9 +1425,16 @@ var allocationDatasets = {};
         }
     }
 
-    // Backspace returns to Charts, but only while the Drill Down tab is
-    // actually the active one - otherwise this would hijack Backspace
-    // everywhere else on the page for no reason.
+    // Backspace has two mutually-exclusive meanings on this page, checked in
+    // the same listener so their precedence is explicit rather than relying
+    // on two independent listeners never happening to both fire (which
+    // they can't anyway, since a tab being active is exclusive - but
+    // stating that as one function's own logic is clearer than trusting an
+    // invariant across two separate ones):
+    //   - Drill Down tab active: return to Charts (existing behavior).
+    //   - Charts tab active and a chart zoom is applied: reset the zoom back
+    //     to the full capture (see renderHeapContentsCharts) - only when
+    //     zoomed, so Backspace does nothing surprising otherwise.
     document.addEventListener('keydown', function (event) {
         if (event.key !== 'Backspace') {
             return;
@@ -1285,6 +1444,13 @@ var allocationDatasets = {};
         if (drillDownPanel && drillDownPanel.classList.contains('active')) {
             event.preventDefault();
             goBackToChartsView();
+            return;
+        }
+
+        var chartsPanelForZoom = document.getElementById('heapContents-tab-charts');
+        if (chartsPanelForZoom && chartsPanelForZoom.classList.contains('active') && heapContentsZoomRange) {
+            event.preventDefault();
+            renderHeapContentsCharts(null);
         }
     });
 
@@ -1409,15 +1575,18 @@ var allocationDatasets = {};
         return '<div class="detailTable"><table>' + header + rows + '</table></div>';
     };
 
-    var buildLohTypeTableHtml = function (topLohTypes) {
+    // Shared by the Top LOH Types and Top POH Types tables - both are plain
+    // type-ranked lists with the same {typeName, count, totalBytes} shape
+    // (see ReportJsonExporter.cs's SerializeTypeStats, which writes both).
+    var buildTypeStatTableHtml = function (typeStats) {
         var header = '<tr class="tableHeader"><th>Type</th><th>Count</th><th>Total Size</th></tr>';
         var rows = '';
-        for (var lohTypeIdx = 0; lohTypeIdx < topLohTypes.length; ++lohTypeIdx) {
-            var lohType = topLohTypes[lohTypeIdx];
+        for (var typeIdx = 0; typeIdx < typeStats.length; ++typeIdx) {
+            var typeStat = typeStats[typeIdx];
             rows += '<tr>' +
-                '<td>' + lohType.typeName + '</td>' +
-                '<td>' + lohType.count + '</td>' +
-                '<td>' + formatBytes(lohType.totalBytes) + '</td>' +
+                '<td>' + typeStat.typeName + '</td>' +
+                '<td>' + typeStat.count + '</td>' +
+                '<td>' + formatBytes(typeStat.totalBytes) + '</td>' +
                 '</tr>';
         }
         return '<div class="detailTable"><table>' + header + rows + '</table></div>';
@@ -1527,7 +1696,12 @@ var allocationDatasets = {};
 
         if (snapshot.topLohTypes && snapshot.topLohTypes.length > 0) {
             html += '<h3 class="detailTableHeading">Top LOH Types</h3>';
-            html += buildLohTypeTableHtml(snapshot.topLohTypes);
+            html += buildTypeStatTableHtml(snapshot.topLohTypes);
+        }
+
+        if (snapshot.topPohTypes && snapshot.topPohTypes.length > 0) {
+            html += '<h3 class="detailTableHeading">Top POH Types</h3>';
+            html += buildTypeStatTableHtml(snapshot.topPohTypes);
         }
 
         panel.innerHTML = html;

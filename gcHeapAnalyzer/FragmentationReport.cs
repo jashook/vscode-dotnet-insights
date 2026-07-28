@@ -27,7 +27,8 @@ public class FragmentationReport
     public GenerationStats[] Generations;
     public FreeChunkReport FreeChunks;
     public List<PinnedTypeStat> PinnedObjects;
-    public List<LohTypeStat> TopLohTypes;
+    public List<TypeStat> TopLohTypes;
+    public List<TypeStat> TopPohTypes;
 }
 
 public class HeapSummary
@@ -89,7 +90,10 @@ public class PinnedTypeStat
     public long TotalBytes;
 }
 
-public class LohTypeStat
+// Shared shape for both TopLohTypes and TopPohTypes - a type ranked by how
+// much of that heap it occupies, with no generation field of its own since
+// each list is already scoped to one heap (LOH or POH).
+public class TypeStat
 {
     public string TypeName;
     public int Count;

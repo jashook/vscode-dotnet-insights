@@ -217,6 +217,58 @@ public class AllocationSummaryBuilderTests
         Assert.Equal(30.0, ticks[2]["RelativeMSec"].GetValue<double>());
     }
 
+    // "loh" mirrors the top-level totalSampledBytes/topTypes/typeTimeline/
+    // drillDown/typeDrillDown shape exactly (see WriteTypeBreakdown), scoped
+    // to AllocationKind.Large ticks only - these tests pin that the filter
+    // actually excludes Small/Pinned ticks rather than aliasing the
+    // top-level view, and that byte totals reconcile against only the
+    // included ticks.
+    [Fact]
+    public void Build_LohSectionOnlyIncludesLargeKindTicks()
+    {
+        List<AllocationEvent> events = new List<AllocationEvent>
+        {
+            MakeEvent("Small.Type", 100, GCAllocationKind.Small, 0),
+            MakeEvent("Pinned.Type", 200, GCAllocationKind.Pinned, 1),
+            MakeEvent("Big.Type", 5000, GCAllocationKind.Large, 2),
+            MakeEvent("Big.Type", 3000, GCAllocationKind.Large, 3)
+        };
+
+        JsonObject summary = Build(events);
+        JsonObject loh = summary["loh"].AsObject();
+
+        Assert.Equal(8000, loh["totalSampledBytes"].GetValue<long>());
+        Assert.Equal(2, loh["totalTickCount"].GetValue<int>());
+        Assert.Equal(1, loh["distinctTypeCount"].GetValue<int>());
+
+        JsonArray lohTopTypes = loh["topTypes"].AsArray();
+        Assert.Single(lohTopTypes);
+        Assert.Equal("Big.Type", lohTopTypes[0]["TypeName"].GetValue<string>());
+        Assert.Equal(8000, lohTopTypes[0]["TotalBytes"].GetValue<long>());
+
+        // The top-level (unfiltered) view must be unaffected by loh's presence.
+        Assert.Equal(8300, summary["totalSampledBytes"].GetValue<long>());
+        Assert.Equal(4, summary["totalTickCount"].GetValue<int>());
+        Assert.Equal(3, summary["distinctTypeCount"].GetValue<int>());
+    }
+
+    [Fact]
+    public void Build_LohSectionIsEmptyButPresentWhenNoLargeKindTicksExist()
+    {
+        List<AllocationEvent> events = new List<AllocationEvent>
+        {
+            MakeEvent("Small.Type", 100, GCAllocationKind.Small, 0),
+            MakeEvent("Pinned.Type", 200, GCAllocationKind.Pinned, 1)
+        };
+
+        JsonObject summary = Build(events);
+        JsonObject loh = summary["loh"].AsObject();
+
+        Assert.Equal(0, loh["totalSampledBytes"].GetValue<long>());
+        Assert.Equal(0, loh["totalTickCount"].GetValue<int>());
+        Assert.Empty(loh["topTypes"].AsArray());
+    }
+
     // Pins the wire format itself (WriteTicks writes a binary sidecar file,
     // not inline JSON - see its own comment for why), bypassing the Build()
     // helper's reconstruction so the raw {format, recordCount,

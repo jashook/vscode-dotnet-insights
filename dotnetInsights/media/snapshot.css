@@ -629,6 +629,77 @@
     display: block;
 }
 
+/* Shown only while a chart zoom (drag-select on the rate or type-timeline
+   chart - see chartZoomHelper.js/snapshotGcStats.js's renderHeapContentsCharts)
+   is applied - hidden (display:none, set inline in
+   AllocationSummaryRenderer.ts) otherwise. */
+.allocationZoomStatus
+{
+    background-color: rgba(72, 83, 136, 0.1);
+    border-radius: 6px;
+    margin: 1em 2% 0;
+    padding: 0.6em 1em;
+}
+
+.allocationZoomStatusLabel
+{
+    color: rgba(72, 83, 136, 1);
+    font-size: 14px;
+    margin-right: 1em;
+}
+
+.resetZoomButton
+{
+    background-color: rgba(72, 83, 136, 0.8);
+    border: none;
+    border-radius: 6px;
+    color: white;
+    cursor: pointer;
+    display: inline-block;
+    font-size: 13px;
+    padding: 0.35em 1em;
+    width: auto;
+}
+
+/* Toggles between the unfiltered ("All Types") and LOH-only stacked-chart+
+   table view within the Charts panel - same look as heapContentsTabButton/
+   heapContentsTabPanel above (a filter, not a separate navigational tab,
+   but visually consistent with the other toggle groups on this page). */
+.allocationViewToggle
+{
+    margin-top: 1em;
+    text-align: center;
+}
+
+.allocationViewButton
+{
+    background-color: rgba(72, 83, 136, 0.8);
+    border: none;
+    border-radius: 6px 6px 0 0;
+    color: white;
+    cursor: pointer;
+    display: inline-block;
+    font-size: 14px;
+    margin: 0 2px;
+    padding: 0.5em 1.2em;
+    width: auto;
+}
+
+.allocationViewButton.active
+{
+    background-color: rgba(174, 207, 27, 0.9);
+}
+
+.allocationViewPanel
+{
+    display: none;
+}
+
+.allocationViewPanel.active
+{
+    display: block;
+}
+
 .drillDownTable td:first-child
 {
     text-align: left;
@@ -662,10 +733,38 @@
     width: 7em;
 }
 
+/* Stays pinned to the top of the viewport while the (potentially long) list
+   of allocating methods below it scrolls - losing track of which type/
+   scope/filter a drill-down table was even about while scrolling was the
+   specific readability problem this fixes. Needs an opaque, theme-aware
+   background (not transparent) so scrolled content doesn't show through
+   underneath it, plus a border to visually separate it from that content. */
+.drillDownHeader
+{
+    background: var(--vscode-editor-background, #ffffff);
+    border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+    padding-bottom: 0.6em;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}
+
+.drillDownTypeHeading
+{
+    margin-bottom: 0.1em;
+    margin-top: 0.8em;
+}
+
+.drillDownScopeLine
+{
+    color: rgba(0, 0, 0, 0.55);
+    margin: 0 0 0.3em 2%;
+}
+
 .drillDownSummary
 {
     color: rgba(0, 0, 0, 0.55);
-    margin: 0.2em 0 1em 2%;
+    margin: 0.2em 0 0 2%;
 }
 
 /* Shown only when a cell/type has more distinct call stacks than
@@ -758,6 +857,29 @@
 {
     color: rgba(0, 0, 0, 0.55);
     font-style: italic;
+}
+
+/* Explicit role label prefixing every drill-down row (see
+   drillDownStats.js's allocationSiteLabel/calledByLabel) - makes the
+   direction of the call stack ("this row allocated it" vs. "this row called
+   the row above it") readable without inferring it from indentation alone. */
+.stackRoleLabel
+{
+    display: inline-block;
+    font-size: 0.85em;
+    font-weight: normal;
+    margin-right: 0.5em;
+    text-transform: uppercase;
+}
+
+.allocationSiteLabel
+{
+    color: rgba(180, 40, 40, 0.9);
+}
+
+.calledByLabel
+{
+    color: rgba(0, 0, 0, 0.45);
 }
 
 .pathCount
