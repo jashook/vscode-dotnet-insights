@@ -19,6 +19,16 @@
 // bucket - lets the global table link a type directly to its full set of
 // allocating call stacks.
 //
+// The same topTypes/typeTimeline/drillDown/typeDrillDown shape is written
+// twice (see WriteTypeBreakdown, shared by both) - once for every tick
+// (top level) and once more, nested under "loh", scoped to only
+// AllocationKind.Large ticks (the runtime sets this per-tick at allocation
+// time whenever that allocation went to the LOH - no new capture needed).
+// Both calls share one bucketCount so the two views use the same time axis
+// - the webview's LOH-only filter toggle just points its existing
+// rendering at allocationSummary.loh instead of allocationSummary itself,
+// with no new rendering code needed for either the chart or its drill-down.
+//
 // Writes directly into a Utf8JsonWriter rather than building a
 // System.Text.Json.Nodes.JsonObject/JsonArray tree first - a real capture's
 // ticks list can be tens of thousands of entries, and materializing one
@@ -109,15 +119,77 @@ public static class AllocationSummaryBuilder
         // BuildDrillDownAggregates).
         allocationEvents.Sort(CompareByRelativeMSecAscending);
 
+        // Shared by both the "all" and "loh" breakdowns below so the two
+        // views share one time axis - toggling the webview's LOH-only
+        // filter swaps which JSON object it reads from without the chart's
+        // x-axis resizing/shifting, since bucket count/width stay fixed.
         int bucketCount = allocationEvents.Count == 0 ? 0 : ComputeBucketIndex(allocationEvents[allocationEvents.Count - 1].RelativeMSec, int.MaxValue) + 1;
 
-        Dictionary<string, TypeAllocStats> statsByType = new Dictionary<string, TypeAllocStats>();
-        long totalSampledBytes = 0;
+        writer.WriteStartObject();
+
+        writer.WritePropertyName("ticks");
+        WriteTicks(writer, allocationEvents, ticksBinaryPath);
+
+        WriteTypeBreakdown(writer, allocationEvents, bucketCount, stacksById, symbolTable);
+
+        // Identical breakdown (same totalSampledBytes/topTypes/typeTimeline/
+        // drillDown/typeDrillDown field names and shapes as above), scoped
+        // to Large-kind (LOH) ticks only - GCAllocationTick's own
+        // AllocationKind field is set by the runtime at allocation time, so
+        // this needs no new capture/instrumentation, just filtering
+        // AllocationEvents already decoded above. Filtering (rather than
+        // re-sorting) preserves allocationEvents' existing RelativeMSec
+        // order, so lohEvents needs no sort of its own. Nested under "loh"
+        // rather than replacing the top-level fields so the webview can
+        // reuse its existing typeTimeline/drillDown/typeDrillDown rendering
+        // completely unchanged - a filter toggle just points it at
+        // allocationSummary.loh instead of allocationSummary itself. ticks
+        // (the raw per-tick scatter, which carries no type/kind - see
+        // WriteTicks) isn't duplicated here; the filter only applies to the
+        // type-oriented views.
+        List<AllocationEvent> lohEvents = FilterByAllocationKind(allocationEvents, GCAllocationKind.Large);
+        writer.WritePropertyName("loh");
+        writer.WriteStartObject();
+        WriteTypeBreakdown(writer, lohEvents, bucketCount, stacksById, symbolTable);
+        writer.WriteEndObject();
+
+        writer.WriteEndObject();
+    }
+
+    private static List<AllocationEvent> FilterByAllocationKind(List<AllocationEvent> allocationEvents, GCAllocationKind kind)
+    {
+        List<AllocationEvent> filtered = new List<AllocationEvent>();
 
         Span<AllocationEvent> allocationEventsSpan = CollectionsMarshal.AsSpan(allocationEvents);
         for (int eventIndex = 0; eventIndex < allocationEventsSpan.Length; ++eventIndex)
         {
             ref readonly AllocationEvent allocationEvent = ref allocationEventsSpan[eventIndex];
+            if (allocationEvent.AllocationKind == kind)
+            {
+                filtered.Add(allocationEvent);
+            }
+        }
+
+        return filtered;
+    }
+
+    // Writes totalSampledBytes/distinctTypeCount/totalTickCount/topTypes/
+    // typeTimeline/drillDown/typeDrillDown directly into whichever object is
+    // currently open on writer - shared by the top-level ("all events") and
+    // "loh" (Large-kind only) sections in Write() so both get identical
+    // field names/shapes and the webview needs no branching between them.
+    // events must already be sorted ascending by RelativeMSec (true both for
+    // the full list, sorted once in Write, and any filtered subset of it,
+    // since filtering preserves relative order).
+    private static void WriteTypeBreakdown(Utf8JsonWriter writer, List<AllocationEvent> events, int bucketCount, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
+    {
+        Dictionary<string, TypeAllocStats> statsByType = new Dictionary<string, TypeAllocStats>();
+        long totalSampledBytes = 0;
+
+        Span<AllocationEvent> eventsSpan = CollectionsMarshal.AsSpan(events);
+        for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
+        {
+            ref readonly AllocationEvent allocationEvent = ref eventsSpan[eventIndex];
             string typeName = string.IsNullOrEmpty(allocationEvent.TypeName) ? "<unknown>" : allocationEvent.TypeName;
 
             TypeAllocStats stats;
@@ -160,11 +232,9 @@ public static class AllocationSummaryBuilder
         // column.
         Dictionary<string, int> typeIndexByName = BuildColumnIndexByType(sortedStats, topTypesCount);
 
-        writer.WriteStartObject();
-
         writer.WriteNumber("totalSampledBytes", totalSampledBytes);
         writer.WriteNumber("distinctTypeCount", statsByType.Count);
-        writer.WriteNumber("totalTickCount", allocationEvents.Count);
+        writer.WriteNumber("totalTickCount", events.Count);
 
         writer.WritePropertyName("topTypes");
         writer.WriteStartArray();
@@ -183,24 +253,19 @@ public static class AllocationSummaryBuilder
         }
         writer.WriteEndArray();
 
-        writer.WritePropertyName("ticks");
-        WriteTicks(writer, allocationEvents, ticksBinaryPath);
-
         writer.WritePropertyName("typeTimeline");
-        WriteTypeTimeline(writer, allocationEvents, sortedStats, chartTypeCount, columnIndexByType, bucketCount);
+        WriteTypeTimeline(writer, events, sortedStats, chartTypeCount, columnIndexByType, bucketCount);
 
         // Single pass over every tick builds both drill-down shapes at once
         // (see BuildDrillDownAggregates) - cheaper than two independent
         // O(totalTicks) passes now that there are two things to aggregate.
-        DrillDownAggregates aggregates = BuildDrillDownAggregates(allocationEvents, columnIndexByType, typeIndexByName, topTypesCount, stacksById, bucketCount);
+        DrillDownAggregates aggregates = BuildDrillDownAggregates(events, columnIndexByType, typeIndexByName, topTypesCount, stacksById, bucketCount);
 
         writer.WritePropertyName("drillDown");
         WriteCellDrillDown(writer, aggregates.ByCell, stacksById, symbolTable);
 
         writer.WritePropertyName("typeDrillDown");
         WriteTypeDrillDown(writer, aggregates.ByType, stacksById, symbolTable);
-
-        writer.WriteEndObject();
     }
 
     // Shared by WriteTypeTimeline and WriteDrillDown so both agree on

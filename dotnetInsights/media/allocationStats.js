@@ -188,9 +188,25 @@ var tickCountAnnotationPlugin = {
 // for Gen0/Gen1 GCs (see snapshotGcStats.js's view-switcher click handler -
 // allocationStats.js has no access to the parsed gcs array itself). Both are
 // optional; a generation with no GCs simply gets no overlay line.
-function renderAllocationTimelineChart(canvasElement, ticks, gen0GcTimesMSec, gen1GcTimesMSec) {
+//
+// zoomOptions (optional): { range: {startMSec, endMSec} | null,
+// onRangeSelected: function(startMSec, endMSec) }. When range is set, the
+// x-axis is clipped to it (via ticks.min/max - a `linear` scale can do this
+// directly without filtering the underlying data at all, unlike the
+// category-scale type-timeline chart below, which has to filter its bucket
+// array instead - see renderAllocationTypeTimelineChart's own comment).
+// When onRangeSelected is set, dragging across the chart calls it with the
+// selected range (see chartZoomHelper.js) - omit zoomOptions entirely for a
+// plain, non-interactive chart.
+//
+// Returns { chart, zoomHandle } (zoomHandle is null unless zoomOptions.
+// onRangeSelected was provided) - callers that re-render on zoom changes
+// need both: chart.destroy() before creating the replacement, and
+// zoomHandle.detach() first, since the same <canvas> persists across
+// zoom changes and stale listeners would otherwise pile up on it.
+function renderAllocationTimelineChart(canvasElement, ticks, gen0GcTimesMSec, gen1GcTimesMSec, zoomOptions) {
     if (canvasElement === null || canvasElement === undefined || !ticks || ticks.length === 0) {
-        return;
+        return null;
     }
 
     var mb = 1024 * 1024;
@@ -255,17 +271,45 @@ function renderAllocationTimelineChart(canvasElement, ticks, gen0GcTimesMSec, ge
 
     var context = canvasElement.getContext('2d');
 
-    new Chart(context, {
+    var zoomRange = zoomOptions && zoomOptions.range;
+    var xAxisTicks = {
+        callback: formatElapsedMsForAllocationChart
+    };
+    if (zoomRange) {
+        // `linear` scale - clipping the visible range this way needs no
+        // filtering of the underlying ticks/buckets data at all, unlike the
+        // category-scale type-timeline chart.
+        xAxisTicks.min = zoomRange.startMSec;
+        xAxisTicks.max = zoomRange.endMSec;
+    }
+
+    // Shared with the zoom-selection plugin below (see chartZoomHelper.js's
+    // own header comment for why this can't just be a closure variable -
+    // the plugin has to exist before the Chart instance it's attached to).
+    var dragStateHolder = { current: null };
+    var plugins = [tickCountAnnotationPlugin];
+    if (zoomOptions && zoomOptions.onRangeSelected) {
+        plugins.push(createZoomSelectionPlugin(dragStateHolder));
+    }
+
+    var chart = new Chart(context, {
         type: 'line',
         data: {
             datasets: datasets
         },
         // Scoped to this chart instance only - see tickCountAnnotationPlugin.
-        plugins: [tickCountAnnotationPlugin],
+        plugins: plugins,
         options: {
             title: {
                 display: true,
                 text: `Sampled Allocation Rate Over Time (per ${(DEFAULT_BUCKET_WIDTH_MSEC / 1000).toFixed(0)}s, bar label = tick count)`
+            },
+            // Instant redraws while dragging a zoom selection (see
+            // chartZoomHelper.js's scheduleRedraw) - an animated transition
+            // firing on every mousemove would make the selection box lag
+            // visibly behind the cursor.
+            animation: {
+                duration: 0
             },
             // Chart-wide fallback matching each line dataset's own
             // lineTension: 0 - see buildAllocationBeforeGcSegments.
@@ -278,9 +322,7 @@ function renderAllocationTimelineChart(canvasElement, ticks, gen0GcTimesMSec, ge
                 xAxes: [{
                     type: 'linear',
                     position: 'bottom',
-                    ticks: {
-                        callback: formatElapsedMsForAllocationChart
-                    },
+                    ticks: xAxisTicks,
                     scaleLabel: {
                         display: true,
                         labelString: "Capture Time Elapsed"
@@ -349,6 +391,13 @@ function renderAllocationTimelineChart(canvasElement, ticks, gen0GcTimesMSec, ge
             "maintainAspectRatio": false
         }
     });
+
+    var zoomHandle = null;
+    if (zoomOptions && zoomOptions.onRangeSelected) {
+        zoomHandle = attachDragToZoom(chart, canvasElement, dragStateHolder, pixelToMSecLinear, zoomOptions.onRangeSelected);
+    }
+
+    return { chart: chart, zoomHandle: zoomHandle };
 }
 
 // Stacked bar chart, one bar per bucket, one stacked segment per type -
@@ -368,19 +417,61 @@ function renderAllocationTimelineChart(canvasElement, ticks, gen0GcTimesMSec, ge
 // stacked segment is clicked, so the caller can look up and render that
 // cell's drillDown data (see snapshotGcStats.js's view-switcher wiring and
 // drillDownStats.js's renderDrillDownTable). Optional - omit for a
-// read-only chart.
-function renderAllocationTypeTimelineChart(canvasElement, typeTimeline, onSegmentClick) {
+// read-only chart. bucketIndex is always the *absolute* index into the
+// server's original typeTimeline.buckets/drillDown.cells numbering, even
+// when zoomOptions.range narrows what's actually displayed (see below) -
+// AllocationJsonExporter.cs's drillDown.cells keys are
+// "{typeIndex}:{bucketIndex}" against the full, unfiltered bucket list, so
+// a locally-re-indexed (0-based within just the zoomed subset) bucketIndex
+// would silently look up the wrong cell - or none at all - once zoomed in.
+//
+// zoomOptions (optional): { range: {startMSec, endMSec} | null,
+// onRangeSelected: function(startMSec, endMSec) }. Unlike the rate chart's
+// linear x-axis (which can just clip its visible range via ticks.min/max),
+// a category scale has no such "narrow the view but keep the same
+// underlying axis" concept - the labels/data arrays *are* the axis - so
+// zooming here means filtering typeTimeline.buckets down to the sub-range
+// before ever building labels/datasets from it.
+function renderAllocationTypeTimelineChart(canvasElement, typeTimeline, onSegmentClick, zoomOptions) {
     if (canvasElement === null || canvasElement === undefined || !typeTimeline || !typeTimeline["buckets"] || typeTimeline["buckets"].length === 0) {
-        return;
+        return null;
     }
 
     var mb = 1024 * 1024;
     var types = typeTimeline["types"];
-    var buckets = typeTimeline["buckets"];
+    var allBuckets = typeTimeline["buckets"];
+
+    // firstVisibleBucketAbsoluteIndex is added back onto every local
+    // (filtered-array) index before it's ever handed to onSegmentClick or
+    // used to compute a zoom-drag's bucketStartMSecs lookup, so both stay
+    // correct against the server's absolute numbering regardless of the
+    // current zoom range.
+    var zoomRange = zoomOptions && zoomOptions.range;
+    var firstVisibleBucketAbsoluteIndex = 0;
+    var buckets = allBuckets;
+    if (zoomRange) {
+        buckets = [];
+        for (var scanIndex = 0; scanIndex < allBuckets.length; ++scanIndex) {
+            var bucketStartMSec = allBuckets[scanIndex]["bucketStartMSec"];
+            if (bucketStartMSec < zoomRange.startMSec || bucketStartMSec >= zoomRange.endMSec) {
+                continue;
+            }
+            if (buckets.length === 0) {
+                firstVisibleBucketAbsoluteIndex = scanIndex;
+            }
+            buckets.push(allBuckets[scanIndex]);
+        }
+
+        if (buckets.length === 0) {
+            return null;
+        }
+    }
 
     var labels = [];
+    var bucketStartMSecs = [];
     for (var bucketIndex = 0; bucketIndex < buckets.length; ++bucketIndex) {
         labels.push(formatElapsedMsForAllocationChart(buckets[bucketIndex]["bucketStartMSec"]));
+        bucketStartMSecs.push(buckets[bucketIndex]["bucketStartMSec"]);
     }
 
     var datasets = [];
@@ -401,16 +492,31 @@ function renderAllocationTypeTimelineChart(canvasElement, typeTimeline, onSegmen
 
     var context = canvasElement.getContext('2d');
 
-    new Chart(context, {
+    // Shared with the zoom-selection plugin below (see chartZoomHelper.js's
+    // own header comment for why this can't just be a closure variable -
+    // the plugin has to exist before the Chart instance it's attached to).
+    var dragStateHolder = { current: null };
+    var plugins = [];
+    if (zoomOptions && zoomOptions.onRangeSelected) {
+        plugins.push(createZoomSelectionPlugin(dragStateHolder));
+    }
+
+    var chart = new Chart(context, {
         type: 'bar',
         data: {
             labels: labels,
             datasets: datasets
         },
+        plugins: plugins,
         options: {
             title: {
                 display: true,
                 text: `Allocated by Type Over Time (per ${(typeTimeline["bucketWidthMSec"] / 1000).toFixed(0)}s)`
+            },
+            // Instant redraws while dragging a zoom selection - see the rate
+            // chart's own identical comment on this.
+            animation: {
+                duration: 0
             },
             scales: {
                 xAxes: [{
@@ -453,7 +559,7 @@ function renderAllocationTypeTimelineChart(canvasElement, typeTimeline, onSegmen
                 }
 
                 var clickedTypeIndex = elements[0]._datasetIndex;
-                var clickedBucketIndex = elements[0]._index;
+                var clickedLocalBucketIndex = elements[0]._index;
 
                 // Last dataset is always "Other" (AllocationJsonExporter.cs) -
                 // a heterogeneous catch-all across many types, not drillable.
@@ -461,9 +567,22 @@ function renderAllocationTypeTimelineChart(canvasElement, typeTimeline, onSegmen
                     return;
                 }
 
-                onSegmentClick(clickedTypeIndex, clickedBucketIndex);
+                // Translate back to the server's absolute bucket numbering -
+                // see this function's own header comment on why the local
+                // (filtered-array) index isn't safe to hand to onSegmentClick
+                // directly once zoomed in.
+                onSegmentClick(clickedTypeIndex, clickedLocalBucketIndex + firstVisibleBucketAbsoluteIndex);
             },
             "maintainAspectRatio": false
         }
     });
+
+    var zoomHandle = null;
+    if (zoomOptions && zoomOptions.onRangeSelected) {
+        zoomHandle = attachDragToZoom(chart, canvasElement, dragStateHolder, function (chartArg, pixelX) {
+            return pixelToMSecCategory(chartArg, pixelX, bucketStartMSecs);
+        }, zoomOptions.onRangeSelected);
+    }
+
+    return { chart: chart, zoomHandle: zoomHandle };
 }

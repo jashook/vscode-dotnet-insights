@@ -127,26 +127,36 @@ describe('AllocationSummaryRenderer', () => {
             const html = renderAllocationSummaryTable(summary);
 
             // Rows are clickable (see snapshotGcStats.js's
-            // onTypeDrillDownClick) - class="typeRow" data-type-index="N",
-            // not a bare <tr>.
-            const dataRowMatches = html.match(/<tr class="typeRow" data-type-index="\d+">/g) || [];
+            // onTypeDrillDownClick) - class="typeRow" data-type-index="N"
+            // data-scope="...", not a bare <tr>. Matches the opening tag
+            // loosely (not attribute-by-attribute) so it doesn't need
+            // updating every time a new data-* attribute is added.
+            const dataRowMatches = html.match(/<tr class="typeRow"[^>]*>/g) || [];
             assert.strictEqual(dataRowMatches.length, 2);
             assert.ok(html.includes('<td>System.Byte[]</td><td>3.00</td><td>75.00</td><td>30</td>'));
             assert.ok(html.includes('<td>System.String</td><td>1.00</td><td>25.00</td><td>10</td>'));
         });
 
-        it('orders the summary tiles above the chart canvas above the ranked table', () => {
+        // The allocation-rate line chart (raw ticks, no per-type/kind
+        // breakdown) is shared/unfiltered and sits above the per-scope
+        // tiles/type-timeline-chart/table block (see
+        // AllocationSummaryRenderer.ts's renderTypeBreakdownPanel) - it
+        // doesn't change when the LOH-only toggle is used, so it isn't part
+        // of that per-scope block.
+        it('orders the rate chart above the summary tiles above the type-timeline chart above the ranked table', () => {
             const summary = makeAllocationSummary([makeTypeEntry('System.Byte[]', 100, 1)], { totalSampledBytes: 100, totalTickCount: 1 });
 
             const html = renderAllocationSummaryTable(summary);
 
+            const rateChartIndex = html.indexOf('id="allocationTimelineChart"');
             const tilesIndex = html.indexOf('Sampled Allocations');
-            const chartIndex = html.indexOf('id="allocationTimelineChart"');
+            const typeChartIndex = html.indexOf('id="allocationTypeTimelineChart-all"');
             const tableIndex = html.indexOf('<table>');
 
-            assert.ok(tilesIndex >= 0 && chartIndex >= 0 && tableIndex >= 0);
-            assert.ok(tilesIndex < chartIndex);
-            assert.ok(chartIndex < tableIndex);
+            assert.ok(rateChartIndex >= 0 && tilesIndex >= 0 && typeChartIndex >= 0 && tableIndex >= 0);
+            assert.ok(rateChartIndex < tilesIndex);
+            assert.ok(tilesIndex < typeChartIndex);
+            assert.ok(typeChartIndex < tableIndex);
         });
 
         it('preserves server-side sort order (already sorted descending by TotalBytes)', () => {
@@ -204,6 +214,51 @@ describe('AllocationSummaryRenderer', () => {
             assert.ok(html.includes('<button class="heapContentsTabButton" id="drillDownTabButton" data-heaptab="drilldown" style="display:none">Drill Down</button>'));
             assert.ok(html.includes('<div id="heapContents-tab-drilldown" class="heapContentsTabPanel"></div>'));
             assert.ok(html.includes('id="backToChartsButton"'));
+        });
+
+        it('omits the All Types/LOH Only toggle when allocationSummary.loh is absent or empty', () => {
+            const summary = makeAllocationSummary([makeTypeEntry('System.Byte[]', 100, 1)], { totalSampledBytes: 100, totalTickCount: 1 });
+
+            const html = renderAllocationSummaryTable(summary);
+
+            assert.ok(!html.includes('allocationViewToggle'));
+            assert.ok(!html.includes('allocationTypeTimelineChart-loh'));
+
+            const withEmptyLoh = renderAllocationSummaryTable(Object.assign({}, summary, { loh: { topTypes: [] } }));
+            assert.ok(!withEmptyLoh.includes('allocationViewToggle'));
+        });
+
+        it('shows the All Types/LOH Only toggle and both panels when allocationSummary.loh has data', () => {
+            const summary = makeAllocationSummary([makeTypeEntry('System.Byte[]', 100, 1)], { totalSampledBytes: 100, totalTickCount: 1 });
+            summary.loh = makeAllocationSummary([makeTypeEntry('System.Byte[]', 80, 1)], { totalSampledBytes: 80, totalTickCount: 1 });
+
+            const html = renderAllocationSummaryTable(summary);
+
+            assert.ok(html.includes('<button class="allocationViewButton active" data-allocview="all">All Types</button>'));
+            assert.ok(html.includes('<button class="allocationViewButton" data-allocview="loh">LOH Only</button>'));
+
+            assert.ok(html.includes('<div id="allocView-all" class="allocationViewPanel active">'));
+            assert.ok(html.includes('<div id="allocView-loh" class="allocationViewPanel">'));
+            assert.ok(html.includes('id="allocationTypeTimelineChart-all"'));
+            assert.ok(html.includes('id="allocationTypeTimelineChart-loh"'));
+
+            // One row per scope, each tagged so snapshotGcStats.js's click
+            // delegation resolves against the right summary object.
+            assert.ok(html.includes('<tr class="typeRow" data-type-index="0" data-scope="all">'));
+            assert.ok(html.includes('<tr class="typeRow" data-type-index="0" data-scope="loh">'));
+        });
+
+        it('shows the Drill Down tab when only the loh scope (not the all scope) has drillable data', () => {
+            const summary = makeAllocationSummary([makeTypeEntry('System.Byte[]', 100, 1)], { totalSampledBytes: 100, totalTickCount: 1 });
+            summary.loh = makeAllocationSummary([makeTypeEntry('System.Byte[]', 80, 1)], {
+                totalSampledBytes: 80,
+                totalTickCount: 1,
+                drillDown: { cells: { '0:0': { totalBytes: 80, totalTickCount: 1, distinctStackCount: 1, stacks: [{ frames: ['Foo.Bar'], tickCount: 1, totalBytes: 80 }] } } }
+            });
+
+            const html = renderAllocationSummaryTable(summary);
+
+            assert.ok(html.includes('id="drillDownTabButton"'));
         });
     });
 
@@ -266,7 +321,7 @@ describe('AllocationSummaryRenderer', () => {
 
             assert.ok(html.includes('class="detailTable allocationTypeTable"'));
             assert.ok(html.includes('id="allocationTimelineChart"'));
-            assert.strictEqual((html.match(/<tr class="typeRow" data-type-index="\d+">/g) || []).length, allocationSummary['topTypes'].length);
+            assert.strictEqual((html.match(/<tr class="typeRow"[^>]*>/g) || []).length, allocationSummary['topTypes'].length);
         });
 
         it('fixture has a populated drillDown with real resolved method names, not every frame unresolved', () => {

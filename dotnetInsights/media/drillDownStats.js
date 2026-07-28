@@ -191,8 +191,13 @@ function renderCallerChainRows(node, depth, mb, parentTotalBytes) {
         ? `<span class="leafMethodToggle">&#9656;</span>`
         : `<span class="leafMethodToggle leafMethodToggleEmpty"></span>`;
 
+    // Explicit role label, not just indentation - every step away from the
+    // allocation site (depth 0, the leaf row above) is a caller of the step
+    // before it, reading top-to-bottom as "called by, called by, ...".
+    var calledByLabel = `<span class="stackRoleLabel calledByLabel">&#8593; Called by</span>`;
+
     var rowHtml = `<tr class="callerRow"${hasBranch ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
-        `<td style="padding-left: ${indentEm}em">${toggleHtml}${formatFrameHtml(node.frameName)}</td>` +
+        `<td style="padding-left: ${indentEm}em">${toggleHtml}${calledByLabel}${formatFrameHtml(node.frameName)}</td>` +
         `<td>${formatBytesWithPercentage(node.totalBytes, parentTotalBytes, mb)}</td>` +
         `<td>${node.tickCount}</td>` +
         `</tr>`;
@@ -224,15 +229,25 @@ function renderCallerChainRows(node, depth, mb, parentTotalBytes) {
 // chart actually let the user click) or
 // gcData["allocationSummary"]["typeDrillDown"][typeIndex] (one type, whole
 // capture) - both a { totalBytes, totalTickCount, distinctStackCount,
-// stacks } object (see this file's header comment). scopeLabel is shown
-// next to typeName in the heading - a formatted bucket time for the
-// former, "Whole Capture" for the latter.
-function renderDrillDownTable(entry, typeName, scopeLabel) {
-    const heading = `<h3 class="detailTableHeading">${escapeHtmlForDrillDown(typeName)} &mdash; ${escapeHtmlForDrillDown(scopeLabel)}</h3>`;
+// stacks } object (see this file's header comment). scopeLabel is a
+// formatted bucket time for the former, "Whole Capture" for the latter.
+// filterLabel is "All Types" or "LOH Only", reflecting which of
+// allocationSummaryJson/allocationSummaryJson.loh the caller resolved
+// entry/typeName from (see snapshotGcStats.js) - shown alongside typeName
+// so it's never ambiguous whether the stacks below came from every
+// allocation of this type or only its LOH-kind ones.
+//
+// This header is sticky (position: sticky, see snapshot.css's
+// .drillDownHeader) so it stays visible while scrolling a long list of
+// allocating methods below - losing track of which type/filter you're
+// looking at was the specific complaint this addressed.
+function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel) {
+    const scopeLine = `<p class="drillDownScopeLine">Scope: ${escapeHtmlForDrillDown(scopeLabel)} &nbsp;&bull;&nbsp; Filter: ${escapeHtmlForDrillDown(filterLabel)}</p>`;
+    const typeHeading = `<h3 class="detailTableHeading drillDownTypeHeading">Type: ${escapeHtmlForDrillDown(typeName)}</h3>`;
 
     const stacks = entry && entry["stacks"];
     if (!stacks || stacks.length === 0) {
-        return `${heading}<div class="detailTable"><p>No captured stacks for this selection.</p></div>`;
+        return `<div class="drillDownHeader">${typeHeading}${scopeLine}</div><div class="detailTable"><p>No captured stacks for this selection.</p></div>`;
     }
 
     const mb = 1024 * 1024;
@@ -254,7 +269,12 @@ function renderDrillDownTable(entry, typeName, scopeLabel) {
     const truncationNote = isTruncated
         ? ` <span class="drillDownTruncationNote">(showing top ${stacks.length.toLocaleString()} of ${distinctStackCount.toLocaleString()} distinct call stacks by bytes - some long-tail stacks aren't individually listed below, but are still counted in every total/percentage.)</span>`
         : ``;
-    const summary = `<p class="drillDownSummary">${totalTicks.toLocaleString()} ticks, ${(totalBytes / mb).toFixed(2)} MB across ${leafGroups.length} allocating ${methodWord}.${truncationNote}</p>`;
+    const summaryLine = `<p class="drillDownSummary">${totalTicks.toLocaleString()} ticks, ${(totalBytes / mb).toFixed(2)} MB across ${leafGroups.length} allocating ${methodWord}.${truncationNote}</p>`;
+
+    // Sticky (see snapshot.css's .drillDownHeader) so type/scope/filter/
+    // summary all stay visible while scrolling a long list of allocating
+    // methods below.
+    const heading = `<div class="drillDownHeader">${typeHeading}${scopeLine}${summaryLine}</div>`;
 
     var rows = "";
     for (var rowIndex = 0; rowIndex < leafGroups.length; ++rowIndex) {
@@ -287,8 +307,17 @@ function renderDrillDownTable(entry, typeName, scopeLabel) {
             ? ` <span class="pathCount">(${group.paths.length} call paths)</span>`
             : ``;
 
+        // Explicit role label - this is the method that directly performed
+        // the allocation (frames[0] in the underlying stack, before any
+        // grouping/tree-building), not one of its callers. Paired with
+        // "Called by" on every row underneath it (see
+        // renderCallerChainRows), so the causal direction reads
+        // unambiguously top-to-bottom without needing to infer it from
+        // indentation alone.
+        var allocationSiteLabel = `<span class="stackRoleLabel allocationSiteLabel">&#9679; Allocated in</span>`;
+
         rows += `<tr class="leafMethodRow"${isExpandable ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
-            `<td>${toggleHtml}${formatFrameHtml(group.leafFrame)}${pathCountSuffix}</td>` +
+            `<td>${toggleHtml}${allocationSiteLabel}${formatFrameHtml(group.leafFrame)}${pathCountSuffix}</td>` +
             `<td>${formatBytesWithPercentage(group.totalBytes, totalBytes, mb)}</td>` +
             `<td>${group.tickCount}</td>` +
             `</tr>`;
@@ -312,7 +341,10 @@ function renderDrillDownTable(entry, typeName, scopeLabel) {
         rows += `<tr id="${rowId}" class="callPathsDetail${expandedClass}"><td colspan="3" class="callerTreeCell"><table class="callerTreeInner">${CALLER_TREE_COLGROUP}${callerRowsHtml}</table></td></tr>`;
     }
 
-    const header = `<tr class="tableHeader"><th>Allocating Method</th><th>Total Bytes (mb)</th><th>Tick Count</th></tr>`;
+    // "Call Stack" rather than "Allocating Method" - this column now holds
+    // both the allocation-site row and its "Called by" rows underneath (see
+    // allocationSiteLabel/calledByLabel above), not just allocating methods.
+    const header = `<tr class="tableHeader"><th>Call Stack</th><th>Total Bytes (mb)</th><th>Tick Count</th></tr>`;
 
-    return `${heading}${summary}<div class="detailTable drillDownTable"><table>${CALLER_TREE_COLGROUP}${header}${rows}</table></div>`;
+    return `${heading}<div class="detailTable drillDownTable"><table>${CALLER_TREE_COLGROUP}${header}${rows}</table></div>`;
 }
