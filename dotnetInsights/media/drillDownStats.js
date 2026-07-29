@@ -29,14 +29,16 @@
 // path first" - so this leads with a ranked list of distinct LEAF
 // (allocating) methods. Expanding a leaf reveals its callers as a real
 // tree (one row per frame, shared call prefixes merged so two paths
-// through the same caller don't duplicate rows) - but a row only gets a
-// collapse toggle where the tree actually branches. A straight,
-// non-branching chain of callers just flows as consecutive rows with no
-// interaction required at all, since there's nothing to hide. Every row
-// also shows its share of its *immediate* parent's bytes (leaf rows: share
-// of the whole scope's total; a caller row: share of the row that expanded
-// into it) - flame-graph style, not a share of the grand total at every
-// level.
+// through the same caller don't duplicate rows) - every row with at least
+// one child gets its own collapse toggle, so any step can be independently
+// hidden, not just where the tree actually branches. A straight,
+// non-branching chain of callers still *starts* expanded (there's nothing
+// to decide yet, so nothing needs a click the first time a leaf is opened),
+// but that's just the initial state - it can still be collapsed like any
+// other row. Every row also shows its share of its *immediate* parent's
+// bytes (leaf rows: share of the whole scope's total; a caller row: share
+// of the row that expanded into it) - flame-graph style, not a share of the
+// grand total at every level.
 
 // Real .NET type/method names can legitimately contain HTML-significant
 // characters (compiler-generated names like "Program.<Main>$" are common -
@@ -76,13 +78,23 @@ function formatFrameHtml(rawFrameName) {
 // exact StackId - see WriteStackAggregate) by their leaf (allocating)
 // frame, since several distinct call paths commonly share the same
 // immediate allocator. Returns groups sorted by total bytes descending.
-function groupStacksByLeaf(stacks) {
+// methodNames is allocationSummaryJson["methodNames"] (see
+// AllocationJsonExporter.cs's MethodNameInterner) - each stack's "frames"
+// is an array of integer indices into it, not raw strings, so every frame
+// is resolved back to its real name here, once, before anything downstream
+// (tree-building, Map keying, display) needs to know it's dealing with
+// method names at all.
+function groupStacksByLeaf(stacks, methodNames) {
     var groupsByLeaf = new Map();
     var leafOrder = [];
 
     for (var stackIndex = 0; stackIndex < stacks.length; ++stackIndex) {
         var stackEntry = stacks[stackIndex];
-        var frames = stackEntry["frames"];
+        var frameIndices = stackEntry["frames"];
+        var frames = new Array(frameIndices.length);
+        for (var frameIdx = 0; frameIdx < frameIndices.length; ++frameIdx) {
+            frames[frameIdx] = methodNames[frameIndices[frameIdx]];
+        }
         var leafFrame = frames[0];
 
         var group = groupsByLeaf.get(leafFrame);
@@ -172,22 +184,33 @@ const CALLER_TREE_COLGROUP = `<colgroup><col><col class="bytesColumn"><col class
 
 var callerRowIdCounter = 0;
 
-// Renders one frame (node) as its own row, then recurses. A node with more
-// than one child is a real branch point - its children each start their
-// own (initially collapsed) sub-chain, one indent level deeper, behind a
-// single toggle on this row. A node with exactly one child is a straight
-// continuation with no decision to make, so that child's row is appended
-// immediately at the *same* indent level rather than opening a new nested,
-// initially-hidden section for something with nothing to hide.
+// Renders one frame (node) as its own row, then recurses. Every node with
+// at least one child gets its own toggle, so any step in the chain can be
+// collapsed independently - not just real branch points (more than one
+// child). A straight, non-branching continuation still starts expanded by
+// default (there's no decision to make yet, so nothing needs a click to
+// become visible the *first* time a leaf is opened) - only a real branch
+// point (more than one child) still starts collapsed - but unlike before,
+// that default is just a starting state, not the only state: every node's
+// subtree can be individually toggled either way from here.
+//
+// depth only advances at a real branch point (more than one child) - a
+// long straight chain of single-child continuations, wrapped in its own
+// collapsible container or not, stays at one indent level instead of
+// pushing further right on every single hop. A deep non-branching stack
+// (common - most call stacks don't branch at every frame) would otherwise
+// run out of horizontal room within a handful of frames.
 function renderCallerChainRows(node, depth, mb, parentTotalBytes) {
     var childEntries = Array.from(node.children.values());
     childEntries.sort(function (left, right) { return right.totalBytes - left.totalBytes; });
 
-    var hasBranch = childEntries.length > 1;
-    var rowId = hasBranch ? `drillDownCaller${++callerRowIdCounter}` : null;
+    var hasChildren = childEntries.length > 0;
+    var isBranch = childEntries.length > 1;
+    var startsExpanded = childEntries.length === 1;
+    var rowId = hasChildren ? `drillDownCaller${++callerRowIdCounter}` : null;
     var indentEm = (depth + 1) * 1.5;
 
-    var toggleHtml = hasBranch
+    var toggleHtml = hasChildren
         ? `<span class="leafMethodToggle">&#9656;</span>`
         : `<span class="leafMethodToggle leafMethodToggleEmpty"></span>`;
 
@@ -196,13 +219,15 @@ function renderCallerChainRows(node, depth, mb, parentTotalBytes) {
     // before it, reading top-to-bottom as "called by, called by, ...".
     var calledByLabel = `<span class="stackRoleLabel calledByLabel">&#8593; Called by</span>`;
 
-    var rowHtml = `<tr class="callerRow"${hasBranch ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
+    var expandedClass = startsExpanded ? ` expanded` : ``;
+
+    var rowHtml = `<tr class="callerRow${expandedClass}"${hasChildren ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
         `<td style="padding-left: ${indentEm}em">${toggleHtml}${calledByLabel}${formatFrameHtml(node.frameName)}</td>` +
         `<td>${formatBytesWithPercentage(node.totalBytes, parentTotalBytes, mb)}</td>` +
         `<td>${node.tickCount}</td>` +
         `</tr>`;
 
-    if (childEntries.length === 0) {
+    if (!hasChildren) {
         return rowHtml;
     }
 
@@ -210,16 +235,14 @@ function renderCallerChainRows(node, depth, mb, parentTotalBytes) {
     // regardless of whether this row itself is a branch point or a
     // straight continuation - flame-graph style, one hop's share of the
     // hop immediately before it, not a share of the overall total.
-    if (childEntries.length === 1) {
-        return rowHtml + renderCallerChainRows(childEntries[0], depth, mb, node.totalBytes);
-    }
+    var childDepth = isBranch ? depth + 1 : depth;
 
     var childRowsHtml = "";
     for (var childIndex = 0; childIndex < childEntries.length; ++childIndex) {
-        childRowsHtml += renderCallerChainRows(childEntries[childIndex], depth + 1, mb, node.totalBytes);
+        childRowsHtml += renderCallerChainRows(childEntries[childIndex], childDepth, mb, node.totalBytes);
     }
 
-    return rowHtml + `<tr id="${rowId}" class="callPathsDetail"><td colspan="3" class="callerTreeCell"><table class="callerTreeInner">${CALLER_TREE_COLGROUP}${childRowsHtml}</table></td></tr>`;
+    return rowHtml + `<tr id="${rowId}" class="callPathsDetail${expandedClass}"><td colspan="3" class="callerTreeCell"><table class="callerTreeInner">${CALLER_TREE_COLGROUP}${childRowsHtml}</table></td></tr>`;
 }
 
 // entry: either gcData["allocationSummary"]["drillDown"]["cells"]["{typeIndex}:{bucketIndex}"]
@@ -235,13 +258,16 @@ function renderCallerChainRows(node, depth, mb, parentTotalBytes) {
 // allocationSummaryJson/allocationSummaryJson.loh the caller resolved
 // entry/typeName from (see snapshotGcStats.js) - shown alongside typeName
 // so it's never ambiguous whether the stacks below came from every
-// allocation of this type or only its LOH-kind ones.
+// allocation of this type or only its LOH-kind ones. methodNames is always
+// allocationSummaryJson["methodNames"] (top-level, shared by both the
+// unfiltered and LOH-only scopes - see AllocationJsonExporter.cs) regardless
+// of which scope entry itself came from.
 //
 // This header is sticky (position: sticky, see snapshot.css's
 // .drillDownHeader) so it stays visible while scrolling a long list of
 // allocating methods below - losing track of which type/filter you're
 // looking at was the specific complaint this addressed.
-function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel) {
+function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel, methodNames) {
     const scopeLine = `<p class="drillDownScopeLine">Scope: ${escapeHtmlForDrillDown(scopeLabel)} &nbsp;&bull;&nbsp; Filter: ${escapeHtmlForDrillDown(filterLabel)}</p>`;
     const typeHeading = `<h3 class="detailTableHeading drillDownTypeHeading">Type: ${escapeHtmlForDrillDown(typeName)}</h3>`;
 
@@ -251,7 +277,7 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel) {
     }
 
     const mb = 1024 * 1024;
-    const leafGroups = groupStacksByLeaf(stacks);
+    const leafGroups = groupStacksByLeaf(stacks, methodNames);
     callerRowIdCounter = 0;
 
     // The true scope totals (every distinct call stack the C# side
@@ -271,10 +297,20 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel) {
         : ``;
     const summaryLine = `<p class="drillDownSummary">${totalTicks.toLocaleString()} ticks, ${(totalBytes / mb).toFixed(2)} MB across ${leafGroups.length} allocating ${methodWord}.${truncationNote}</p>`;
 
+    // Bulk-toggles every collapsible row at once (see snapshotGcStats.js's
+    // click delegation on the drill-down panel) - now that every node with
+    // at least one child is individually collapsible (not just real branch
+    // points), a deep tree can take a lot of individual clicks to fully
+    // open or close by hand.
+    const expandCollapseControls = `<div class="drillDownExpandControls">` +
+        `<button class="drillDownExpandControlButton drillDownExpandAllBtn" type="button">Expand All</button>` +
+        `<button class="drillDownExpandControlButton drillDownCollapseAllBtn" type="button">Collapse All</button>` +
+        `</div>`;
+
     // Sticky (see snapshot.css's .drillDownHeader) so type/scope/filter/
-    // summary all stay visible while scrolling a long list of allocating
-    // methods below.
-    const heading = `<div class="drillDownHeader">${typeHeading}${scopeLine}${summaryLine}</div>`;
+    // summary/controls all stay visible while scrolling a long list of
+    // allocating methods below.
+    const heading = `<div class="drillDownHeader">${typeHeading}${scopeLine}${summaryLine}${expandCollapseControls}</div>`;
 
     var rows = "";
     for (var rowIndex = 0; rowIndex < leafGroups.length; ++rowIndex) {
@@ -288,7 +324,14 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel) {
         var topLevelCallers = callerTreeRoot ? Array.from(callerTreeRoot.children.values()) : [];
         topLevelCallers.sort(function (left, right) { return right.totalBytes - left.totalBytes; });
 
-        var isExpandable = topLevelCallers.length > 1;
+        // Every leaf with at least one top-level caller gets a real toggle -
+        // not just ones with more than one (a real branch) - so any leaf's
+        // caller chain can be collapsed independently. A single top-level
+        // caller still starts expanded by default (nothing to decide yet),
+        // matching renderCallerChainRows' own default for a straight
+        // continuation one level down.
+        var isExpandable = topLevelCallers.length > 0;
+        var startsExpanded = topLevelCallers.length === 1;
         var rowId = `drillDownLeaf${rowIndex}`;
 
         var toggleHtml = isExpandable
@@ -315,8 +358,9 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel) {
         // unambiguously top-to-bottom without needing to infer it from
         // indentation alone.
         var allocationSiteLabel = `<span class="stackRoleLabel allocationSiteLabel">&#9679; Allocated in</span>`;
+        var expandedClass = startsExpanded ? ` expanded` : ``;
 
-        rows += `<tr class="leafMethodRow"${isExpandable ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
+        rows += `<tr class="leafMethodRow${expandedClass}"${isExpandable ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
             `<td>${toggleHtml}${allocationSiteLabel}${formatFrameHtml(group.leafFrame)}${pathCountSuffix}</td>` +
             `<td>${formatBytesWithPercentage(group.totalBytes, totalBytes, mb)}</td>` +
             `<td>${group.tickCount}</td>` +
@@ -327,17 +371,10 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel) {
         }
 
         var callerRowsHtml = "";
-        if (topLevelCallers.length === 1) {
-            // Single immediate caller - straight continuation, shown
-            // inline right away just like every other non-branching hop.
-            callerRowsHtml = renderCallerChainRows(topLevelCallers[0], 0, mb, group.totalBytes);
-        } else {
-            for (var callerIndex = 0; callerIndex < topLevelCallers.length; ++callerIndex) {
-                callerRowsHtml += renderCallerChainRows(topLevelCallers[callerIndex], 0, mb, group.totalBytes);
-            }
+        for (var callerIndex = 0; callerIndex < topLevelCallers.length; ++callerIndex) {
+            callerRowsHtml += renderCallerChainRows(topLevelCallers[callerIndex], 0, mb, group.totalBytes);
         }
 
-        var expandedClass = isExpandable ? `` : ` expanded`;
         rows += `<tr id="${rowId}" class="callPathsDetail${expandedClass}"><td colspan="3" class="callerTreeCell"><table class="callerTreeInner">${CALLER_TREE_COLGROUP}${callerRowsHtml}</table></td></tr>`;
     }
 

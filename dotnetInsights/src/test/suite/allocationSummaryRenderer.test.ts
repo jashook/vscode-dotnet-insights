@@ -326,6 +326,7 @@ describe('AllocationSummaryRenderer', () => {
 
         it('fixture has a populated drillDown with real resolved method names, not every frame unresolved', () => {
             const drillDown = allocationSummary['drillDown'];
+            const methodNames = allocationSummary['methodNames'];
 
             assert.ok(drillDown !== null && drillDown !== undefined);
             const cellKeys = Object.keys(drillDown['cells']);
@@ -334,7 +335,8 @@ describe('AllocationSummaryRenderer', () => {
             let foundRealFrame = false;
             for (const cellKey of cellKeys) {
                 for (const stackEntry of drillDown['cells'][cellKey]['stacks']) {
-                    for (const frame of stackEntry['frames']) {
+                    for (const frameIndex of stackEntry['frames']) {
+                        const frame = methodNames[frameIndex];
                         if (!frame.startsWith('<unresolved') && frame !== '<no stack captured>') {
                             foundRealFrame = true;
                         }
@@ -354,6 +356,7 @@ describe('AllocationSummaryRenderer', () => {
 
         it('fixture has a populated typeDrillDown (whole-capture, not scoped to one bucket) with real resolved method names', () => {
             const typeDrillDown = allocationSummary['typeDrillDown'];
+            const methodNames = allocationSummary['methodNames'];
 
             assert.ok(typeDrillDown !== null && typeDrillDown !== undefined);
             // Parallel array to topTypes - see AllocationJsonExporter.cs's
@@ -363,7 +366,8 @@ describe('AllocationSummaryRenderer', () => {
             let foundRealFrame = false;
             for (const typeEntry of typeDrillDown) {
                 for (const stackEntry of typeEntry['stacks']) {
-                    for (const frame of stackEntry['frames']) {
+                    for (const frameIndex of stackEntry['frames']) {
+                        const frame = methodNames[frameIndex];
                         if (!frame.startsWith('<unresolved') && frame !== '<no stack captured>') {
                             foundRealFrame = true;
                         }

@@ -178,10 +178,11 @@ public class TypeDrillDownBuilderTests
         }, pointerSize: 8);
 
         JsonObject summary = Build(events, stacksById, symbolTable);
+        JsonArray methodNames = summary["methodNames"].AsArray();
         JsonArray frames = summary["typeDrillDown"][0]["stacks"][0]["frames"].AsArray();
 
-        Assert.Equal("Leaf", frames[0].GetValue<string>());
-        Assert.Equal("Caller", frames[1].GetValue<string>());
+        Assert.Equal("Leaf", methodNames[frames[0].GetValue<int>()].GetValue<string>());
+        Assert.Equal("Caller", methodNames[frames[1].GetValue<int>()].GetValue<string>());
     }
 
     [Fact]
@@ -201,7 +202,9 @@ public class TypeDrillDownBuilderTests
         Assert.Single(stacks);
         Assert.Equal(300, stacks[0]["totalBytes"].GetValue<long>());
         Assert.Equal(2, stacks[0]["tickCount"].GetValue<int>());
-        Assert.Equal("<no stack captured>", stacks[0]["frames"][0].GetValue<string>());
+
+        int frameIndex = stacks[0]["frames"][0].GetValue<int>();
+        Assert.Equal("<no stack captured>", summary["methodNames"][frameIndex].GetValue<string>());
     }
 
     [Fact]

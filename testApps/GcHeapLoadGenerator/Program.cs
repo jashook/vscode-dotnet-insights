@@ -15,6 +15,20 @@
 // Pair with gcHeapAnalyzer once the printed "retained" total is near the
 // target:
 //   dotnet run --project gcHeapAnalyzer -- --pid <pid>
+//
+// example-gcHeapAnalyzer-output.json in this directory is a real capture
+// against this load generator (--target-gb 0.3, Server GC, 8 logical
+// heaps) - a concrete reference for the full report shape (generations,
+// per-generation histograms, large-chunk adjacency, segment occupancy,
+// segment maps) without needing a live process on hand.
+//
+// example-gc-verbose.nettrace is a real ~3-second `dotnet-trace collect
+// --profile gc-verbose` capture against the same load generator (169 GCs,
+// ~95k allocation ticks) - a real nettraceParser input for exercising the
+// GC/allocation JSON export path without needing a live process either.
+// Kept short deliberately (~9 MB) rather than a longer capture (a 10s
+// capture of this same load generator was ~32 MB) to stay reasonably close
+// to this repo's other real fixture (nettrace-gcdata.json, 829 KB).
 ////////////////////////////////////////////////////////////////////////////////
 
 using System;

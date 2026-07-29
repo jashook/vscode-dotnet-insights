@@ -1,0 +1,1157 @@
+{
+  "processId": 32890,
+  "processName": "dotnet",
+  "captureTimeUtc": "2026-07-28T22:03:12.7350600Z",
+  "summary": {
+    "totalCommittedBytes": 672268288,
+    "totalObjectBytes": 652654136,
+    "totalFreeBytes": 19614152,
+    "fragmentationPct": 2.92,
+    "pinnedObjectCount": 1,
+    "segmentCount": 24
+  },
+  "generations": [
+    {
+      "generation": 0,
+      "label": "Gen0",
+      "committedBytes": 0,
+      "objectBytes": -216,
+      "freeBytes": 216,
+      "fragmentationPct": 0,
+      "segmentCount": 0,
+      "freeChunkCount": 9,
+      "histogram": [
+        {
+          "label": "< 1 KB",
+          "minBytes": 0,
+          "maxBytes": 1023,
+          "count": 9,
+          "totalBytes": 216
+        },
+        {
+          "label": "1\u20138 KB",
+          "minBytes": 1024,
+          "maxBytes": 8191,
+          "count": 0,
+          "totalBytes": 0
+        },
+        {
+          "label": "8\u201385 KB",
+          "minBytes": 8192,
+          "maxBytes": 84999,
+          "count": 0,
+          "totalBytes": 0
+        },
+        {
+          "label": "85 KB\u20131 MB",
+          "minBytes": 85000,
+          "maxBytes": 1048575,
+          "count": 0,
+          "totalBytes": 0
+        },
+        {
+          "label": "> 1 MB",
+          "minBytes": 1048576,
+          "maxBytes": -1,
+          "count": 0,
+          "totalBytes": 0
+        }
+      ]
+    },
+    {
+      "generation": 1,
+      "label": "Gen1",
+      "committedBytes": 0,
+      "objectBytes": -192,
+      "freeBytes": 192,
+      "fragmentationPct": 0,
+      "segmentCount": 0,
+      "freeChunkCount": 8,
+      "histogram": [
+        {
+          "label": "< 1 KB",
+          "minBytes": 0,
+          "maxBytes": 1023,
+          "count": 8,
+          "totalBytes": 192
+        },
+        {
+          "label": "1\u20138 KB",
+          "minBytes": 1024,
+          "maxBytes": 8191,
+          "count": 0,
+          "totalBytes": 0
+        },
+        {
+          "label": "8\u201385 KB",
+          "minBytes": 8192,
+          "maxBytes": 84999,
+          "count": 0,
+          "totalBytes": 0
+        },
+        {
+          "label": "85 KB\u20131 MB",
+          "minBytes": 85000,
+          "maxBytes": 1048575,
+          "count": 0,
+          "totalBytes": 0
+        },
+        {
+          "label": "> 1 MB",
+          "minBytes": 1048576,
+          "maxBytes": -1,
+          "count": 0,
+          "totalBytes": 0
+        }
+      ]
+    },
+    {
+      "generation": 2,
+      "label": "Gen2",
+      "committedBytes": 376602624,
+      "objectBytes": 376596048,
+      "freeBytes": 6576,
+      "fragmentationPct": 0,
+      "segmentCount": 8,
+      "freeChunkCount": 14,
+      "histogram": [
+        {
+          "label": "< 1 KB",
+          "minBytes": 0,
+          "maxBytes": 1023,
+          "count": 12,
+          "totalBytes": 1480
+        },
+        {
+          "label": "1\u20138 KB",
+          "minBytes": 1024,
+          "maxBytes": 8191,
+          "count": 2,
+          "totalBytes": 5096
+        },
+        {
+          "label": "8\u201385 KB",
+          "minBytes": 8192,
+          "maxBytes": 84999,
+          "count": 0,
+          "totalBytes": 0
+        },
+        {
+          "label": "85 KB\u20131 MB",
+          "minBytes": 85000,
+          "maxBytes": 1048575,
+          "count": 0,
+          "totalBytes": 0
+        },
+        {
+          "label": "> 1 MB",
+          "minBytes": 1048576,
+          "maxBytes": -1,
+          "count": 0,
+          "totalBytes": 0
+        }
+      ]
+    },
+    {
+      "generation": 3,
+      "label": "LOH",
+      "committedBytes": 295272448,
+      "objectBytes": 275665472,
+      "freeBytes": 19606976,
+      "fragmentationPct": 6.64,
+      "segmentCount": 8,
+      "freeChunkCount": 564,
+      "histogram": [
+        {
+          "label": "< 1 KB",
+          "minBytes": 0,
+          "maxBytes": 1023,
+          "count": 454,
+          "totalBytes": 15032
+        },
+        {
+          "label": "1\u20138 KB",
+          "minBytes": 1024,
+          "maxBytes": 8191,
+          "count": 10,
+          "totalBytes": 40608
+        },
+        {
+          "label": "8\u201385 KB",
+          "minBytes": 8192,
+          "maxBytes": 84999,
+          "count": 78,
+          "totalBytes": 2850640
+        },
+        {
+          "label": "85 KB\u20131 MB",
+          "minBytes": 85000,
+          "maxBytes": 1048575,
+          "count": 16,
+          "totalBytes": 5989328
+        },
+        {
+          "label": "> 1 MB",
+          "minBytes": 1048576,
+          "maxBytes": -1,
+          "count": 6,
+          "totalBytes": 10711368
+        }
+      ]
+    },
+    {
+      "generation": 4,
+      "label": "POH",
+      "committedBytes": 393216,
+      "objectBytes": 393024,
+      "freeBytes": 192,
+      "fragmentationPct": 0.05,
+      "segmentCount": 8,
+      "freeChunkCount": 8,
+      "histogram": [
+        {
+          "label": "< 1 KB",
+          "minBytes": 0,
+          "maxBytes": 1023,
+          "count": 8,
+          "totalBytes": 192
+        },
+        {
+          "label": "1\u20138 KB",
+          "minBytes": 1024,
+          "maxBytes": 8191,
+          "count": 0,
+          "totalBytes": 0
+        },
+        {
+          "label": "8\u201385 KB",
+          "minBytes": 8192,
+          "maxBytes": 84999,
+          "count": 0,
+          "totalBytes": 0
+        },
+        {
+          "label": "85 KB\u20131 MB",
+          "minBytes": 85000,
+          "maxBytes": 1048575,
+          "count": 0,
+          "totalBytes": 0
+        },
+        {
+          "label": "> 1 MB",
+          "minBytes": 1048576,
+          "maxBytes": -1,
+          "count": 0,
+          "totalBytes": 0
+        }
+      ]
+    }
+  ],
+  "freeChunks": {
+    "totalCount": 603,
+    "totalFreeBytes": 19614152,
+    "histogram": [
+      {
+        "label": "< 1 KB",
+        "minBytes": 0,
+        "maxBytes": 1023,
+        "count": 491,
+        "totalBytes": 17112
+      },
+      {
+        "label": "1\u20138 KB",
+        "minBytes": 1024,
+        "maxBytes": 8191,
+        "count": 12,
+        "totalBytes": 45704
+      },
+      {
+        "label": "8\u201385 KB",
+        "minBytes": 8192,
+        "maxBytes": 84999,
+        "count": 78,
+        "totalBytes": 2850640
+      },
+      {
+        "label": "85 KB\u20131 MB",
+        "minBytes": 85000,
+        "maxBytes": 1048575,
+        "count": 16,
+        "totalBytes": 5989328
+      },
+      {
+        "label": "> 1 MB",
+        "minBytes": 1048576,
+        "maxBytes": -1,
+        "count": 6,
+        "totalBytes": 10711368
+      }
+    ],
+    "largeChunks": [
+      {
+        "address": "0x0000007411396788",
+        "sizeBytes": 2486784,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x0000007441701040",
+        "sizeBytes": 2420384,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x00000074413835e0",
+        "sizeBytes": 2109784,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x00000074017b32e8",
+        "sizeBytes": 1296896,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x0000007431757ce8",
+        "sizeBytes": 1254792,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x00000074721c4088",
+        "sizeBytes": 1142728,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x0000007461e47370",
+        "sizeBytes": 1032840,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x000000747140f4d8",
+        "sizeBytes": 826136,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x0000007401ded3d8",
+        "sizeBytes": 793280,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x000000742064bca0",
+        "sizeBytes": 784504,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x00000074110aedd0",
+        "sizeBytes": 604512,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x0000007411a55a48",
+        "sizeBytes": 461136,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x0000007451df9870",
+        "sizeBytes": 317816,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x0000007432358108",
+        "sizeBytes": 275272,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x00000074324746f8",
+        "sizeBytes": 165296,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x00000074309c2fb8",
+        "sizeBytes": 135704,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x00000074314db0f8",
+        "sizeBytes": 135008,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x00000074416d32b0",
+        "sizeBytes": 95456,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x0000007430117c80",
+        "sizeBytes": 94440,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x00000074614fbd10",
+        "sizeBytes": 90912,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x0000007440ff2ff8",
+        "sizeBytes": 89224,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      },
+      {
+        "address": "0x000000742045eeb8",
+        "sizeBytes": 87792,
+        "generation": 3,
+        "precedingType": "System.Byte[]",
+        "precedingIsPinned": false,
+        "followingType": "System.Byte[]",
+        "followingIsPinned": false
+      }
+    ]
+  },
+  "pinnedObjects": [
+    {
+      "typeName": "System.Object",
+      "generation": 2,
+      "count": 1,
+      "totalBytes": 24
+    }
+  ],
+  "topLohTypes": [
+    {
+      "typeName": "System.Byte[]",
+      "count": 556,
+      "totalBytes": 274574595
+    }
+  ],
+  "topPohTypes": [
+    {
+      "typeName": "System.Object[]",
+      "count": 3,
+      "totalBytes": 32712
+    }
+  ],
+  "segments": [
+    {
+      "address": "0x00000074f0004000",
+      "generation": 4,
+      "committedBytes": 16384,
+      "liveBytes": 0,
+      "occupancyPct": 0
+    },
+    {
+      "address": "0x00000074d0004000",
+      "generation": 4,
+      "committedBytes": 16384,
+      "liveBytes": 0,
+      "occupancyPct": 0
+    },
+    {
+      "address": "0x00000074c0004000",
+      "generation": 4,
+      "committedBytes": 16384,
+      "liveBytes": 0,
+      "occupancyPct": 0
+    },
+    {
+      "address": "0x00000074b0004000",
+      "generation": 4,
+      "committedBytes": 16384,
+      "liveBytes": 0,
+      "occupancyPct": 0
+    },
+    {
+      "address": "0x00000074a0004000",
+      "generation": 4,
+      "committedBytes": 16384,
+      "liveBytes": 0,
+      "occupancyPct": 0
+    },
+    {
+      "address": "0x0000007490004000",
+      "generation": 4,
+      "committedBytes": 16384,
+      "liveBytes": 0,
+      "occupancyPct": 0
+    },
+    {
+      "address": "0x00000074e0004000",
+      "generation": 4,
+      "committedBytes": 16384,
+      "liveBytes": 0,
+      "occupancyPct": 0
+    },
+    {
+      "address": "0x0000007480004000",
+      "generation": 4,
+      "committedBytes": 278528,
+      "liveBytes": 32712,
+      "occupancyPct": 11.74
+    },
+    {
+      "address": "0x0000007000004000",
+      "generation": 2,
+      "committedBytes": 37322752,
+      "liveBytes": 21043271,
+      "occupancyPct": 56.38
+    },
+    {
+      "address": "0x0000007100004000",
+      "generation": 2,
+      "committedBytes": 49070080,
+      "liveBytes": 31030893,
+      "occupancyPct": 63.24
+    },
+    {
+      "address": "0x0000007200004000",
+      "generation": 2,
+      "committedBytes": 49774592,
+      "liveBytes": 32460750,
+      "occupancyPct": 65.22
+    },
+    {
+      "address": "0x0000007180004000",
+      "generation": 2,
+      "committedBytes": 47857664,
+      "liveBytes": 31637541,
+      "occupancyPct": 66.11
+    },
+    {
+      "address": "0x0000007300004000",
+      "generation": 2,
+      "committedBytes": 47235072,
+      "liveBytes": 31921524,
+      "occupancyPct": 67.58
+    },
+    {
+      "address": "0x0000007380004000",
+      "generation": 2,
+      "committedBytes": 47988736,
+      "liveBytes": 32460125,
+      "occupancyPct": 67.64
+    },
+    {
+      "address": "0x0000007080004000",
+      "generation": 2,
+      "committedBytes": 47054848,
+      "liveBytes": 31973423,
+      "occupancyPct": 67.95
+    },
+    {
+      "address": "0x0000007280004000",
+      "generation": 2,
+      "committedBytes": 50298880,
+      "liveBytes": 35042490,
+      "occupancyPct": 69.67
+    },
+    {
+      "address": "0x0000007440004000",
+      "generation": 3,
+      "committedBytes": 35684352,
+      "liveBytes": 30783291,
+      "occupancyPct": 86.27
+    },
+    {
+      "address": "0x0000007410004000",
+      "generation": 3,
+      "committedBytes": 32522240,
+      "liveBytes": 28561593,
+      "occupancyPct": 87.82
+    },
+    {
+      "address": "0x0000007430004000",
+      "generation": 3,
+      "committedBytes": 39026688,
+      "liveBytes": 36029389,
+      "occupancyPct": 92.32
+    },
+    {
+      "address": "0x0000007400004000",
+      "generation": 3,
+      "committedBytes": 39469056,
+      "liveBytes": 36949383,
+      "occupancyPct": 93.62
+    },
+    {
+      "address": "0x0000007470004000",
+      "generation": 3,
+      "committedBytes": 43008000,
+      "liveBytes": 40614861,
+      "occupancyPct": 94.44
+    },
+    {
+      "address": "0x0000007460004000",
+      "generation": 3,
+      "committedBytes": 34701312,
+      "liveBytes": 33274815,
+      "occupancyPct": 95.89
+    },
+    {
+      "address": "0x0000007450004000",
+      "generation": 3,
+      "committedBytes": 32407552,
+      "liveBytes": 31142765,
+      "occupancyPct": 96.1
+    },
+    {
+      "address": "0x0000007420004000",
+      "generation": 3,
+      "committedBytes": 38453248,
+      "liveBytes": 37218498,
+      "occupancyPct": 96.79
+    }
+  ],
+  "segmentMaps": [
+    {
+      "address": "0x0000007000004000",
+      "generation": 2,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 4,
+          "bytes": 376,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 90,
+          "objectCount": 684,
+          "bytes": 20980785,
+          "hasPinnedObject": true
+        }
+      ]
+    },
+    {
+      "address": "0x0000007080004000",
+      "generation": 2,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 1,
+          "bytes": 24,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 0,
+          "objectCount": 765,
+          "bytes": 31973423,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007100004000",
+      "generation": 2,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 1,
+          "bytes": 24,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 0,
+          "objectCount": 739,
+          "bytes": 31030893,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007180004000",
+      "generation": 2,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 2,
+          "bytes": 3472,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 0,
+          "objectCount": 728,
+          "bytes": 31637541,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007200004000",
+      "generation": 2,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 2,
+          "bytes": 1672,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 7,
+          "objectCount": 757,
+          "bytes": 32460750,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007280004000",
+      "generation": 2,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 2,
+          "bytes": 960,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 0,
+          "objectCount": 816,
+          "bytes": 35042490,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007300004000",
+      "generation": 2,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 1,
+          "bytes": 24,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 2,
+          "objectCount": 760,
+          "bytes": 31921524,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007380004000",
+      "generation": 2,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 1,
+          "bytes": 24,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 2,
+          "objectCount": 770,
+          "bytes": 32460125,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007400004000",
+      "generation": 3,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 84,
+          "bytes": 2506016,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 0,
+          "objectCount": 83,
+          "bytes": 36949383,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007410004000",
+      "generation": 3,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 74,
+          "bytes": 3955072,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 0,
+          "objectCount": 73,
+          "bytes": 28561593,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007420004000",
+      "generation": 3,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 73,
+          "bytes": 1232672,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 0,
+          "objectCount": 72,
+          "bytes": 37218498,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007430004000",
+      "generation": 3,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 50,
+          "bytes": 2469352,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 0,
+          "objectCount": 49,
+          "bytes": 36029389,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007440004000",
+      "generation": 3,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 64,
+          "bytes": 4895928,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 0,
+          "objectCount": 63,
+          "bytes": 30783291,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007450004000",
+      "generation": 3,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 67,
+          "bytes": 734872,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 0,
+          "objectCount": 66,
+          "bytes": 31142765,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007460004000",
+      "generation": 3,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 69,
+          "bytes": 1425072,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 0,
+          "objectCount": 68,
+          "bytes": 33274815,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007470004000",
+      "generation": 3,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 83,
+          "bytes": 2387992,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Byte[]",
+          "otherTypeCount": 0,
+          "objectCount": 82,
+          "bytes": 40614861,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007480004000",
+      "generation": 4,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 1,
+          "bytes": 24,
+          "hasPinnedObject": false
+        },
+        {
+          "isGap": false,
+          "typeName": "System.Object[]",
+          "otherTypeCount": 0,
+          "objectCount": 3,
+          "bytes": 32712,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x0000007490004000",
+      "generation": 4,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 1,
+          "bytes": 24,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x00000074a0004000",
+      "generation": 4,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 1,
+          "bytes": 24,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x00000074b0004000",
+      "generation": 4,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 1,
+          "bytes": 24,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x00000074c0004000",
+      "generation": 4,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 1,
+          "bytes": 24,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x00000074d0004000",
+      "generation": 4,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 1,
+          "bytes": 24,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x00000074e0004000",
+      "generation": 4,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 1,
+          "bytes": 24,
+          "hasPinnedObject": false
+        }
+      ]
+    },
+    {
+      "address": "0x00000074f0004000",
+      "generation": 4,
+      "blocks": [
+        {
+          "isGap": true,
+          "typeName": null,
+          "otherTypeCount": 0,
+          "objectCount": 1,
+          "bytes": 24,
+          "hasPinnedObject": false
+        }
+      ]
+    }
+  ]
+}

@@ -224,6 +224,7 @@ public class RealCaptureTests
 
         JsonObject summary = BuildAllocationSummary(allocationEvents, stacksById, symbolTable);
         JsonObject cells = summary["drillDown"]["cells"].AsObject();
+        JsonArray methodNames = summary["methodNames"].AsArray();
 
         Assert.True(cells.Count > 0, "Expected at least one drillDown cell for this capture.");
 
@@ -234,7 +235,7 @@ public class RealCaptureTests
             {
                 foreach (JsonNode frame in stackEntry["frames"].AsArray())
                 {
-                    string frameName = frame.GetValue<string>();
+                    string frameName = methodNames[frame.GetValue<int>()].GetValue<string>();
                     if (!frameName.StartsWith("<unresolved") && frameName != "<no stack captured>")
                     {
                         foundRealFrame = true;

@@ -1282,6 +1282,31 @@ var allocationDatasets = {};
         }
     }
 
+    // Bulk-toggles every collapsible row in the drill-down panel at once
+    // (see the Expand All/Collapse All buttons in drillDownStats.js's
+    // renderDrillDownTable) - every node with at least one child is now
+    // individually collapsible (not just real branch points), so a deep
+    // tree can take many individual clicks to fully open or close by hand.
+    function setAllDrillDownRowsExpanded(container, expanded) {
+        var toggleRows = container.querySelectorAll('[data-expandable="true"]');
+        for (var rowIndex = 0; rowIndex < toggleRows.length; ++rowIndex) {
+            var toggleRow = toggleRows[rowIndex];
+            var detailRow = document.getElementById(toggleRow.getAttribute('data-target'));
+
+            if (expanded) {
+                toggleRow.classList.add('expanded');
+                if (detailRow) {
+                    detailRow.classList.add('expanded');
+                }
+            } else {
+                toggleRow.classList.remove('expanded');
+                if (detailRow) {
+                    detailRow.classList.remove('expanded');
+                }
+            }
+        }
+    }
+
     // Shared by both ways into the Drill Down tab (a chart-segment click and
     // a global-table row click below) - injects the rendered table, reveals
     // the tab button (hidden until there's actually something to show), and
@@ -1312,7 +1337,7 @@ var allocationDatasets = {};
         var typeName = typeTimeline["types"][typeIndex];
         var bucketLabel = formatElapsedMsForAllocationChart(typeTimeline["buckets"][bucketIndex]["bucketStartMSec"]);
 
-        showDrillDownTab(renderDrillDownTable(cellEntry, typeName, bucketLabel, filterLabel));
+        showDrillDownTab(renderDrillDownTable(cellEntry, typeName, bucketLabel, filterLabel, allocationSummaryJson["methodNames"]));
     }
 
     // Called from the click delegation in wireHeapContentsInnerTabs below
@@ -1326,7 +1351,7 @@ var allocationDatasets = {};
         var typeEntry = typeDrillDown ? typeDrillDown[typeIndex] : null;
         var typeName = summaryScope["topTypes"][typeIndex]["TypeName"];
 
-        showDrillDownTab(renderDrillDownTable(typeEntry, typeName, "Whole Capture", filterLabel));
+        showDrillDownTab(renderDrillDownTable(typeEntry, typeName, "Whole Capture", filterLabel, allocationSummaryJson["methodNames"]));
     }
 
     function wireHeapContentsInnerTabs() {
@@ -1409,6 +1434,16 @@ var allocationDatasets = {};
         var drillDownPanel = document.getElementById('heapContents-tab-drilldown');
         if (drillDownPanel) {
             drillDownPanel.addEventListener('click', function (event) {
+                if (event.target.closest('.drillDownExpandAllBtn')) {
+                    setAllDrillDownRowsExpanded(drillDownPanel, true);
+                    return;
+                }
+
+                if (event.target.closest('.drillDownCollapseAllBtn')) {
+                    setAllDrillDownRowsExpanded(drillDownPanel, false);
+                    return;
+                }
+
                 var leafRow = event.target.closest('[data-expandable="true"]');
                 if (!leafRow) {
                     return;
@@ -1416,6 +1451,25 @@ var allocationDatasets = {};
 
                 var detailRow = document.getElementById(leafRow.getAttribute('data-target'));
                 if (!detailRow) {
+                    return;
+                }
+
+                // Expanding/collapsing the root (leaf/allocation-site) row
+                // reveals or hides the *entire* call stack beneath it in one
+                // click, not just the next level - that's the "show me the
+                // whole story for this allocation" action a user reaches
+                // for first, and previously meant clicking through every
+                // intermediate branch point one at a time even though a
+                // straight (non-branching) run already showed itself
+                // automatically. A caller row deeper in the tree still
+                // toggles just its own immediate children, so a
+                // fully-expanded stack can still be selectively
+                // re-collapsed one branch at a time.
+                if (leafRow.classList.contains('leafMethodRow')) {
+                    var willExpand = !leafRow.classList.contains('expanded');
+                    setAllDrillDownRowsExpanded(detailRow, willExpand);
+                    leafRow.classList.toggle('expanded', willExpand);
+                    detailRow.classList.toggle('expanded', willExpand);
                     return;
                 }
 
@@ -1457,6 +1511,22 @@ var allocationDatasets = {};
     // ── Heap Snapshot (gcHeapAnalyzer output) ────────────────────────────────
     // File is read entirely in the webview via FileReader — no extension-host
     // round-trip needed. The tab button is hidden until a snapshot is loaded.
+
+    var HEAP_GEN_LABELS = ['Gen0', 'Gen1', 'Gen2', 'LOH', 'POH'];
+
+    var genLabelFor = function (generation) {
+        return (generation >= 0 && generation < HEAP_GEN_LABELS.length)
+            ? HEAP_GEN_LABELS[generation] : 'Gen' + generation;
+    };
+
+    // Loaded snapshot + the currently-selected generation filter (-1 = "All
+    // Generations") for the Free Chunk Distribution section - module-level
+    // so the filter buttons can re-render just that section without
+    // re-parsing or re-walking the whole snapshot.
+    var heapSnapshotData = null;
+    var heapSnapshotGenFilter = -1;
+    var freeChunkCountChartInstance = null;
+    var freeChunkBytesChartInstance = null;
 
     var formatBytes = function (bytes) {
         if (bytes >= 1073741824) { return (bytes / 1073741824).toFixed(1) + ' GB'; }
@@ -1536,19 +1606,31 @@ var allocationDatasets = {};
         return '<div class="detailTable"><table>' + header + rows + '</table></div>';
     };
 
+    // Preceding/Following describe the nearest live object on either side of
+    // the hole (see AddToHistogram/LargeFreeChunk in HeapAnalyzer.cs) - a
+    // pin badge on either side is the direct root-cause signal for Gen2:
+    // the GC can't compact past a pinned object, so a hole bounded by one is
+    // permanent regardless of how many more collections run, whereas a hole
+    // bounded by two ordinary objects points at a GC that simply hasn't
+    // compacted yet, or a free-list size mismatch.
+    var buildAdjacencyCellHtml = function (typeName, isPinned) {
+        var pinBadge = isPinned ? ' <span class="pinnedBadge" title="Pinned">&#128204;</span>' : '';
+        return '<code>' + typeName + '</code>' + pinBadge;
+    };
+
     var buildLargeChunksTableHtml = function (largeChunks) {
-        var GEN_LABELS = ['Gen0', 'Gen1', 'Gen2', 'LOH', 'POH'];
         var displayChunks = largeChunks.length > 50 ? largeChunks.slice(0, 50) : largeChunks;
-        var header = '<tr class="tableHeader"><th>Address</th><th>Size</th><th>Generation</th></tr>';
+        var header = '<tr class="tableHeader"><th>Address</th><th>Size</th><th>Generation</th>' +
+            '<th>Preceding</th><th>Following</th></tr>';
         var rows = '';
         for (var chunkIdx = 0; chunkIdx < displayChunks.length; ++chunkIdx) {
             var chunk = displayChunks[chunkIdx];
-            var genLabel = (chunk.generation >= 0 && chunk.generation < GEN_LABELS.length)
-                ? GEN_LABELS[chunk.generation] : 'Gen' + chunk.generation;
             rows += '<tr>' +
                 '<td><code>' + chunk.address + '</code></td>' +
                 '<td>' + formatBytes(chunk.sizeBytes) + '</td>' +
-                '<td>' + genLabel + '</td>' +
+                '<td>' + genLabelFor(chunk.generation) + '</td>' +
+                '<td>' + buildAdjacencyCellHtml(chunk.precedingType, chunk.precedingIsPinned) + '</td>' +
+                '<td>' + buildAdjacencyCellHtml(chunk.followingType, chunk.followingIsPinned) + '</td>' +
                 '</tr>';
         }
         var note = largeChunks.length > 50
@@ -1558,18 +1640,39 @@ var allocationDatasets = {};
     };
 
     var buildPinnedTableHtml = function (pinnedObjects) {
-        var GEN_LABELS = ['Gen0', 'Gen1', 'Gen2', 'LOH', 'POH'];
         var header = '<tr class="tableHeader"><th>Type</th><th>Generation</th><th>Count</th><th>Total Size</th></tr>';
         var rows = '';
         for (var pinnedIdx = 0; pinnedIdx < pinnedObjects.length; ++pinnedIdx) {
             var pinned = pinnedObjects[pinnedIdx];
-            var genLabel = (pinned.generation >= 0 && pinned.generation < GEN_LABELS.length)
-                ? GEN_LABELS[pinned.generation] : 'Gen' + pinned.generation;
             rows += '<tr>' +
                 '<td>' + pinned.typeName + '</td>' +
-                '<td>' + genLabel + '</td>' +
+                '<td>' + genLabelFor(pinned.generation) + '</td>' +
                 '<td>' + pinned.count + '</td>' +
                 '<td>' + formatBytes(pinned.totalBytes) + '</td>' +
+                '</tr>';
+        }
+        return '<div class="detailTable"><table>' + header + rows + '</table></div>';
+    };
+
+    var occupancyPctClass = function (pct) {
+        if (pct < 10) { return 'expensiveGc'; }
+        if (pct < 30) { return 'warnGc'; }
+        if (pct < 60) { return 'interstingGc'; }
+        return '';
+    };
+
+    var buildSegmentTableHtml = function (segments) {
+        var header = '<tr class="tableHeader"><th>Address</th><th>Generation</th>' +
+            '<th>Committed</th><th>Live</th><th>Occupancy %</th></tr>';
+        var rows = '';
+        for (var segmentIdx = 0; segmentIdx < segments.length; ++segmentIdx) {
+            var segment = segments[segmentIdx];
+            rows += '<tr>' +
+                '<td><code>' + segment.address + '</code></td>' +
+                '<td>' + genLabelFor(segment.generation) + '</td>' +
+                '<td>' + formatBytes(segment.committedBytes) + '</td>' +
+                '<td>' + formatBytes(segment.liveBytes) + '</td>' +
+                '<td class="' + occupancyPctClass(segment.occupancyPct) + '">' + segment.occupancyPct.toFixed(1) + '%</td>' +
                 '</tr>';
         }
         return '<div class="detailTable"><table>' + header + rows + '</table></div>';
@@ -1592,7 +1695,15 @@ var allocationDatasets = {};
         return '<div class="detailTable"><table>' + header + rows + '</table></div>';
     };
 
-    var buildFreeChunkCharts = function (histogram) {
+    // Re-rendered on every generation-filter change (see wireGenFilterButtons
+    // below), so any previous chart instances must be destroyed first - the
+    // canvases persist across re-renders (only innerHTML around them
+    // changes), and Chart.js throws if a second chart is attached to a
+    // canvas that already has one.
+    var buildFreeChunkCharts = function (histogram, titleSuffix) {
+        if (freeChunkCountChartInstance) { freeChunkCountChartInstance.destroy(); freeChunkCountChartInstance = null; }
+        if (freeChunkBytesChartInstance) { freeChunkBytesChartInstance.destroy(); freeChunkBytesChartInstance = null; }
+
         var bucketLabels = [];
         var countData = [];
         var bytesData = [];
@@ -1613,7 +1724,7 @@ var allocationDatasets = {};
 
         var countCanvas = document.getElementById('freeChunkCountChart');
         if (countCanvas) {
-            new Chart(countCanvas.getContext('2d'), {
+            freeChunkCountChartInstance = new Chart(countCanvas.getContext('2d'), {
                 type: 'horizontalBar',
                 data: {
                     labels: bucketLabels,
@@ -1625,7 +1736,7 @@ var allocationDatasets = {};
                     }]
                 },
                 options: {
-                    title: { display: true, text: 'Free Chunks by Count' },
+                    title: { display: true, text: 'Free Chunks by Count' + titleSuffix },
                     scales: { xAxes: [{ ticks: { beginAtZero: true } }] },
                     legend: { display: false },
                     animation: { duration: 0 },
@@ -1636,7 +1747,7 @@ var allocationDatasets = {};
 
         var bytesCanvas = document.getElementById('freeChunkBytesChart');
         if (bytesCanvas) {
-            new Chart(bytesCanvas.getContext('2d'), {
+            freeChunkBytesChartInstance = new Chart(bytesCanvas.getContext('2d'), {
                 type: 'horizontalBar',
                 data: {
                     labels: bucketLabels,
@@ -1648,7 +1759,7 @@ var allocationDatasets = {};
                     }]
                 },
                 options: {
-                    title: { display: true, text: 'Free Space by Size Bucket' },
+                    title: { display: true, text: 'Free Space by Size Bucket' + titleSuffix },
                     scales: {
                         xAxes: [{
                             ticks: {
@@ -1665,47 +1776,228 @@ var allocationDatasets = {};
         }
     };
 
+    // Free Chunk Distribution + Large Free Holes, scoped to whichever
+    // generation is currently selected (heapSnapshotGenFilter, -1 = All).
+    // Rebuilds just this section's DOM + charts rather than the whole
+    // snapshot panel, since it's the only part a filter change affects.
+    var renderFreeChunkSection = function () {
+        var snapshot = heapSnapshotData;
+        if (!snapshot) { return; }
+
+        var container = document.getElementById('freeChunkSection');
+        if (!container) { return; }
+
+        var isAll = heapSnapshotGenFilter < 0;
+        var histogram = isAll ? snapshot.freeChunks.histogram : snapshot.generations[heapSnapshotGenFilter].histogram;
+        var titleSuffix = isAll ? '' : ' (' + genLabelFor(heapSnapshotGenFilter) + ')';
+
+        var largeChunks = snapshot.freeChunks.largeChunks;
+        if (!isAll) {
+            largeChunks = [];
+            for (var chunkIdx = 0; chunkIdx < snapshot.freeChunks.largeChunks.length; ++chunkIdx) {
+                if (snapshot.freeChunks.largeChunks[chunkIdx].generation === heapSnapshotGenFilter) {
+                    largeChunks.push(snapshot.freeChunks.largeChunks[chunkIdx]);
+                }
+            }
+        }
+
+        var html = '<div class="freeChunkHistogramRow">' +
+                        '<div class="freeChunkHistogramChart"><canvas id="freeChunkCountChart"></canvas></div>' +
+                        '<div class="freeChunkHistogramChart"><canvas id="freeChunkBytesChart"></canvas></div>' +
+                    '</div>';
+        html += buildFreeChunkTableHtml({ histogram: histogram, totalFreeBytes: histogram.reduce(function (sum, bucket) { return sum + bucket.totalBytes; }, 0) });
+
+        if (largeChunks.length > 0) {
+            html += '<h4 class="detailTableHeading">Large Free Holes (&ge; 85 KB)' + titleSuffix + ' &mdash; ' +
+                    largeChunks.length + ' total</h4>';
+            html += buildLargeChunksTableHtml(largeChunks);
+        } else {
+            html += '<p>No large free holes' + titleSuffix + '.</p>';
+        }
+
+        container.innerHTML = html;
+        buildFreeChunkCharts(histogram, titleSuffix);
+    };
+
+    var wireGenFilterButtons = function () {
+        var filterButtons = document.getElementsByClassName('genFilterButton');
+        for (var buttonIdx = 0; buttonIdx < filterButtons.length; ++buttonIdx) {
+            filterButtons[buttonIdx].addEventListener('click', function (event) {
+                var buttons = document.getElementsByClassName('genFilterButton');
+                for (var idx = 0; idx < buttons.length; ++idx) {
+                    buttons[idx].classList.remove('active');
+                }
+                event.currentTarget.classList.add('active');
+
+                heapSnapshotGenFilter = parseInt(event.currentTarget.getAttribute('data-gen-filter'), 10);
+                renderFreeChunkSection();
+            });
+        }
+    };
+
+    // Real bytes span orders of magnitude (a 20 MB gap next to a 5 KB live
+    // run) - a linear width would make every small block invisible, so
+    // widths are sqrt-scaled instead: compresses the dynamic range while
+    // still keeping larger blocks visibly larger, and a CSS min-width (see
+    // .segmentBlock) keeps labels legible regardless.
+    var segmentBlockFlexGrow = function (bytes) {
+        return Math.max(1, Math.round(Math.sqrt(Math.max(bytes, 1))));
+    };
+
+    var buildSegmentBlockHtml = function (block) {
+        var flexGrow = segmentBlockFlexGrow(block.bytes);
+
+        if (block.isGap) {
+            return '<div class="segmentBlock segmentBlockGap" style="flex-grow:' + flexGrow + '" ' +
+                'title="Free / fragmented gap - ' + formatBytes(block.bytes) + '">' +
+                '<div class="segmentBlockLabel">Free</div>' +
+                '<div class="segmentBlockSize">' + formatBytes(block.bytes) + '</div>' +
+                '</div>';
+        }
+
+        var moreLabel = block.otherTypeCount > 0 ? ' <span class="segmentBlockMore">+' + block.otherTypeCount + ' more</span>' : '';
+        var pinBadge = block.hasPinnedObject ? ' <span class="pinnedBadge" title="Contains a pinned object">&#128204;</span>' : '';
+        var classes = 'segmentBlock segmentBlockLive' + (block.hasPinnedObject ? ' segmentBlockPinned' : '');
+        var titleText = block.typeName + (block.otherTypeCount > 0 ? ' (+' + block.otherTypeCount + ' more types)' : '') +
+            ' - ' + block.objectCount + ' object(s), ' + formatBytes(block.bytes);
+
+        return '<div class="' + classes + '" style="flex-grow:' + flexGrow + '" title="' + titleText + '">' +
+            '<div class="segmentBlockLabel">' + block.typeName + moreLabel + pinBadge + '</div>' +
+            '<div class="segmentBlockSize">' + formatBytes(block.bytes) + '</div>' +
+            '</div>';
+    };
+
+    var buildSegmentStripHtml = function (segmentMap, occupancy) {
+        var occLabel = occupancy ? (' &mdash; ' + occupancy.occupancyPct.toFixed(1) + '% occupied') : '';
+        var heading = '<h4 class="segmentStripHeading">' + genLabelFor(segmentMap.generation) + ' segment ' +
+            '<code>' + segmentMap.address + '</code>' + occLabel + ', address-ordered</h4>';
+
+        var blocksHtml = '<div class="segmentStripRow">';
+        for (var blockIdx = 0; blockIdx < segmentMap.blocks.length; ++blockIdx) {
+            blocksHtml += buildSegmentBlockHtml(segmentMap.blocks[blockIdx]);
+        }
+        blocksHtml += '</div>';
+
+        return heading + blocksHtml;
+    };
+
+    // One address-ordered strip per Gen2/LOH/POH segment (see SegmentMap in
+    // HeapAnalyzer.cs) - occupancyByAddress correlates each strip back to
+    // its Segment Occupancy table row so the strip's heading can show the
+    // same % the Overview tab already reports for that segment.
+    var renderSegmentMapSection = function (snapshot) {
+        var container = document.getElementById('heapSnapshot-tab-segmentmap');
+        if (!container) { return; }
+
+        var occupancyByAddress = {};
+        if (snapshot.segments) {
+            for (var segIdx = 0; segIdx < snapshot.segments.length; ++segIdx) {
+                occupancyByAddress[snapshot.segments[segIdx].address] = snapshot.segments[segIdx];
+            }
+        }
+
+        var html = '<div class="segmentStripLegend">' +
+                '<span class="segmentStripLegendItem"><span class="segmentBlock segmentBlockLive segmentBlockPinned segmentStripLegendSwatch"></span>Pinned live object(s)</span>' +
+                '<span class="segmentStripLegendItem"><span class="segmentBlock segmentBlockLive segmentStripLegendSwatch"></span>Live object(s)</span>' +
+                '<span class="segmentStripLegendItem"><span class="segmentBlock segmentBlockGap segmentStripLegendSwatch"></span>Free / fragmented gap</span>' +
+            '</div>';
+
+        for (var mapIdx = 0; mapIdx < snapshot.segmentMaps.length; ++mapIdx) {
+            var segmentMap = snapshot.segmentMaps[mapIdx];
+            html += buildSegmentStripHtml(segmentMap, occupancyByAddress[segmentMap.address]);
+        }
+
+        container.innerHTML = html;
+    };
+
+    var wireHeapSnapshotInnerTabs = function () {
+        var tabButtons = document.getElementsByClassName('heapSnapshotInnerTabButton');
+        for (var buttonIdx = 0; buttonIdx < tabButtons.length; ++buttonIdx) {
+            tabButtons[buttonIdx].addEventListener('click', function (event) {
+                var targetTab = event.currentTarget.getAttribute('data-heapsnaptab');
+
+                var buttons = document.getElementsByClassName('heapSnapshotInnerTabButton');
+                for (var idx = 0; idx < buttons.length; ++idx) {
+                    buttons[idx].classList.remove('active');
+                }
+                event.currentTarget.classList.add('active');
+
+                var panels = document.getElementsByClassName('heapSnapshotInnerTabPanel');
+                for (var panelIdx = 0; panelIdx < panels.length; ++panelIdx) {
+                    panels[panelIdx].classList.remove('active');
+                }
+                document.getElementById('heapSnapshot-tab-' + targetTab).classList.add('active');
+            });
+        }
+    };
+
     var renderHeapSnapshot = function (snapshot) {
         var panel = document.getElementById('tab-heapSnapshot');
         if (!panel) { return; }
 
-        var html = buildSnapshotSummaryHtml(snapshot);
+        heapSnapshotData = snapshot;
+        heapSnapshotGenFilter = -1;
 
-        html += '<h3 class="detailTableHeading">Generation Breakdown</h3>';
-        html += buildGenerationTableHtml(snapshot.generations);
+        var overviewHtml = buildSnapshotSummaryHtml(snapshot);
 
-        html += '<h3 class="detailTableHeading">Free Chunk Distribution</h3>';
-        html += '<div class="freeChunkHistogramRow">' +
-                    '<div class="freeChunkHistogramChart"><canvas id="freeChunkCountChart"></canvas></div>' +
-                    '<div class="freeChunkHistogramChart"><canvas id="freeChunkBytesChart"></canvas></div>' +
-                '</div>';
-        html += buildFreeChunkTableHtml(snapshot.freeChunks);
+        overviewHtml += '<h3 class="detailTableHeading">Generation Breakdown</h3>';
+        overviewHtml += buildGenerationTableHtml(snapshot.generations);
 
-        if (snapshot.freeChunks.largeChunks.length > 0) {
-            html += '<h3 class="detailTableHeading">Large Free Holes (&ge; 85 KB) &mdash; ' +
-                    snapshot.freeChunks.largeChunks.length + ' total</h3>';
-            html += buildLargeChunksTableHtml(snapshot.freeChunks.largeChunks);
+        if (snapshot.segments && snapshot.segments.length > 0) {
+            overviewHtml += '<h3 class="detailTableHeading">Segment Occupancy</h3>' +
+                '<p class="segmentOccupancyHint">Sorted least-occupied first - a low-occupancy segment is a fragmentation ' +
+                'signal on its own, whatever the cause (a pinned object, an ordinary long-lived anchor, or a GC that ' +
+                'simply hasn\'t compacted recently).</p>';
+            overviewHtml += buildSegmentTableHtml(snapshot.segments);
         }
 
+        overviewHtml += '<h3 class="detailTableHeading">Free Chunk Distribution</h3>';
+        overviewHtml += '<div class="genFilterRow">' +
+                    '<button class="genFilterButton active" data-gen-filter="-1">All</button>' +
+                    '<button class="genFilterButton" data-gen-filter="0">Gen0</button>' +
+                    '<button class="genFilterButton" data-gen-filter="1">Gen1</button>' +
+                    '<button class="genFilterButton" data-gen-filter="2">Gen2</button>' +
+                    '<button class="genFilterButton" data-gen-filter="3">LOH</button>' +
+                    '<button class="genFilterButton" data-gen-filter="4">POH</button>' +
+                '</div>';
+        overviewHtml += '<div id="freeChunkSection"></div>';
+
         if (snapshot.pinnedObjects && snapshot.pinnedObjects.length > 0) {
-            html += '<h3 class="detailTableHeading">Pinned Object Types</h3>';
-            html += buildPinnedTableHtml(snapshot.pinnedObjects);
+            overviewHtml += '<h3 class="detailTableHeading">Pinned Object Types</h3>';
+            overviewHtml += buildPinnedTableHtml(snapshot.pinnedObjects);
         } else {
-            html += '<h3 class="detailTableHeading">Pinned Objects</h3><p>No pinned objects detected.</p>';
+            overviewHtml += '<h3 class="detailTableHeading">Pinned Objects</h3><p>No pinned objects detected.</p>';
         }
 
         if (snapshot.topLohTypes && snapshot.topLohTypes.length > 0) {
-            html += '<h3 class="detailTableHeading">Top LOH Types</h3>';
-            html += buildTypeStatTableHtml(snapshot.topLohTypes);
+            overviewHtml += '<h3 class="detailTableHeading">Top LOH Types</h3>';
+            overviewHtml += buildTypeStatTableHtml(snapshot.topLohTypes);
         }
 
         if (snapshot.topPohTypes && snapshot.topPohTypes.length > 0) {
-            html += '<h3 class="detailTableHeading">Top POH Types</h3>';
-            html += buildTypeStatTableHtml(snapshot.topPohTypes);
+            overviewHtml += '<h3 class="detailTableHeading">Top POH Types</h3>';
+            overviewHtml += buildTypeStatTableHtml(snapshot.topPohTypes);
+        }
+
+        var hasSegmentMaps = snapshot.segmentMaps && snapshot.segmentMaps.length > 0;
+
+        var html = '<div class="heapSnapshotInnerTabBar">' +
+                '<button class="heapSnapshotInnerTabButton active" data-heapsnaptab="overview">Overview</button>' +
+                (hasSegmentMaps ? '<button class="heapSnapshotInnerTabButton" data-heapsnaptab="segmentmap">Segment Map</button>' : '') +
+            '</div>';
+        html += '<div id="heapSnapshot-tab-overview" class="heapSnapshotInnerTabPanel active">' + overviewHtml + '</div>';
+        if (hasSegmentMaps) {
+            html += '<div id="heapSnapshot-tab-segmentmap" class="heapSnapshotInnerTabPanel"></div>';
         }
 
         panel.innerHTML = html;
-        buildFreeChunkCharts(snapshot.freeChunks.histogram);
+        renderFreeChunkSection();
+        wireGenFilterButtons();
+        wireHeapSnapshotInnerTabs();
+
+        if (hasSegmentMaps) {
+            renderSegmentMapSection(snapshot);
+        }
 
         var tabBtn = document.getElementById('heapSnapshotTabBtn');
         if (tabBtn) {

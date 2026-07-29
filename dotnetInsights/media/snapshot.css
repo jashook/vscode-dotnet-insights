@@ -384,6 +384,156 @@
     padding: 1em;
 }
 
+.segmentOccupancyHint {
+    font-size: 0.85em;
+    opacity: 0.8;
+    margin: 0 0 8px 0;
+}
+
+/* Filters the Free Chunk Distribution section by generation (All/Gen0-4) -
+   same look as .allocationViewButton so the two filter-toggle groups on
+   this page (allocation view, heap snapshot generation) read as the same
+   pattern rather than two different widgets. */
+.genFilterRow {
+    margin: 0.5em 0 1em 0;
+}
+
+.genFilterButton {
+    background-color: rgba(72, 83, 136, 0.8);
+    border: none;
+    border-radius: 6px 6px 0 0;
+    color: white;
+    cursor: pointer;
+    display: inline-block;
+    font-size: 14px;
+    margin: 0 2px;
+    padding: 0.4em 1em;
+    width: auto;
+}
+
+.genFilterButton.active {
+    background-color: rgba(174, 207, 27, 0.9);
+}
+
+.pinnedBadge {
+    font-size: 0.9em;
+}
+
+/* Inner tab bar within the Heap Snapshot panel (Overview / Segment Map) -
+   same look as .heapContentsTabBar/.heapContentsTabButton so every inner-tab
+   group on this page reads as the same pattern. */
+.heapSnapshotInnerTabBar {
+    margin-top: 1em;
+    text-align: center;
+}
+
+.heapSnapshotInnerTabButton {
+    background-color: rgba(72, 83, 136, 0.8);
+    border: none;
+    border-radius: 6px 6px 0 0;
+    color: white;
+    cursor: pointer;
+    display: inline-block;
+    font-size: 15px;
+    margin: 0 2px;
+    padding: 0.6em 1.5em;
+    width: auto;
+}
+
+.heapSnapshotInnerTabButton.active {
+    background-color: rgba(174, 207, 27, 0.9);
+}
+
+.heapSnapshotInnerTabPanel {
+    display: none;
+}
+
+.heapSnapshotInnerTabPanel.active {
+    display: block;
+}
+
+.segmentStripHeading {
+    margin: 1.5em 0 0.5em 0;
+}
+
+.segmentStripLegend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5em;
+    margin-bottom: 0.5em;
+    font-size: 0.85em;
+    opacity: 0.85;
+}
+
+.segmentStripLegendItem {
+    display: flex;
+    align-items: center;
+    gap: 0.4em;
+}
+
+.segmentStripLegendSwatch {
+    flex-grow: 0 !important;
+    min-width: 24px !important;
+    width: 24px;
+    height: 16px;
+    padding: 0 !important;
+}
+
+/* Widths are set inline per-block (flex-grow, sqrt-scaled by byte size - see
+   segmentBlockFlexGrow in snapshotGcStats.js) - min-width keeps a tiny block
+   (or the legend swatches above) from collapsing to unreadable. The row
+   scrolls horizontally rather than shrinking blocks below that floor when a
+   segment has many blocks. */
+.segmentStripRow {
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    margin-bottom: 1em;
+}
+
+.segmentBlock {
+    min-width: 90px;
+    padding: 0.5em 0.6em;
+    border-radius: 6px;
+    text-align: center;
+    font-size: 0.8em;
+    box-sizing: border-box;
+}
+
+.segmentBlockLive {
+    background-color: rgba(96, 165, 69, 0.18);
+    border: 1.5px solid rgba(96, 165, 69, 0.9);
+}
+
+.segmentBlockPinned {
+    background-color: rgba(220, 53, 69, 0.15);
+    border: 1.5px solid rgba(220, 53, 69, 0.85);
+}
+
+.segmentBlockGap {
+    background-color: rgba(128, 128, 128, 0.12);
+    border: 1.5px dashed rgba(128, 128, 128, 0.6);
+}
+
+.segmentBlockLabel {
+    font-weight: bold;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.segmentBlockSize {
+    opacity: 0.8;
+    margin-top: 2px;
+}
+
+.segmentBlockMore {
+    font-weight: normal;
+    opacity: 0.75;
+    font-size: 0.9em;
+}
+
 .spacer
 {
     margin-top: 3em;
@@ -713,14 +863,29 @@
    use the exact same colgroup, which is what makes a caller row's Bytes/
    Ticks numbers actually line up under the leaf row's numbers above it.
    The Method column is deliberately left unset in both so it can hold
-   long names, and still ends up the same width in both places since a
-   nested table's total width always matches the colspan cell containing
-   it. */
-.drillDownTable table,
-.callerTreeInner
+   long names. */
+.drillDownTable table
 {
     table-layout: fixed;
     width: auto;
+}
+
+/* Every node with at least one child now gets its own nested
+   .callerTreeInner (see renderCallerChainRows) so it can be collapsed
+   independently, not just at real branch points - a straight, deep call
+   stack (common - 20-30 frames with no branching is normal) can nest 20-30
+   of these inside each other. A nested table with width:auto shrinks to
+   its own content instead of filling the <td> containing it (unlike a
+   top-level table, which isn't inside a table-cell and so naturally fills
+   its container) - width:100% here is what actually makes "a nested
+   table's total width always matches the colspan cell containing it" true
+   at every nesting depth, instead of merely being true for one or two
+   levels and silently compounding into a visible rightward-narrowing
+   pyramid for anything deeper. */
+.callerTreeInner
+{
+    table-layout: fixed;
+    width: 100%;
 }
 
 .bytesColumn
@@ -777,13 +942,38 @@
     font-style: italic;
 }
 
+.drillDownExpandControls
+{
+    margin: 0.5em 0 0 2%;
+}
+
+.drillDownExpandControlButton
+{
+    background-color: rgba(72, 83, 136, 0.8);
+    border: none;
+    border-radius: 6px;
+    color: white;
+    cursor: pointer;
+    display: inline-block;
+    font-size: 13px;
+    margin-right: 0.5em;
+    padding: 0.4em 1em;
+    width: auto;
+}
+
+.drillDownExpandControlButton:hover
+{
+    background-color: rgba(72, 83, 136, 1);
+}
+
 /* Rows for leaf (allocating) methods - see drillDownStats.js's
    groupStacksByLeaf - and, one level down, rows for individual caller
    frames (renderCallerChainRows). Both use the same
-   [data-expandable="true"]/toggle/expanded convention: a row only gets a
-   toggle where the call tree actually branches (more than one next step);
-   a straight, non-branching chain of callers just flows as consecutive
-   rows with no interaction needed. */
+   [data-expandable="true"]/toggle/expanded convention: any row with at
+   least one child gets a toggle, so it can be collapsed independently -
+   not just where the call tree actually branches. A straight,
+   non-branching chain of callers still starts expanded by default (nothing
+   to decide yet), but can still be collapsed like any other row. */
 .leafMethodRow[data-expandable="true"],
 .callerRow[data-expandable="true"]
 {
@@ -827,10 +1017,30 @@
 /* The <td> wrapping each nested level's <table> - no padding of its own so
    the nested table's rows sit flush against the outer table, since each
    callerRow already carries its own depth-based indent via an inline
-   padding-left style (renderCallerChainRows). */
-.callerTreeCell
+   padding-left style (renderCallerChainRows). Qualified with .detailTable
+   (not just .callerTreeCell alone) so this beats .detailTable td's
+   `padding: 4px` on specificity - a bare .callerTreeCell (specificity 0-1-0)
+   loses to that compound selector (0-1-1) regardless of source order, so
+   the intended padding:0 was silently never applying. Every node now
+   nesting its own .callerTreeInner (not just real branch points - see
+   renderCallerChainRows) turned this latent 4px-per-level leak into a
+   visible rightward-narrowing pyramid across a long non-branching stack;
+   at only 1-2 nesting levels deep (the old branch-only behavior) it was
+   imperceptible. */
+.detailTable .callerTreeCell
 {
     padding: 0;
+}
+
+/* Browsers default border-spacing to 2px (border-collapse: separate) on
+   every <table>, adding further per-nesting-level drift on top of the
+   .callerTreeCell padding bug above - neither this file nor its .detailTable
+   table/.callerTreeInner rules ever reset it, so it was silently
+   compounding the exact same way. */
+.drillDownTable table,
+.callerTreeInner
+{
+    border-spacing: 0;
 }
 
 .callerRow td

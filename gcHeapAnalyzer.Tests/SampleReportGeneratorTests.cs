@@ -198,6 +198,261 @@ public class SampleReportGeneratorTests
                 $"Generation {genIndex} has negative fragmentation");
         }
     }
+
+    // Each generation's own histogram must sum to that same generation's
+    // FreeBytes/FreeChunkCount - otherwise the per-generation view (added so
+    // Gen2's fragmentation shape isn't drowned out by Gen0/Gen1's much
+    // higher chunk counts in the aggregate) would silently disagree with
+    // the generation table sitting right next to it in the UI.
+    [Fact]
+    public void Generate_EachGenerationHistogramSumsMatchThatGenerationsFreeBytesAndCount()
+    {
+        FragmentationReport report = SampleReportGenerator.Generate();
+
+        for (int genIndex = 0; genIndex < report.Generations.Length; ++genIndex)
+        {
+            GenerationStats gen = report.Generations[genIndex];
+
+            long bucketCountSum = 0;
+            long bucketBytesSum = 0;
+            for (int bucketIndex = 0; bucketIndex < gen.Histogram.Length; ++bucketIndex)
+            {
+                bucketCountSum += gen.Histogram[bucketIndex].Count;
+                bucketBytesSum += gen.Histogram[bucketIndex].TotalBytes;
+            }
+
+            Assert.True(gen.FreeChunkCount == bucketCountSum,
+                $"{gen.Label}: FreeChunkCount ({gen.FreeChunkCount}) != histogram count sum ({bucketCountSum})");
+            Assert.True(gen.FreeBytes == bucketBytesSum,
+                $"{gen.Label}: FreeBytes ({gen.FreeBytes}) != histogram bytes sum ({bucketBytesSum})");
+        }
+    }
+
+    // The cross-generation aggregate (report.FreeChunks.Histogram) must
+    // equal the sum, bucket-by-bucket, of all five generations' own
+    // histograms - this is a structural invariant of real HeapAnalyzer
+    // output (every free object is tallied into both places), and the
+    // synthetic sample should honor it too so it stays a believable stand-in
+    // for a real capture.
+    [Fact]
+    public void Generate_AggregateHistogramEqualsSumOfPerGenerationHistograms()
+    {
+        FragmentationReport report = SampleReportGenerator.Generate();
+
+        for (int bucketIndex = 0; bucketIndex < report.FreeChunks.Histogram.Length; ++bucketIndex)
+        {
+            long expectedCount = 0;
+            long expectedBytes = 0;
+            for (int genIndex = 0; genIndex < report.Generations.Length; ++genIndex)
+            {
+                expectedCount += report.Generations[genIndex].Histogram[bucketIndex].Count;
+                expectedBytes += report.Generations[genIndex].Histogram[bucketIndex].TotalBytes;
+            }
+
+            FreeChunkBucket aggregateBucket = report.FreeChunks.Histogram[bucketIndex];
+            Assert.True(aggregateBucket.Count == expectedCount,
+                $"Bucket '{aggregateBucket.Label}': aggregate count ({aggregateBucket.Count}) != sum across generations ({expectedCount})");
+            Assert.True(aggregateBucket.TotalBytes == expectedBytes,
+                $"Bucket '{aggregateBucket.Label}': aggregate bytes ({aggregateBucket.TotalBytes}) != sum across generations ({expectedBytes})");
+        }
+    }
+
+    // Root-cause signal this sample exists to demonstrate: at least one
+    // Gen2 hole must be bracketed by a pinned object (the permanent,
+    // non-compactable case) and at least one must NOT be (showing the tool
+    // can also surface a Gen2 hole that pinning doesn't explain).
+    [Fact]
+    public void Generate_Gen2LargeChunksIncludeBothPinnedAndNonPinnedAdjacency()
+    {
+        FragmentationReport report = SampleReportGenerator.Generate();
+
+        bool sawPinnedAdjacency = false;
+        bool sawNonPinnedAdjacency = false;
+
+        for (int chunkIndex = 0; chunkIndex < report.FreeChunks.LargeChunks.Count; ++chunkIndex)
+        {
+            LargeFreeChunk chunk = report.FreeChunks.LargeChunks[chunkIndex];
+            if (chunk.Generation != 2)
+            {
+                continue;
+            }
+
+            if (chunk.PrecedingIsPinned || chunk.FollowingIsPinned)
+            {
+                sawPinnedAdjacency = true;
+            }
+            else
+            {
+                sawNonPinnedAdjacency = true;
+            }
+        }
+
+        Assert.True(sawPinnedAdjacency, "Expected at least one Gen2 hole bracketed by a pinned object");
+        Assert.True(sawNonPinnedAdjacency, "Expected at least one Gen2 hole with no pinned neighbor");
+    }
+
+    // LOH fragmentation in this sample is deliberately never pinning-caused
+    // (LOH objects are rarely pinned via GCHandle in practice) - a different
+    // root cause (buffer-size mismatch) than Gen2's story above.
+    [Fact]
+    public void Generate_LohLargeChunksHaveNoPinnedAdjacency()
+    {
+        FragmentationReport report = SampleReportGenerator.Generate();
+
+        for (int chunkIndex = 0; chunkIndex < report.FreeChunks.LargeChunks.Count; ++chunkIndex)
+        {
+            LargeFreeChunk chunk = report.FreeChunks.LargeChunks[chunkIndex];
+            if (chunk.Generation != 3)
+            {
+                continue;
+            }
+
+            Assert.False(chunk.PrecedingIsPinned, $"LOH chunk at {chunk.Address} should not have a pinned preceding neighbor");
+            Assert.False(chunk.FollowingIsPinned, $"LOH chunk at {chunk.Address} should not have a pinned following neighbor");
+        }
+    }
+
+    [Fact]
+    public void Generate_SegmentsListIsNonEmptyAndOccupancyPctIsWithinZeroToOneHundred()
+    {
+        FragmentationReport report = SampleReportGenerator.Generate();
+
+        Assert.True(report.Segments.Count > 0);
+
+        for (int segmentIndex = 0; segmentIndex < report.Segments.Count; ++segmentIndex)
+        {
+            SegmentOccupancy segment = report.Segments[segmentIndex];
+            Assert.True(segment.OccupancyPct >= 0.0 && segment.OccupancyPct <= 100.0,
+                $"Segment {segment.Address} has out-of-range occupancy {segment.OccupancyPct}");
+            Assert.StartsWith("0x", segment.Address);
+        }
+    }
+
+    // Per-generation segment committed/live bytes should reconcile with
+    // that generation's own totals - otherwise the segment-occupancy view
+    // would show numbers that don't add up against the generation table
+    // right next to it.
+    [Fact]
+    public void Generate_Gen2SegmentBytesSumMatchesGen2CommittedAndObjectBytes()
+    {
+        FragmentationReport report = SampleReportGenerator.Generate();
+        GenerationStats gen2 = report.Generations[2];
+
+        long committedSum = 0;
+        long liveSum = 0;
+        for (int segmentIndex = 0; segmentIndex < report.Segments.Count; ++segmentIndex)
+        {
+            SegmentOccupancy segment = report.Segments[segmentIndex];
+            if (segment.Generation != 2)
+            {
+                continue;
+            }
+
+            committedSum += segment.CommittedBytes;
+            liveSum += segment.LiveBytes;
+        }
+
+        Assert.Equal(gen2.CommittedBytes, committedSum);
+        Assert.Equal(gen2.ObjectBytes, liveSum);
+    }
+
+    [Fact]
+    public void Generate_SegmentMapsListHasOneEntryPerSegment()
+    {
+        FragmentationReport report = SampleReportGenerator.Generate();
+
+        Assert.Equal(report.Segments.Count, report.SegmentMaps.Count);
+    }
+
+    // Each SegmentMap's blocks must reconcile with the SegmentOccupancy entry
+    // sharing its Address - otherwise the block-strip visualization and the
+    // occupancy table sitting next to it in the UI would silently disagree
+    // about how much of the segment is actually live vs free.
+    [Fact]
+    public void Generate_EachSegmentMapBlocksSumMatchesItsSegmentOccupancyEntry()
+    {
+        FragmentationReport report = SampleReportGenerator.Generate();
+
+        for (int mapIndex = 0; mapIndex < report.SegmentMaps.Count; ++mapIndex)
+        {
+            SegmentMap segmentMap = report.SegmentMaps[mapIndex];
+
+            SegmentOccupancy matchingOccupancy = null;
+            for (int segmentIndex = 0; segmentIndex < report.Segments.Count; ++segmentIndex)
+            {
+                if (report.Segments[segmentIndex].Address == segmentMap.Address)
+                {
+                    matchingOccupancy = report.Segments[segmentIndex];
+                    break;
+                }
+            }
+
+            Assert.True(matchingOccupancy != null, $"No SegmentOccupancy entry found for SegmentMap at {segmentMap.Address}");
+
+            long liveSum = 0;
+            long gapSum = 0;
+            for (int blockIndex = 0; blockIndex < segmentMap.Blocks.Count; ++blockIndex)
+            {
+                SegmentBlock block = segmentMap.Blocks[blockIndex];
+                if (block.IsGap)
+                {
+                    gapSum += block.Bytes;
+                }
+                else
+                {
+                    liveSum += block.Bytes;
+                }
+            }
+
+            Assert.True(liveSum == matchingOccupancy.LiveBytes,
+                $"Segment {segmentMap.Address}: block live sum ({liveSum}) != SegmentOccupancy.LiveBytes ({matchingOccupancy.LiveBytes})");
+            Assert.True(gapSum == matchingOccupancy.CommittedBytes - matchingOccupancy.LiveBytes,
+                $"Segment {segmentMap.Address}: block gap sum ({gapSum}) != committed-minus-live ({matchingOccupancy.CommittedBytes - matchingOccupancy.LiveBytes})");
+        }
+    }
+
+    // Root-cause signal this feature exists to show visually: the sample's
+    // worst (25%-occupancy) Gen2 segment should have at least one pinned
+    // live block bracketing at least one gap - the "why can't this segment
+    // be reclaimed" story the block-strip view is meant to make obvious.
+    [Fact]
+    public void Generate_WorstGen2SegmentMapHasAPinnedBlockAndAGap()
+    {
+        FragmentationReport report = SampleReportGenerator.Generate();
+
+        SegmentMap worstSegmentMap = null;
+        double worstOccupancy = 101.0;
+        for (int segmentIndex = 0; segmentIndex < report.Segments.Count; ++segmentIndex)
+        {
+            SegmentOccupancy segment = report.Segments[segmentIndex];
+            if (segment.Generation == 2 && segment.OccupancyPct < worstOccupancy)
+            {
+                worstOccupancy = segment.OccupancyPct;
+                for (int mapIndex = 0; mapIndex < report.SegmentMaps.Count; ++mapIndex)
+                {
+                    if (report.SegmentMaps[mapIndex].Address == segment.Address)
+                    {
+                        worstSegmentMap = report.SegmentMaps[mapIndex];
+                        break;
+                    }
+                }
+            }
+        }
+
+        Assert.NotNull(worstSegmentMap);
+
+        bool sawPinnedBlock = false;
+        bool sawGap = false;
+        for (int blockIndex = 0; blockIndex < worstSegmentMap.Blocks.Count; ++blockIndex)
+        {
+            SegmentBlock block = worstSegmentMap.Blocks[blockIndex];
+            if (block.IsGap) { sawGap = true; }
+            if (block.HasPinnedObject) { sawPinnedBlock = true; }
+        }
+
+        Assert.True(sawPinnedBlock, "Expected the worst Gen2 segment's map to include a pinned block");
+        Assert.True(sawGap, "Expected the worst Gen2 segment's map to include a gap");
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

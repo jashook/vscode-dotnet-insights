@@ -40,13 +40,33 @@ public class ReportJsonExporterTests
             SegmentCount        = 1
         };
 
+        FreeChunkBucket[] EmptyHistogram() => new FreeChunkBucket[]
+        {
+            new FreeChunkBucket { Label = "< 1 KB",     MinBytes = 0,          MaxBytes = 1_023,         Count = 0, TotalBytes = 0 },
+            new FreeChunkBucket { Label = "1–8 KB",     MinBytes = 1_024,      MaxBytes = 8_191,         Count = 0, TotalBytes = 0 },
+            new FreeChunkBucket { Label = "8–85 KB",    MinBytes = 8_192,      MaxBytes = 84_999,        Count = 0, TotalBytes = 0 },
+            new FreeChunkBucket { Label = "85 KB–1 MB", MinBytes = 85_000,     MaxBytes = 1_048_575,     Count = 0, TotalBytes = 0 },
+            new FreeChunkBucket { Label = "> 1 MB",     MinBytes = 1_048_576,  MaxBytes = long.MaxValue, Count = 0, TotalBytes = 0 }
+        };
+
         report.Generations = new GenerationStats[]
         {
-            new GenerationStats { Generation = 0, Label = "Gen0", CommittedBytes = 65536, ObjectBytes = 60000, FreeBytes = 5536, FragmentationPct = 8.4, SegmentCount = 0, FreeChunkCount = 2 },
-            new GenerationStats { Generation = 1, Label = "Gen1", CommittedBytes = 131072, ObjectBytes = 120000, FreeBytes = 11072, FragmentationPct = 8.4, SegmentCount = 0, FreeChunkCount = 5 },
-            new GenerationStats { Generation = 2, Label = "Gen2", CommittedBytes = 524288, ObjectBytes = 360000, FreeBytes = 164288, FragmentationPct = 31.3, SegmentCount = 1, FreeChunkCount = 42 },
-            new GenerationStats { Generation = 3, Label = "LOH",  CommittedBytes = 327680, ObjectBytes = 246432, FreeBytes = 81248, FragmentationPct = 24.8, SegmentCount = 0, FreeChunkCount = 7 },
-            new GenerationStats { Generation = 4, Label = "POH",  CommittedBytes = 0, ObjectBytes = 0, FreeBytes = 0, FragmentationPct = 0.0, SegmentCount = 0, FreeChunkCount = 0 }
+            new GenerationStats { Generation = 0, Label = "Gen0", CommittedBytes = 65536, ObjectBytes = 60000, FreeBytes = 5536, FragmentationPct = 8.4, SegmentCount = 0, FreeChunkCount = 2, Histogram = EmptyHistogram() },
+            new GenerationStats { Generation = 1, Label = "Gen1", CommittedBytes = 131072, ObjectBytes = 120000, FreeBytes = 11072, FragmentationPct = 8.4, SegmentCount = 0, FreeChunkCount = 5, Histogram = EmptyHistogram() },
+            new GenerationStats
+            {
+                Generation = 2, Label = "Gen2", CommittedBytes = 524288, ObjectBytes = 360000, FreeBytes = 164288, FragmentationPct = 31.3, SegmentCount = 1, FreeChunkCount = 42,
+                Histogram = new FreeChunkBucket[]
+                {
+                    new FreeChunkBucket { Label = "< 1 KB",     MinBytes = 0,          MaxBytes = 1_023,         Count = 41, TotalBytes = 33_216 },
+                    new FreeChunkBucket { Label = "1–8 KB",     MinBytes = 1_024,      MaxBytes = 8_191,         Count = 0,  TotalBytes = 0 },
+                    new FreeChunkBucket { Label = "8–85 KB",    MinBytes = 8_192,      MaxBytes = 84_999,        Count = 0,  TotalBytes = 0 },
+                    new FreeChunkBucket { Label = "85 KB–1 MB", MinBytes = 85_000,     MaxBytes = 1_048_575,     Count = 1,  TotalBytes = 131_072 },
+                    new FreeChunkBucket { Label = "> 1 MB",     MinBytes = 1_048_576,  MaxBytes = long.MaxValue, Count = 0,  TotalBytes = 0 }
+                }
+            },
+            new GenerationStats { Generation = 3, Label = "LOH",  CommittedBytes = 327680, ObjectBytes = 246432, FreeBytes = 81248, FragmentationPct = 24.8, SegmentCount = 0, FreeChunkCount = 7, Histogram = EmptyHistogram() },
+            new GenerationStats { Generation = 4, Label = "POH",  CommittedBytes = 0, ObjectBytes = 0, FreeBytes = 0, FragmentationPct = 0.0, SegmentCount = 0, FreeChunkCount = 0, Histogram = EmptyHistogram() }
         };
 
         report.FreeChunks = new FreeChunkReport
@@ -63,8 +83,26 @@ public class ReportJsonExporterTests
             },
             LargeChunks = new List<LargeFreeChunk>
             {
-                new LargeFreeChunk { Address = "0x00007f0000100000", SizeBytes = 131_072, Generation = 2 },
-                new LargeFreeChunk { Address = "0x00007f0000200000", SizeBytes = 98_304,  Generation = 3 }
+                new LargeFreeChunk { Address = "0x00007f0000100000", SizeBytes = 131_072, Generation = 2, PrecedingTypeName = "System.Byte[]", PrecedingIsPinned = true,  FollowingTypeName = "System.Byte[]",   FollowingIsPinned = true },
+                new LargeFreeChunk { Address = "0x00007f0000200000", SizeBytes = 98_304,  Generation = 3, PrecedingTypeName = "System.Object[]", PrecedingIsPinned = false, FollowingTypeName = "<end of segment>", FollowingIsPinned = false }
+            }
+        };
+
+        report.Segments = new List<SegmentOccupancy>
+        {
+            new SegmentOccupancy { Address = "0x00007f0000000000", Generation = 2, CommittedBytes = 524288, LiveBytes = 360000, OccupancyPct = 68.67 }
+        };
+
+        report.SegmentMaps = new List<SegmentMap>
+        {
+            new SegmentMap
+            {
+                Address = "0x00007f0000000000", Generation = 2,
+                Blocks = new List<SegmentBlock>
+                {
+                    new SegmentBlock { IsGap = false, TypeName = "System.Byte[]", OtherTypeCount = 2, ObjectCount = 5, Bytes = 360000, HasPinnedObject = true },
+                    new SegmentBlock { IsGap = true, ObjectCount = 1, Bytes = 164288 }
+                }
             }
         };
 
@@ -175,6 +213,74 @@ public class ReportJsonExporterTests
         Assert.Equal(2, (int)firstChunk["generation"]);
     }
 
+    // Regression coverage for the Gen2 root-cause investigation this field
+    // exists for: a hole bracketed by a pinned object on both sides is a
+    // fundamentally different (permanent, non-compactable) problem than one
+    // bracketed by ordinary objects - this pins that both the type name and
+    // the pinned flag actually reach the JSON on both sides of the gap.
+    [Fact]
+    public void ToJson_IncludesLargeChunkAdjacencyWithTypeNamesAndPinnedFlags()
+    {
+        JsonObject root = ParseReport(MakeMinimalReport());
+        JsonArray largeChunks = (JsonArray)((JsonObject)root["freeChunks"])["largeChunks"];
+
+        JsonObject pinnedOnBothSides = (JsonObject)largeChunks[0];
+        Assert.Equal("System.Byte[]", (string)pinnedOnBothSides["precedingType"]);
+        Assert.True((bool)pinnedOnBothSides["precedingIsPinned"]);
+        Assert.Equal("System.Byte[]", (string)pinnedOnBothSides["followingType"]);
+        Assert.True((bool)pinnedOnBothSides["followingIsPinned"]);
+
+        JsonObject endOfSegment = (JsonObject)largeChunks[1];
+        Assert.Equal("System.Object[]", (string)endOfSegment["precedingType"]);
+        Assert.False((bool)endOfSegment["precedingIsPinned"]);
+        Assert.Equal("<end of segment>", (string)endOfSegment["followingType"]);
+        Assert.False((bool)endOfSegment["followingIsPinned"]);
+    }
+
+    // Regression coverage for the per-generation histogram this exists for:
+    // the aggregate freeChunks.histogram would drown out Gen2's shape under
+    // Gen0/Gen1's much higher chunk counts in a real capture, so each
+    // generations[] entry carries its own histogram scoped to just that
+    // generation.
+    [Fact]
+    public void ToJson_GenerationsEachIncludeTheirOwnScopedHistogram()
+    {
+        JsonObject root = ParseReport(MakeMinimalReport());
+        JsonArray generations = (JsonArray)root["generations"];
+
+        JsonObject gen2 = (JsonObject)generations[2];
+        JsonArray gen2Histogram = (JsonArray)gen2["histogram"];
+
+        Assert.Equal(5, gen2Histogram.Count);
+
+        JsonObject subOneKb = (JsonObject)gen2Histogram[0];
+        Assert.Equal(41, (long)subOneKb["count"]);
+        Assert.Equal(33_216, (long)subOneKb["totalBytes"]);
+
+        // Gen0's histogram is scoped to Gen0 only - it must not pick up
+        // Gen2's bucket values (the two arrays should be independent, not
+        // aliased to the same underlying instance).
+        JsonObject gen0 = (JsonObject)generations[0];
+        JsonObject gen0SubOneKb = (JsonObject)((JsonArray)gen0["histogram"])[0];
+        Assert.Equal(0, (long)gen0SubOneKb["count"]);
+    }
+
+    [Fact]
+    public void ToJson_IncludesSegmentsWithAddressGenerationBytesAndOccupancy()
+    {
+        JsonObject root = ParseReport(MakeMinimalReport());
+        JsonArray segments = (JsonArray)root["segments"];
+
+        Assert.Single(segments);
+
+        JsonObject segment = (JsonObject)segments[0];
+        Assert.Equal("0x00007f0000000000", (string)segment["address"]);
+        Assert.Equal(2, (int)segment["generation"]);
+        Assert.Equal(524288, (long)segment["committedBytes"]);
+        Assert.Equal(360000, (long)segment["liveBytes"]);
+        Assert.Equal(68.67, (double)segment["occupancyPct"]);
+    }
+
     [Fact]
     public void ToJson_IncludesPinnedObjectsWithTypeNameGenerationCountAndTotalBytes()
     {
@@ -220,6 +326,34 @@ public class ReportJsonExporterTests
         Assert.Equal("System.Threading.OverlappedData", (string)firstEntry["typeName"]);
         Assert.Equal(5, (int)firstEntry["count"]);
         Assert.Equal(40_960, (long)firstEntry["totalBytes"]);
+    }
+
+    [Fact]
+    public void ToJson_IncludesSegmentMapsWithBlocksAndPinnedFlag()
+    {
+        JsonObject root = ParseReport(MakeMinimalReport());
+        JsonArray segmentMaps = (JsonArray)root["segmentMaps"];
+
+        Assert.Single(segmentMaps);
+
+        JsonObject segmentMap = (JsonObject)segmentMaps[0];
+        Assert.Equal("0x00007f0000000000", (string)segmentMap["address"]);
+        Assert.Equal(2, (int)segmentMap["generation"]);
+
+        JsonArray blocks = (JsonArray)segmentMap["blocks"];
+        Assert.Equal(2, blocks.Count);
+
+        JsonObject liveBlock = (JsonObject)blocks[0];
+        Assert.False((bool)liveBlock["isGap"]);
+        Assert.Equal("System.Byte[]", (string)liveBlock["typeName"]);
+        Assert.Equal(2, (int)liveBlock["otherTypeCount"]);
+        Assert.Equal(5, (int)liveBlock["objectCount"]);
+        Assert.Equal(360000, (long)liveBlock["bytes"]);
+        Assert.True((bool)liveBlock["hasPinnedObject"]);
+
+        JsonObject gapBlock = (JsonObject)blocks[1];
+        Assert.True((bool)gapBlock["isGap"]);
+        Assert.Equal(164288, (long)gapBlock["bytes"]);
     }
 
     [Fact]

@@ -84,7 +84,6 @@ public static class HeapAnalyzer
         phaseStopwatch.Restart();
 
         string processName = GetProcessName(pid);
-        Console.Error.WriteLine($"Walking heap ({heap.Segments.Length} segment(s)) — process suspended...");
 
         FragmentationReport report = new FragmentationReport();
         report.ProcessId = pid;
@@ -93,15 +92,67 @@ public static class HeapAnalyzer
 
         report.Generations = BuildGenerationStatsArray();
 
+        // Pinned handle enumeration runs *before* the object walk below (not
+        // after, as this used to be ordered) specifically so pinnedAddresses
+        // is populated in time for the free-chunk adjacency check inside
+        // that walk to consult it. GCHandles can reference objects in any
+        // generation (a gen0 object pinned by an async I/O operation is as
+        // interesting as a gen2 one).
+        Dictionary<string, PinnedTypeStat> pinnedByKey = new Dictionary<string, PinnedTypeStat>();
+        HashSet<ulong> pinnedAddresses = new HashSet<ulong>();
+        int pinnedCount = 0;
+        long totalHandlesWalked = 0;
+
+        foreach (ClrHandle handle in runtime.EnumerateHandles())
+        {
+            ++totalHandlesWalked;
+
+            if (handle.HandleKind != ClrHandleKind.Pinned && handle.HandleKind != ClrHandleKind.AsyncPinned)
+            {
+                continue;
+            }
+
+            ClrObject obj = handle.Object;
+            if (!obj.IsValid)
+            {
+                continue;
+            }
+
+            ++pinnedCount;
+            pinnedAddresses.Add(obj.Address);
+
+            string typeName = obj.Type?.Name ?? "<unknown>";
+            ClrSegment objSegment = heap.GetSegmentByAddress(obj.Address);
+            int gen = objSegment != null ? GetObjectGeneration(obj.Address, objSegment) : -1;
+
+            string key = $"{typeName}|{gen}";
+
+            PinnedTypeStat pinnedStat;
+            if (!pinnedByKey.TryGetValue(key, out pinnedStat))
+            {
+                pinnedStat = new PinnedTypeStat { TypeName = typeName, Generation = gen };
+                pinnedByKey[key] = pinnedStat;
+            }
+
+            ++pinnedStat.Count;
+            pinnedStat.TotalBytes += (long)obj.Size;
+        }
+
+        long handleMs = phaseStopwatch.ElapsedMilliseconds;
+        phaseStopwatch.Restart();
+
+        Console.Error.WriteLine($"Walking heap ({heap.Segments.Length} segment(s)) — process suspended...");
+
         FreeChunkBucket[] histogram = BuildHistogramBuckets();
         List<LargeFreeChunk> largeChunks = new List<LargeFreeChunk>();
+        List<SegmentOccupancy> segmentOccupancy = new List<SegmentOccupancy>();
+        List<SegmentMap> segmentMaps = new List<SegmentMap>();
 
-        Dictionary<string, PinnedTypeStat> pinnedByKey = new Dictionary<string, PinnedTypeStat>();
         Dictionary<string, TypeStat> lohByType = new Dictionary<string, TypeStat>();
         // POH objects don't necessarily have a Pinned/AsyncPinned GCHandle at
         // all - GC.AllocateArray<T>(pinned: true) lives on this heap and is
         // non-relocatable by residency alone, no handle required - so
-        // PinnedObjects (handle-enumeration-based, see below) can't be relied
+        // PinnedObjects (handle-enumeration-based, see above) can't be relied
         // on to show what's actually occupying the Pinned Object Heap. This
         // mirrors lohByType exactly for the same reason LOH gets one: without
         // it, the report can say POH is fragmented but never say why.
@@ -129,6 +180,66 @@ public static class HeapAnalyzer
                 ++report.Generations[primaryGen].SegmentCount;
             }
 
+            // Adjacency/occupancy state, reset per segment - a hole can't
+            // span two segments, and neither can "the last live object seen
+            // so far".
+            long segmentLiveBytes = 0;
+            bool hasLastLive = false;
+            ulong lastLiveAddress = 0;
+            LargeFreeChunk pendingChunk = null;
+
+            // Block-map tracking (for the address-ordered segment strip
+            // visualization) only runs for Gen2/LOH/POH segments - Gen0/Gen1
+            // segments cycle through far too many objects for this to stay
+            // small, and aren't what this feature is for. For an Ephemeral
+            // segment (workstation GC), Gen2's objects occupy a contiguous
+            // address-range prefix of the segment (Gen1 and Gen0 follow at
+            // higher addresses) - EnumerateObjects walks in address order,
+            // so trackingBlocks below simply stops the moment an object's
+            // generation no longer matches primaryGen, without needing any
+            // segment.Kind-specific handling.
+            bool trackingBlocks = primaryGen == 2 || primaryGen == 3 || primaryGen == 4;
+            bool pastTargetGenPrefix = false;
+            List<SegmentBlock> blocks = trackingBlocks ? new List<SegmentBlock>() : null;
+            Dictionary<string, long> currentRunTypeBytes = trackingBlocks ? new Dictionary<string, long>() : null;
+            long currentRunBytes = 0;
+            int currentRunObjectCount = 0;
+            bool currentRunHasPinned = false;
+
+            void FlushCurrentRun()
+            {
+                if (currentRunObjectCount == 0)
+                {
+                    return;
+                }
+
+                string dominantTypeName = "<unknown>";
+                long dominantBytes = -1;
+                foreach (KeyValuePair<string, long> entry in currentRunTypeBytes)
+                {
+                    if (entry.Value > dominantBytes)
+                    {
+                        dominantBytes = entry.Value;
+                        dominantTypeName = entry.Key;
+                    }
+                }
+
+                blocks.Add(new SegmentBlock
+                {
+                    IsGap = false,
+                    TypeName = dominantTypeName,
+                    OtherTypeCount = currentRunTypeBytes.Count - 1,
+                    ObjectCount = currentRunObjectCount,
+                    Bytes = currentRunBytes,
+                    HasPinnedObject = currentRunHasPinned
+                });
+
+                currentRunTypeBytes.Clear();
+                currentRunBytes = 0;
+                currentRunObjectCount = 0;
+                currentRunHasPinned = false;
+            }
+
             foreach (ClrObject obj in segment.EnumerateObjects())
             {
                 ++totalObjectsWalked;
@@ -141,87 +252,164 @@ public static class HeapAnalyzer
                 long objSize = (long)obj.Size;
                 int objGen = GetObjectGeneration(obj.Address, segment);
 
+                if (trackingBlocks && !pastTargetGenPrefix && objGen != primaryGen)
+                {
+                    FlushCurrentRun();
+                    pastTargetGenPrefix = true;
+                }
+
                 if (obj.IsFree)
                 {
                     if (objGen >= 0 && objGen < 5)
                     {
                         report.Generations[objGen].FreeBytes += objSize;
                         ++report.Generations[objGen].FreeChunkCount;
+                        AddToHistogram(report.Generations[objGen].Histogram, objSize);
                     }
 
                     AddToHistogram(histogram, objSize);
 
+                    if (trackingBlocks && !pastTargetGenPrefix)
+                    {
+                        if (blocks.Count > 0 && blocks[blocks.Count - 1].IsGap)
+                        {
+                            blocks[blocks.Count - 1].Bytes += objSize;
+                            ++blocks[blocks.Count - 1].ObjectCount;
+                        }
+                        else
+                        {
+                            blocks.Add(new SegmentBlock { IsGap = true, Bytes = objSize, ObjectCount = 1 });
+                        }
+                    }
+
                     if (objSize >= LargeChunkThresholdBytes)
                     {
-                        largeChunks.Add(new LargeFreeChunk
+                        // Preceding is resolvable right now, from whatever
+                        // live object we last walked past (re-resolved by
+                        // address rather than carried as a ClrType/string on
+                        // every iteration - this ClrType lookup only runs
+                        // for the rare object adjacent to an actual large
+                        // hole, not per object walked, same reasoning as why
+                        // lohByType/pohByType below only resolve Type.Name
+                        // for LOH/POH objects). Following can't be known
+                        // until the next live object turns up, so it's left
+                        // for the pendingChunk hookup below - or, if this
+                        // segment ends first, resolved to "<end of segment>"
+                        // right after this loop.
+                        string precedingTypeName = "<start of segment>";
+                        bool precedingIsPinned = false;
+                        if (hasLastLive)
+                        {
+                            ClrObject precedingObj = heap.GetObject(lastLiveAddress);
+                            precedingTypeName = precedingObj.Type?.Name ?? "<unknown>";
+                            precedingIsPinned = pinnedAddresses.Contains(lastLiveAddress);
+                        }
+
+                        LargeFreeChunk chunk = new LargeFreeChunk
                         {
                             Address = $"0x{obj.Address:x16}",
                             SizeBytes = objSize,
-                            Generation = objGen
-                        });
+                            Generation = objGen,
+                            PrecedingTypeName = precedingTypeName,
+                            PrecedingIsPinned = precedingIsPinned
+                        };
+
+                        largeChunks.Add(chunk);
+                        pendingChunk = chunk;
                     }
+
+                    continue;
                 }
-                else if (objGen == 3 || objGen == 4)
+
+                // Live object - resolves any pending chunk's Following side,
+                // then becomes the new "last live object" for whichever
+                // chunk comes next.
+                if (pendingChunk != null)
+                {
+                    pendingChunk.FollowingTypeName = obj.Type?.Name ?? "<unknown>";
+                    pendingChunk.FollowingIsPinned = pinnedAddresses.Contains(obj.Address);
+                    pendingChunk = null;
+                }
+
+                lastLiveAddress = obj.Address;
+                hasLastLive = true;
+                segmentLiveBytes += objSize;
+
+                bool isLohOrPoh = objGen == 3 || objGen == 4;
+                bool isTargetGenForBlocks = trackingBlocks && !pastTargetGenPrefix;
+
+                if (isLohOrPoh || isTargetGenForBlocks)
                 {
                     string typeName = obj.Type?.Name ?? "<unknown>";
-                    Dictionary<string, TypeStat> typesByName = objGen == 3 ? lohByType : pohByType;
 
-                    TypeStat typeStat;
-                    if (!typesByName.TryGetValue(typeName, out typeStat))
+                    if (isLohOrPoh)
                     {
-                        typeStat = new TypeStat { TypeName = typeName };
-                        typesByName[typeName] = typeStat;
+                        Dictionary<string, TypeStat> typesByName = objGen == 3 ? lohByType : pohByType;
+
+                        TypeStat typeStat;
+                        if (!typesByName.TryGetValue(typeName, out typeStat))
+                        {
+                            typeStat = new TypeStat { TypeName = typeName };
+                            typesByName[typeName] = typeStat;
+                        }
+
+                        ++typeStat.Count;
+                        typeStat.TotalBytes += objSize;
                     }
 
-                    ++typeStat.Count;
-                    typeStat.TotalBytes += objSize;
+                    if (isTargetGenForBlocks)
+                    {
+                        long existingRunBytes;
+                        currentRunTypeBytes.TryGetValue(typeName, out existingRunBytes);
+                        currentRunTypeBytes[typeName] = existingRunBytes + objSize;
+                        ++currentRunObjectCount;
+                        currentRunBytes += objSize;
+
+                        if (pinnedAddresses.Contains(obj.Address))
+                        {
+                            currentRunHasPinned = true;
+                        }
+                    }
                 }
             }
+
+            if (trackingBlocks && !pastTargetGenPrefix)
+            {
+                FlushCurrentRun();
+            }
+
+            if (trackingBlocks)
+            {
+                segmentMaps.Add(new SegmentMap
+                {
+                    Address = $"0x{segment.Start:x16}",
+                    Generation = primaryGen,
+                    Blocks = blocks
+                });
+            }
+
+            // A hole that runs to the end of the segment has no following
+            // live object to resolve it against - distinct from "<unknown>"
+            // (a real object whose type just couldn't be resolved).
+            if (pendingChunk != null)
+            {
+                pendingChunk.FollowingTypeName = "<end of segment>";
+                pendingChunk.FollowingIsPinned = false;
+            }
+
+            segmentOccupancy.Add(new SegmentOccupancy
+            {
+                Address = $"0x{segment.Start:x16}",
+                Generation = primaryGen,
+                CommittedBytes = segmentCommitted,
+                LiveBytes = segmentLiveBytes,
+                OccupancyPct = segmentCommitted > 0
+                    ? Math.Round((segmentLiveBytes / (double)segmentCommitted) * 100.0, 2)
+                    : 0.0
+            });
         }
 
         long walkMs = phaseStopwatch.ElapsedMilliseconds;
-        phaseStopwatch.Restart();
-
-        // Pinned handle enumeration — separate from the object walk since
-        // GCHandles can reference objects in any generation (a gen0 object
-        // pinned by an async I/O operation is as interesting as a gen2 one).
-        int pinnedCount = 0;
-        long totalHandlesWalked = 0;
-        foreach (ClrHandle handle in runtime.EnumerateHandles())
-        {
-            ++totalHandlesWalked;
-
-            if (handle.HandleKind != ClrHandleKind.Pinned && handle.HandleKind != ClrHandleKind.AsyncPinned)
-            {
-                continue;
-            }
-
-            ClrObject obj = handle.Object;
-            if (!obj.IsValid)
-            {
-                continue;
-            }
-
-            ++pinnedCount;
-
-            string typeName = obj.Type?.Name ?? "<unknown>";
-            ClrSegment objSegment = heap.GetSegmentByAddress(obj.Address);
-            int gen = objSegment != null ? GetObjectGeneration(obj.Address, objSegment) : -1;
-
-            string key = $"{typeName}|{gen}";
-
-            PinnedTypeStat pinnedStat;
-            if (!pinnedByKey.TryGetValue(key, out pinnedStat))
-            {
-                pinnedStat = new PinnedTypeStat { TypeName = typeName, Generation = gen };
-                pinnedByKey[key] = pinnedStat;
-            }
-
-            ++pinnedStat.Count;
-            pinnedStat.TotalBytes += (long)obj.Size;
-        }
-
-        long handleMs = phaseStopwatch.ElapsedMilliseconds;
         phaseStopwatch.Restart();
 
         // Compute derived fields
@@ -288,6 +476,12 @@ public static class HeapAnalyzer
 
         report.TopPohTypes = sortedPoh;
 
+        // Worst (least occupied) segments first - the ones most worth
+        // looking at for "why is this segment still around".
+        segmentOccupancy.Sort((left, right) => left.OccupancyPct.CompareTo(right.OccupancyPct));
+        report.Segments = segmentOccupancy;
+        report.SegmentMaps = segmentMaps;
+
         long postProcessMs = phaseStopwatch.ElapsedMilliseconds;
         long totalMs = totalStopwatch.ElapsedMilliseconds;
 
@@ -297,8 +491,8 @@ public static class HeapAnalyzer
         Console.Error.WriteLine("Analysis complete.");
         Console.Error.WriteLine(
             $"Timing: attach={attachMs}ms createRuntime={createRuntimeMs}ms " +
-            $"objectWalk={walkMs}ms ({totalObjectsWalked} objects, {objectsPerSecond:F0}/s) " +
             $"handleWalk={handleMs}ms ({totalHandlesWalked} handles, {handlesPerSecond:F0}/s) " +
+            $"objectWalk={walkMs}ms ({totalObjectsWalked} objects, {objectsPerSecond:F0}/s) " +
             $"postProcess={postProcessMs}ms total={totalMs}ms");
 
         return report;
@@ -355,7 +549,8 @@ public static class HeapAnalyzer
             stats[genIndex] = new GenerationStats
             {
                 Generation = genIndex,
-                Label = labels[genIndex]
+                Label = labels[genIndex],
+                Histogram = BuildHistogramBuckets()
             };
         }
 
