@@ -12,6 +12,24 @@
 // (or, for TimeStamp, the previously read value is not replaced but summed
 // with the newly read delta). CompressedEventBlobDecoderState carries that
 // running state across calls within one block.
+//
+// Per NetTraceFormat_v5.md's own wording - "When starting a new event block
+// assume that the previous event contained every field with a zeroed value" -
+// EventBlock.cs/MetadataBlock.cs must construct a FRESH
+// CompressedEventBlobDecoderState (all fields zero, including TimeStamp) for
+// every block and must NOT seed TimeStamp from that block's own
+// MinTimestamp/MaxTimestamp header fields, even though those look like the
+// obvious seed at a glance. Verified against a real capture: a block's first
+// event blob re-encodes a TimeStamp delta that is already (near enough) the
+// block's own true absolute QPC value on its own - MinTimestamp/MaxTimestamp
+// are purely descriptive (letting a reader locate blocks of interest without
+// decoding every event inside them), not decoder input. Seeding from
+// MinTimestamp double-counts that value into every event's timestamp for the
+// rest of the block, and because every block repeats the same mistake, every
+// timestamp in the file ends up roughly 2x too large - this was invisible to
+// every other test in this project (none of them compare timestamps/relative
+// times) until a ground-truth diff against Microsoft.Diagnostics.Tracing.
+// TraceEvent surfaced it as a ~2x elapsed-time inflation.
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace DotnetInsights.NetTrace {

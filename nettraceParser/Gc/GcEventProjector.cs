@@ -75,15 +75,16 @@ public static class GcEventProjector
     private const string ClrProviderName = "Microsoft-Windows-DotNETRuntime";
 
     // referenceUtc/referenceQpc anchor the wall-clock conversion: referenceQpc
-    // is whatever QPC tick value corresponds to referenceUtc. NettraceHeader's
-    // own SyncTimeQPC looks like it should be this anchor, but empirically
-    // (verified against a real capture's file mtime) its numeric relationship
-    // to the per-event QPC stream doesn't hold up on this platform - so
-    // callers pass the trace's own first event's QPC value paired with
-    // SyncTimeUtc instead, which is self-consistent by construction (both
-    // come from data already proven correct: SyncTimeUtc matched the real
-    // capture time to the second, and per-event QPC deltas are internally
-    // consistent - only the header's own SyncTimeQPC field is suspect).
+    // is whatever QPC tick value corresponds to referenceUtc. Callers pass
+    // NettraceHeader's own SyncTimeQPC/SyncTimeUtc directly - this used to
+    // look unreliable (a real capture's converted timestamps were ~3 days
+    // off from its own file mtime), but that was a symptom of a per-event
+    // timestamp decode bug (see CompressedEventBlobHeader.cs's doc comment)
+    // that inflated every event's own QPC by ~2x, not a problem with
+    // SyncTimeQPC itself - with that decode bug fixed, SyncTimeQPC agrees
+    // with the trace's own first event's QPC to within ~1ms on every real
+    // capture checked, i.e. it's the correct, exact session-start anchor
+    // (matching what PerfView/Microsoft.Diagnostics.Tracing.TraceEvent use).
     // How many concurrently in-flight GCs of one generation (started, no
     // GlobalHeapHistory seen yet) a per-generation pending queue tolerates
     // before assuming the oldest one is never going to get one (a dropped
@@ -111,7 +112,7 @@ public static class GcEventProjector
         // first (a stable sort - ties broken by original position - since
         // same-QPC events should keep their relative wire order).
         //
-        // Filtered to just the 5 GC-relevant event IDs before sorting
+        // Filtered to just the 8 GC-relevant event IDs before sorting
         // (not all ~15M events in a busy capture, most of which are
         // AllocationTick) so the sort itself stays cheap - a real 5-minute
         // capture with millions of allocation ticks had only ~109,000
@@ -144,7 +145,8 @@ public static class GcEventProjector
 
             if (record.EventId == ClrGcEventIds.GCStart || record.EventId == ClrGcEventIds.GCEnd ||
                 record.EventId == ClrGcEventIds.GCHeapStats || record.EventId == ClrGcEventIds.GCPerHeapHistory ||
-                record.EventId == ClrGcEventIds.GCGlobalHeapHistory)
+                record.EventId == ClrGcEventIds.GCGlobalHeapHistory || record.EventId == ClrGcEventIds.GCSuspendEEBegin ||
+                record.EventId == ClrGcEventIds.GCSuspendEEEnd || record.EventId == ClrGcEventIds.GCRestartEEEnd)
             {
                 gcRelevantEvents.Add((record, eventIndex));
             }
@@ -186,6 +188,72 @@ public static class GcEventProjector
         Dictionary<int, Queue<int>> pendingByGeneration = new Dictionary<int, Queue<int>>();
         int currentBatchGcId = -1;
 
+        // GCHeapStats routes via this, not currentBatchGcId - verified against
+        // a real Server GC capture that a background GC's own GCHeapStats
+        // arrives immediately after ITS OWN GCEnd but *before* its own
+        // GCGlobalHeapHistory (the reverse order from a foreground GC, where
+        // GlobalHeapHistory/PerHeapHistory precede GCEnd/HeapStats). Routing
+        // GCHeapStats via currentBatchGcId (last set by GlobalHeapHistory)
+        // misattributes a background GC's HeapStats to whatever unrelated GC
+        // most recently resolved via GlobalHeapHistory, since that background
+        // GC's own GlobalHeapHistory hasn't fired yet. GCHeapStats reliably
+        // immediately follows its own GC's GCEnd in every case checked
+        // (foreground and background alike), so tracking that directly is
+        // more robust than depending on GlobalHeapHistory's arrival order.
+        int mostRecentlyEndedGcId = -1;
+
+        // PauseDurationMSec's true window is GCSuspendEEBegin (request to
+        // suspend all threads) through GCRestartEEEnd (threads running
+        // again) - not GCStart-to-GCEnd, which only covers the collection
+        // itself and omits the time spent actually stopping every thread.
+        // Verified against Microsoft.Diagnostics.Tracing.TraceEvent's own
+        // GC analysis (TraceManagedProcess.cs): PauseStartRelativeMSec is
+        // seeded from the most recent qualifying GCSuspendEEBegin (Reason ==
+        // SuspendForGC or SuspendForGCPrep - other reasons, e.g. debugger
+        // suspension, don't count), falling back to GCStart's own timestamp
+        // if none was seen.
+        //
+        // Routing RestartEEEnd replicates TraceGarbageCollector.GetCurrentGC:
+        // prefer the most-recently-started GC *unless it has already
+        // consumed a RestartEEEnd of its own* (tracked via
+        // gcIdsWithRestartApplied - TraceEvent's own equivalent check is
+        // "IsComplete", which becomes true at exactly that point), in which
+        // case fall back to the currently-open background GC instead.
+        // Verified against a real Server GC capture: a background GC has its
+        // own brief internal suspend/restart cycles (Reason ==
+        // SuspendForGCPrep) interleaved with unrelated ephemeral gen0/1 GCs
+        // that run and fully resolve *during* its concurrent phase, with no
+        // new GCStart in between one of those internal cycles and the
+        // ephemeral GC's own already-completed one - routing purely by
+        // "most recently started" would re-target the finished ephemeral GC
+        // and corrupt its PauseDurationMSec with the background GC's own
+        // much longer window.
+        //
+        // A background GC's own PauseDurationMSec is seeded at GCStart with
+        // just its initiating SuspendEEBegin-to-SuspendEEEnd gap (the time to
+        // actually stop every thread - a few tens of microseconds, not a
+        // lasting pause), then updated at each RestartEEEnd that routes to
+        // it: SuspendForGCPrep cycles (its own internal synchronization
+        // pauses) *accumulate* onto the running total, while a SuspendForGC
+        // cycle (matching a nested/ephemeral GC's own suspend rather than
+        // the BGC's) *replaces* it with the full SuspendEEBegin-to-this-
+        // RestartEEEnd window - both verified field-for-field against
+        // TraceManagedProcess.cs's AddConcurrentPauseTime.
+        long pendingSuspendQpc = -1;
+        long mostRecentQualifyingSuspendBeginQpc = -1;
+        int mostRecentQualifyingSuspendReason = -1;
+        long pendingSuspendEndQpc = -1;
+        int mostRecentlyStartedGcId = -1;
+        int openBackgroundGcId = -1;
+        Dictionary<int, long> pauseStartQpcById = new Dictionary<int, long>();
+        HashSet<int> gcIdsWithRestartApplied = new HashSet<int>();
+
+        // Marks a GC as having a real suspend/restart-based PauseDurationMSec
+        // already (from the BackgroundGC seed at GCStart, or a RestartEEEnd)
+        // - GCEnd's own GCStart-to-GCEnd fallback (see that handler) skips
+        // recomputing it once this is set.
+        HashSet<int> gcIdsWithSuspendBasedPause = new HashSet<int>();
+
         foreach ((EventRecord record, int _) in gcRelevantEvents)
         {
             PayloadReader reader = new PayloadReader(record.PayloadBuffer, record.PayloadOffset, record.PayloadLength, pointerSize);
@@ -209,6 +277,31 @@ public static class GcEventProjector
                 gcsById[start.Count] = gcEvent;
                 startTimeStampById[start.Count] = record.TimeStampRelativeQPC;
 
+                long pauseStartQpc = pendingSuspendQpc >= 0 ? pendingSuspendQpc : record.TimeStampRelativeQPC;
+                pauseStartQpcById[start.Count] = pauseStartQpc;
+                pendingSuspendQpc = -1;
+                mostRecentlyStartedGcId = start.Count;
+
+                if (start.Type == GCType.BackgroundGC)
+                {
+                    openBackgroundGcId = start.Count;
+
+                    // Seed with just the time to actually stop every thread
+                    // for this GC's own initiating suspend - GCSuspendEEEnd
+                    // always precedes GCStart (verified against a real
+                    // capture), so pendingSuspendEndQpc is already the right
+                    // value here. This is deliberately a small, one-time
+                    // window, not the GC's eventual full pause - later
+                    // RestartEEEnd events routed to this GC (see that
+                    // handler) update it further.
+                    if (qpcFrequency > 0 && pendingSuspendEndQpc >= 0)
+                    {
+                        gcEvent.PauseDurationMSec = (pendingSuspendEndQpc - pauseStartQpc) * 1000.0 / qpcFrequency;
+                        gcEvent.PauseStartRelativeMSec = (pauseStartQpc - referenceQpc) * 1000.0 / qpcFrequency;
+                        gcIdsWithSuspendBasedPause.Add(start.Count);
+                    }
+                }
+
                 Queue<int> generationQueue;
                 if (!pendingByGeneration.TryGetValue(start.Depth, out generationQueue))
                 {
@@ -227,8 +320,20 @@ public static class GcEventProjector
                 {
                     gcEvent.HasEnd = true;
 
+                    // GCStart-to-GCEnd fallback only - skipped once the real
+                    // suspend/restart-based pause window (see GCSuspendEEEnd/
+                    // GCRestartEEEnd) has already been computed for this GC,
+                    // which for a background GC can happen *before* its own
+                    // GCEnd fires (verified against a real Server GC capture:
+                    // a background GC's completing GCEnd arrives after its
+                    // last internal RestartEEEnd, the reverse of a regular
+                    // blocking GC's order) - without this guard, GCEnd
+                    // unconditionally overwrites the correct value with the
+                    // full GCStart-to-GCEnd span, which for a background GC
+                    // is its entire concurrent mark phase, not a real pause.
                     long startTimeStamp;
-                    if (startTimeStampById.TryGetValue(end.Count, out startTimeStamp) && qpcFrequency > 0)
+                    if (!gcIdsWithSuspendBasedPause.Contains(end.Count) &&
+                        startTimeStampById.TryGetValue(end.Count, out startTimeStamp) && qpcFrequency > 0)
                     {
                         long deltaTicks = record.TimeStampRelativeQPC - startTimeStamp;
                         gcEvent.PauseDurationMSec = deltaTicks * 1000.0 / qpcFrequency;
@@ -244,13 +349,45 @@ public static class GcEventProjector
                         gcEvent.PauseEndRelativeMSec = (record.TimeStampRelativeQPC - referenceQpc) * 1000.0 / qpcFrequency;
                     }
                 }
+
+                mostRecentlyEndedGcId = end.Count;
+
+                if (end.Count == openBackgroundGcId)
+                {
+                    openBackgroundGcId = -1;
+                }
             }
             else if (record.EventId == ClrGcEventIds.GCHeapStats)
             {
                 ClrGcHeapStats heapStats = ClrGcHeapStats.Decode(reader, record.Version);
 
-                GcEvent gcEvent;
-                if (currentBatchGcId >= 0 && gcsById.TryGetValue(currentBatchGcId, out gcEvent))
+                // HeapStats can arrive on either side of its own GC's GCEnd -
+                // verified both ways against a real Server GC capture:
+                // foreground GCs there had GlobalHeapHistory+PerHeapHistory
+                // (which set currentBatchGcId) *before* GCEnd/HeapStats, but
+                // a background GC had GCEnd+HeapStats *before* its own
+                // GlobalHeapHistory. Preferring currentBatchGcId (the normal
+                // case) but falling back to mostRecentlyEndedGcId when that
+                // candidate already has its stats handles both orders: a
+                // background GC's stray HeapStats no longer misattributes to
+                // an older, already-resolved GC that GlobalHeapHistory last
+                // pointed at.
+                GcEvent gcEvent = null;
+                GcEvent currentBatchEvent;
+                if (currentBatchGcId >= 0 && gcsById.TryGetValue(currentBatchGcId, out currentBatchEvent) && !currentBatchEvent.HasHeapStats)
+                {
+                    gcEvent = currentBatchEvent;
+                }
+                else
+                {
+                    GcEvent mostRecentlyEndedEvent;
+                    if (mostRecentlyEndedGcId >= 0 && gcsById.TryGetValue(mostRecentlyEndedGcId, out mostRecentlyEndedEvent) && !mostRecentlyEndedEvent.HasHeapStats)
+                    {
+                        gcEvent = mostRecentlyEndedEvent;
+                    }
+                }
+
+                if (gcEvent != null)
                 {
                     gcEvent.HasHeapStats = true;
                     gcEvent.TotalHeapSize = heapStats.TotalHeapSize;
@@ -303,6 +440,67 @@ public static class GcEventProjector
                     // Reason can be superseded by the time collection actually begins).
                     gcEvent.Reason = globalHistory.Reason;
                     gcEvent.GlobalMechanisms = globalHistory.GlobalMechanisms;
+                }
+            }
+            else if (record.EventId == ClrGcEventIds.GCSuspendEEBegin)
+            {
+                ClrGcSuspendEEBegin suspend = ClrGcSuspendEEBegin.Decode(reader, record.Version);
+
+                if (suspend.Reason == GCSuspendEEReason.SuspendForGC || suspend.Reason == GCSuspendEEReason.SuspendForGCPrep)
+                {
+                    pendingSuspendQpc = record.TimeStampRelativeQPC;
+                    mostRecentQualifyingSuspendBeginQpc = record.TimeStampRelativeQPC;
+                    mostRecentQualifyingSuspendReason = suspend.Reason;
+                }
+            }
+            else if (record.EventId == ClrGcEventIds.GCSuspendEEEnd)
+            {
+                // No Reason field on this event (NetTraceFormat's GCNoUserData
+                // template) - pairs with whatever the most recent
+                // GCSuspendEEBegin was, matching wire-order verified against
+                // a real capture (GCSuspendEEEnd always precedes the GCStart
+                // it enables).
+                pendingSuspendEndQpc = record.TimeStampRelativeQPC;
+            }
+            else if (record.EventId == ClrGcEventIds.GCRestartEEEnd)
+            {
+                bool routeToBackgroundGc = false;
+                int targetGcId = -1;
+                if (mostRecentlyStartedGcId >= 0 && !gcIdsWithRestartApplied.Contains(mostRecentlyStartedGcId))
+                {
+                    targetGcId = mostRecentlyStartedGcId;
+                    gcIdsWithRestartApplied.Add(mostRecentlyStartedGcId);
+                }
+                else if (openBackgroundGcId >= 0)
+                {
+                    // Not added to gcIdsWithRestartApplied - a background GC
+                    // can have several of its own internal restart cycles.
+                    targetGcId = openBackgroundGcId;
+                    routeToBackgroundGc = true;
+                }
+
+                GcEvent gcEvent;
+                long pauseStartQpc;
+                if (targetGcId >= 0 && qpcFrequency > 0 &&
+                    gcsById.TryGetValue(targetGcId, out gcEvent) &&
+                    pauseStartQpcById.TryGetValue(targetGcId, out pauseStartQpc))
+                {
+                    if (routeToBackgroundGc && mostRecentQualifyingSuspendReason == GCSuspendEEReason.SuspendForGCPrep)
+                    {
+                        // This cycle was the background GC's own internal
+                        // synchronization pause - accumulate onto its
+                        // running total rather than replacing it.
+                        double pauseIncrementMSec = (record.TimeStampRelativeQPC - mostRecentQualifyingSuspendBeginQpc) * 1000.0 / qpcFrequency;
+                        gcEvent.PauseDurationMSec += pauseIncrementMSec;
+                    }
+                    else
+                    {
+                        gcEvent.PauseDurationMSec = (record.TimeStampRelativeQPC - pauseStartQpc) * 1000.0 / qpcFrequency;
+                    }
+
+                    gcEvent.PauseStartRelativeMSec = (pauseStartQpc - referenceQpc) * 1000.0 / qpcFrequency;
+                    gcEvent.PauseEndRelativeMSec = (record.TimeStampRelativeQPC - referenceQpc) * 1000.0 / qpcFrequency;
+                    gcIdsWithSuspendBasedPause.Add(targetGcId);
                 }
             }
         }

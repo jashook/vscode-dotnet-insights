@@ -12,16 +12,24 @@
 //                fragmentationPct, pinnedObjectCount, segmentCount },
 //     generations: [
 //       { generation, label, committedBytes, objectBytes, freeBytes,
-//         fragmentationPct, segmentCount, freeChunkCount }   // indices 0-4
+//         fragmentationPct, segmentCount, freeChunkCount,
+//         histogram: [{ label, minBytes, maxBytes, count, totalBytes }] }
+//                                                            // indices 0-4
 //     ],
 //     freeChunks: {
 //       totalCount, totalFreeBytes,
 //       histogram: [{ label, minBytes, maxBytes, count, totalBytes }],
-//       largeChunks: [{ address, sizeBytes, generation }]
+//       largeChunks: [{ address, sizeBytes, generation,
+//                       precedingType, precedingIsPinned,
+//                       followingType, followingIsPinned }]
 //     },
 //     pinnedObjects: [{ typeName, generation, count, totalBytes }],
 //     topLohTypes:   [{ typeName, count, totalBytes }],
-//     topPohTypes:   [{ typeName, count, totalBytes }]
+//     topPohTypes:   [{ typeName, count, totalBytes }],
+//     segments: [{ address, generation, committedBytes, liveBytes, occupancyPct }],
+//     segmentMaps: [{ address, generation,
+//                     blocks: [{ isGap, typeName, otherTypeCount, objectCount,
+//                                bytes, hasPinnedObject }] }]
 //   }
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -51,6 +59,8 @@ public static class ReportJsonExporter
         root["pinnedObjects"] = SerializePinnedObjects(report.PinnedObjects);
         root["topLohTypes"] = SerializeTypeStats(report.TopLohTypes);
         root["topPohTypes"] = SerializeTypeStats(report.TopPohTypes);
+        root["segments"] = SerializeSegments(report.Segments);
+        root["segmentMaps"] = SerializeSegmentMaps(report.SegmentMaps);
 
         return root.ToJsonString();
     }
@@ -83,22 +93,22 @@ public static class ReportJsonExporter
             obj["fragmentationPct"] = gen.FragmentationPct;
             obj["segmentCount"] = gen.SegmentCount;
             obj["freeChunkCount"] = gen.FreeChunkCount;
+            obj["histogram"] = SerializeHistogram(gen.Histogram);
             arr.Add(obj);
         }
 
         return arr;
     }
 
-    private static JsonObject SerializeFreeChunks(FreeChunkReport freeChunks)
+    // Shared by freeChunks.histogram (cross-generation) and each
+    // generations[] entry's own histogram (scoped to just that generation) -
+    // same bucket shape either way.
+    private static JsonArray SerializeHistogram(FreeChunkBucket[] histogram)
     {
-        JsonObject obj = new JsonObject();
-        obj["totalCount"] = freeChunks.TotalCount;
-        obj["totalFreeBytes"] = freeChunks.TotalFreeBytes;
-
         JsonArray histogramArray = new JsonArray();
-        for (int bucketIndex = 0; bucketIndex < freeChunks.Histogram.Length; ++bucketIndex)
+        for (int bucketIndex = 0; bucketIndex < histogram.Length; ++bucketIndex)
         {
-            FreeChunkBucket bucket = freeChunks.Histogram[bucketIndex];
+            FreeChunkBucket bucket = histogram[bucketIndex];
             JsonObject bucketObj = new JsonObject();
             bucketObj["label"] = bucket.Label;
             bucketObj["minBytes"] = bucket.MinBytes;
@@ -108,7 +118,15 @@ public static class ReportJsonExporter
             histogramArray.Add(bucketObj);
         }
 
-        obj["histogram"] = histogramArray;
+        return histogramArray;
+    }
+
+    private static JsonObject SerializeFreeChunks(FreeChunkReport freeChunks)
+    {
+        JsonObject obj = new JsonObject();
+        obj["totalCount"] = freeChunks.TotalCount;
+        obj["totalFreeBytes"] = freeChunks.TotalFreeBytes;
+        obj["histogram"] = SerializeHistogram(freeChunks.Histogram);
 
         JsonArray largeChunksArray = new JsonArray();
         for (int chunkIndex = 0; chunkIndex < freeChunks.LargeChunks.Count; ++chunkIndex)
@@ -118,11 +136,66 @@ public static class ReportJsonExporter
             chunkObj["address"] = chunk.Address;
             chunkObj["sizeBytes"] = chunk.SizeBytes;
             chunkObj["generation"] = chunk.Generation;
+            chunkObj["precedingType"] = chunk.PrecedingTypeName;
+            chunkObj["precedingIsPinned"] = chunk.PrecedingIsPinned;
+            chunkObj["followingType"] = chunk.FollowingTypeName;
+            chunkObj["followingIsPinned"] = chunk.FollowingIsPinned;
             largeChunksArray.Add(chunkObj);
         }
 
         obj["largeChunks"] = largeChunksArray;
         return obj;
+    }
+
+    private static JsonArray SerializeSegments(List<SegmentOccupancy> segments)
+    {
+        JsonArray arr = new JsonArray();
+
+        for (int segmentIndex = 0; segmentIndex < segments.Count; ++segmentIndex)
+        {
+            SegmentOccupancy segment = segments[segmentIndex];
+            JsonObject obj = new JsonObject();
+            obj["address"] = segment.Address;
+            obj["generation"] = segment.Generation;
+            obj["committedBytes"] = segment.CommittedBytes;
+            obj["liveBytes"] = segment.LiveBytes;
+            obj["occupancyPct"] = segment.OccupancyPct;
+            arr.Add(obj);
+        }
+
+        return arr;
+    }
+
+    private static JsonArray SerializeSegmentMaps(List<SegmentMap> segmentMaps)
+    {
+        JsonArray arr = new JsonArray();
+
+        for (int mapIndex = 0; mapIndex < segmentMaps.Count; ++mapIndex)
+        {
+            SegmentMap segmentMap = segmentMaps[mapIndex];
+            JsonObject obj = new JsonObject();
+            obj["address"] = segmentMap.Address;
+            obj["generation"] = segmentMap.Generation;
+
+            JsonArray blocksArray = new JsonArray();
+            for (int blockIndex = 0; blockIndex < segmentMap.Blocks.Count; ++blockIndex)
+            {
+                SegmentBlock block = segmentMap.Blocks[blockIndex];
+                JsonObject blockObj = new JsonObject();
+                blockObj["isGap"] = block.IsGap;
+                blockObj["typeName"] = block.TypeName;
+                blockObj["otherTypeCount"] = block.OtherTypeCount;
+                blockObj["objectCount"] = block.ObjectCount;
+                blockObj["bytes"] = block.Bytes;
+                blockObj["hasPinnedObject"] = block.HasPinnedObject;
+                blocksArray.Add(blockObj);
+            }
+
+            obj["blocks"] = blocksArray;
+            arr.Add(obj);
+        }
+
+        return arr;
     }
 
     private static JsonArray SerializePinnedObjects(List<PinnedTypeStat> pinnedObjects)

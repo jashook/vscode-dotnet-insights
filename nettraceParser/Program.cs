@@ -39,12 +39,12 @@ NettraceFile file = NettraceFile.Read(filePath);
 long readMs = phaseStopwatch.ElapsedMilliseconds;
 phaseStopwatch.Restart();
 
-// SyncTimeUtc has been verified correct (matches captured trace files' real
-// mtimes to the second), but NettraceHeader.SyncTimeQPC's numeric
-// relationship to the per-event QPC stream does not - so the trace's own
-// first event is used as the QPC anchor for SyncTimeUtc instead. See the
-// comment on GcEventProjector.Project for the full explanation.
-long referenceQpc = file.Events.Count > 0 ? file.Events[0].TimeStampRelativeQPC : file.Header.SyncTimeQPC;
+// Anchoring wall-clock conversion to Header.SyncTimeQPC now agrees with
+// file.Events[0]'s own QPC to within ~1ms on every real capture checked
+// (previously this looked ~3 days off - see CompressedEventBlobHeader.cs's
+// doc comment: that was a symptom of a per-event timestamp decode bug that
+// inflated every event's QPC by ~2x, not an unreliable SyncTimeQPC field).
+long referenceQpc = file.Header.SyncTimeQPC;
 
 int jsonArgIndex = Array.IndexOf(args, "--json");
 if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
@@ -90,8 +90,7 @@ Console.WriteLine($"SyncTime: {file.Header.Year}-{file.Header.Month:D2}-{file.He
 Console.WriteLine($"QPCFrequency: {file.Header.QPCFrequency}");
 if (Environment.GetEnvironmentVariable("NETTRACE_DEBUG") != null)
 {
-    Console.WriteLine($"SyncTimeQPC (raw, header - not used for GC timestamps, see referenceQpc): {file.Header.SyncTimeQPC}");
-    Console.WriteLine($"referenceQpc (first event, used for GC timestamps): {referenceQpc}");
+    Console.WriteLine($"SyncTimeQPC (referenceQpc, used for GC timestamps): {file.Header.SyncTimeQPC}");
 }
 Console.WriteLine($"PointerSize: {file.Header.PointerSize}");
 Console.WriteLine($"ProcessId: {file.Header.ProcessId}");

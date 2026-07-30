@@ -31,10 +31,28 @@ public static class ClrGcEventIds
 {
     public const int GCStart = 1;
     public const int GCEnd = 2;
+    public const int GCRestartEEEnd = 3;
     public const int GCHeapStats = 4;
+    public const int GCSuspendEEEnd = 8;
+    public const int GCSuspendEEBegin = 9;
     public const int GCAllocationTick = 10;
     public const int GCPerHeapHistory = 204;
     public const int GCGlobalHeapHistory = 205;
+}
+
+// Manifest value, not the C# GCSuspendEEReason enum's member order (which
+// happens to match numerically here, but ClrGcSuspendEEBegin.Decode reads
+// this as a raw int rather than depending on that coincidence).
+public static class GCSuspendEEReason
+{
+    public const int SuspendOther = 0x0;
+    public const int SuspendForGC = 0x1;
+    public const int SuspendForAppDomainShutdown = 0x2;
+    public const int SuspendForCodePitching = 0x3;
+    public const int SuspendForShutdown = 0x4;
+    public const int SuspendForDebugger = 0x5;
+    public const int SuspendForGCPrep = 0x6;
+    public const int SuspendForDebuggerSweep = 0x7;
 }
 
 public enum GCReason
@@ -126,6 +144,25 @@ public class ClrGcEnd
             data.ClrInstanceID = reader.GetInt16At(8);
         }
 
+        return data;
+    }
+}
+
+// GCSuspendEEBegin (manifest value 9) - the moment the runtime *requests*
+// thread suspension for a GC, which precedes that GC's own GCStart. Field
+// layout differs by version (ClrEtwAll.man's "GCSuspendEE"/"GCSuspendEE_V1"
+// templates): v0 is a bare UInt16 Reason with no Count; v1 adds Count
+// (UInt32) and ClrInstanceID (UInt16) after a widened UInt32 Reason. Only
+// Reason is decoded here - see GcEventProjector.Project's PauseStartRelativeMSec/
+// PauseDurationMSec comment for why Count isn't needed for correlation.
+public class ClrGcSuspendEEBegin
+{
+    public int Reason;
+
+    public static ClrGcSuspendEEBegin Decode(PayloadReader reader, int version)
+    {
+        ClrGcSuspendEEBegin data = new ClrGcSuspendEEBegin();
+        data.Reason = version >= 1 ? reader.GetInt32At(0) : reader.GetInt16At(0);
         return data;
     }
 }

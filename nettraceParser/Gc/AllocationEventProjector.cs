@@ -69,9 +69,10 @@ public static class AllocationEventProjector
     private const string ClrProviderName = "Microsoft-Windows-DotNETRuntime";
 
     // Same (events, pointerSize, qpcFrequency, referenceUtc, referenceQpc)
-    // shape as GcEventProjector.Project - same reasoning applies (the
-    // trace's own first event is the QPC anchor, not NettraceHeader's
-    // SyncTimeQPC; see Program.cs's referenceQpc comment).
+    // shape as GcEventProjector.Project - same reasoning applies (callers
+    // pass NettraceHeader's own SyncTimeQPC/SyncTimeUtc; see
+    // GcEventProjector.Project's referenceQpc comment for why that's now
+    // correct).
     public static List<AllocationEvent> Project(List<EventRecord> events, int pointerSize, long qpcFrequency, DateTime referenceUtc, long referenceQpc)
     {
         // AllocationEvent is a struct (~48 bytes) - without a capacity hint

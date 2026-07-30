@@ -29,6 +29,18 @@
 // rendering at allocationSummary.loh instead of allocationSummary itself,
 // with no new rendering code needed for either the chart or its drill-down.
 //
+// Every stack's "frames" (in both drillDown and typeDrillDown, in both the
+// top-level and "loh" scopes) is an array of integer indices into a single
+// shared allocationSummary.methodNames array (see MethodNameInterner), not
+// raw resolved-name strings - a consumer resolves a frame via
+// methodNames[frameIndex]. The same call paths recur across many distinct
+// (type, time-bucket) cells in a real capture, and writing the full string
+// every time was measured on a real ~10-minute production capture as
+// ballooning the JSON to 1.5GB (past Node's V8 string-length limit) despite
+// the ticks array already living in a separate binary sidecar (see
+// WriteTicks) - interning cut that same capture's stack data by roughly two
+// orders of magnitude.
+//
 // Writes directly into a Utf8JsonWriter rather than building a
 // System.Text.Json.Nodes.JsonObject/JsonArray tree first - a real capture's
 // ticks list can be tens of thousands of entries, and materializing one
@@ -87,6 +99,38 @@ public static class AllocationSummaryBuilder
     // a higher cap than DrillDownStacksPerCellLimit is deliberate here.
     private const int DrillDownStacksPerTypeLimit = 100;
 
+    // Deduplicates resolved method-name strings across every stack this
+    // exporter writes (both the "all" and "loh" scopes share one instance -
+    // see Write) into a single shared pool, referenced from each stack's
+    // "frames" array by integer index instead of repeating the string.
+    // Real captures reuse the same handful of hot call paths (framework
+    // internals, common allocation sites) across thousands of distinct
+    // (type, time-bucket) drill-down cells - without this, a long capture's
+    // JSON output scales with total drill-down *stack entries* (cells x
+    // per-cell cap), not distinct call paths, and was measured on a real
+    // ~10-minute production capture (523 GCs, ~190k stack entries after
+    // capping) at 1.5GB - past Node's ~537M-character string limit, which
+    // is what made the file unreadable in the VS Code extension even though
+    // nettraceParser itself parsed and exported it without error.
+    private class MethodNameInterner
+    {
+        private readonly Dictionary<string, int> indexByName = new Dictionary<string, int>();
+        public readonly List<string> NamesInOrder = new List<string>();
+
+        public int Intern(string name)
+        {
+            int index;
+            if (!indexByName.TryGetValue(name, out index))
+            {
+                index = NamesInOrder.Count;
+                indexByName[name] = index;
+                NamesInOrder.Add(name);
+            }
+
+            return index;
+        }
+    }
+
     private class TypeAllocStats
     {
         public string TypeName;
@@ -125,12 +169,18 @@ public static class AllocationSummaryBuilder
         // x-axis resizing/shifting, since bucket count/width stay fixed.
         int bucketCount = allocationEvents.Count == 0 ? 0 : ComputeBucketIndex(allocationEvents[allocationEvents.Count - 1].RelativeMSec, int.MaxValue) + 1;
 
+        // Shared by both the "all" and "loh" breakdowns below (see
+        // MethodNameInterner) - a single pool, referenced by
+        // allocationSummary.methodNames, backs every stack's "frames" array
+        // in both scopes.
+        MethodNameInterner methodNameInterner = new MethodNameInterner();
+
         writer.WriteStartObject();
 
         writer.WritePropertyName("ticks");
         WriteTicks(writer, allocationEvents, ticksBinaryPath);
 
-        WriteTypeBreakdown(writer, allocationEvents, bucketCount, stacksById, symbolTable);
+        WriteTypeBreakdown(writer, allocationEvents, bucketCount, stacksById, symbolTable, methodNameInterner);
 
         // Identical breakdown (same totalSampledBytes/topTypes/typeTimeline/
         // drillDown/typeDrillDown field names and shapes as above), scoped
@@ -150,8 +200,20 @@ public static class AllocationSummaryBuilder
         List<AllocationEvent> lohEvents = FilterByAllocationKind(allocationEvents, GCAllocationKind.Large);
         writer.WritePropertyName("loh");
         writer.WriteStartObject();
-        WriteTypeBreakdown(writer, lohEvents, bucketCount, stacksById, symbolTable);
+        WriteTypeBreakdown(writer, lohEvents, bucketCount, stacksById, symbolTable, methodNameInterner);
         writer.WriteEndObject();
+
+        // Written last since it's only fully populated once every stack in
+        // both scopes above has been walked - JSON object key order carries
+        // no meaning to any consumer here (this is machine-read, not
+        // hand-skimmed), so there's no need to reserve space for it earlier.
+        writer.WritePropertyName("methodNames");
+        writer.WriteStartArray();
+        for (int nameIndex = 0; nameIndex < methodNameInterner.NamesInOrder.Count; ++nameIndex)
+        {
+            writer.WriteStringValue(methodNameInterner.NamesInOrder[nameIndex]);
+        }
+        writer.WriteEndArray();
 
         writer.WriteEndObject();
     }
@@ -181,7 +243,7 @@ public static class AllocationSummaryBuilder
     // events must already be sorted ascending by RelativeMSec (true both for
     // the full list, sorted once in Write, and any filtered subset of it,
     // since filtering preserves relative order).
-    private static void WriteTypeBreakdown(Utf8JsonWriter writer, List<AllocationEvent> events, int bucketCount, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
+    private static void WriteTypeBreakdown(Utf8JsonWriter writer, List<AllocationEvent> events, int bucketCount, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
     {
         Dictionary<string, TypeAllocStats> statsByType = new Dictionary<string, TypeAllocStats>();
         long totalSampledBytes = 0;
@@ -262,10 +324,10 @@ public static class AllocationSummaryBuilder
         DrillDownAggregates aggregates = BuildDrillDownAggregates(events, columnIndexByType, typeIndexByName, topTypesCount, stacksById, bucketCount);
 
         writer.WritePropertyName("drillDown");
-        WriteCellDrillDown(writer, aggregates.ByCell, stacksById, symbolTable);
+        WriteCellDrillDown(writer, aggregates.ByCell, stacksById, symbolTable, methodNameInterner);
 
         writer.WritePropertyName("typeDrillDown");
-        WriteTypeDrillDown(writer, aggregates.ByType, stacksById, symbolTable);
+        WriteTypeDrillDown(writer, aggregates.ByType, stacksById, symbolTable, methodNameInterner);
     }
 
     // Shared by WriteTypeTimeline and WriteDrillDown so both agree on
@@ -486,8 +548,14 @@ public static class AllocationSummaryBuilder
     // WriteCellDrillDown and WriteTypeDrillDown so both agree on exactly
     // how a resolved (or unresolved/no-stack) call stack is represented.
     // "leaf-first" frame order, matching Blocks/StackBlock.cs's own decoded
-    // IP order.
-    private static void WriteStackAggregate(Utf8JsonWriter writer, StackAggregate aggregate, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
+    // IP order. frames is an array of integer indices into the shared
+    // allocationSummary.methodNames pool (see MethodNameInterner), not raw
+    // strings - the same resolved name recurs across many distinct stacks
+    // (framework internals, common allocation sites), and writing it out in
+    // full every time is what let a long real capture's JSON balloon past
+    // Node's string-length limit despite the ticks array already living in
+    // a separate binary sidecar.
+    private static void WriteStackAggregate(Utf8JsonWriter writer, StackAggregate aggregate, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
     {
         writer.WriteStartObject();
 
@@ -495,14 +563,15 @@ public static class AllocationSummaryBuilder
         writer.WriteStartArray();
         if (aggregate.StackId == -1)
         {
-            writer.WriteStringValue("<no stack captured>");
+            writer.WriteNumberValue(methodNameInterner.Intern("<no stack captured>"));
         }
         else
         {
             long[] instructionPointers = stacksById[aggregate.StackId];
             for (int frameIndex = 0; frameIndex < instructionPointers.Length; ++frameIndex)
             {
-                writer.WriteStringValue(symbolTable.Resolve(instructionPointers[frameIndex]));
+                string resolvedName = symbolTable.Resolve(instructionPointers[frameIndex]);
+                writer.WriteNumberValue(methodNameInterner.Intern(resolvedName));
             }
         }
         writer.WriteEndArray();
@@ -522,7 +591,7 @@ public static class AllocationSummaryBuilder
     // one the chart bar was actually drawn from) from the capped list alone,
     // which previously made the drill-down view's own displayed percentages
     // silently disagree with the bar they were opened from.
-    private static void WriteCellDrillDown(Utf8JsonWriter writer, Dictionary<(int TypeIndex, int BucketIndex), Dictionary<int, StackAggregate>> stacksByCell, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
+    private static void WriteCellDrillDown(Utf8JsonWriter writer, Dictionary<(int TypeIndex, int BucketIndex), Dictionary<int, StackAggregate>> stacksByCell, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
     {
         writer.WriteStartObject();
         writer.WritePropertyName("cells");
@@ -552,7 +621,7 @@ public static class AllocationSummaryBuilder
             writer.WriteStartArray();
             for (int stackIndex = 0; stackIndex < stackCount; ++stackIndex)
             {
-                WriteStackAggregate(writer, cellStackList[stackIndex], stacksById, symbolTable);
+                WriteStackAggregate(writer, cellStackList[stackIndex], stacksById, symbolTable, methodNameInterner);
             }
             writer.WriteEndArray();
             writer.WriteEndObject();
@@ -574,7 +643,7 @@ public static class AllocationSummaryBuilder
     // does - a type with more distinct call stacks than the cap needs a way
     // to recover its real (topTypes-matching) total from something other
     // than summing the possibly-truncated stacks array.
-    private static void WriteTypeDrillDown(Utf8JsonWriter writer, Dictionary<int, StackAggregate>[] stacksByType, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
+    private static void WriteTypeDrillDown(Utf8JsonWriter writer, Dictionary<int, StackAggregate>[] stacksByType, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
     {
         writer.WriteStartArray();
 
@@ -606,7 +675,7 @@ public static class AllocationSummaryBuilder
                 writer.WriteStartArray();
                 for (int stackIndex = 0; stackIndex < stackCount; ++stackIndex)
                 {
-                    WriteStackAggregate(writer, stackList[stackIndex], stacksById, symbolTable);
+                    WriteStackAggregate(writer, stackList[stackIndex], stacksById, symbolTable, methodNameInterner);
                 }
                 writer.WriteEndArray();
             }

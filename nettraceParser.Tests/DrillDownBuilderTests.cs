@@ -70,6 +70,15 @@ public class DrillDownBuilderTests
         }
     }
 
+    // frames arrays hold integer indices into the shared
+    // allocationSummary.methodNames pool now (see AllocationJsonExporter.cs's
+    // MethodNameInterner), not raw strings - resolves one frame back to its
+    // name the same way a real consumer would.
+    private static string ResolveFrameName(JsonObject summary, JsonNode frameIndexNode)
+    {
+        return summary["methodNames"][frameIndexNode.GetValue<int>()].GetValue<string>();
+    }
+
     private static EventRecord MakeRundownEvent(long startAddress, int size, string name)
     {
         byte[] payload = new PayloadBuilder()
@@ -119,9 +128,9 @@ public class DrillDownBuilderTests
         // before stackId=20 (50).
         Assert.Equal(300, bucket0Stacks[0]["totalBytes"].GetValue<long>());
         Assert.Equal(2, bucket0Stacks[0]["tickCount"].GetValue<int>());
-        Assert.Equal("MethodTen", bucket0Stacks[0]["frames"][0].GetValue<string>());
+        Assert.Equal("MethodTen", ResolveFrameName(summary, bucket0Stacks[0]["frames"][0]));
         Assert.Equal(50, bucket0Stacks[1]["totalBytes"].GetValue<long>());
-        Assert.Equal("MethodTwenty", bucket0Stacks[1]["frames"][0].GetValue<string>());
+        Assert.Equal("MethodTwenty", ResolveFrameName(summary, bucket0Stacks[1]["frames"][0]));
 
         JsonArray bucket1Stacks = cells["0:1"]["stacks"].AsArray();
         Assert.Single(bucket1Stacks);
@@ -182,7 +191,7 @@ public class DrillDownBuilderTests
         Assert.Single(cellStacks);
         Assert.Equal(300, cellStacks[0]["totalBytes"].GetValue<long>());
         Assert.Equal(2, cellStacks[0]["tickCount"].GetValue<int>());
-        Assert.Equal("<no stack captured>", cellStacks[0]["frames"][0].GetValue<string>());
+        Assert.Equal("<no stack captured>", ResolveFrameName(summary, cellStacks[0]["frames"][0]));
     }
 
     [Fact]
