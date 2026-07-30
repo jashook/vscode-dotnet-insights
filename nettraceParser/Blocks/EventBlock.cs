@@ -70,6 +70,13 @@ public class EventBlock : IFastSerializable, IFastSerializableVersion
 
         short headerSize;
         short headerFlags;
+        // Read but intentionally unused beyond advancing the stream: per
+        // NetTraceFormat_v5.md, Min/MaxTimestamp are purely descriptive
+        // (letting a reader locate blocks of interest without decoding every
+        // event inside them) - they do NOT seed the per-block delta decoder.
+        // See CompressedEventBlobDecoderState's own doc comment for why this
+        // matters and what broke when this code used to (wrongly) seed with
+        // MinTimestamp.
         long minTimeStamp;
         long maxTimeStamp;
 
@@ -81,8 +88,9 @@ public class EventBlock : IFastSerializable, IFastSerializableVersion
         long headerEnd = blockContentStart + headerSize;
         deserializer.Reader.Goto((StreamLabel)headerEnd);
 
+        // Zero-initialized (not seeded from MinTimestamp) - see
+        // CompressedEventBlobDecoderState's doc comment.
         CompressedEventBlobDecoderState decoderState = new CompressedEventBlobDecoderState();
-        decoderState.TimeStamp = minTimeStamp;
 
         while ((long)deserializer.Current < blockContentEnd)
         {

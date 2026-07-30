@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\nettraceParser\nettraceParser.csproj" />
+    <ProjectReference Include="..\nettraceParser.GroundTruth\nettraceParser.GroundTruth.csproj" />
   </ItemGroup>
 
   <ItemGroup>

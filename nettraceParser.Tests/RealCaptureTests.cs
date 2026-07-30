@@ -39,7 +39,7 @@ public class RealCaptureTests
     private static (List<GcEvent> GcEvents, List<AllocationEvent> AllocationEvents, Dictionary<int, long[]> StacksById, MethodSymbolTable SymbolTable) ProjectFixture()
     {
         NettraceFile file = NettraceFile.Read(FixturePath);
-        long referenceQpc = file.Events.Count > 0 ? file.Events[0].TimeStampRelativeQPC : file.Header.SyncTimeQPC;
+        long referenceQpc = file.Header.SyncTimeQPC;
 
         List<GcEvent> gcEvents = GcEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);
         List<AllocationEvent> allocationEvents = AllocationEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);

@@ -30,15 +30,65 @@ only if these stop matching observed behavior:
   expects a bare `EndObject` tag (a legacy V1 quirk) but real files terminate
   with `NullReference`. Use `GetEntryObject()` + a manual
   `while (deserializer.ReadObject() != null) {}` loop instead.
+- **Compressed event header delta decoding**: `CompressedEventBlobDecoderState`
+  (`Blocks/CompressedEventBlobHeader.cs`) must be a **fresh, zero-initialized**
+  instance per `EventBlock`/`MetadataBlock` — per `NetTraceFormat_v5.md`,
+  "when starting a new event block assume the previous event contained every
+  field with a zeroed value." A block's own `MinTimestamp`/`MaxTimestamp`
+  header fields are purely descriptive (let a reader locate blocks of
+  interest without decoding every event inside them) and must **not** seed
+  the decoder state — seeding `TimeStamp` with `MinTimestamp` double-counts
+  it into every event's own timestamp for the rest of that block (a block's
+  first event blob already re-encodes a delta that amounts to its own true
+  absolute QPC value on its own). This was a real, long-standing bug here:
+  every event's decoded QPC came out ~2x too large, invisible to every test
+  in this repo (none compared timestamps) until a ground-truth diff against
+  `Microsoft.Diagnostics.Tracing.TraceEvent` caught it (see "Ground-truth
+  diff testing" below). It also fully explains the next bullet below, which
+  was itself a misdiagnosis of this same bug's symptom.
+- **QPC timestamp anchor**: use `NettraceHeader.SyncTimeQPC`/`SyncTimeUtc`
+  directly as the wall-clock reference (`referenceQpc =
+  file.Header.SyncTimeQPC`) — this used to look unreliable ("~3 days off in
+  one verified case," previously worked around by anchoring to the trace's
+  own first event's QPC instead), but that was a symptom of the timestamp
+  decode bug above, not a real problem with `SyncTimeQPC`. With that bug
+  fixed, `SyncTimeQPC` agrees with the first event's own QPC to within ~1ms
+  on every real capture checked and matches PerfView/TraceEvent's own anchor
+  exactly (verified via `Microsoft.Diagnostics.Tracing.TraceEvent`'s
+  `sessionStartTimeQPC`, which is literally `_syncTimeQPC` read the same way).
 - **GC event correlation**: `GCHeapStats` / `GCGlobalHeapHistory` /
   `GCPerHeapHistory` can arrive on the wire *after* `GCEnd` for the GC they
-  describe. Correlate via a `mostRecentlyStartedGcId` counter, not by
-  tracking "currently open" GCs.
-- **QPC timestamp domain**: `NettraceHeader.SyncTimeQPC`'s numeric
-  relationship to the per-event QPC stream does not reliably hold on this
-  platform (produced timestamps ~3 days off in one verified case). Anchor
-  wall-clock conversion to the trace's own **first event's QPC value**
-  instead of the header's `SyncTimeQPC`.
+  describe — `GcEventProjector.Project` correlates via several distinct
+  "most recent X" trackers, not by tracking "currently open" GCs, because a
+  single shared notion of "current" isn't enough:
+  - `GCGlobalHeapHistory`/`GCPerHeapHistory` route via `currentBatchGcId`,
+    resolved through a **per-generation** pending queue (keyed by `GCStart`'s
+    own `Depth`, dequeued using `GCGlobalHeapHistory`'s own
+    `CondemnedGeneration`) — a single shared queue/pointer can't tell a slow
+    background gen2 GC's bookkeeping apart from overlapping foreground
+    gen0/1 GCs.
+  - `GCHeapStats` routes via a **separate** `mostRecentlyEndedGcId` (updated
+    on `GCEnd`), not `currentBatchGcId` — verified against a real Server GC
+    capture that a background GC's own `GCHeapStats` arrives right after its
+    own `GCEnd` but *before* its own `GCGlobalHeapHistory` (the reverse order
+    from a foreground GC). Falls back from `currentBatchGcId` only once that
+    candidate already has its stats, so both orders resolve correctly.
+  - `PauseDurationMSec`'s true window is `GCSuspendEEBegin` (thread
+    suspension requested) through `GCRestartEEEnd` (threads running again) —
+    not `GCStart`-to-`GCEnd`, which omits the time spent actually stopping
+    every thread and, for a background GC, covers its entire concurrent mark
+    phase rather than a real pause. A background GC's own pause is seeded at
+    `GCStart` with just its initiating `GCSuspendEEBegin`-to-`GCSuspendEEEnd`
+    gap (microseconds, not a lasting pause), then further internal
+    `SuspendForGCPrep` cycles *accumulate* onto it while a `SuspendForGC`
+    cycle *replaces* it — both verified field-for-field against TraceEvent's
+    own `TraceManagedProcess.cs` (`AddConcurrentPauseTime`,
+    `GetCurrentGC`). `GCEnd`'s own `GCStart`-to-`GCEnd` fallback computation
+    must be skipped once a real suspend/restart-based value already exists
+    for that GC (tracked via `gcIdsWithSuspendBasedPause`) — a background
+    GC's completing `GCEnd` arrives *after* its last internal
+    `GCRestartEEEnd`, so without this guard it silently clobbers the correct
+    value with the full mark-phase span.
 - **`GCPerHeapHistory`**: only `Version >= 3` payloads are decoded (what this
   environment's .NET actually emits); older layouts are unimplemented on
   purpose.
@@ -122,6 +172,33 @@ touching GC data shapes, since several real bugs here (QPC timestamp domain,
 GC event correlation order) were only visible against real capture data.
 
 Commands (run from `dotnetInsights/`): `npm run compile`, `npm test`.
+
+### Ground-truth diff testing (`nettraceParser.GroundTruth`)
+
+`nettraceParser.GroundTruth` is a small standalone project (`dotnet run --
+<file.nettrace> [--json out.json]`) that reads a `.nettrace` file via
+`Microsoft.Diagnostics.Tracing.TraceEvent` (`Analysis.GC.TraceGC`/
+`TraceGarbageCollector`) instead of `nettraceParser`'s own hand-rolled
+decoder — the one project in this repo deliberately allowed to depend on
+TraceEvent, since the whole point is to be an independent second
+implementation built on the same library PerfView's GC Stats view uses.
+`nettraceParser.Tests/GroundTruthDiffTests.cs` diffs `GcEventProjector`'s
+output against it field-by-field (generation, reason, heap sizes, promoted
+bytes, pause timing, ...), gated behind the `NETTRACE_GROUNDTRUTH_FIXTURE`
+env var (a local file path) so it's a silent no-op by default and never
+needs a fixture checked in:
+```
+NETTRACE_GROUNDTRUTH_FIXTURE=~/path/to/some.nettrace \
+  dotnet test --filter GroundTruthDiffTests
+```
+This is how the timestamp-decode bug, the `GCHeapStats` misattribution bug,
+and the `PauseDurationMSec` semantic gap above were all found and confirmed
+fixed — none of them were visible from `nettraceParser`'s own pinned-value
+tests (`RealCaptureTests.cs`), because those pins were derived from
+`nettraceParser`'s own (buggy) output in the first place. Prefer extending
+this diff test over adding another synthetic/pinned-value test when the
+question is "does this match what PerfView would show," not just "does this
+match what this code already computes."
 
 ## Known open items
 

@@ -55,6 +55,9 @@ public class MetadataBlock : IFastSerializable, IFastSerializableVersion
 
         short headerSize;
         short headerFlags;
+        // Read but intentionally unused beyond advancing the stream - see
+        // EventBlock.cs's own copy of this comment and
+        // CompressedEventBlobDecoderState's doc comment.
         long minTimeStamp;
         long maxTimeStamp;
 
@@ -66,8 +69,9 @@ public class MetadataBlock : IFastSerializable, IFastSerializableVersion
         long headerEnd = blockContentStart + headerSize;
         deserializer.Reader.Goto((StreamLabel)headerEnd);
 
+        // Zero-initialized (not seeded from MinTimestamp) - see
+        // CompressedEventBlobDecoderState's doc comment.
         CompressedEventBlobDecoderState decoderState = new CompressedEventBlobDecoderState();
-        decoderState.TimeStamp = minTimeStamp;
 
         while ((long)deserializer.Current < blockContentEnd)
         {
