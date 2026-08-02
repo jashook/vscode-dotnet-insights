@@ -672,6 +672,28 @@
     padding: 8px;
 }
 
+/* [data-sort] scopes this to the per-GC detail table's headers specifically
+   (see GcDetailTableRenderer.ts) - the generation-breakdown tables share the
+   .detailTable/.tableHeader classes but aren't sortable, and shouldn't look
+   clickable either. */
+.detailTable th[data-sort]
+{
+    cursor: pointer;
+    user-select: none;
+}
+
+.detailTable th[data-sort]:hover
+{
+    background-color: rgba(87, 93, 182, 1);
+}
+
+.detailTable th .sortIndicator
+{
+    display: inline-block;
+    font-size: 10px;
+    width: 10px;
+}
+
 .detailTable tr:hover
 {
     background-color: lightblue;

@@ -1009,6 +1009,89 @@ var allocationDatasets = {};
         document.getElementById("generationBreakdownSection").innerHTML = buildAllGenerationBreakdownTables(showAllGenFields);
     }
 
+    // Click-to-sort for the Detailed tab's per-GC table. The table is only
+    // ever built once per webview session (see detailTableHtml above), so
+    // this reorders the already-rendered <tr> elements in place rather than
+    // re-deriving values from the original gcs array - matching the
+    // render-once/mutate-the-DOM approach the rest of this lazy-inject path
+    // already uses.
+    var currentSortColumnIndex = -1;
+    var currentSortAscending = true;
+
+    function detailTableSortValue(cell, sortType) {
+        if (sortType === 'date') {
+            // The DateTime cell's own data-raw attribute (an ISO-8601
+            // timestamp or a zero-padded "+elapsed" string - see
+            // GcDetailTableRenderer.ts) sorts correctly as plain text; the
+            // human-formatted display text (e.g. "21-Jul-2026 03:42:13 PM
+            // PDT") does not.
+            return cell.getAttribute('data-raw') || '';
+        }
+
+        if (sortType === 'number') {
+            var parsed = parseFloat(cell.textContent);
+            return isNaN(parsed) ? -Infinity : parsed;
+        }
+
+        return cell.textContent.toLowerCase();
+    }
+
+    function sortDetailTableByColumn(table, columnIndex, sortType, ascending) {
+        var tbody = table.tBodies[0] || table;
+        // Snapshots the live HTMLCollection before any row gets moved -
+        // table.rows[0] is the header row, left untouched.
+        var dataRows = Array.prototype.slice.call(table.rows, 1);
+
+        dataRows.sort(function (rowA, rowB) {
+            var valueA = detailTableSortValue(rowA.cells[columnIndex], sortType);
+            var valueB = detailTableSortValue(rowB.cells[columnIndex], sortType);
+
+            var comparison = 0;
+            if (valueA < valueB) {
+                comparison = -1;
+            } else if (valueA > valueB) {
+                comparison = 1;
+            }
+
+            return ascending ? comparison : -comparison;
+        });
+
+        // appendChild on a node already in the tree moves it - iterating in
+        // the desired final order and re-appending each row leaves the
+        // header (never touched) first and every data row following in
+        // sorted order.
+        for (var rowIndex = 0; rowIndex < dataRows.length; ++rowIndex) {
+            tbody.appendChild(dataRows[rowIndex]);
+        }
+    }
+
+    function setupDetailTableSortHandlers(container) {
+        var table = container.querySelector(".detailTable table");
+        if (!table) {
+            return;
+        }
+
+        var headerCells = table.rows[0].cells;
+        for (var headerIndex = 0; headerIndex < headerCells.length; ++headerIndex) {
+            var headerCell = headerCells[headerIndex];
+
+            (function (columnIndex, headerCell) {
+                headerCell.addEventListener('click', function () {
+                    var ascending = (currentSortColumnIndex === columnIndex) ? !currentSortAscending : true;
+                    sortDetailTableByColumn(table, columnIndex, headerCell.getAttribute('data-sort'), ascending);
+
+                    for (var clearIndex = 0; clearIndex < headerCells.length; ++clearIndex) {
+                        headerCells[clearIndex].getElementsByClassName('sortIndicator')[0].textContent = '';
+                    }
+                    headerCell.getElementsByClassName('sortIndicator')[0].textContent = ascending ? ' ▲' : ' ▼';
+
+                    currentSortColumnIndex = columnIndex;
+                    currentSortAscending = ascending;
+                });
+            })(headerIndex, headerCell);
+        }
+    }
+
     var genFieldsToggle = document.getElementById("genFieldsToggle");
     genFieldsToggle.addEventListener('click', function () {
         showAllGenFields = !showAllGenFields;
@@ -1062,6 +1145,8 @@ var allocationDatasets = {};
                     var dateTimeCell = dateTimeCells[dateTimeCellIndex];
                     dateTimeCell.textContent = formatHumanDateTime(dateTimeCell.getAttribute('data-raw'));
                 }
+
+                setupDetailTableSortHandlers(detailedPanel);
 
                 renderGenerationBreakdownSection();
                 detailTableInjected = true;

@@ -86,6 +86,25 @@ describe('GcDetailTableRenderer', () => {
             assert.ok(html.includes('<td class="gcDateTimeCell" data-raw="2026-07-21T15:42:13.3255649-07:00"></td>'));
         });
 
+        // Column sorting (snapshotGcStats.js's setupDetailTableSortHandlers)
+        // reads each <th>'s data-sort attribute to decide how to compare
+        // that column's cells - pinned here so a future column reorder/
+        // rename can't silently drop or mislabel one.
+        it('marks every header with the data-sort type its column needs (number/date/text)', () => {
+            const html = renderGcDetailTable([makeGc(1, 1)]);
+
+            assert.ok(html.includes('<th data-sort="number"><span class="thLabel">GC Number</span>'));
+            assert.ok(html.includes('<th data-sort="date"><span class="thLabel">DateTime</span>'));
+            assert.ok(html.includes('<th data-sort="number"><span class="thLabel">Collection Generation</span>'));
+            assert.ok(html.includes('<th data-sort="text"><span class="thLabel">Type</span>'));
+            assert.ok(html.includes('<th data-sort="number"><span class="thLabel">Pause Time (mSec)</span>'));
+            assert.ok(html.includes('<th data-sort="text"><span class="thLabel">Reason</span>'));
+
+            // Every header - regardless of sort type - gets an (initially
+            // empty) sort-direction indicator span the click handler fills in.
+            assert.strictEqual((html.match(/<span class="sortIndicator"><\/span>/g) || []).length, 16);
+        });
+
         it('renders GenerationSizePOH as a real value, not the old NYI placeholder', () => {
             const html = renderGcDetailTable([makeGc(1, 1, { GenerationSizePOH: 2 * 1024 * 1024 })]);
 
