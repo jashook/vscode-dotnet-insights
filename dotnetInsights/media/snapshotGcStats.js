@@ -1367,12 +1367,60 @@ var allocationDatasets = {};
         }
     }
 
+    // Builds this row's own subtree the first time it's expanded -
+    // drillDownStats.js's renderCallerRow/renderDrillDownTable only emit an
+    // empty data-lazy="true" placeholder for any row with children, so the
+    // nested-table HTML (the expensive part) only ever gets built for a
+    // subtree a user actually asked to see, not eagerly for all of them on
+    // every drill-down click. Safe to call on an already-built detailRow -
+    // it's a no-op (data-lazy is removed once built, so this just falls
+    // through).
+    function buildDrillDownRowIfLazy(detailRow) {
+        if (!detailRow || detailRow.getAttribute('data-lazy') !== 'true') {
+            return;
+        }
+
+        var builtHtml = buildLazyDrillDownSubtree(detailRow.id);
+        if (builtHtml !== null) {
+            detailRow.querySelector('.callerTreeCell').innerHTML = builtHtml;
+        }
+        detailRow.removeAttribute('data-lazy');
+    }
+
     // Bulk-toggles every collapsible row in the drill-down panel at once
     // (see the Expand All/Collapse All buttons in drillDownStats.js's
-    // renderDrillDownTable) - every node with at least one child is now
-    // individually collapsible (not just real branch points), so a deep
-    // tree can take many individual clicks to fully open or close by hand.
+    // renderDrillDownTable, and the leafMethodRow "reveal the whole story"
+    // click below) - every node with at least one child is now individually
+    // collapsible (not just real branch points), so a deep tree can take
+    // many individual clicks to fully open or close by hand.
+    //
+    // When expanding, this also has to *build* every still-lazy row under
+    // container first - building one level can introduce new
+    // still-collapsed-and-unbuilt rows one level deeper (a child that
+    // itself has children), so this loops until a full pass finds nothing
+    // left to build, ensuring "expand everything under here" really does
+    // reach every depth, not just whatever happened to already exist.
+    // Collapsing never needs this - hiding already-built content via CSS is
+    // still cheap, and there's no reason to throw already-built DOM away.
     function setAllDrillDownRowsExpanded(container, expanded) {
+        if (expanded) {
+            // container is sometimes itself a still-lazy .callPathsDetail row
+            // (a leafMethodRow's own detail row, the first time it's
+            // expanded) - Element.querySelector only searches *descendants*,
+            // never the element it's called on, so container's own lazy
+            // state has to be built explicitly before the descendant loop
+            // below can find anything underneath it to build. A no-op via
+            // buildDrillDownRowIfLazy's own guard when container isn't a
+            // lazy row itself (e.g. the whole drillDownPanel, for Expand
+            // All).
+            buildDrillDownRowIfLazy(container);
+
+            var lazyDetailRow;
+            while ((lazyDetailRow = container.querySelector('.callPathsDetail[data-lazy="true"]')) !== null) {
+                buildDrillDownRowIfLazy(lazyDetailRow);
+            }
+        }
+
         var toggleRows = container.querySelectorAll('[data-expandable="true"]');
         for (var rowIndex = 0; rowIndex < toggleRows.length; ++rowIndex) {
             var toggleRow = toggleRows[rowIndex];
@@ -1556,6 +1604,16 @@ var allocationDatasets = {};
                     leafRow.classList.toggle('expanded', willExpand);
                     detailRow.classList.toggle('expanded', willExpand);
                     return;
+                }
+
+                // A single caller row's own toggle only reveals its
+                // *immediate* children, lazily building just that one level
+                // the first time (see drillDownStats.js's renderCallerRow/
+                // buildLazyDrillDownSubtree) - deeper levels stay collapsed
+                // and unbuilt until expanded themselves.
+                var willExpandOneLevel = !leafRow.classList.contains('expanded');
+                if (willExpandOneLevel) {
+                    buildDrillDownRowIfLazy(detailRow);
                 }
 
                 leafRow.classList.toggle('expanded');

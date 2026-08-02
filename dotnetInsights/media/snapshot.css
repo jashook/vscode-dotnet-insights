@@ -893,8 +893,9 @@
 }
 
 /* Every node with at least one child now gets its own nested
-   .callerTreeInner (see renderCallerChainRows) so it can be collapsed
-   independently, not just at real branch points - a straight, deep call
+   .callerTreeInner (see drillDownStats.js's renderCallerRow/
+   buildLazyDrillDownSubtree) so it can be collapsed independently, not just
+   at real branch points - a straight, deep call
    stack (common - 20-30 frames with no branching is normal) can nest 20-30
    of these inside each other. A nested table with width:auto shrinks to
    its own content instead of filling the <td> containing it (unlike a
