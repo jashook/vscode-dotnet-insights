@@ -35,6 +35,7 @@ using System.IO;
 
 using DotnetInsights.NetTrace.Gc;
 using DotnetInsights.NetTrace.GroundTruth;
+using DotnetInsights.NetTrace.Rundown;
 
 using Xunit;
 
@@ -149,6 +150,114 @@ public class GroundTruthDiffTests
         {
             diffs.Add($"GC #{gcId}: {fieldName} differs (nettraceParser={parsedValue}, groundTruth={truthValue})");
         }
+    }
+
+    // Regression coverage for the StackId-recycling bug: NettraceFile used to
+    // hand every event a raw StackId int, resolved later against a single
+    // whole-file Dictionary<int, long[]> that a later StackBlock's own
+    // sequence-point-scoped StackId reuse would silently overwrite - see
+    // NetTraceFormat_v5.md's own StackBlock section ("Events are only
+    // allowed to refer to a stack id if there is no sequence point in
+    // between the event and the stack") and EventBlock.cs's own comment on
+    // why resolution now happens eagerly, at parse time, instead. Confirmed
+    // via this same TraceEvent-based comparison on a real production
+    // capture: 0 of 30 sampled ticks' leaf frames agreed before the fix,
+    // 100% agreed after - this test exists so that result can never silently
+    // regress again.
+    [Fact]
+    public void AllocationEventProjector_Project_StackLeafFramesMatchTraceEventGroundTruth()
+    {
+        string fixturePath = Environment.GetEnvironmentVariable(FixtureEnvVar);
+        if (string.IsNullOrEmpty(fixturePath) || !File.Exists(fixturePath))
+        {
+            return;
+        }
+
+        NettraceFile file = NettraceFile.Read(fixturePath);
+        long referenceQpc = file.Header.SyncTimeQPC;
+
+        List<AllocationEvent> parsedEvents = AllocationEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, referenceQpc);
+
+        List<(double RelativeMSec, long AllocationAmount, string TypeName, string LeafMethodName)> parsedTuples = new List<(double, long, string, string)>(parsedEvents.Count);
+        foreach (AllocationEvent parsedEvent in parsedEvents)
+        {
+            string leaf = parsedEvent.Stack.Length > 0 ? symbolTable.Resolve(parsedEvent.Stack[0], parsedEvent.RelativeMSec) : null;
+            parsedTuples.Add((parsedEvent.RelativeMSec, parsedEvent.AllocationAmount, parsedEvent.TypeName, leaf));
+        }
+
+        // Same (RelativeMSec, AllocationAmount, TypeName) tie-break ordering
+        // as TraceEventAllocationReader.Read - both sides compute
+        // RelativeMSec from the same underlying QPC delta/frequency (see
+        // NettraceHeader.SyncTimeQPC's own doc comment on this repo's
+        // earlier timestamp-decode bug), so a positional zip after this sort
+        // pairs up the same real tick on both sides.
+        parsedTuples.Sort((left, right) =>
+        {
+            int msecCompare = left.RelativeMSec.CompareTo(right.RelativeMSec);
+            if (msecCompare != 0)
+            {
+                return msecCompare;
+            }
+
+            int amountCompare = left.AllocationAmount.CompareTo(right.AllocationAmount);
+            if (amountCompare != 0)
+            {
+                return amountCompare;
+            }
+
+            return string.CompareOrdinal(left.TypeName, right.TypeName);
+        });
+
+        List<AllocationTruthRecord> truthRecords = TraceEventAllocationReader.Read(fixturePath);
+
+        Assert.True(parsedTuples.Count == truthRecords.Count, $"Tick count differs: nettraceParser={parsedTuples.Count}, groundTruth={truthRecords.Count} (fixture: {fixturePath})");
+
+        List<string> diffs = new List<string>();
+        int compareCount = Math.Min(parsedTuples.Count, truthRecords.Count);
+
+        for (int tickIndex = 0; tickIndex < compareCount; ++tickIndex)
+        {
+            (double RelativeMSec, long AllocationAmount, string TypeName, string LeafMethodName) parsedTuple = parsedTuples[tickIndex];
+            AllocationTruthRecord truthRecord = truthRecords[tickIndex];
+
+            // Compare against both the raw ground-truth name and its
+            // paren-stripped form - see AllocationTruthRecord.LeafMethodName's
+            // own doc comment on why a single fixed normalization doesn't
+            // work for dynamic/Reflection.Emit methods.
+            if (parsedTuple.LeafMethodName != truthRecord.LeafMethodName && parsedTuple.LeafMethodName != StripParams(truthRecord.LeafMethodName))
+            {
+                diffs.Add($"Tick @{parsedTuple.RelativeMSec:F4}ms ({parsedTuple.TypeName}, {parsedTuple.AllocationAmount} bytes): leaf frame differs (nettraceParser={parsedTuple.LeafMethodName ?? "<no stack>"}, groundTruth={truthRecord.LeafMethodName ?? "<no stack>"})");
+            }
+        }
+
+        Assert.True(diffs.Count == 0, $"{diffs.Count} of {compareCount} allocation-tick leaf frame(s) mismatched between nettraceParser and TraceEvent ground truth (fixture: {fixturePath}):\n" + string.Join("\n", diffs.Count > 50 ? diffs.GetRange(0, 50) : diffs));
+    }
+
+    // TraceEvent's FullMethodName includes the full parameter signature
+    // (e.g. "Namespace.Type.Method(class System.String)") for an ordinary
+    // method - nettraceParser's own MethodSymbolTable.Resolve (see
+    // ClrMethodRundown.cs's DisplayName) only carries Namespace.MethodName
+    // in that case. Strip at the LAST '(' rather than the first: an ordinary
+    // method's own name never contains one (C# generic arguments use <>,
+    // never parens), so this is a no-op difference for it, but a dynamic/
+    // Reflection.Emit method's Name field can itself already contain a
+    // parenthesized fake signature as literal text (e.g.
+    // "dynamicClass.Void .ctor(System.String)") with TraceEvent then
+    // appending the method's real JIT signature after it (e.g.
+    // "...(System.String)(class System.Object[])") - stripping at the first
+    // '(' would truncate into that literal name text; the last '(' is
+    // always the start of the real, appended signature on both kinds of
+    // method.
+    private static string StripParams(string fullMethodName)
+    {
+        if (string.IsNullOrEmpty(fullMethodName))
+        {
+            return fullMethodName;
+        }
+
+        int parenIndex = fullMethodName.LastIndexOf('(');
+        return parenIndex >= 0 ? fullMethodName.Substring(0, parenIndex) : fullMethodName;
     }
 }
 

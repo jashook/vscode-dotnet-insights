@@ -134,7 +134,7 @@ public class MethodSymbolTableTests
     {
         byte[] foreignPayload = MakeMethodDCStartVerbosePayload(1, 2, 1000, 100, 0x06000001, 0, "T", "M", "sig", 8);
 
-        EventRecord foreignEvent = new EventRecord("Some-Other-Provider", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackId: 0, fields: null, foreignPayload, payloadOffset: 0, foreignPayload.Length);
+        EventRecord foreignEvent = new EventRecord("Some-Other-Provider", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stack: System.Array.Empty<long>(), fields: null, foreignPayload, payloadOffset: 0, foreignPayload.Length);
 
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord> { foreignEvent }, pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
 
@@ -145,7 +145,7 @@ public class MethodSymbolTableTests
     {
         byte[] payload = MakeMethodDCStartVerbosePayload(1, 2, startAddress, size, 0x06000001, 0, "", name, "sig", 8);
 
-        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackId: 0, fields: null, payload, payloadOffset: 0, payload.Length);
+        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stack: System.Array.Empty<long>(), fields: null, payload, payloadOffset: 0, payload.Length);
     }
 
     // qpc is a raw QPC tick value, not milliseconds - callers pick a
@@ -156,14 +156,14 @@ public class MethodSymbolTableTests
     {
         byte[] payload = MakeMethodDCStartVerbosePayload(methodId, moduleId: 2, startAddress, size, 0x06000001, 0, "", name, "sig", 8);
 
-        return new EventRecord("Microsoft-Windows-DotNETRuntime", eventName: null, ClrMethodEventIds.MethodLoadVerbose, version: 1, timeStampRelativeQpc: qpc, threadId: 0, stackId: 0, fields: null, payload, payloadOffset: 0, payload.Length);
+        return new EventRecord("Microsoft-Windows-DotNETRuntime", eventName: null, ClrMethodEventIds.MethodLoadVerbose, version: 1, timeStampRelativeQpc: qpc, threadId: 0, stack: System.Array.Empty<long>(), fields: null, payload, payloadOffset: 0, payload.Length);
     }
 
     private static EventRecord MakeUnloadEvent(long methodId, long qpc)
     {
         byte[] payload = MakeMethodDCStartVerbosePayload(methodId, moduleId: 2, methodStartAddress: 0, methodSize: 0, methodToken: 0x06000001, methodFlags: 0, methodNamespace: "", methodName: "unused", signature: "sig", pointerSize: 8);
 
-        return new EventRecord("Microsoft-Windows-DotNETRuntime", eventName: null, ClrMethodEventIds.MethodUnloadVerbose, version: 1, timeStampRelativeQpc: qpc, threadId: 0, stackId: 0, fields: null, payload, payloadOffset: 0, payload.Length);
+        return new EventRecord("Microsoft-Windows-DotNETRuntime", eventName: null, ClrMethodEventIds.MethodUnloadVerbose, version: 1, timeStampRelativeQpc: qpc, threadId: 0, stack: System.Array.Empty<long>(), fields: null, payload, payloadOffset: 0, payload.Length);
     }
 
     // The real bug this whole feature fixes (see MethodSymbolTable.cs's own

@@ -71,7 +71,7 @@ if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
 
     string processName = Path.GetFileNameWithoutExtension(filePath);
 
-    GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, file.StacksById, symbolTable, processName, ticksBinaryPath);
+    GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, symbolTable, processName, ticksBinaryPath);
     long jsonExportMs = phaseStopwatch.ElapsedMilliseconds;
 
     long totalMs = totalStopwatch.ElapsedMilliseconds;

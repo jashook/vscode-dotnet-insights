@@ -52,7 +52,7 @@ public class RealCaptureTests
     // (see AllocationJsonExporter.cs for why) rather than returning a
     // JsonObject - write to an in-memory buffer and parse it back so these
     // tests can keep asserting against the real output shape.
-    private static JsonObject BuildAllocationSummary(List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
+    private static JsonObject BuildAllocationSummary(List<AllocationEvent> allocationEvents, MethodSymbolTable symbolTable)
     {
         // ticks is now a binary sidecar file (see AllocationJsonExporter.cs's
         // WriteTicks) - this file's tests don't assert on ticks directly, so
@@ -65,7 +65,7 @@ public class RealCaptureTests
             {
                 using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
                 {
-                    AllocationSummaryBuilder.Write(writer, allocationEvents, stacksById, symbolTable, ticksBinaryPath);
+                    AllocationSummaryBuilder.Write(writer, allocationEvents, symbolTable, ticksBinaryPath);
                 }
 
                 return (JsonObject)JsonNode.Parse(stream.ToArray());
@@ -190,9 +190,9 @@ public class RealCaptureTests
     [Fact]
     public void AllocationSummaryBuilder_Build_ReconcilesTotalSampledBytesAcrossTopTypes()
     {
-        (_, List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable) = ProjectFixture();
+        (_, List<AllocationEvent> allocationEvents, _, MethodSymbolTable symbolTable) = ProjectFixture();
 
-        JsonObject summary = BuildAllocationSummary(allocationEvents, stacksById, symbolTable);
+        JsonObject summary = BuildAllocationSummary(allocationEvents, symbolTable);
 
         long totalSampledBytes = summary["totalSampledBytes"].GetValue<long>();
         Assert.True(totalSampledBytes > 1_000_000_000L, $"Expected >1GB sampled, got {totalSampledBytes}");
@@ -220,9 +220,9 @@ public class RealCaptureTests
         // "<no stack captured>" (which would mean StackId wasn't actually
         // wired through AllocationEventProjector.cs, or the symbol table
         // silently failed to resolve anything).
-        (_, List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable) = ProjectFixture();
+        (_, List<AllocationEvent> allocationEvents, _, MethodSymbolTable symbolTable) = ProjectFixture();
 
-        JsonObject summary = BuildAllocationSummary(allocationEvents, stacksById, symbolTable);
+        JsonObject summary = BuildAllocationSummary(allocationEvents, symbolTable);
         JsonObject cells = summary["drillDown"]["cells"].AsObject();
         JsonArray methodNames = summary["methodNames"].AsArray();
 

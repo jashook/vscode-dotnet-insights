@@ -97,7 +97,7 @@ public class NettraceFile
             {
                 deserializer.RegisterFactory("Trace", () => header);
                 deserializer.RegisterFactory("MetadataBlock", () => { ++metadataBlockCount; return new MetadataBlock(file.MetadataById); });
-                deserializer.RegisterFactory("EventBlock", () => { ++eventBlockCount; return new EventBlock(file.MetadataById, file.Events, fileBytes); });
+                deserializer.RegisterFactory("EventBlock", () => { ++eventBlockCount; return new EventBlock(file.MetadataById, file.Events, fileBytes, file.StacksById); });
                 // header.PointerSize is read here (not file.Header.PointerSize,
                 // which isn't assigned until after this whole loop finishes) -
                 // safe because GetEntryObject() below reads the Trace header

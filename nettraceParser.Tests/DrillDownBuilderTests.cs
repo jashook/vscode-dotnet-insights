@@ -16,6 +16,7 @@
 // *largest* stacks, not an arbitrary subset.
 ////////////////////////////////////////////////////////////////////////////////
 
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
@@ -33,16 +34,49 @@ namespace DotnetInsights.NetTrace.Tests {
 
 public class DrillDownBuilderTests
 {
+    // AllocationJsonExporter.cs now aggregates stacks by AllocationEvent.Stack's
+    // own array reference, not by a raw StackId int (see EventRecord.cs's own
+    // comment on why - StackId values are recyclable in the real wire format).
+    // This cache is what lets these tests keep using a readable synthetic int
+    // "stackId" while still giving two MakeEvent calls for the "same" stack
+    // the exact same array instance, which is what real aggregation now
+    // requires - EventBlock.cs achieves the same thing in production by
+    // resolving against the shared StacksById dictionary at parse time.
+    // stackId 0 always means "no stack" (Array.Empty<long>()), matching the
+    // real pipeline's own convention.
+    private static readonly Dictionary<int, long[]> stackCache = new Dictionary<int, long[]>();
+
+    // address = stackId * 100 is an arbitrary but stable, distinct-per-id
+    // convention - tests that need MethodSymbolTable to resolve a stack's
+    // frame to a real name build their rundown data at this same address
+    // (see MakeRundownEvent's call sites below).
+    private static long[] StackFor(int stackId)
+    {
+        if (stackId == 0)
+        {
+            return Array.Empty<long>();
+        }
+
+        long[] stack;
+        if (!stackCache.TryGetValue(stackId, out stack))
+        {
+            stack = new long[] { stackId * 100 };
+            stackCache[stackId] = stack;
+        }
+
+        return stack;
+    }
+
     private static AllocationEvent MakeEvent(string typeName, long amount, double relativeMSec, int stackId, GCAllocationKind kind = GCAllocationKind.Small)
     {
-        return new AllocationEvent(default, relativeMSec, amount, kind, typeName, heapIndex: 0, stackId: stackId);
+        return new AllocationEvent(default, relativeMSec, amount, kind, typeName, heapIndex: 0, stack: StackFor(stackId));
     }
 
     // AllocationSummaryBuilder.Write streams directly to a Utf8JsonWriter
     // (see AllocationJsonExporter.cs for why) rather than returning a
     // JsonObject - write to an in-memory buffer and parse it back so these
     // tests can keep asserting against the real output shape.
-    private static JsonObject Build(List<AllocationEvent> events, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable)
+    private static JsonObject Build(List<AllocationEvent> events, MethodSymbolTable symbolTable)
     {
         // ticks is now a binary sidecar file (see AllocationJsonExporter.cs's
         // WriteTicks) - this file's tests don't assert on ticks directly, so
@@ -55,7 +89,7 @@ public class DrillDownBuilderTests
             {
                 using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
                 {
-                    AllocationSummaryBuilder.Write(writer, events, stacksById, symbolTable, ticksBinaryPath);
+                    AllocationSummaryBuilder.Write(writer, events, symbolTable, ticksBinaryPath);
                 }
 
                 return (JsonObject)JsonNode.Parse(stream.ToArray());
@@ -87,7 +121,7 @@ public class DrillDownBuilderTests
             .WriteUnicodeString("").WriteUnicodeString(name).WriteUnicodeString("sig")
             .ToArray();
 
-        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackId: 0, fields: null, payload, payloadOffset: 0, payload.Length);
+        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stack: Array.Empty<long>(), fields: null, payload, payloadOffset: 0, payload.Length);
     }
 
     [Fact]
@@ -101,19 +135,13 @@ public class DrillDownBuilderTests
             MakeEvent("TypeA", 999, relativeMSec: 1500, stackId: 10)  // different bucket - separate cell
         };
 
-        Dictionary<int, long[]> stacksById = new Dictionary<int, long[]>
-        {
-            { 10, new long[] { 1000 } },
-            { 20, new long[] { 2000 } }
-        };
-
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>
         {
             MakeRundownEvent(1000, 10, "MethodTen"),
             MakeRundownEvent(2000, 10, "MethodTwenty")
         }, pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
 
-        JsonObject summary = Build(events, stacksById, symbolTable);
+        JsonObject summary = Build(events, symbolTable);
         JsonObject cells = summary["drillDown"]["cells"].AsObject();
 
         // Only one type -> typeIndex 0. bucketWidthMSec=1000, so 100ms is
@@ -150,10 +178,9 @@ public class DrillDownBuilderTests
             events.Add(MakeEvent($"Type{typeIndex}", 900 - (typeIndex * 100), relativeMSec: 0, stackId: 1));
         }
 
-        Dictionary<int, long[]> stacksById = new Dictionary<int, long[]> { { 1, new long[] { 5000 } } };
-        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord> { MakeRundownEvent(5000, 10, "Method") }, pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord> { MakeRundownEvent(100, 10, "Method") }, pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
 
-        JsonObject summary = Build(events, stacksById, symbolTable);
+        JsonObject summary = Build(events, symbolTable);
         JsonObject cells = summary["drillDown"]["cells"].AsObject();
 
         // Eight real types -> eight cells ("0:0".."7:0"), nothing for Type8.
@@ -177,14 +204,19 @@ public class DrillDownBuilderTests
     [Fact]
     public void Build_DrillDown_GroupsTicksWithNoCapturedStackUnderAPlaceholder()
     {
+        // Both events have no captured stack (Array.Empty<long>()) - real
+        // stack resolution happens once, eagerly, at parse time now (see
+        // EventBlock.cs), so there's no "dangling id not found in a lookup
+        // table" case left at this layer to construct separately; every
+        // AllocationEvent's Stack is already whatever it's ever going to be.
         List<AllocationEvent> events = new List<AllocationEvent>
         {
-            MakeEvent("TypeA", 100, relativeMSec: 0, stackId: 0),      // StackId 0 == "no stack"
-            MakeEvent("TypeA", 200, relativeMSec: 0, stackId: 999)     // not in stacksById
+            MakeEvent("TypeA", 100, relativeMSec: 0, stackId: 0),
+            MakeEvent("TypeA", 200, relativeMSec: 0, stackId: 0)
         };
 
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
-        JsonObject summary = Build(events, new Dictionary<int, long[]>(), symbolTable);
+        JsonObject summary = Build(events, symbolTable);
 
         JsonArray cellStacks = summary["drillDown"]["cells"]["0:0"]["stacks"].AsArray();
 
@@ -198,17 +230,15 @@ public class DrillDownBuilderTests
     public void Build_DrillDown_CapsStacksPerCellAtFiftyKeepingTheLargestByBytes()
     {
         List<AllocationEvent> events = new List<AllocationEvent>();
-        Dictionary<int, long[]> stacksById = new Dictionary<int, long[]>();
 
         for (int stackId = 1; stackId <= 60; ++stackId)
         {
             // Descending bytes by id, so the top 50 kept are ids 1-50.
             events.Add(MakeEvent("TypeA", amount: 1000 - stackId, relativeMSec: 0, stackId: stackId));
-            stacksById[stackId] = new long[] { stackId * 100 };
         }
 
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
-        JsonObject summary = Build(events, stacksById, symbolTable);
+        JsonObject summary = Build(events, symbolTable);
 
         JsonObject cell = summary["drillDown"]["cells"]["0:0"].AsObject();
         JsonArray cellStacks = cell["stacks"].AsArray();
@@ -256,10 +286,9 @@ public class DrillDownBuilderTests
             MakeEvent("TypeB", 500, relativeMSec: 1200, stackId: 1)
         };
 
-        Dictionary<int, long[]> stacksById = new Dictionary<int, long[]> { { 1, new long[] { 100 } }, { 2, new long[] { 200 } } };
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
 
-        JsonObject summary = Build(events, stacksById, symbolTable);
+        JsonObject summary = Build(events, symbolTable);
         JsonObject typeTimeline = summary["typeTimeline"].AsObject();
         JsonObject cells = summary["drillDown"]["cells"].AsObject();
 
@@ -301,10 +330,9 @@ public class DrillDownBuilderTests
             MakeEvent("TypeA", 5000, relativeMSec: 0, stackId: 2, kind: GCAllocationKind.Large)
         };
 
-        Dictionary<int, long[]> stacksById = new Dictionary<int, long[]> { { 1, new long[] { 100 } }, { 2, new long[] { 200 } } };
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
 
-        JsonObject summary = Build(events, stacksById, symbolTable);
+        JsonObject summary = Build(events, symbolTable);
 
         // Unfiltered (top-level) drillDown sees both stacks.
         JsonObject allCell = summary["drillDown"]["cells"]["0:0"].AsObject();

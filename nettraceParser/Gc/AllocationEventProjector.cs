@@ -47,12 +47,12 @@ public readonly struct AllocationEvent
     public readonly GCAllocationKind AllocationKind;
     public readonly string TypeName;
     public readonly int HeapIndex;
-    // Resolves via Rundown/MethodSymbolTable.cs against Blocks/StackBlock.cs's
-    // decoded stacks (see Gc/DrillDownBuilder.cs) - 0 when the capture
-    // didn't stack-walk this particular tick.
-    public readonly int StackId;
+    // Copied directly from the owning EventRecord.Stack, already resolved at
+    // parse time (see EventBlock.cs/EventRecord.cs) - empty
+    // (Array.Empty<long>()), never null, when this tick wasn't stack-walked.
+    public readonly long[] Stack;
 
-    public AllocationEvent(DateTime timestamp, double relativeMSec, long allocationAmount, GCAllocationKind allocationKind, string typeName, int heapIndex, int stackId)
+    public AllocationEvent(DateTime timestamp, double relativeMSec, long allocationAmount, GCAllocationKind allocationKind, string typeName, int heapIndex, long[] stack)
     {
         this.Timestamp = timestamp;
         this.RelativeMSec = relativeMSec;
@@ -60,7 +60,7 @@ public readonly struct AllocationEvent
         this.AllocationKind = allocationKind;
         this.TypeName = typeName;
         this.HeapIndex = heapIndex;
-        this.StackId = stackId;
+        this.Stack = stack;
     }
 }
 
@@ -128,7 +128,7 @@ public static class AllocationEventProjector
                 relativeMSec = qpcDelta * 1000.0 / qpcFrequency;
             }
 
-            result.Add(new AllocationEvent(timestamp, relativeMSec, tick.AllocationAmount64, tick.AllocationKind, tick.TypeName, tick.HeapIndex, record.StackId));
+            result.Add(new AllocationEvent(timestamp, relativeMSec, tick.AllocationAmount64, tick.AllocationKind, tick.TypeName, tick.HeapIndex, record.Stack));
         }
 
         return result;

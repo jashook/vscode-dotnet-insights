@@ -35,17 +35,12 @@ public class AllocationSummaryBuilderTests
 {
     private static AllocationEvent MakeEvent(string typeName, long amount, GCAllocationKind kind, double relativeMSec)
     {
-        return new AllocationEvent(default, relativeMSec, amount, kind, typeName, heapIndex: 0, stackId: 0);
+        return new AllocationEvent(default, relativeMSec, amount, kind, typeName, heapIndex: 0, stack: Array.Empty<long>());
     }
 
     // These tests don't exercise stack resolution (see
-    // DrillDownBuilderTests.cs for that) - an empty stacksById/symbolTable
-    // pair is enough to call Build.
-    private static Dictionary<int, long[]> EmptyStacksById()
-    {
-        return new Dictionary<int, long[]>();
-    }
-
+    // DrillDownBuilderTests.cs for that) - an empty symbolTable is enough to
+    // call Build (every event's Stack is already Array.Empty<long>()).
     private static MethodSymbolTable EmptySymbolTable()
     {
         return MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
@@ -74,7 +69,7 @@ public class AllocationSummaryBuilderTests
             {
                 using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
                 {
-                    AllocationSummaryBuilder.Write(writer, events, EmptyStacksById(), EmptySymbolTable(), ticksBinaryPath);
+                    AllocationSummaryBuilder.Write(writer, events, EmptySymbolTable(), ticksBinaryPath);
                 }
 
                 summary = (JsonObject)JsonNode.Parse(stream.ToArray());
@@ -293,7 +288,7 @@ public class AllocationSummaryBuilderTests
             {
                 using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
                 {
-                    AllocationSummaryBuilder.Write(writer, events, EmptyStacksById(), EmptySymbolTable(), ticksBinaryPath);
+                    AllocationSummaryBuilder.Write(writer, events, EmptySymbolTable(), ticksBinaryPath);
                 }
 
                 summary = (JsonObject)JsonNode.Parse(stream.ToArray());
