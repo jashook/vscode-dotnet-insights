@@ -17,7 +17,12 @@ import { exec } from "child_process";
 export class DotnetInsightsGcSnapshotEditor implements vscode.CustomReadonlyEditorProvider {
     public static register(context: vscode.ExtensionContext, insights: DotnetInsights): vscode.Disposable {
         const provider = new DotnetInsightsGcSnapshotEditor(context, insights, null);
-        const providerRegistration = vscode.window.registerCustomEditorProvider(DotnetInsightsGcSnapshotEditor.viewType, provider);
+        // Without this, switching to another editor tab and back tears down
+        // and reloads the webview's whole DOM/JS state from scratch (VS
+        // Code's default) - losing the Detailed tab's injected table, any
+        // sort applied to it, and the GC charts' zoom range (see
+        // snapshotGcStats.js's gcChartsZoomRange/heapContentsZoomRange).
+        const providerRegistration = vscode.window.registerCustomEditorProvider(DotnetInsightsGcSnapshotEditor.viewType, provider, { webviewOptions: { retainContextWhenHidden: true } });
         return providerRegistration;
     }
 
