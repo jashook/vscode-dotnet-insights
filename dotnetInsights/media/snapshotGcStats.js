@@ -1488,10 +1488,18 @@ var allocationDatasets = {};
         if (!zoomRange) {
             var wholeCaptureTypes = [];
             for (var wholeIndex = 0; wholeIndex < topTypes.length; ++wholeIndex) {
+                // Tick/Small/Large/Pinned counts carried straight through
+                // (unlike the zoomed branch below, the real whole-capture
+                // values are available here - see renderRankedTypesTableRows,
+                // which renders them only when present on typeStats).
                 wholeCaptureTypes.push({
                     typeIndex: wholeIndex,
                     TypeName: topTypes[wholeIndex]["TypeName"],
-                    TotalBytes: topTypes[wholeIndex]["TotalBytes"]
+                    TotalBytes: topTypes[wholeIndex]["TotalBytes"],
+                    TickCount: topTypes[wholeIndex]["TickCount"],
+                    SmallCount: topTypes[wholeIndex]["SmallCount"],
+                    LargeCount: topTypes[wholeIndex]["LargeCount"],
+                    PinnedCount: topTypes[wholeIndex]["PinnedCount"]
                 });
             }
             // Already sorted server-side by TotalBytes descending - no
@@ -1565,11 +1573,21 @@ var allocationDatasets = {};
             var tdTotalBytes = (totalBytes / mb).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
             var tdPercent = percentOfSampled.toFixed(2);
 
+            // Only the unzoomed branch of computeZoomedTypeStats carries
+            // these through (the zoomed branch has no per-bucket data for
+            // them - see computeZoomedTypeStats's own comment) - undefined
+            // here means "leave the CSS-hidden cells empty", matching the
+            // ticksOnlyColumn hide rule these same cells already carry.
+            var tdTickCount = typeStats.TickCount !== undefined ? typeStats.TickCount : "";
+            var tdSmallCount = typeStats.SmallCount !== undefined ? typeStats.SmallCount : "";
+            var tdLargeCount = typeStats.LargeCount !== undefined ? typeStats.LargeCount : "";
+            var tdPinnedCount = typeStats.PinnedCount !== undefined ? typeStats.PinnedCount : "";
+
             rowsHtml += `<tr class="typeRow" data-type-index="${typeStats.typeIndex}" data-scope="${scope}">` +
                 `<td>${typeStats.TypeName}</td>` +
                 `<td>${tdTotalBytes}</td>` +
                 `<td>${tdPercent}</td>` +
-                `<td class="ticksOnlyColumn"></td><td class="ticksOnlyColumn"></td><td class="ticksOnlyColumn"></td><td class="ticksOnlyColumn"></td>` +
+                `<td class="ticksOnlyColumn">${tdTickCount}</td><td class="ticksOnlyColumn">${tdSmallCount}</td><td class="ticksOnlyColumn">${tdLargeCount}</td><td class="ticksOnlyColumn">${tdPinnedCount}</td>` +
                 `</tr>`;
         }
 
