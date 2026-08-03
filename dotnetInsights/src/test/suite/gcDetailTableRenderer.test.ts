@@ -11,6 +11,7 @@ function makeGc(id: number, pauseDurationMSec: number, overrides?: any): any {
         data: Object.assign({
             Id: id,
             DateTime: '2026-07-21T15:42:13.3255649-07:00',
+            PauseStartRelativeMSec: id * 1000,
             generation: 0,
             Type: 'AllocSmall',
             PauseDurationMSec: pauseDurationMSec,
@@ -128,12 +129,12 @@ describe('GcDetailTableRenderer', () => {
 
             const html = renderGcDetailTable(gcs);
 
-            assert.ok(html.includes('<tr class="expensiveGc"><td>1</td>'));
-            assert.ok(html.includes('<tr class="warnGc"><td>2</td>'));
-            assert.ok(html.includes('<tr class="interstingGc"><td>3</td>'));
-            assert.ok(html.includes('<tr class="somewhatInterestingGc"><td>4</td>'));
-            assert.ok(html.includes('<tr class="notSomewhatInterestingGc"><td>5</td>'));
-            assert.ok(html.includes('<tr><td>6</td>'));
+            assert.ok(html.includes('<tr class="expensiveGc" data-elapsed-msec="1000"><td>1</td>'));
+            assert.ok(html.includes('<tr class="warnGc" data-elapsed-msec="2000"><td>2</td>'));
+            assert.ok(html.includes('<tr class="interstingGc" data-elapsed-msec="3000"><td>3</td>'));
+            assert.ok(html.includes('<tr class="somewhatInterestingGc" data-elapsed-msec="4000"><td>4</td>'));
+            assert.ok(html.includes('<tr class="notSomewhatInterestingGc" data-elapsed-msec="5000"><td>5</td>'));
+            assert.ok(html.includes('<tr data-elapsed-msec="6000"><td>6</td>'));
         });
     });
 
@@ -145,7 +146,7 @@ describe('GcDetailTableRenderer', () => {
         it('renders one row per GC', () => {
             const html = renderGcDetailTable(gcs);
 
-            const dataRowMatches = html.match(/<tr(?: class="[a-zA-Z]*")?><td>\d+<\/td>/g) || [];
+            const dataRowMatches = html.match(/<tr(?: class="[a-zA-Z]*")? data-elapsed-msec="[^"]*"><td>\d+<\/td>/g) || [];
             assert.strictEqual(dataRowMatches.length, 140);
         });
 

@@ -86,6 +86,13 @@ export function renderGcDetailTable(gcs: any[]): string {
         const tdTotalPromotedSize1 = (parseInt(gcData["TotalPromotedSize1"]) / mb).toFixed(2);
         const tdTotalPromotedSize2 = (parseInt(gcData["TotalPromotedSize2"]) / mb).toFixed(2);
 
+        // Read by snapshotGcStats.js's filterDetailTableToZoomRange to hide
+        // rows outside the GC Charts tab's current zoom selection - the same
+        // elapsed-ms value the charts themselves plot each GC at (see
+        // buildAllPauseTimePulses), so a zoomed chart range and the filtered
+        // table always agree on which GCs are "in view".
+        const tdElapsedMsec = gcData["PauseStartRelativeMSec"];
+
         var severityClass = "";
         if (pauseTime > 200.0) {
             severityClass = ` class="expensiveGc"`;
@@ -103,7 +110,7 @@ export function renderGcDetailTable(gcs: any[]): string {
             severityClass = ` class="notSomewhatInterestingGc"`;
         }
 
-        rows += `<tr${severityClass}><td>${tdId}</td><td class="gcDateTimeCell" data-raw="${tdDateTimeRaw}"></td><td>${tdGen}</td><td>${tdType}</td><td>${tdPauseTime}</td><td>${tdReason}</td><td>${tdGen0Size}</td><td>${tdGen1Size}</td><td>${tdGen2Size}</td><td>${tdLohSize}</td><td>${tdPohSize}</td><td>${tdTotalHeapSize}</td><td>${tdGen0MinSize}</td><td>${tdTotalPromotedSize0}</td><td>${tdTotalPromotedSize1}</td><td>${tdTotalPromotedSize2}</td></tr>`;
+        rows += `<tr${severityClass} data-elapsed-msec="${tdElapsedMsec}"><td>${tdId}</td><td class="gcDateTimeCell" data-raw="${tdDateTimeRaw}"></td><td>${tdGen}</td><td>${tdType}</td><td>${tdPauseTime}</td><td>${tdReason}</td><td>${tdGen0Size}</td><td>${tdGen1Size}</td><td>${tdGen2Size}</td><td>${tdLohSize}</td><td>${tdPohSize}</td><td>${tdTotalHeapSize}</td><td>${tdGen0MinSize}</td><td>${tdTotalPromotedSize0}</td><td>${tdTotalPromotedSize1}</td><td>${tdTotalPromotedSize2}</td></tr>`;
     }
 
     // data-sort marks how snapshotGcStats.js's click-to-sort handler should
