@@ -111,7 +111,7 @@ public class DrillDownBuilderTests
         {
             MakeRundownEvent(1000, 10, "MethodTen"),
             MakeRundownEvent(2000, 10, "MethodTwenty")
-        }, pointerSize: 8);
+        }, pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
 
         JsonObject summary = Build(events, stacksById, symbolTable);
         JsonObject cells = summary["drillDown"]["cells"].AsObject();
@@ -151,7 +151,7 @@ public class DrillDownBuilderTests
         }
 
         Dictionary<int, long[]> stacksById = new Dictionary<int, long[]> { { 1, new long[] { 5000 } } };
-        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord> { MakeRundownEvent(5000, 10, "Method") }, pointerSize: 8);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord> { MakeRundownEvent(5000, 10, "Method") }, pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
 
         JsonObject summary = Build(events, stacksById, symbolTable);
         JsonObject cells = summary["drillDown"]["cells"].AsObject();
@@ -183,7 +183,7 @@ public class DrillDownBuilderTests
             MakeEvent("TypeA", 200, relativeMSec: 0, stackId: 999)     // not in stacksById
         };
 
-        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
         JsonObject summary = Build(events, new Dictionary<int, long[]>(), symbolTable);
 
         JsonArray cellStacks = summary["drillDown"]["cells"]["0:0"]["stacks"].AsArray();
@@ -207,7 +207,7 @@ public class DrillDownBuilderTests
             stacksById[stackId] = new long[] { stackId * 100 };
         }
 
-        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
         JsonObject summary = Build(events, stacksById, symbolTable);
 
         JsonObject cell = summary["drillDown"]["cells"]["0:0"].AsObject();
@@ -257,7 +257,7 @@ public class DrillDownBuilderTests
         };
 
         Dictionary<int, long[]> stacksById = new Dictionary<int, long[]> { { 1, new long[] { 100 } }, { 2, new long[] { 200 } } };
-        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
 
         JsonObject summary = Build(events, stacksById, symbolTable);
         JsonObject typeTimeline = summary["typeTimeline"].AsObject();
@@ -302,7 +302,7 @@ public class DrillDownBuilderTests
         };
 
         Dictionary<int, long[]> stacksById = new Dictionary<int, long[]> { { 1, new long[] { 100 } }, { 2, new long[] { 200 } } };
-        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
 
         JsonObject summary = Build(events, stacksById, symbolTable);
 

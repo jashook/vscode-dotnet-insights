@@ -51,7 +51,7 @@ public class GcJsonExporterTests
 
         try
         {
-            GcJsonExporter.WriteToFile(outputPath, gcEvents, new List<AllocationEvent>(), new Dictionary<int, long[]>(), MethodSymbolTable.Build(new List<EventRecord>(), 8), processName: "test-process", ticksBinaryPath);
+            GcJsonExporter.WriteToFile(outputPath, gcEvents, new List<AllocationEvent>(), new Dictionary<int, long[]>(), MethodSymbolTable.Build(new List<EventRecord>(), 8, 0, 0), processName: "test-process", ticksBinaryPath);
             string json = File.ReadAllText(outputPath);
             return (JsonObject)JsonNode.Parse(json);
         }

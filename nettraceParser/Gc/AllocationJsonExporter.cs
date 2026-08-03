@@ -444,6 +444,14 @@ public static class AllocationSummaryBuilder
         public int StackId;
         public long TotalBytes;
         public int TickCount;
+        // The first tick's own RelativeMSec that contributed to this
+        // aggregate - used as a representative timestamp when resolving
+        // this stack's frames (see MethodSymbolTable.Resolve), since a
+        // StackAggregate can merge many ticks sharing one StackId at
+        // different real times. An approximation (ticks sharing the exact
+        // same StackId in practice tend to occur close together - the same
+        // hot call path re-executing), not a per-tick-exact resolution.
+        public double FirstSeenRelativeMSec;
     }
 
     private struct DrillDownAggregates
@@ -509,7 +517,7 @@ public static class AllocationSummaryBuilder
                         aggregates.ByCell[cellKey] = cellStacks;
                     }
 
-                    AddToStackAggregate(cellStacks, stackKey, allocationEvent.AllocationAmount);
+                    AddToStackAggregate(cellStacks, stackKey, allocationEvent.AllocationAmount, allocationEvent.RelativeMSec);
                 }
             }
 
@@ -523,20 +531,21 @@ public static class AllocationSummaryBuilder
                     aggregates.ByType[globalTypeIndex] = typeStacks;
                 }
 
-                AddToStackAggregate(typeStacks, stackKey, allocationEvent.AllocationAmount);
+                AddToStackAggregate(typeStacks, stackKey, allocationEvent.AllocationAmount, allocationEvent.RelativeMSec);
             }
         }
 
         return aggregates;
     }
 
-    private static void AddToStackAggregate(Dictionary<int, StackAggregate> stacks, int stackKey, long allocationAmount)
+    private static void AddToStackAggregate(Dictionary<int, StackAggregate> stacks, int stackKey, long allocationAmount, double relativeMSec)
     {
         StackAggregate aggregate;
         if (!stacks.TryGetValue(stackKey, out aggregate))
         {
             aggregate = new StackAggregate();
             aggregate.StackId = stackKey;
+            aggregate.FirstSeenRelativeMSec = relativeMSec;
             stacks[stackKey] = aggregate;
         }
 
@@ -570,7 +579,7 @@ public static class AllocationSummaryBuilder
             long[] instructionPointers = stacksById[aggregate.StackId];
             for (int frameIndex = 0; frameIndex < instructionPointers.Length; ++frameIndex)
             {
-                string resolvedName = symbolTable.Resolve(instructionPointers[frameIndex]);
+                string resolvedName = symbolTable.Resolve(instructionPointers[frameIndex], aggregate.FirstSeenRelativeMSec);
                 writer.WriteNumberValue(methodNameInterner.Intern(resolvedName));
             }
         }

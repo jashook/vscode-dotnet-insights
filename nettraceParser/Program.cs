@@ -65,7 +65,7 @@ if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
     long allocationProjectMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 
-    MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize);
+    MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, referenceQpc);
     long symbolTableMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 

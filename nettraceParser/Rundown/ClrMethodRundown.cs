@@ -40,8 +40,26 @@ public static class ClrRundownEventIds
     public const int MethodDCStartVerbose = 144;
 }
 
+// Regular Microsoft-Windows-DotNETRuntime provider (not Rundown) - fired
+// live, during tracing, whenever a method is actually JIT'd/loaded or
+// unloaded, each carrying its own timestamp. This is what makes a
+// time-aware MethodSymbolTable possible at all: MethodDCStartVerbose alone
+// (rundown, fired once at trace-end) only says a method was loaded *by* the
+// end of the capture, never *when* - not enough to tell whether a given
+// stack frame's address still belonged to that method at the time that
+// particular frame was actually captured, if the address was reused by a
+// different method in between (collectible/dynamic methods being the
+// common case - see MethodSymbolTable.cs). EventID values confirmed against
+// microsoft/perfview's ClrTraceEventParser.cs (MethodTaskGuid, opcodes 37/38).
+public static class ClrMethodEventIds
+{
+    public const int MethodLoadVerbose = 143;
+    public const int MethodUnloadVerbose = 144;
+}
+
 public class ClrMethodRecord
 {
+    public long MethodID;
     public long MethodStartAddress;
     public long MethodSize;
     public string DisplayName;
@@ -51,6 +69,11 @@ public class ClrMethodRecord
     // MethodID (pointer), ModuleID (pointer), MethodStartAddress (pointer),
     // MethodSize (Int32), MethodToken (Int32), MethodFlags (Int32), then
     // three null-terminated UTF-16 strings: Namespace, MethodName, Signature.
+    // Same payload shape for MethodLoadVerbose/MethodUnloadVerbose (regular
+    // CLR provider) as MethodDCStartVerbose (Rundown provider) - confirmed
+    // against microsoft/perfview's ClrTraceEventParser.cs: both are the
+    // MethodLoadUnloadVerboseTraceData class, just registered under
+    // different EventIDs/providers.
     public static ClrMethodRecord Decode(PayloadReader reader)
     {
         int stringsStart = reader.HostOffset(24, 3);
@@ -60,6 +83,7 @@ public class ClrMethodRecord
         }
 
         ClrMethodRecord method = new ClrMethodRecord();
+        method.MethodID = reader.GetAddressAt(reader.HostOffset(0, 0));
         method.MethodStartAddress = reader.GetAddressAt(reader.HostOffset(8, 2));
         method.MethodSize = reader.GetInt32At(reader.HostOffset(12, 3));
 

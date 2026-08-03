@@ -48,7 +48,7 @@ public class AllocationSummaryBuilderTests
 
     private static MethodSymbolTable EmptySymbolTable()
     {
-        return MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8);
+        return MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
     }
 
     // AllocationSummaryBuilder.Write streams directly to a Utf8JsonWriter

@@ -91,21 +91,21 @@ public class MethodSymbolTableTests
             MakeRundownEvent(startAddress: 2000, size: 50, name: "TypeB.MethodB")
         };
 
-        MethodSymbolTable symbolTable = MethodSymbolTable.Build(events, pointerSize: 8);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(events, pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
 
-        Assert.Equal("TypeA.MethodA", symbolTable.Resolve(1050));
-        Assert.Equal("TypeA.MethodA", symbolTable.Resolve(1000));       // range start, inclusive
-        Assert.Equal("TypeB.MethodB", symbolTable.Resolve(2049));       // range end, exclusive - 2049 is the last valid byte
-        Assert.Equal("TypeB.MethodB", symbolTable.Resolve(2000));
+        Assert.Equal("TypeA.MethodA", symbolTable.Resolve(1050, 0));
+        Assert.Equal("TypeA.MethodA", symbolTable.Resolve(1000, 0));       // range start, inclusive
+        Assert.Equal("TypeB.MethodB", symbolTable.Resolve(2049, 0));       // range end, exclusive - 2049 is the last valid byte
+        Assert.Equal("TypeB.MethodB", symbolTable.Resolve(2000, 0));
     }
 
     [Fact]
     public void MethodSymbolTable_Resolve_ReturnsPlaceholderForAnUnresolvedAddress()
     {
         List<EventRecord> events = new List<EventRecord> { MakeRundownEvent(startAddress: 1000, size: 100, name: "TypeA.MethodA") };
-        MethodSymbolTable symbolTable = MethodSymbolTable.Build(events, pointerSize: 8);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(events, pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
 
-        string resolved = symbolTable.Resolve(9999);
+        string resolved = symbolTable.Resolve(9999, 0);
 
         Assert.StartsWith("<unresolved", resolved);
     }
@@ -121,12 +121,12 @@ public class MethodSymbolTableTests
             MakeRundownEvent(startAddress: 3000, size: 100, name: "Third")
         };
 
-        MethodSymbolTable symbolTable = MethodSymbolTable.Build(events, pointerSize: 8);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(events, pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
 
-        Assert.Equal("First", symbolTable.Resolve(1099));
-        Assert.Equal("Second", symbolTable.Resolve(2000));
-        Assert.Equal("Third", symbolTable.Resolve(3099));
-        Assert.StartsWith("<unresolved", symbolTable.Resolve(1999));  // gap between First and Second
+        Assert.Equal("First", symbolTable.Resolve(1099, 0));
+        Assert.Equal("Second", symbolTable.Resolve(2000, 0));
+        Assert.Equal("Third", symbolTable.Resolve(3099, 0));
+        Assert.StartsWith("<unresolved", symbolTable.Resolve(1999, 0));  // gap between First and Second
     }
 
     [Fact]
@@ -136,9 +136,9 @@ public class MethodSymbolTableTests
 
         EventRecord foreignEvent = new EventRecord("Some-Other-Provider", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackId: 0, fields: null, foreignPayload, payloadOffset: 0, foreignPayload.Length);
 
-        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord> { foreignEvent }, pointerSize: 8);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord> { foreignEvent }, pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
 
-        Assert.StartsWith("<unresolved", symbolTable.Resolve(1050));
+        Assert.StartsWith("<unresolved", symbolTable.Resolve(1050, 0));
     }
 
     private static EventRecord MakeRundownEvent(long startAddress, int size, string name)
@@ -146,6 +146,77 @@ public class MethodSymbolTableTests
         byte[] payload = MakeMethodDCStartVerbosePayload(1, 2, startAddress, size, 0x06000001, 0, "", name, "sig", 8);
 
         return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackId: 0, fields: null, payload, payloadOffset: 0, payload.Length);
+    }
+
+    // qpc is a raw QPC tick value, not milliseconds - callers pick a
+    // qpcFrequency (see the tests using these) that makes the two line up
+    // 1:1 for readable test values, matching how AllocationEventProjector's
+    // own tests already do this.
+    private static EventRecord MakeLoadEvent(long methodId, long startAddress, int size, string name, long qpc)
+    {
+        byte[] payload = MakeMethodDCStartVerbosePayload(methodId, moduleId: 2, startAddress, size, 0x06000001, 0, "", name, "sig", 8);
+
+        return new EventRecord("Microsoft-Windows-DotNETRuntime", eventName: null, ClrMethodEventIds.MethodLoadVerbose, version: 1, timeStampRelativeQpc: qpc, threadId: 0, stackId: 0, fields: null, payload, payloadOffset: 0, payload.Length);
+    }
+
+    private static EventRecord MakeUnloadEvent(long methodId, long qpc)
+    {
+        byte[] payload = MakeMethodDCStartVerbosePayload(methodId, moduleId: 2, methodStartAddress: 0, methodSize: 0, methodToken: 0x06000001, methodFlags: 0, methodNamespace: "", methodName: "unused", signature: "sig", pointerSize: 8);
+
+        return new EventRecord("Microsoft-Windows-DotNETRuntime", eventName: null, ClrMethodEventIds.MethodUnloadVerbose, version: 1, timeStampRelativeQpc: qpc, threadId: 0, stackId: 0, fields: null, payload, payloadOffset: 0, payload.Length);
+    }
+
+    // The real bug this whole feature fixes (see MethodSymbolTable.cs's own
+    // header comment): a collectible/dynamic method ("Old") gets JIT'd,
+    // runs, and is unloaded mid-capture; the CLR later reuses that exact
+    // address for a different method ("New") still loaded at capture end.
+    // A stack frame captured *while Old was resident* must still resolve
+    // to "Old", not to whichever method a single end-of-capture snapshot
+    // would say owns that address now.
+    [Fact]
+    public void MethodSymbolTable_Resolve_AttributesReusedAddressToWhicheverMethodOwnedItAtTheGivenTime()
+    {
+        const long qpcFrequency = 1000; // 1 QPC tick == 1ms, for readable test values.
+        List<EventRecord> events = new List<EventRecord>
+        {
+            MakeLoadEvent(methodId: 1, startAddress: 5000, size: 100, name: "Old", qpc: 100),
+            MakeUnloadEvent(methodId: 1, qpc: 200),
+            MakeLoadEvent(methodId: 2, startAddress: 5000, size: 100, name: "New", qpc: 300)
+        };
+
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(events, pointerSize: 8, qpcFrequency: qpcFrequency, referenceQpc: 0);
+
+        Assert.Equal("Old", symbolTable.Resolve(5050, relativeMSec: 150));
+        Assert.Equal("New", symbolTable.Resolve(5050, relativeMSec: 350));
+    }
+
+    // A MethodID (like an address) can itself be reused across more than
+    // one load/unload cycle within one capture - the FIFO queue in Build
+    // must pair each Unload with the *oldest* still-open Load for that
+    // MethodID, not overwrite/lose track of earlier occurrences.
+    [Fact]
+    public void MethodSymbolTable_Resolve_HandlesMethodIdReusedAcrossMultipleLoadUnloadCycles()
+    {
+        const long qpcFrequency = 1000;
+        List<EventRecord> events = new List<EventRecord>
+        {
+            MakeLoadEvent(methodId: 1, startAddress: 5000, size: 100, name: "First", qpc: 100),
+            MakeUnloadEvent(methodId: 1, qpc: 200),
+            MakeLoadEvent(methodId: 1, startAddress: 6000, size: 100, name: "Second", qpc: 300),
+            MakeUnloadEvent(methodId: 1, qpc: 400)
+        };
+
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(events, pointerSize: 8, qpcFrequency: qpcFrequency, referenceQpc: 0);
+
+        Assert.Equal("First", symbolTable.Resolve(5050, relativeMSec: 150));
+        Assert.Equal("Second", symbolTable.Resolve(6050, relativeMSec: 350));
+
+        // Past Second's own recorded unload, with no other method ever
+        // claiming address 6000 - falls back to the only address match
+        // that exists rather than "<unresolved ...>" (see Resolve's own
+        // fallbackDisplayName comment: a frame still resolves to something
+        // real when Load/Unload data doesn't perfectly cover it).
+        Assert.Equal("Second", symbolTable.Resolve(6050, relativeMSec: 450));
     }
 
     [Fact]
@@ -159,7 +230,7 @@ public class MethodSymbolTableTests
         // (which would mean the rundown decode silently failed, e.g. a
         // wrong offset producing garbage addresses that never match).
         NettraceFile file = NettraceFile.Read(FixturePath);
-        MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeQPC);
 
         int resolvedFrameCount = 0;
         int totalFrameCount = 0;
@@ -169,7 +240,7 @@ public class MethodSymbolTableTests
             foreach (long instructionPointer in stackEntry.Value)
             {
                 ++totalFrameCount;
-                string resolved = symbolTable.Resolve(instructionPointer);
+                string resolved = symbolTable.Resolve(instructionPointer, 0);
 
                 if (!resolved.StartsWith("<unresolved"))
                 {
