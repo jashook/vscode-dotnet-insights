@@ -108,7 +108,19 @@ function groupStacksByLeaf(stacks, methodNames) {
         for (var frameIdx = 0; frameIdx < frameIndices.length; ++frameIdx) {
             frames[frameIdx] = methodNames[frameIndices[frameIdx]];
         }
-        var leafFrame = frames[0];
+
+        // A stack can have zero captured frames - seen in real production
+        // captures (not just the usual "<no stack captured>" sentinel
+        // AllocationJsonExporter.cs writes for that same situation, an
+        // empty frames array reaches here too). Group it under that same
+        // sentinel rather than leaving leafFrame undefined, which crashed
+        // formatFrameHtml (String.prototype.indexOf on undefined) and took
+        // down the *entire* drill-down render for this type/cell with it -
+        // one malformed stack among up to
+        // DrillDownStacksPerCellLimit/PerTypeLimit silently made every
+        // other (perfectly fine) stack for that type inaccessible too,
+        // since the exception happened before any row got built.
+        var leafFrame = frames.length > 0 ? frames[0] : "<no stack captured>";
 
         var group = groupsByLeaf.get(leafFrame);
         if (!group) {

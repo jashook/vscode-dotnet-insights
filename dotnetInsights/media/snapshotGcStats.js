@@ -1397,27 +1397,51 @@ var allocationDatasets = {};
     // When expanding, this also has to *build* every still-lazy row under
     // container first - building one level can introduce new
     // still-collapsed-and-unbuilt rows one level deeper (a child that
-    // itself has children), so this loops until a full pass finds nothing
-    // left to build, ensuring "expand everything under here" really does
-    // reach every depth, not just whatever happened to already exist.
+    // itself has children), so every newly-built row's own lazy children
+    // get queued up too, ensuring "expand everything under here" really
+    // does reach every depth, not just whatever happened to already exist.
     // Collapsing never needs this - hiding already-built content via CSS is
     // still cheap, and there's no reason to throw already-built DOM away.
+    //
+    // Deliberately an explicit worklist, not "re-run container.querySelector
+    // for the next lazy row until none are left" - re-querying the *whole*
+    // container on every single row is a real perf bug that shipped here
+    // once already: each call re-scans everything already built too, so a
+    // tree with N rows did on the order of N container-wide scans (each one
+    // itself O(container size)), which measurably stalled/froze the webview
+    // on a large capture's deep or wide call stacks. Scoping each lazy scan
+    // to only the subtree that specific build just produced keeps the total
+    // work proportional to N, not N^2.
     function setAllDrillDownRowsExpanded(container, expanded) {
         if (expanded) {
+            var lazyQueue = [];
+
             // container is sometimes itself a still-lazy .callPathsDetail row
             // (a leafMethodRow's own detail row, the first time it's
-            // expanded) - Element.querySelector only searches *descendants*,
-            // never the element it's called on, so container's own lazy
-            // state has to be built explicitly before the descendant loop
-            // below can find anything underneath it to build. A no-op via
-            // buildDrillDownRowIfLazy's own guard when container isn't a
-            // lazy row itself (e.g. the whole drillDownPanel, for Expand
-            // All).
-            buildDrillDownRowIfLazy(container);
+            // expanded) - Element.querySelector[All] only searches
+            // *descendants*, never the element it's called on, so container
+            // itself has to be queued explicitly rather than only its
+            // descendants (e.g. the whole drillDownPanel, for Expand All,
+            // which is never itself a lazy row).
+            if (container.classList && container.classList.contains('callPathsDetail')) {
+                lazyQueue.push(container);
+            }
 
-            var lazyDetailRow;
-            while ((lazyDetailRow = container.querySelector('.callPathsDetail[data-lazy="true"]')) !== null) {
-                buildDrillDownRowIfLazy(lazyDetailRow);
+            var initialLazyRows = container.querySelectorAll('.callPathsDetail[data-lazy="true"]');
+            for (var initialIndex = 0; initialIndex < initialLazyRows.length; ++initialIndex) {
+                lazyQueue.push(initialLazyRows[initialIndex]);
+            }
+
+            while (lazyQueue.length > 0) {
+                var lazyRow = lazyQueue.pop();
+                buildDrillDownRowIfLazy(lazyRow);
+
+                // Scoped to the row just built, not the whole container -
+                // this is what keeps the total work linear (see above).
+                var newlyLazyRows = lazyRow.querySelectorAll('.callPathsDetail[data-lazy="true"]');
+                for (var newIndex = 0; newIndex < newlyLazyRows.length; ++newIndex) {
+                    lazyQueue.push(newlyLazyRows[newIndex]);
+                }
             }
         }
 
