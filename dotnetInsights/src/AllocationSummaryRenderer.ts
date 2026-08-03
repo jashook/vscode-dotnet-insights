@@ -20,6 +20,13 @@
 // allocation-rate line chart (raw ticks, no per-type/kind breakdown) is
 // unaffected by this toggle - it's rendered once, above it, always
 // unfiltered.
+// Thousands-separated, 2-decimal mb figure (e.g. "12,345.67") - a busy
+// capture's sampled/type totals can run into the thousands of mb, where a
+// bare toFixed(2) result is hard to scan at a glance.
+function formatMb(mbValue: number): string {
+    return mbValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 export function renderAllocationSummaryTable(allocationSummary: any): string {
     const topTypes = allocationSummary["topTypes"];
 
@@ -133,7 +140,7 @@ function renderTypeBreakdownPanel(summary: any, scope: string, isActive: boolean
         <div class="summaryGcDiv">
             <div class="total">
                 <div>Sampled Allocations${scope === "loh" ? " (LOH only)" : ""}</div>
-                <div>Total<span>${(totalSampledBytes / mb).toFixed(2)} mb</span></div>
+                <div>Total<span>${formatMb(totalSampledBytes / mb)} mb</span></div>
                 <div>Ticks<span>${totalTickCount}</span></div>
                 <div>Distinct Types<span>${distinctTypeCount}</span></div>
             </div>
@@ -147,7 +154,7 @@ function renderTypeBreakdownPanel(summary: any, scope: string, isActive: boolean
         const percentOfSampled = totalSampledBytes === 0 ? 0 : (totalBytes * 100.0) / totalSampledBytes;
 
         const tdTypeName = typeStats["TypeName"];
-        const tdTotalBytes = (totalBytes / mb).toFixed(2);
+        const tdTotalBytes = formatMb(totalBytes / mb);
         const tdPercent = percentOfSampled.toFixed(2);
         const tdTickCount = typeStats["TickCount"];
         const tdSmallCount = typeStats["SmallCount"];

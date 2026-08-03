@@ -916,6 +916,11 @@
     width: 9em;
 }
 
+.percentColumn
+{
+    width: 6em;
+}
+
 .ticksColumn
 {
     width: 7em;

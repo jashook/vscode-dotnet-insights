@@ -1750,7 +1750,7 @@ var allocationDatasets = {};
         var typeName = typeTimeline["types"][typeIndex];
         var bucketLabel = formatElapsedMsForAllocationChart(typeTimeline["buckets"][bucketIndex]["bucketStartMSec"]);
 
-        showDrillDownTab(renderDrillDownTable(cellEntry, typeName, bucketLabel, filterLabel, allocationSummaryJson["methodNames"]));
+        showDrillDownTab(renderDrillDownTable(cellEntry, typeName, bucketLabel, filterLabel, allocationSummaryJson["methodNames"], summaryScope["totalSampledBytes"]));
     }
 
     // Called from the click delegation in wireHeapContentsInnerTabs below
@@ -1764,7 +1764,7 @@ var allocationDatasets = {};
         var typeEntry = typeDrillDown ? typeDrillDown[typeIndex] : null;
         var typeName = summaryScope["topTypes"][typeIndex]["TypeName"];
 
-        showDrillDownTab(renderDrillDownTable(typeEntry, typeName, "Whole Capture", filterLabel, allocationSummaryJson["methodNames"]));
+        showDrillDownTab(renderDrillDownTable(typeEntry, typeName, "Whole Capture", filterLabel, allocationSummaryJson["methodNames"], summaryScope["totalSampledBytes"]));
     }
 
     function wireHeapContentsInnerTabs() {
