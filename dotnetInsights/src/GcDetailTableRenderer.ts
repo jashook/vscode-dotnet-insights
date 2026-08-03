@@ -86,6 +86,13 @@ export function renderGcDetailTable(gcs: any[]): string {
         const tdTotalPromotedSize1 = (parseInt(gcData["TotalPromotedSize1"]) / mb).toFixed(2);
         const tdTotalPromotedSize2 = (parseInt(gcData["TotalPromotedSize2"]) / mb).toFixed(2);
 
+        // Read by snapshotGcStats.js's filterDetailTableToZoomRange to hide
+        // rows outside the GC Charts tab's current zoom selection - the same
+        // elapsed-ms value the charts themselves plot each GC at (see
+        // buildAllPauseTimePulses), so a zoomed chart range and the filtered
+        // table always agree on which GCs are "in view".
+        const tdElapsedMsec = gcData["PauseStartRelativeMSec"];
+
         var severityClass = "";
         if (pauseTime > 200.0) {
             severityClass = ` class="expensiveGc"`;
@@ -103,10 +110,44 @@ export function renderGcDetailTable(gcs: any[]): string {
             severityClass = ` class="notSomewhatInterestingGc"`;
         }
 
-        rows += `<tr${severityClass}><td>${tdId}</td><td class="gcDateTimeCell" data-raw="${tdDateTimeRaw}"></td><td>${tdGen}</td><td>${tdType}</td><td>${tdPauseTime}</td><td>${tdReason}</td><td>${tdGen0Size}</td><td>${tdGen1Size}</td><td>${tdGen2Size}</td><td>${tdLohSize}</td><td>${tdPohSize}</td><td>${tdTotalHeapSize}</td><td>${tdGen0MinSize}</td><td>${tdTotalPromotedSize0}</td><td>${tdTotalPromotedSize1}</td><td>${tdTotalPromotedSize2}</td></tr>`;
+        rows += `<tr${severityClass} data-elapsed-msec="${tdElapsedMsec}"><td>${tdId}</td><td class="gcDateTimeCell" data-raw="${tdDateTimeRaw}"></td><td>${tdGen}</td><td>${tdType}</td><td>${tdPauseTime}</td><td>${tdReason}</td><td>${tdGen0Size}</td><td>${tdGen1Size}</td><td>${tdGen2Size}</td><td>${tdLohSize}</td><td>${tdPohSize}</td><td>${tdTotalHeapSize}</td><td>${tdGen0MinSize}</td><td>${tdTotalPromotedSize0}</td><td>${tdTotalPromotedSize1}</td><td>${tdTotalPromotedSize2}</td></tr>`;
     }
 
-    const header = `<tr class="tableHeader"><th>GC Number</th><th>DateTime</th><th>Collection Generation</th><th>Type</th><th>Pause Time (mSec)</th><th>Reason</th><th>Generation 0 Size (mb)</th><th>Generation 1 Size (mb)</th><th>Generation 2 Size (mb)</th><th>LOH Size (mb)</th><th>POH Size (mb)</th><th>Total Heap Size (mb)</th><th>Gen 0 Min Budget (mb)</th><th>Promoted Gen0 (mb)</th><th>Promoted Gen1 (mb)</th><th>Promoted Gen2 (mb)</th></tr>`;
+    // data-sort marks how snapshotGcStats.js's click-to-sort handler should
+    // compare this column's cells: "number" parses textContent as a float,
+    // "date" reads the DateTime cell's own data-raw attribute (see below -
+    // the raw ISO/"+elapsed" string sorts correctly as plain text, the
+    // human-formatted display text does not), anything else falls back to a
+    // case-insensitive text compare. Each header's visible label is wrapped
+    // in its own <span> so the click handler can append a sort-direction
+    // arrow in a sibling <span> without having to re-derive or disturb the
+    // label text on every click.
+    const columns: [string, string][] = [
+        ["GC Number", "number"],
+        ["DateTime", "date"],
+        ["Collection Generation", "number"],
+        ["Type", "text"],
+        ["Pause Time (mSec)", "number"],
+        ["Reason", "text"],
+        ["Generation 0 Size (mb)", "number"],
+        ["Generation 1 Size (mb)", "number"],
+        ["Generation 2 Size (mb)", "number"],
+        ["LOH Size (mb)", "number"],
+        ["POH Size (mb)", "number"],
+        ["Total Heap Size (mb)", "number"],
+        ["Gen 0 Min Budget (mb)", "number"],
+        ["Promoted Gen0 (mb)", "number"],
+        ["Promoted Gen1 (mb)", "number"],
+        ["Promoted Gen2 (mb)", "number"],
+    ];
+
+    var headerCells = "";
+    for (var columnIndex = 0; columnIndex < columns.length; ++columnIndex) {
+        const [label, sortType] = columns[columnIndex];
+        headerCells += `<th data-sort="${sortType}"><span class="thLabel">${label}</span><span class="sortIndicator"></span></th>`;
+    }
+
+    const header = `<tr class="tableHeader">${headerCells}</tr>`;
 
     return `<div class="detailTable"><table>${header}${rows}</table></div>`;
 }

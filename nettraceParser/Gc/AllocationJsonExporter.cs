@@ -150,7 +150,7 @@ public static class AllocationSummaryBuilder
     // file instead of as JSON, with only a small descriptor object left in
     // the JSON output pointing at it (by convention/caller-known path, not
     // embedded - see Program.cs).
-    public static void Write(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable, string ticksBinaryPath)
+    public static void Write(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, MethodSymbolTable symbolTable, string ticksBinaryPath)
     {
         // Sorted once, in place, up front - every pass below (including
         // WriteTicks, which used to make its own defensive copy+sort just
@@ -180,7 +180,7 @@ public static class AllocationSummaryBuilder
         writer.WritePropertyName("ticks");
         WriteTicks(writer, allocationEvents, ticksBinaryPath);
 
-        WriteTypeBreakdown(writer, allocationEvents, bucketCount, stacksById, symbolTable, methodNameInterner);
+        WriteTypeBreakdown(writer, allocationEvents, bucketCount, symbolTable, methodNameInterner);
 
         // Identical breakdown (same totalSampledBytes/topTypes/typeTimeline/
         // drillDown/typeDrillDown field names and shapes as above), scoped
@@ -200,7 +200,7 @@ public static class AllocationSummaryBuilder
         List<AllocationEvent> lohEvents = FilterByAllocationKind(allocationEvents, GCAllocationKind.Large);
         writer.WritePropertyName("loh");
         writer.WriteStartObject();
-        WriteTypeBreakdown(writer, lohEvents, bucketCount, stacksById, symbolTable, methodNameInterner);
+        WriteTypeBreakdown(writer, lohEvents, bucketCount, symbolTable, methodNameInterner);
         writer.WriteEndObject();
 
         // Written last since it's only fully populated once every stack in
@@ -243,7 +243,7 @@ public static class AllocationSummaryBuilder
     // events must already be sorted ascending by RelativeMSec (true both for
     // the full list, sorted once in Write, and any filtered subset of it,
     // since filtering preserves relative order).
-    private static void WriteTypeBreakdown(Utf8JsonWriter writer, List<AllocationEvent> events, int bucketCount, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
+    private static void WriteTypeBreakdown(Utf8JsonWriter writer, List<AllocationEvent> events, int bucketCount, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
     {
         Dictionary<string, TypeAllocStats> statsByType = new Dictionary<string, TypeAllocStats>();
         long totalSampledBytes = 0;
@@ -321,13 +321,13 @@ public static class AllocationSummaryBuilder
         // Single pass over every tick builds both drill-down shapes at once
         // (see BuildDrillDownAggregates) - cheaper than two independent
         // O(totalTicks) passes now that there are two things to aggregate.
-        DrillDownAggregates aggregates = BuildDrillDownAggregates(events, columnIndexByType, typeIndexByName, topTypesCount, stacksById, bucketCount);
+        DrillDownAggregates aggregates = BuildDrillDownAggregates(events, columnIndexByType, typeIndexByName, topTypesCount, bucketCount);
 
         writer.WritePropertyName("drillDown");
-        WriteCellDrillDown(writer, aggregates.ByCell, stacksById, symbolTable, methodNameInterner);
+        WriteCellDrillDown(writer, aggregates.ByCell, symbolTable, methodNameInterner);
 
         writer.WritePropertyName("typeDrillDown");
-        WriteTypeDrillDown(writer, aggregates.ByType, stacksById, symbolTable, methodNameInterner);
+        WriteTypeDrillDown(writer, aggregates.ByType, symbolTable, methodNameInterner);
     }
 
     // Shared by WriteTypeTimeline and WriteDrillDown so both agree on
@@ -441,15 +441,24 @@ public static class AllocationSummaryBuilder
 
     private class StackAggregate
     {
-        public int StackId;
+        public long[] Stack;
         public long TotalBytes;
         public int TickCount;
+        // The first tick's own RelativeMSec that contributed to this
+        // aggregate - used as a representative timestamp when resolving
+        // this stack's frames (see MethodSymbolTable.Resolve), since a
+        // StackAggregate can merge many ticks that share the exact same
+        // Stack array reference at different real times. An approximation
+        // (ticks sharing the identical stack in practice tend to occur
+        // close together - the same hot call path re-executing), not a
+        // per-tick-exact resolution.
+        public double FirstSeenRelativeMSec;
     }
 
     private struct DrillDownAggregates
     {
-        public Dictionary<(int TypeIndex, int BucketIndex), Dictionary<int, StackAggregate>> ByCell;
-        public Dictionary<int, StackAggregate>[] ByType;
+        public Dictionary<(int TypeIndex, int BucketIndex), Dictionary<long[], StackAggregate>> ByCell;
+        public Dictionary<long[], StackAggregate>[] ByType;
     }
 
     // Single pass over every tick, building both drill-down shapes at once:
@@ -464,12 +473,21 @@ public static class AllocationSummaryBuilder
     // stacks across the whole capture, not just one chart segment's slice
     // of it.
     //
-    // Both aggregations key stacks by StackId, with -1 a synthetic id
-    // (distinct from any real StackId, which are always >= 0) standing in
-    // for "no stack captured" (StackId 0, or stack-walking wasn't enabled
-    // for that tick) - grouped instead of silently dropped, so totals still
-    // reconcile exactly with typeTimeline's own per-cell totals.
-    private static DrillDownAggregates BuildDrillDownAggregates(List<AllocationEvent> allocationEvents, Dictionary<string, int> columnIndexByType, Dictionary<string, int> typeIndexByName, int topTypesCount, Dictionary<int, long[]> stacksById, int bucketCount)
+    // Both aggregations key stacks by AllocationEvent.Stack's own array
+    // reference (ReferenceEqualityComparer, see below), NOT by the raw
+    // StackId integer the wire format uses - that integer is recyclable
+    // (NetTraceFormat_v5.md's StackBlock section describes a *bounded*
+    // cache, so a later StackBlock can legitimately reuse an id an earlier,
+    // evicted stack used), so grouping by it would silently merge ticks
+    // that only coincidentally share a recycled number, not a real stack.
+    // Reference equality is enough (not full content equality) because
+    // EventBlock.cs resolves each event's Stack eagerly, at parse time,
+    // against the one shared StacksById dictionary - two events that
+    // legitimately share the same still-valid stack get back the exact
+    // same array instance, and Array.Empty<long>() (the "no stack" value)
+    // is itself a single cached instance shared by every no-stack tick, so
+    // those still group together too.
+    private static DrillDownAggregates BuildDrillDownAggregates(List<AllocationEvent> allocationEvents, Dictionary<string, int> columnIndexByType, Dictionary<string, int> typeIndexByName, int topTypesCount, int bucketCount)
     {
         DrillDownAggregates aggregates = new DrillDownAggregates();
         // Keyed by (typeIndex, bucketIndex) as a value-type tuple, not the
@@ -478,21 +496,15 @@ public static class AllocationSummaryBuilder
         // real 76k-tick capture) as a meaningful chunk of this method's cost.
         // The formatted string is built once per distinct cell instead, in
         // WriteCellDrillDown - there are far fewer cells than ticks.
-        aggregates.ByCell = new Dictionary<(int, int), Dictionary<int, StackAggregate>>();
-        aggregates.ByType = new Dictionary<int, StackAggregate>[topTypesCount];
+        aggregates.ByCell = new Dictionary<(int, int), Dictionary<long[], StackAggregate>>();
+        aggregates.ByType = new Dictionary<long[], StackAggregate>[topTypesCount];
 
         Span<AllocationEvent> allocationEventsSpan = CollectionsMarshal.AsSpan(allocationEvents);
         for (int eventIndex = 0; eventIndex < allocationEventsSpan.Length; ++eventIndex)
         {
             ref readonly AllocationEvent allocationEvent = ref allocationEventsSpan[eventIndex];
             string typeName = string.IsNullOrEmpty(allocationEvent.TypeName) ? "<unknown>" : allocationEvent.TypeName;
-
-            // -1 is a synthetic id, distinct from any real StackId (which
-            // are always >= 0) - real StackId 0 conventionally means "no
-            // stack" too, so both land in the same bucket. Shared by both
-            // aggregations below - it doesn't depend on which one a tick
-            // lands in.
-            int stackKey = (allocationEvent.StackId == 0 || !stacksById.ContainsKey(allocationEvent.StackId)) ? -1 : allocationEvent.StackId;
+            long[] stackKey = allocationEvent.Stack;
 
             if (bucketCount > 0)
             {
@@ -502,41 +514,42 @@ public static class AllocationSummaryBuilder
                     int bucketIndex = ComputeBucketIndex(allocationEvent.RelativeMSec, bucketCount);
                     (int TypeIndex, int BucketIndex) cellKey = (chartTypeIndex, bucketIndex);
 
-                    Dictionary<int, StackAggregate> cellStacks;
+                    Dictionary<long[], StackAggregate> cellStacks;
                     if (!aggregates.ByCell.TryGetValue(cellKey, out cellStacks))
                     {
-                        cellStacks = new Dictionary<int, StackAggregate>();
+                        cellStacks = new Dictionary<long[], StackAggregate>(ReferenceEqualityComparer.Instance);
                         aggregates.ByCell[cellKey] = cellStacks;
                     }
 
-                    AddToStackAggregate(cellStacks, stackKey, allocationEvent.AllocationAmount);
+                    AddToStackAggregate(cellStacks, stackKey, allocationEvent.AllocationAmount, allocationEvent.RelativeMSec);
                 }
             }
 
             int globalTypeIndex;
             if (typeIndexByName.TryGetValue(typeName, out globalTypeIndex))
             {
-                Dictionary<int, StackAggregate> typeStacks = aggregates.ByType[globalTypeIndex];
+                Dictionary<long[], StackAggregate> typeStacks = aggregates.ByType[globalTypeIndex];
                 if (typeStacks == null)
                 {
-                    typeStacks = new Dictionary<int, StackAggregate>();
+                    typeStacks = new Dictionary<long[], StackAggregate>(ReferenceEqualityComparer.Instance);
                     aggregates.ByType[globalTypeIndex] = typeStacks;
                 }
 
-                AddToStackAggregate(typeStacks, stackKey, allocationEvent.AllocationAmount);
+                AddToStackAggregate(typeStacks, stackKey, allocationEvent.AllocationAmount, allocationEvent.RelativeMSec);
             }
         }
 
         return aggregates;
     }
 
-    private static void AddToStackAggregate(Dictionary<int, StackAggregate> stacks, int stackKey, long allocationAmount)
+    private static void AddToStackAggregate(Dictionary<long[], StackAggregate> stacks, long[] stackKey, long allocationAmount, double relativeMSec)
     {
         StackAggregate aggregate;
         if (!stacks.TryGetValue(stackKey, out aggregate))
         {
             aggregate = new StackAggregate();
-            aggregate.StackId = stackKey;
+            aggregate.Stack = stackKey;
+            aggregate.FirstSeenRelativeMSec = relativeMSec;
             stacks[stackKey] = aggregate;
         }
 
@@ -555,22 +568,22 @@ public static class AllocationSummaryBuilder
     // full every time is what let a long real capture's JSON balloon past
     // Node's string-length limit despite the ticks array already living in
     // a separate binary sidecar.
-    private static void WriteStackAggregate(Utf8JsonWriter writer, StackAggregate aggregate, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
+    private static void WriteStackAggregate(Utf8JsonWriter writer, StackAggregate aggregate, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
     {
         writer.WriteStartObject();
 
         writer.WritePropertyName("frames");
         writer.WriteStartArray();
-        if (aggregate.StackId == -1)
+        if (aggregate.Stack.Length == 0)
         {
             writer.WriteNumberValue(methodNameInterner.Intern("<no stack captured>"));
         }
         else
         {
-            long[] instructionPointers = stacksById[aggregate.StackId];
+            long[] instructionPointers = aggregate.Stack;
             for (int frameIndex = 0; frameIndex < instructionPointers.Length; ++frameIndex)
             {
-                string resolvedName = symbolTable.Resolve(instructionPointers[frameIndex]);
+                string resolvedName = symbolTable.Resolve(instructionPointers[frameIndex], aggregate.FirstSeenRelativeMSec);
                 writer.WriteNumberValue(methodNameInterner.Intern(resolvedName));
             }
         }
@@ -591,13 +604,13 @@ public static class AllocationSummaryBuilder
     // one the chart bar was actually drawn from) from the capped list alone,
     // which previously made the drill-down view's own displayed percentages
     // silently disagree with the bar they were opened from.
-    private static void WriteCellDrillDown(Utf8JsonWriter writer, Dictionary<(int TypeIndex, int BucketIndex), Dictionary<int, StackAggregate>> stacksByCell, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
+    private static void WriteCellDrillDown(Utf8JsonWriter writer, Dictionary<(int TypeIndex, int BucketIndex), Dictionary<long[], StackAggregate>> stacksByCell, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
     {
         writer.WriteStartObject();
         writer.WritePropertyName("cells");
         writer.WriteStartObject();
 
-        foreach (KeyValuePair<(int TypeIndex, int BucketIndex), Dictionary<int, StackAggregate>> cellEntry in stacksByCell)
+        foreach (KeyValuePair<(int TypeIndex, int BucketIndex), Dictionary<long[], StackAggregate>> cellEntry in stacksByCell)
         {
             List<StackAggregate> cellStackList = new List<StackAggregate>(cellEntry.Value.Values);
             cellStackList.Sort((left, right) => right.TotalBytes.CompareTo(left.TotalBytes));
@@ -621,7 +634,7 @@ public static class AllocationSummaryBuilder
             writer.WriteStartArray();
             for (int stackIndex = 0; stackIndex < stackCount; ++stackIndex)
             {
-                WriteStackAggregate(writer, cellStackList[stackIndex], stacksById, symbolTable, methodNameInterner);
+                WriteStackAggregate(writer, cellStackList[stackIndex], symbolTable, methodNameInterner);
             }
             writer.WriteEndArray();
             writer.WriteEndObject();
@@ -643,13 +656,13 @@ public static class AllocationSummaryBuilder
     // does - a type with more distinct call stacks than the cap needs a way
     // to recover its real (topTypes-matching) total from something other
     // than summing the possibly-truncated stacks array.
-    private static void WriteTypeDrillDown(Utf8JsonWriter writer, Dictionary<int, StackAggregate>[] stacksByType, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
+    private static void WriteTypeDrillDown(Utf8JsonWriter writer, Dictionary<long[], StackAggregate>[] stacksByType, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
     {
         writer.WriteStartArray();
 
         for (int typeIndex = 0; typeIndex < stacksByType.Length; ++typeIndex)
         {
-            Dictionary<int, StackAggregate> typeStacks = stacksByType[typeIndex];
+            Dictionary<long[], StackAggregate> typeStacks = stacksByType[typeIndex];
 
             writer.WriteStartObject();
 
@@ -675,7 +688,7 @@ public static class AllocationSummaryBuilder
                 writer.WriteStartArray();
                 for (int stackIndex = 0; stackIndex < stackCount; ++stackIndex)
                 {
-                    WriteStackAggregate(writer, stackList[stackIndex], stacksById, symbolTable, methodNameInterner);
+                    WriteStackAggregate(writer, stackList[stackIndex], symbolTable, methodNameInterner);
                 }
                 writer.WriteEndArray();
             }

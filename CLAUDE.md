@@ -92,6 +92,28 @@ only if these stop matching observed behavior:
 - **`GCPerHeapHistory`**: only `Version >= 3` payloads are decoded (what this
   environment's .NET actually emits); older layouts are unimplemented on
   purpose.
+- **StackId recycling**: per `NetTraceFormat_v5.md`'s StackBlock section,
+  "Events are only allowed to refer to a stack id if there is no sequence
+  point in between the event and the stack" — a numeric `StackId` is only
+  valid until the next sequence point, after which a later `StackBlock` is
+  free to reuse the same id for a completely different stack. A single
+  whole-file `Dictionary<int, long[]>` (the original `NettraceFile.StacksById`
+  design) gets silently overwritten by that reuse, so resolving stacks lazily
+  (after the whole file is parsed) makes every event's resolved stack a
+  coin flip between its real stack and whatever later claimed that id —
+  individually plausible-looking, but wrong. Confirmed against real
+  production data diffed with `Microsoft.Diagnostics.Tracing.TraceEvent`: 0
+  of 30 sampled `GCAllocationTick` leaf frames agreed before the fix. Fixed
+  by resolving each event's stack **eagerly**, in `EventBlock.cs`, at the
+  exact moment it's parsed (against whatever `StacksById` holds then, since
+  blocks are processed in real file order) — `EventRecord`/`AllocationEvent`
+  now carry the resolved `long[]` directly instead of a recyclable `int`, and
+  downstream aggregation (`AllocationJsonExporter`) keys by stack array
+  reference (`ReferenceEqualityComparer`) rather than the id. Permanent
+  regression coverage:
+  `GroundTruthDiffTests.AllocationEventProjector_Project_StackLeafFramesMatchTraceEventGroundTruth`
+  (via a new `TraceEventAllocationReader` in `nettraceParser.GroundTruth`) —
+  verified clean (0 mismatches) against a 1.3M-tick real capture.
 - Field names/shape in `Gc/GcJsonExporter.cs`'s `--json` output are copied
   1:1 from `dotnetInsights/src/DotnetInsightsGcSnapshotEditor.ts`'s
   `gcDataFromXml` so the shared webview renderer needs no source-specific
@@ -184,19 +206,25 @@ TraceEvent, since the whole point is to be an independent second
 implementation built on the same library PerfView's GC Stats view uses.
 `nettraceParser.Tests/GroundTruthDiffTests.cs` diffs `GcEventProjector`'s
 output against it field-by-field (generation, reason, heap sizes, promoted
-bytes, pause timing, ...), gated behind the `NETTRACE_GROUNDTRUTH_FIXTURE`
-env var (a local file path) so it's a silent no-op by default and never
-needs a fixture checked in:
+bytes, pause timing, ...) and separately diffs `AllocationEventProjector`'s
+resolved stack leaf frames against a second reader
+(`TraceEventAllocationReader`, which needs its own `.etlx` conversion via
+`TraceLog.CreateFromEventPipeDataFile` since stack-walking only works on
+TraceLog's played-back event stream, not raw `EventPipeEventSource` —
+expect this half to take noticeably longer on a large capture). Both are
+gated behind the `NETTRACE_GROUNDTRUTH_FIXTURE` env var (a local file path)
+so they're a silent no-op by default and never need a fixture checked in:
 ```
 NETTRACE_GROUNDTRUTH_FIXTURE=~/path/to/some.nettrace \
   dotnet test --filter GroundTruthDiffTests
 ```
 This is how the timestamp-decode bug, the `GCHeapStats` misattribution bug,
-and the `PauseDurationMSec` semantic gap above were all found and confirmed
-fixed — none of them were visible from `nettraceParser`'s own pinned-value
-tests (`RealCaptureTests.cs`), because those pins were derived from
-`nettraceParser`'s own (buggy) output in the first place. Prefer extending
-this diff test over adding another synthetic/pinned-value test when the
+the `PauseDurationMSec` semantic gap, and the StackId-recycling bug above
+were all found and confirmed fixed — none of them were visible from
+`nettraceParser`'s own pinned-value tests (`RealCaptureTests.cs`), because
+those pins were derived from `nettraceParser`'s own (buggy) output in the
+first place. Prefer extending this diff test over adding another
+synthetic/pinned-value test when the
 question is "does this match what PerfView would show," not just "does this
 match what this code already computes."
 

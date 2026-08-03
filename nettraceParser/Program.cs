@@ -65,13 +65,13 @@ if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
     long allocationProjectMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 
-    MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize);
+    MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, referenceQpc);
     long symbolTableMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 
     string processName = Path.GetFileNameWithoutExtension(filePath);
 
-    GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, file.StacksById, symbolTable, processName, ticksBinaryPath);
+    GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, symbolTable, processName, ticksBinaryPath);
     long jsonExportMs = phaseStopwatch.ElapsedMilliseconds;
 
     long totalMs = totalStopwatch.ElapsedMilliseconds;

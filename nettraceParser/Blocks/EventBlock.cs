@@ -47,15 +47,23 @@ public class EventBlock : IFastSerializable, IFastSerializableVersion
     // this block produces stores an (offset, length) slice into this same shared
     // array instead of its own copied byte[]. See EventRecord.cs.
     private readonly byte[] fileBytes;
+    // Same Dictionary<int, long[]> instance StackBlock.cs writes into,
+    // shared across the whole file and updated in place as blocks are read
+    // in stream order - looking it up HERE, at event-parse time, rather
+    // than deferring to a later pass, is what makes EventRecord.Stack immune
+    // to a later StackBlock reusing the same numeric id (see EventRecord.cs's
+    // own comment on Stack for why that reuse is real and this matters).
+    private readonly Dictionary<int, long[]> stacksById;
 
     public int EventCount { get; set; }
     public int SkippedEventCount { get; set; }
 
-    public EventBlock(Dictionary<int, EventMetadata> metadataById, List<EventRecord> events, byte[] fileBytes)
+    public EventBlock(Dictionary<int, EventMetadata> metadataById, List<EventRecord> events, byte[] fileBytes, Dictionary<int, long[]> stacksById)
     {
         this.metadataById = metadataById;
         this.events = events;
         this.fileBytes = fileBytes;
+        this.stacksById = stacksById;
     }
 
     public void FromStream(Deserializer deserializer)
@@ -132,6 +140,17 @@ public class EventBlock : IFastSerializable, IFastSerializableVersion
                     fields = EmptyFields;
                 }
 
+                // Resolved NOW, against whatever this.stacksById holds at
+                // this exact point in the (in-order) parse - see
+                // EventRecord.cs's own comment on Stack for why a deferred,
+                // look-up-by-id-later approach is wrong (StackId values get
+                // reused later in the file).
+                long[] stack;
+                if (eventHeader.StackId == 0 || !this.stacksById.TryGetValue(eventHeader.StackId, out stack))
+                {
+                    stack = System.Array.Empty<long>();
+                }
+
                 EventRecord record = new EventRecord(
                     metadata.ProviderName,
                     metadata.EventName,
@@ -139,7 +158,7 @@ public class EventBlock : IFastSerializable, IFastSerializableVersion
                     metadata.Version,
                     eventHeader.TimeStamp,
                     eventHeader.ThreadId,
-                    eventHeader.StackId,
+                    stack,
                     fields,
                     this.fileBytes,
                     (int)payloadStart,

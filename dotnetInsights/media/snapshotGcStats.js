@@ -31,28 +31,6 @@ var allocationDatasets = {};
     // the "Heap Contents" nav button's first click.
     var allocationSummaryJson = JSON.parse(document.getElementById("allocationSummaryJson").textContent);
 
-    // DateTime is a real calendar date/time (in the parsing machine's local
-    // timezone - see GcJsonExporter.cs) for .nettrace sources, or a
-    // "+elapsed since capture start" string for .gcinfo (XML) sources, which
-    // have no absolute time anchor available - see gcDataFromXml.
-    var formatGcAxisTime = function (dateTimeString) {
-        if (dateTimeString === undefined || dateTimeString === null) {
-            return "";
-        }
-
-        if (dateTimeString.charAt(0) === '+') {
-            // Already a compact elapsed-time string (.gcinfo/XML source).
-            return dateTimeString;
-        }
-
-        var parsed = new Date(dateTimeString);
-        if (isNaN(parsed.getTime())) {
-            return "";
-        }
-
-        return parsed.toLocaleTimeString();
-    };
-
     // Full human-readable form for tooltips (space isn't constrained there
     // the way it is on an axis tick) - mirrors GcDetailTableRenderer.ts's
     // formatHumanDateTime exactly, e.g. "21-Jul-2026 03:42:13 PM PDT".
@@ -89,28 +67,186 @@ var allocationDatasets = {};
         return `${partsByType["day"]}-${partsByType["month"]}-${partsByType["year"]} ${partsByType["hour"]}:${partsByType["minute"]}:${partsByType["second"]} ${partsByType["dayPeriod"]} ${partsByType["timeZoneName"]}`;
     };
 
-    var timestamps = [];
-    var gcDateTimes = [];
-    // Chart.js 2.x renders an array label as multiple stacked lines under the
-    // tick, so each axis tick shows both the GC number and its time.
-    var chartLabels = [];
-    for (var index = 0; index < gcs.length; ++index) {
-        var gcId = gcs[index]["data"]["Id"];
-        var gcDateTime = gcs[index]["data"]["DateTime"];
-
-        timestamps.push(gcId);
-        gcDateTimes.push(gcDateTime);
-        chartLabels.push([`${gcId}`, formatGcAxisTime(gcDateTime)]);
-    }
-
-    var gcTooltipTitle = function (tooltipItems) {
+    // Tooltip title for every GC-over-time chart - each point carries its
+    // own gcId/dateTime (see buildGcPointSeries), since all these charts are
+    // now on a shared linear (elapsed-ms) x-axis rather than a category axis
+    // keyed by array index.
+    var linearGcTooltipTitle = function (tooltipItems, tooltipData) {
         var lines = [];
         for (var itemIndex = 0; itemIndex < tooltipItems.length; ++itemIndex) {
-            var gcIndex = tooltipItems[itemIndex].index;
-            lines.push(`GC #${timestamps[gcIndex]} — ${formatHumanDateTime(gcDateTimes[gcIndex])}`);
+            var tooltipItem = tooltipItems[itemIndex];
+            var point = tooltipData.datasets[tooltipItem.datasetIndex].data[tooltipItem.index];
+            lines.push(`GC #${point.gcId} — ${formatHumanDateTime(point.dateTime)}`);
         }
         return lines;
     };
+
+    // One point per GC: {x: elapsed ms, y: value, gcId, dateTime} - shared
+    // shape for every GC-over-time chart (Usage, Fragmentation, per-Heap) now
+    // that they're all on the same linear x-axis as the Pause Time chart
+    // (see buildAllPauseTimePulses below). valueFn(gcData) computes the y
+    // value for one GC.
+    var buildGcPointSeries = function (valueFn) {
+        var points = [];
+        for (var index = 0; index < gcs.length; ++index) {
+            var gcData = gcs[index]["data"];
+            points.push({
+                x: gcData["PauseStartRelativeMSec"],
+                y: valueFn(gcData),
+                gcId: gcData["Id"],
+                dateTime: gcData["DateTime"]
+            });
+        }
+        return points;
+    };
+
+    // ── Shared drag-to-zoom, across the entire webview ────────────────────
+    // One zoom range applies across every time-series chart on the page -
+    // the GC view's Pause Time/Usage/Fragmentation/per-Heap charts *and* the
+    // Heap Contents view's allocation-rate/type-timeline charts (see
+    // applySharedZoom below) - plus filters the Detailed tab's rows to the
+    // same range. null means "full capture, not zoomed". Declared once here
+    // (rather than as two independent per-view variables) so dragging a
+    // selection on any chart, in either view, moves every other chart to
+    // match - a GC-charts zoom and a Heap-Contents zoom used to be entirely
+    // separate state.
+    var sharedZoomRange = null;
+
+    // {chart, zoomHandle} for the always-rebuilt charts (Pause Time, Usage,
+    // Fragmentation once built) - destroyed/recreated on every zoom change.
+    var gcChartHandles = [];
+
+    // heapIndex -> {chart, zoomHandle}, only for heap charts actually built
+    // so far (they're lazily constructed via IntersectionObserver - see
+    // below) - a zoom change rebuilds only the ones already on screen, and
+    // any heap chart built for the first time afterward picks up the
+    // then-current sharedZoomRange directly.
+    var heapChartHandlesByIndex = {};
+
+    function destroyGcCharts() {
+        for (var handleIndex = 0; handleIndex < gcChartHandles.length; ++handleIndex) {
+            var handle = gcChartHandles[handleIndex];
+            if (handle.zoomHandle) {
+                handle.zoomHandle.detach();
+            }
+            handle.chart.destroy();
+        }
+        gcChartHandles = [];
+
+        for (var heapIndexKey in heapChartHandlesByIndex) {
+            var heapHandle = heapChartHandlesByIndex[heapIndexKey];
+            if (heapHandle.zoomHandle) {
+                heapHandle.zoomHandle.detach();
+            }
+            heapHandle.chart.destroy();
+        }
+        heapChartHandlesByIndex = {};
+    }
+
+    function onGcChartsRangeSelected(startMSec, endMSec) {
+        applySharedZoom({ startMSec: startMSec, endMSec: endMSec });
+    }
+
+    function updateGcZoomStatusUi(zoomRange) {
+        var statusBar = document.getElementById("gcZoomStatus");
+        if (!statusBar) {
+            return;
+        }
+
+        if (!zoomRange) {
+            statusBar.style.display = "none";
+            return;
+        }
+
+        statusBar.style.display = "block";
+        var label = statusBar.getElementsByClassName("allocationZoomStatusLabel")[0];
+        if (label) {
+            label.textContent = "Zoomed: " + formatElapsedMs(zoomRange.startMSec) +
+                " – " + formatElapsedMs(zoomRange.endMSec) + " (Backspace to reset)";
+        }
+    }
+
+    // Hides Detailed-tab rows whose GC falls outside sharedZoomRange - a
+    // no-op until both the Detailed tab has been opened at least once (see
+    // detailTableInjected below) and a zoom is actually applied. Called both
+    // on every zoom change and the first time the Detailed tab opens (in
+    // case a zoom was already applied on a chart beforehand).
+    function filterDetailTableToZoomRange() {
+        if (!detailTableInjected) {
+            return;
+        }
+
+        var detailTable = document.querySelector('#tab-detailed .detailTable table');
+        if (!detailTable) {
+            return;
+        }
+
+        for (var rowIndex = 1; rowIndex < detailTable.rows.length; ++rowIndex) {
+            var row = detailTable.rows[rowIndex];
+            var elapsedMsec = parseFloat(row.getAttribute('data-elapsed-msec'));
+            var isVisible = !sharedZoomRange || (elapsedMsec >= sharedZoomRange.startMSec && elapsedMsec <= sharedZoomRange.endMSec);
+            row.style.display = isVisible ? "" : "none";
+        }
+    }
+
+    // Rebuilds only the GC view's own charts (Pause Time/Usage/Fragmentation
+    // + any per-heap chart already built) plus the Detailed table's row
+    // filter - called by applySharedZoom below, which also rebuilds the Heap
+    // Contents charts, so the two views' charts stay in sync regardless of
+    // which one a drag-select actually happened on. zoomRange is null for
+    // the full, unzoomed capture. A heap chart built for the first time
+    // afterward (scrolled into view) just reads sharedZoomRange directly.
+    function renderGcCharts(zoomRange) {
+        var previouslyBuiltHeapIndexes = [];
+        for (var existingHeapIndexKey in heapChartHandlesByIndex) {
+            previouslyBuiltHeapIndexes.push(parseInt(existingHeapIndexKey, 10));
+        }
+
+        destroyGcCharts();
+        updateGcZoomStatusUi(zoomRange);
+
+        var pauseHandle = renderTotalGcPauseTimeChart(zoomRange);
+        if (pauseHandle) {
+            gcChartHandles.push(pauseHandle);
+        }
+
+        var statsHandle = renderTotalGcStatsChart(zoomRange);
+        if (statsHandle) {
+            gcChartHandles.push(statsHandle);
+        }
+
+        if (document.getElementById("gcFragmentationOverTime")) {
+            requestAnimationFrame(function () {
+                var fragHandle = renderGcFragmentationChart(zoomRange);
+                if (fragHandle) {
+                    gcChartHandles.push(fragHandle);
+                }
+            });
+        }
+
+        for (var rebuildIndex = 0; rebuildIndex < previouslyBuiltHeapIndexes.length; ++rebuildIndex) {
+            var heapIndexToRebuild = previouslyBuiltHeapIndexes[rebuildIndex];
+            heapChartHandlesByIndex[heapIndexToRebuild] = renderHeapChart(heapIndexToRebuild, zoomRange);
+        }
+
+        filterDetailTableToZoomRange();
+    }
+
+    // Single entry point for every zoom change after page load (drag-select
+    // on ANY chart in either view, either Reset Zoom button, or Backspace) -
+    // updates sharedZoomRange once, then rebuilds both views' charts so a
+    // zoom applied while looking at the GC charts is already in place if the
+    // user switches to Heap Contents, and vice versa. renderHeapContentsCharts
+    // (defined further below) is a no-op for canvases that don't exist yet
+    // (the Heap Contents view is injected lazily on first open - see
+    // AllocationSummaryRenderer.ts/renderAllocationTimelineChart's own
+    // canvasElement-null guard), so calling it here even before that view
+    // has ever been opened is harmless.
+    function applySharedZoom(zoomRange) {
+        sharedZoomRange = zoomRange;
+        renderGcCharts(zoomRange);
+        renderHeapContentsCharts(zoomRange);
+    }
 
     var gcStatsChart = document.getElementsByClassName("gcStatsChart")[0];
 
@@ -180,9 +316,6 @@ var allocationDatasets = {};
             "maintainAspectRatio": false,
         }
     });
-
-    var totalGcPauseTimeOverTime = document.getElementById("totalGcPauseTimeOverTime");
-    const totalGcPauseTimeOverTimeContext = totalGcPauseTimeOverTime.getContext('2d');
 
     // LOH isn't a distinct GC generation - LOH is swept as part of Gen 2
     // (full) GCs, so a GC's "generation" field alone can't identify it. A GC
@@ -275,222 +408,259 @@ var allocationDatasets = {};
 
     var pauseTimePulses = buildAllPauseTimePulses();
 
-    var totalGcPauseTimeOverTimeChart = new Chart(totalGcPauseTimeOverTimeContext, {
-        type: 'line',
-            data: {
-                datasets: [{
-                    label: 'Total Blocking Time',
-                    data: pauseTimePulses[0],
-                    backgroundColor: [
-                        "rgba(220, 53, 69, 0.2)",
-                    ],
-                    borderColor: "rgba(220, 53, 69, 1)",
-                    borderWidth: 1,
-                    lineTension: 0,
-                    pointRadius: 2,
-                    pointHoverRadius: 4
-                },
-                {
-                    label: 'Gen 0',
-                    data: pauseTimePulses[1],
-                    backgroundColor: [
-                        "rgba(72, 83, 136, 0.2)",
-                    ],
-                    borderWidth: 1,
-                    lineTension: 0,
-                    pointRadius: 2,
-                    pointHoverRadius: 4
-                },
-                {
-                    label: "Gen 1",
-                    data: pauseTimePulses[2],
-                    backgroundColor: [
-                        "rgba(96, 165, 69, 0.2)",
-                    ],
-                    borderWidth: 1,
-                    lineTension: 0,
-                    pointRadius: 2,
-                    pointHoverRadius: 4
-                },
-                {
-                    label: "Gen 2",
-                    data: pauseTimePulses[3],
-                    backgroundColor: [
-                        "rgba(141, 31, 95, 0.2)",
-                    ],
-                    borderWidth: 1,
-                    lineTension: 0,
-                    pointRadius: 2,
-                    pointHoverRadius: 4
-                },
-                {
-                    label: "LOH",
-                    data: pauseTimePulses[4],
-                    backgroundColor: [
-                        "rgba(201, 221, 84, 0.2)"
-                    ],
-                    borderWidth: 1,
-                    lineTension: 0,
-                    pointRadius: 2,
-                    pointHoverRadius: 4
+    function renderTotalGcPauseTimeChart(zoomRange) {
+        var canvasElement = document.getElementById("totalGcPauseTimeOverTime");
+        if (!canvasElement) {
+            return null;
+        }
+
+        var xAxisTicks = { callback: formatElapsedMs };
+        if (zoomRange) {
+            xAxisTicks.min = zoomRange.startMSec;
+            xAxisTicks.max = zoomRange.endMSec;
+        }
+
+        var dragStateHolder = { current: null };
+
+        var chart = new Chart(canvasElement.getContext('2d'), {
+            type: 'line',
+                data: {
+                    datasets: [{
+                        label: 'Total Blocking Time',
+                        data: pauseTimePulses[0],
+                        backgroundColor: [
+                            "rgba(220, 53, 69, 0.2)",
+                        ],
+                        borderColor: "rgba(220, 53, 69, 1)",
+                        borderWidth: 1,
+                        lineTension: 0,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    },
+                    {
+                        label: 'Gen 0',
+                        data: pauseTimePulses[1],
+                        backgroundColor: [
+                            "rgba(72, 83, 136, 0.2)",
+                        ],
+                        borderWidth: 1,
+                        lineTension: 0,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    },
+                    {
+                        label: "Gen 1",
+                        data: pauseTimePulses[2],
+                        backgroundColor: [
+                            "rgba(96, 165, 69, 0.2)",
+                        ],
+                        borderWidth: 1,
+                        lineTension: 0,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    },
+                    {
+                        label: "Gen 2",
+                        data: pauseTimePulses[3],
+                        backgroundColor: [
+                            "rgba(141, 31, 95, 0.2)",
+                        ],
+                        borderWidth: 1,
+                        lineTension: 0,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    },
+                    {
+                        label: "LOH",
+                        data: pauseTimePulses[4],
+                        backgroundColor: [
+                            "rgba(201, 221, 84, 0.2)"
+                        ],
+                        borderWidth: 1,
+                        lineTension: 0,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    }
+                ]},
+                plugins: [createZoomSelectionPlugin(dragStateHolder)],
+                options: {
+                    title: {
+                        display: true,
+                        text: `GC Pause Time by Generation`
+                    },
+                    // Sharp vertical pulses (x,0)->(x,pauseMs) confuse Chart.js's
+                    // default bezier curve fitting (lineTension) - it overshoots
+                    // through the vertical segments and loops back on itself,
+                    // producing the self-crossing "figure eight" artifact. Force
+                    // straight-line segments instead, both per-dataset above and
+                    // here as a chart-wide default so nothing falls back to it.
+                    elements: {
+                        line: {
+                            tension: 0
+                        }
+                    },
+                    scales: {
+                        xAxes: [{
+                            type: 'linear',
+                            position: 'bottom',
+                            ticks: xAxisTicks,
+                            scaleLabel: {
+                                display: true,
+                                labelString: "Capture Time Elapsed"
+                            }
+                        }],
+                        yAxes: [{
+                            ticks: {
+                                beginAtZero: true
+                            },
+                            scaleLabel: {
+                                display: true,
+                                labelString: "Time in ms"
+                            }
+                        }],
+                    },
+                    tooltips: {
+                        callbacks: {
+                            title: pauseTimeTooltipTitle
+                        }
+                    },
+                    animation: { duration: 0 },
+                    "maintainAspectRatio": false,
                 }
-            ]},
-            options: {
-                title: {
-                    display: true,
-                    text: `GC Pause Time by Generation`
-                },
-                // Sharp vertical pulses (x,0)->(x,pauseMs) confuse Chart.js's
-                // default bezier curve fitting (lineTension) - it overshoots
-                // through the vertical segments and loops back on itself,
-                // producing the self-crossing "figure eight" artifact. Force
-                // straight-line segments instead, both per-dataset above and
-                // here as a chart-wide default so nothing falls back to it.
-                elements: {
-                    line: {
-                        tension: 0
-                    }
-                },
-                scales: {
-                    xAxes: [{
-                        type: 'linear',
-                        position: 'bottom',
-                        ticks: {
-                            callback: formatElapsedMs
-                        },
-                        scaleLabel: {
-                            display: true,
-                            labelString: "Capture Time Elapsed"
-                        }
-                    }],
-                    yAxes: [{
-                        ticks: {
-                            beginAtZero: true
-                        },
-                        scaleLabel: {
-                            display: true,
-                            labelString: "Time in ms"
-                        }
-                    }],
-                },
-                tooltips: {
-                    callbacks: {
-                        title: pauseTimeTooltipTitle
-                    }
-                },
-                animation: { duration: 0 },
-                "maintainAspectRatio": false,
-            }
-    });
+        });
 
-    var totalGcStatsOverTime = document.getElementById("totalGcStatsOverTime");
-    const totalGcStatsOverTimeContext = totalGcStatsOverTime.getContext('2d');
-
-    var totalGen0DataSet = [];
-    var totalGen1DataSet = [];
-    var totalGen2DataSet = [];
-    var totalLohDataSet = [];
+        var zoomHandle = attachDragToZoom(chart, canvasElement, dragStateHolder, pixelToMSecLinear, onGcChartsRangeSelected);
+        return { chart: chart, zoomHandle: zoomHandle };
+    }
 
     var totalMb = 1024 * 1024;
 
-    for (var index = 0; index < gcs.length; ++index) {
-        var gcData = gcs[index]["data"];
-        
+    var totalGenSizeSeries = [
+        buildGcPointSeries(function (gcData) { return gcData["GenerationSize0"] / totalMb; }),
+        buildGcPointSeries(function (gcData) { return gcData["GenerationSize1"] / totalMb; }),
+        buildGcPointSeries(function (gcData) { return gcData["GenerationSize2"] / totalMb; }),
+        buildGcPointSeries(function (gcData) { return gcData["GenerationSizeLOH"] / totalMb; })
+    ];
 
-        totalGen0DataSet.push(gcData["GenerationSize0"] / totalMb);
-        totalGen1DataSet.push(gcData["GenerationSize1"] / totalMb);
-        totalGen2DataSet.push(gcData["GenerationSize2"] / totalMb);
-        totalLohDataSet.push(gcData["GenerationSizeLOH"] / totalMb);
+    function renderTotalGcStatsChart(zoomRange) {
+        var canvasElement = document.getElementById("totalGcStatsOverTime");
+        if (!canvasElement) {
+            return null;
+        }
+
+        var xAxisTicks = { callback: formatElapsedMs };
+        if (zoomRange) {
+            xAxisTicks.min = zoomRange.startMSec;
+            xAxisTicks.max = zoomRange.endMSec;
+        }
+
+        var dragStateHolder = { current: null };
+
+        var chart = new Chart(canvasElement.getContext('2d'), {
+            type: 'line',
+                data: {
+                    datasets: [{
+                        label: 'Gen 0',
+                        data: totalGenSizeSeries[0],
+                        backgroundColor: [
+                            "rgba(72, 83, 136, 0.2)",
+                        ],
+                        borderWidth: 1,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    },
+                    {
+                        label: "Gen 1",
+                        data: totalGenSizeSeries[1],
+                        backgroundColor: [
+                            "rgba(96, 165, 69, 0.2)",
+                        ],
+                        borderWidth: 1,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    },
+                    {
+                        label: "Gen 2",
+                        data: totalGenSizeSeries[2],
+                        backgroundColor: [
+                            "rgba(141, 31, 95, 0.2)",
+                        ],
+                        borderWidth: 1,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    },
+                    {
+                        label: "LOH",
+                        data: totalGenSizeSeries[3],
+                        backgroundColor: [
+                            "rgba(201, 221, 84, 0.2)"
+                        ],
+                        borderWidth: 1,
+                        pointRadius: 2,
+                        pointHoverRadius: 4
+                    }
+                ]},
+                plugins: [createZoomSelectionPlugin(dragStateHolder)],
+                options: {
+                    title: {
+                        display: true,
+                        text: `Total GC Usage by Generation`
+                    },
+                    scales: {
+                        xAxes: [{
+                            type: 'linear',
+                            position: 'bottom',
+                            ticks: xAxisTicks,
+                            scaleLabel: {
+                                display: true,
+                                labelString: "Capture Time Elapsed"
+                            }
+                        }],
+                        yAxes: [{
+                            ticks: {
+                                beginAtZero: true
+                            },
+                            scaleLabel: {
+                                display: true,
+                                labelString: "Memory Usage in MB"
+                            }
+                        }],
+                    },
+                    tooltips: {
+                        callbacks: {
+                            title: linearGcTooltipTitle
+                        }
+                    },
+                    animation: { duration: 0 },
+                    "maintainAspectRatio": false,
+                }
+        });
+
+        var zoomHandle = attachDragToZoom(chart, canvasElement, dragStateHolder, pixelToMSecLinear, onGcChartsRangeSelected);
+        return { chart: chart, zoomHandle: zoomHandle };
     }
 
-    var totalGcStatsOverTimeChart = new Chart(totalGcStatsOverTimeContext, {
-        type: 'line',
-            data: {
-                labels: chartLabels,
-                datasets: [{
-                    label: 'Gen 0',
-                    data: totalGen0DataSet,
-                    backgroundColor: [
-                        "rgba(72, 83, 136, 0.2)",
-                    ],
-                    borderWidth: 1,
-                    pointRadius: 2,
-                    pointHoverRadius: 4
-                },
-                {
-                    label: "Gen 1",
-                    data: totalGen1DataSet,
-                    backgroundColor: [
-                        "rgba(96, 165, 69, 0.2)",
-                    ],
-                    borderWidth: 1,
-                    pointRadius: 2,
-                    pointHoverRadius: 4
-                },
-                {
-                    label: "Gen 2",
-                    data: totalGen2DataSet,
-                    backgroundColor: [
-                        "rgba(141, 31, 95, 0.2)",
-                    ],
-                    borderWidth: 1,
-                    pointRadius: 2,
-                    pointHoverRadius: 4
-                },
-                {
-                    label: "LOH",
-                    data: totalLohDataSet,
-                    backgroundColor: [
-                        "rgba(201, 221, 84, 0.2)"
-                    ],
-                    borderWidth: 1,
-                    pointRadius: 2,
-                    pointHoverRadius: 4
-                }
-            ]},
-            options: {
-                title: {
-                    display: true,
-                    text: `Total GC Usage by Generation`
-                },
-                scales: {
-                    yAxes: [{
-                        ticks: {
-                            beginAtZero: true
-                        },
-                        scaleLabel: {
-                            display: true,
-                            labelString: "Memory Usage in MB"
-                        }
-                    }],
-                },
-                tooltips: {
-                    callbacks: {
-                        title: gcTooltipTitle
-                    }
-                },
-                animation: { duration: 0 },
-                "maintainAspectRatio": false,
-            }
-    });
+    // Built once, on first render, and cached - the GC x heap x gen summing
+    // below is the expensive part, not chart construction, so every
+    // subsequent zoom change (renderGcCharts) reuses these same point arrays
+    // and just re-clips the x-axis range (see renderGcFragmentationChart).
+    var fragmentationSeriesCache = null;
 
-    if (document.getElementById("gcFragmentationOverTime")) {
-      // The fragmentation chart is below the fold - deferring its GC x heap x
-      // gen dataset computation to after the above-fold charts have painted
-      // avoids blocking the initial render for work the user may not
-      // immediately scroll to see.
-      requestAnimationFrame(function () {
-        var fragGen0Dataset = [];
-        var fragGen1Dataset = [];
-        var fragGen2Dataset = [];
-        var fragLohDataset = [];
-        var fragTotalDataset = [];
-        var pinnedCountDataset = [];
-        var compactionMarkerDataset = [];
+    function buildFragmentationSeries() {
+        var fragGen0Points = [];
+        var fragGen1Points = [];
+        var fragGen2Points = [];
+        var fragLohPoints = [];
+        var fragTotalPoints = [];
+        var pinnedCountPoints = [];
+        var compactionMarkerPoints = [];
 
         for (var fragIndex = 0; fragIndex < gcs.length; ++fragIndex) {
             var fragGcData = gcs[fragIndex]["data"];
             var fragHeaps = fragGcData["Heaps"];
+            var fragX = fragGcData["PauseStartRelativeMSec"];
+            var fragGcId = fragGcData["Id"];
+            var fragDateTime = fragGcData["DateTime"];
 
             var fragByGen = [0, 0, 0, 0];
             var sizeAfterByGen = [0, 0, 0, 0];
@@ -509,30 +679,55 @@ var allocationDatasets = {};
             var totalHeapSizeBytes = parseFloat(fragGcData["TotalHeapSize"]) || 0;
             var totalFragBytes = fragByGen[0] + fragByGen[1] + fragByGen[2] + fragByGen[3];
 
-            fragGen0Dataset.push(sizeAfterByGen[0] > 0 ? (fragByGen[0] / sizeAfterByGen[0]) * 100 : 0);
-            fragGen1Dataset.push(sizeAfterByGen[1] > 0 ? (fragByGen[1] / sizeAfterByGen[1]) * 100 : 0);
-            fragGen2Dataset.push(sizeAfterByGen[2] > 0 ? (fragByGen[2] / sizeAfterByGen[2]) * 100 : 0);
-            fragLohDataset.push(sizeAfterByGen[3] > 0 ? (fragByGen[3] / sizeAfterByGen[3]) * 100 : 0);
-            fragTotalDataset.push(totalHeapSizeBytes > 0 ? (totalFragBytes / totalHeapSizeBytes) * 100 : 0);
+            fragGen0Points.push({ x: fragX, y: sizeAfterByGen[0] > 0 ? (fragByGen[0] / sizeAfterByGen[0]) * 100 : 0, gcId: fragGcId, dateTime: fragDateTime });
+            fragGen1Points.push({ x: fragX, y: sizeAfterByGen[1] > 0 ? (fragByGen[1] / sizeAfterByGen[1]) * 100 : 0, gcId: fragGcId, dateTime: fragDateTime });
+            fragGen2Points.push({ x: fragX, y: sizeAfterByGen[2] > 0 ? (fragByGen[2] / sizeAfterByGen[2]) * 100 : 0, gcId: fragGcId, dateTime: fragDateTime });
+            fragLohPoints.push({ x: fragX, y: sizeAfterByGen[3] > 0 ? (fragByGen[3] / sizeAfterByGen[3]) * 100 : 0, gcId: fragGcId, dateTime: fragDateTime });
+            fragTotalPoints.push({ x: fragX, y: totalHeapSizeBytes > 0 ? (totalFragBytes / totalHeapSizeBytes) * 100 : 0, gcId: fragGcId, dateTime: fragDateTime });
 
-            pinnedCountDataset.push(parseInt(fragGcData["PinnedObjectCount"]) || 0);
+            pinnedCountPoints.push({ x: fragX, y: parseInt(fragGcData["PinnedObjectCount"]) || 0, gcId: fragGcId, dateTime: fragDateTime });
 
             var mechanisms = parseInt(fragGcData["GlobalMechanisms"]) || 0;
             // GCGlobalMechanisms.Compaction = 0x2
-            compactionMarkerDataset.push((mechanisms & 0x2) !== 0 ? 2 : null);
+            compactionMarkerPoints.push((mechanisms & 0x2) !== 0 ? { x: fragX, y: 2, gcId: fragGcId, dateTime: fragDateTime } : null);
         }
 
-        var gcFragmentationOverTime = document.getElementById("gcFragmentationOverTime");
-        var gcFragmentationContext = gcFragmentationOverTime.getContext('2d');
+        return {
+            gen0: fragGen0Points,
+            gen1: fragGen1Points,
+            gen2: fragGen2Points,
+            loh: fragLohPoints,
+            total: fragTotalPoints,
+            pinnedCount: pinnedCountPoints,
+            compactionMarker: compactionMarkerPoints
+        };
+    }
 
-        var gcFragmentationChart = new Chart(gcFragmentationContext, {
+    function renderGcFragmentationChart(zoomRange) {
+        var canvasElement = document.getElementById("gcFragmentationOverTime");
+        if (!canvasElement) {
+            return null;
+        }
+
+        if (!fragmentationSeriesCache) {
+            fragmentationSeriesCache = buildFragmentationSeries();
+        }
+
+        var xAxisTicks = { callback: formatElapsedMs };
+        if (zoomRange) {
+            xAxisTicks.min = zoomRange.startMSec;
+            xAxisTicks.max = zoomRange.endMSec;
+        }
+
+        var dragStateHolder = { current: null };
+
+        var chart = new Chart(canvasElement.getContext('2d'), {
             type: 'line',
             data: {
-                labels: chartLabels,
                 datasets: [
                     {
                         label: 'Total',
-                        data: fragTotalDataset,
+                        data: fragmentationSeriesCache.total,
                         borderColor: "rgba(220, 53, 69, 1)",
                         backgroundColor: "rgba(220, 53, 69, 0.05)",
                         borderWidth: 2,
@@ -543,7 +738,7 @@ var allocationDatasets = {};
                     },
                     {
                         label: 'Gen 0',
-                        data: fragGen0Dataset,
+                        data: fragmentationSeriesCache.gen0,
                         borderColor: "rgba(72, 83, 136, 1)",
                         backgroundColor: "rgba(72, 83, 136, 0.05)",
                         borderWidth: 1,
@@ -554,7 +749,7 @@ var allocationDatasets = {};
                     },
                     {
                         label: 'Gen 1',
-                        data: fragGen1Dataset,
+                        data: fragmentationSeriesCache.gen1,
                         borderColor: "rgba(96, 165, 69, 1)",
                         backgroundColor: "rgba(96, 165, 69, 0.05)",
                         borderWidth: 1,
@@ -565,7 +760,7 @@ var allocationDatasets = {};
                     },
                     {
                         label: 'Gen 2',
-                        data: fragGen2Dataset,
+                        data: fragmentationSeriesCache.gen2,
                         borderColor: "rgba(141, 31, 95, 1)",
                         backgroundColor: "rgba(141, 31, 95, 0.05)",
                         borderWidth: 1,
@@ -576,7 +771,7 @@ var allocationDatasets = {};
                     },
                     {
                         label: 'LOH',
-                        data: fragLohDataset,
+                        data: fragmentationSeriesCache.loh,
                         borderColor: "rgba(201, 221, 84, 1)",
                         backgroundColor: "rgba(201, 221, 84, 0.05)",
                         borderWidth: 1,
@@ -587,7 +782,7 @@ var allocationDatasets = {};
                     },
                     {
                         label: 'Pinned Objects',
-                        data: pinnedCountDataset,
+                        data: fragmentationSeriesCache.pinnedCount,
                         borderColor: "rgba(255, 165, 0, 0.8)",
                         backgroundColor: "rgba(255, 165, 0, 0.05)",
                         borderWidth: 1,
@@ -599,7 +794,7 @@ var allocationDatasets = {};
                     },
                     {
                         label: 'Compaction',
-                        data: compactionMarkerDataset,
+                        data: fragmentationSeriesCache.compactionMarker,
                         backgroundColor: "rgba(255, 165, 0, 0.9)",
                         borderColor: "rgba(255, 165, 0, 1)",
                         pointRadius: 8,
@@ -610,12 +805,22 @@ var allocationDatasets = {};
                     }
                 ]
             },
+            plugins: [createZoomSelectionPlugin(dragStateHolder)],
             options: {
                 title: {
                     display: true,
                     text: 'Heap Fragmentation by Generation'
                 },
                 scales: {
+                    xAxes: [{
+                        type: 'linear',
+                        position: 'bottom',
+                        ticks: xAxisTicks,
+                        scaleLabel: {
+                            display: true,
+                            labelString: "Capture Time Elapsed"
+                        }
+                    }],
                     yAxes: [
                         {
                             id: 'fragPct',
@@ -648,14 +853,16 @@ var allocationDatasets = {};
                 },
                 tooltips: {
                     callbacks: {
-                        title: gcTooltipTitle
+                        title: linearGcTooltipTitle
                     }
                 },
                 animation: { duration: 0 },
                 maintainAspectRatio: false
             }
         });
-      });
+
+        var zoomHandle = attachDragToZoom(chart, canvasElement, dragStateHolder, pixelToMSecLinear, onGcChartsRangeSelected);
+        return { chart: chart, zoomHandle: zoomHandle };
     }
 
     var lohTypesSection = document.getElementById("lohTypesSection");
@@ -704,34 +911,44 @@ var allocationDatasets = {};
         }
     }
 
-    const setChart = (passedHeapIndex) => {
-        var gen0DataSet = [];
-        var gen1DataSet = [];
-        var gen2DataSet = [];
-        var lohDataSet = [];
+    // heapIndex -> [gen0, gen1, gen2, loh] point series - built once per
+    // heap, the first time that heap's chart is actually rendered (see
+    // renderHeapChart), then reused by every later zoom-triggered rebuild.
+    var heapChartSeriesCache = {};
 
+    function buildHeapSeries(passedHeapIndex) {
         var mb = 1024;
 
-        for (var index = 0; index < gcs.length; ++index) {
-            var gcData = gcs[index]["data"];
+        return [
+            buildGcPointSeries(function (gcData) { return gcData["Heaps"][passedHeapIndex]["Generations"][0]["SizeAfter"] / mb; }),
+            buildGcPointSeries(function (gcData) { return gcData["Heaps"][passedHeapIndex]["Generations"][1]["SizeAfter"] / mb; }),
+            buildGcPointSeries(function (gcData) { return gcData["Heaps"][passedHeapIndex]["Generations"][2]["SizeAfter"] / mb; }),
+            buildGcPointSeries(function (gcData) { return gcData["Heaps"][passedHeapIndex]["Generations"][3]["SizeAfter"] / mb; })
+        ];
+    }
 
-            var currentHeap = gcData["Heaps"][passedHeapIndex]["Generations"];
-            
-            gen0DataSet.push(currentHeap[0]["SizeAfter"] / mb);
-            gen1DataSet.push(currentHeap[1]["SizeAfter"] / mb);
-            gen2DataSet.push(currentHeap[2]["SizeAfter"] / mb);
-            lohDataSet.push(currentHeap[3]["SizeAfter"] / mb);
+    function renderHeapChart(passedHeapIndex, zoomRange) {
+        if (!heapChartSeriesCache[passedHeapIndex]) {
+            heapChartSeriesCache[passedHeapIndex] = buildHeapSeries(passedHeapIndex);
+        }
+        var series = heapChartSeriesCache[passedHeapIndex];
+
+        var canvasElement = heapCharts[passedHeapIndex];
+
+        var xAxisTicks = { callback: formatElapsedMs };
+        if (zoomRange) {
+            xAxisTicks.min = zoomRange.startMSec;
+            xAxisTicks.max = zoomRange.endMSec;
         }
 
-        var ctx = heapCharts[passedHeapIndex];
-        ctx = ctx.getContext('2d');
-        var heapChart = new Chart(ctx, {
+        var dragStateHolder = { current: null };
+
+        var chart = new Chart(canvasElement.getContext('2d'), {
             type: 'line',
             data: {
-                labels: chartLabels,
                 datasets: [{
                     label: 'Gen 0',
-                    data: gen0DataSet,
+                    data: series[0],
                     backgroundColor: [
                         'rgba(54, 162, 235, 0.2)',
                     ],
@@ -741,7 +958,7 @@ var allocationDatasets = {};
                 },
                 {
                     label: "Gen 1",
-                    data: gen1DataSet,
+                    data: series[1],
                     backgroundColor: [
                         'rgba(75, 192, 192, 0.2)'
                     ],
@@ -751,7 +968,7 @@ var allocationDatasets = {};
                 },
                 {
                     label: "Gen 2",
-                    data: gen2DataSet,
+                    data: series[2],
                     backgroundColor: [
                         'rgba(153, 102, 255, 0.2)'
                     ],
@@ -761,7 +978,7 @@ var allocationDatasets = {};
                 },
                 {
                     label: "LOH",
-                    data: lohDataSet,
+                    data: series[3],
                     backgroundColor: [
                         'rgba(255, 206, 86, 0.2)'
                     ],
@@ -770,12 +987,22 @@ var allocationDatasets = {};
                     pointHoverRadius: 4
                 }
             ]},
+            plugins: [createZoomSelectionPlugin(dragStateHolder)],
             options: {
                 title: {
                     display: true,
                     text: `Heap: ${passedHeapIndex}`
                 },
                 scales: {
+                    xAxes: [{
+                        type: 'linear',
+                        position: 'bottom',
+                        ticks: xAxisTicks,
+                        scaleLabel: {
+                            display: true,
+                            labelString: "Capture Time Elapsed"
+                        }
+                    }],
                     yAxes: [{
                         ticks: {
                             beginAtZero: true
@@ -788,28 +1015,55 @@ var allocationDatasets = {};
                 },
                 tooltips: {
                     callbacks: {
-                        title: gcTooltipTitle
+                        title: linearGcTooltipTitle
                     }
                 },
                 animation: { duration: 0 },
                 "maintainAspectRatio": false,
             }
         });
-    };
+
+        var zoomHandle = attachDragToZoom(chart, canvasElement, dragStateHolder, pixelToMSecLinear, onGcChartsRangeSelected);
+        return { chart: chart, zoomHandle: zoomHandle };
+    }
 
     var heapCharts = document.getElementsByClassName("heapChart");
+
+    // Initial (unzoomed) build of the Pause Time / Usage / Fragmentation
+    // charts - mirrors renderHeapContentsCharts(null)'s role for the Heap
+    // Contents view. Runs before the per-heap setup below so sharedZoomRange
+    // is settled (still null, nothing to zoom yet) before any heap chart
+    // reads it. Calls renderGcCharts directly, not applySharedZoom - the
+    // Heap Contents view has nothing to rebuild yet at page load (it's
+    // injected lazily on first open - see the viewNavButton handler below).
+    renderGcCharts(null);
+
+    // Click equivalent of the Backspace zoom-reset above - for anyone who
+    // doesn't know/want to use the keyboard shortcut. Only visible while a
+    // zoom is actually applied (see updateGcZoomStatusUi). The button is
+    // part of the GC view's static markup (not lazily injected), so this can
+    // be wired up right away.
+    var resetGcZoomButton = document.getElementById('resetGcZoomButton');
+    if (resetGcZoomButton) {
+        resetGcZoomButton.addEventListener('click', function () {
+            applySharedZoom(null);
+        });
+    }
 
     // Server GC traces can have 16+ heaps, each getting its own Chart.js
     // instance - building all of them synchronously on load is expensive and
     // most users never scroll down to see every heap. Defer each chart's
-    // construction until its canvas actually scrolls into view.
+    // construction until its canvas actually scrolls into view. Whatever
+    // zoom is currently applied (sharedZoomRange) is used immediately, so a
+    // heap chart that first appears while already zoomed doesn't flash the
+    // full range before narrowing.
     if ('IntersectionObserver' in window) {
         var heapChartObserver = new IntersectionObserver(function (entries, observer) {
             for (var entryIndex = 0; entryIndex < entries.length; ++entryIndex) {
                 var entry = entries[entryIndex];
                 if (entry.isIntersecting) {
                     var heapIndex = parseInt(entry.target.getAttribute('data-heap-index'), 10);
-                    setChart(heapIndex);
+                    heapChartHandlesByIndex[heapIndex] = renderHeapChart(heapIndex, sharedZoomRange);
                     observer.unobserve(entry.target);
                 }
             }
@@ -821,7 +1075,7 @@ var allocationDatasets = {};
         }
     } else {
         for (var index = 0; index < heapCharts.length; ++index) {
-            setChart(index);
+            heapChartHandlesByIndex[index] = renderHeapChart(index, sharedZoomRange);
         }
     }
 
@@ -1009,6 +1263,89 @@ var allocationDatasets = {};
         document.getElementById("generationBreakdownSection").innerHTML = buildAllGenerationBreakdownTables(showAllGenFields);
     }
 
+    // Click-to-sort for the Detailed tab's per-GC table. The table is only
+    // ever built once per webview session (see detailTableHtml above), so
+    // this reorders the already-rendered <tr> elements in place rather than
+    // re-deriving values from the original gcs array - matching the
+    // render-once/mutate-the-DOM approach the rest of this lazy-inject path
+    // already uses.
+    var currentSortColumnIndex = -1;
+    var currentSortAscending = true;
+
+    function detailTableSortValue(cell, sortType) {
+        if (sortType === 'date') {
+            // The DateTime cell's own data-raw attribute (an ISO-8601
+            // timestamp or a zero-padded "+elapsed" string - see
+            // GcDetailTableRenderer.ts) sorts correctly as plain text; the
+            // human-formatted display text (e.g. "21-Jul-2026 03:42:13 PM
+            // PDT") does not.
+            return cell.getAttribute('data-raw') || '';
+        }
+
+        if (sortType === 'number') {
+            var parsed = parseFloat(cell.textContent);
+            return isNaN(parsed) ? -Infinity : parsed;
+        }
+
+        return cell.textContent.toLowerCase();
+    }
+
+    function sortDetailTableByColumn(table, columnIndex, sortType, ascending) {
+        var tbody = table.tBodies[0] || table;
+        // Snapshots the live HTMLCollection before any row gets moved -
+        // table.rows[0] is the header row, left untouched.
+        var dataRows = Array.prototype.slice.call(table.rows, 1);
+
+        dataRows.sort(function (rowA, rowB) {
+            var valueA = detailTableSortValue(rowA.cells[columnIndex], sortType);
+            var valueB = detailTableSortValue(rowB.cells[columnIndex], sortType);
+
+            var comparison = 0;
+            if (valueA < valueB) {
+                comparison = -1;
+            } else if (valueA > valueB) {
+                comparison = 1;
+            }
+
+            return ascending ? comparison : -comparison;
+        });
+
+        // appendChild on a node already in the tree moves it - iterating in
+        // the desired final order and re-appending each row leaves the
+        // header (never touched) first and every data row following in
+        // sorted order.
+        for (var rowIndex = 0; rowIndex < dataRows.length; ++rowIndex) {
+            tbody.appendChild(dataRows[rowIndex]);
+        }
+    }
+
+    function setupDetailTableSortHandlers(container) {
+        var table = container.querySelector(".detailTable table");
+        if (!table) {
+            return;
+        }
+
+        var headerCells = table.rows[0].cells;
+        for (var headerIndex = 0; headerIndex < headerCells.length; ++headerIndex) {
+            var headerCell = headerCells[headerIndex];
+
+            (function (columnIndex, headerCell) {
+                headerCell.addEventListener('click', function () {
+                    var ascending = (currentSortColumnIndex === columnIndex) ? !currentSortAscending : true;
+                    sortDetailTableByColumn(table, columnIndex, headerCell.getAttribute('data-sort'), ascending);
+
+                    for (var clearIndex = 0; clearIndex < headerCells.length; ++clearIndex) {
+                        headerCells[clearIndex].getElementsByClassName('sortIndicator')[0].textContent = '';
+                    }
+                    headerCell.getElementsByClassName('sortIndicator')[0].textContent = ascending ? ' ▲' : ' ▼';
+
+                    currentSortColumnIndex = columnIndex;
+                    currentSortAscending = ascending;
+                });
+            })(headerIndex, headerCell);
+        }
+    }
+
     var genFieldsToggle = document.getElementById("genFieldsToggle");
     genFieldsToggle.addEventListener('click', function () {
         showAllGenFields = !showAllGenFields;
@@ -1063,8 +1400,16 @@ var allocationDatasets = {};
                     dateTimeCell.textContent = formatHumanDateTime(dateTimeCell.getAttribute('data-raw'));
                 }
 
+                setupDetailTableSortHandlers(detailedPanel);
+
                 renderGenerationBreakdownSection();
                 detailTableInjected = true;
+
+                // A GC chart zoom may already have been applied on the
+                // Charts tab before this tab was ever opened - filter to it
+                // immediately rather than showing every row until the next
+                // zoom change.
+                filterDetailTableToZoomRange();
             }
         });
     }
@@ -1075,15 +1420,6 @@ var allocationDatasets = {};
     // deeper, inside #view-gc. Same show/hide-via-active-class mechanism,
     // keyed on data-view/id="view-*" instead of data-tab/id="tab-*".
     var allocationSummaryInjected = false;
-
-    // Drag-to-zoom state for the Heap Contents charts (see
-    // chartZoomHelper.js) - both the allocation-rate chart and whichever
-    // type-timeline chart(s) are currently rendered share one zoom range,
-    // so dragging a selection on any one of them re-renders all of them to
-    // the same [startMSec, endMSec) window. null means "full capture, not
-    // zoomed". Backspace resets straight back to null (not a step-by-step
-    // undo stack) - see the keydown listener further below.
-    var heapContentsZoomRange = null;
 
     // { chart, zoomHandle } for every currently-rendered Heap Contents
     // chart - detached/destroyed and rebuilt on every zoom change (renderHeapContentsCharts
@@ -1109,7 +1445,7 @@ var allocationDatasets = {};
     }
 
     function onHeapContentsRangeSelected(startMSec, endMSec) {
-        renderHeapContentsCharts({ startMSec: startMSec, endMSec: endMSec });
+        applySharedZoom({ startMSec: startMSec, endMSec: endMSec });
     }
 
     function updateZoomStatusUi(zoomRange) {
@@ -1131,12 +1467,169 @@ var allocationDatasets = {};
         }
     }
 
-    // Shared by the initial Heap Contents open and every subsequent zoom
-    // change (drag-select or Backspace reset) - zoomRange is null for the
-    // full, unzoomed capture.
+    // Recomputes each type's byte total (and a matching grand total to
+    // percentage against) for zoomRange - or, when null, just wraps
+    // summaryScope's own server-computed topTypes/totalSampledBytes
+    // unchanged. Both branches return the same shape: an array of
+    // {typeIndex, TypeName, TotalBytes} sorted by TotalBytes descending
+    // (typeIndex is always the *original* position in topTypes/typeDrillDown,
+    // preserved through the re-sort so a zoomed row still resolves the right
+    // drill-down entry), plus grandTotalBytes to percentage each row against.
+    //
+    // Only possible because typeTimeline.buckets carries a real per-type
+    // byte breakdown per time bucket (see allocationStats.js's
+    // renderAllocationTypeTimelineChart, which reads the same field) -
+    // there's no equivalent per-bucket breakdown for tick/small/large/
+    // pinned counts, so those stay whole-capture-only (see
+    // updateRankedTypesTables's ticksOnlyColumn hiding).
+    function computeZoomedTypeStats(summaryScope, zoomRange) {
+        var topTypes = summaryScope["topTypes"];
+
+        if (!zoomRange) {
+            var wholeCaptureTypes = [];
+            for (var wholeIndex = 0; wholeIndex < topTypes.length; ++wholeIndex) {
+                // Tick/Small/Large/Pinned counts carried straight through
+                // (unlike the zoomed branch below, the real whole-capture
+                // values are available here - see renderRankedTypesTableRows,
+                // which renders them only when present on typeStats).
+                wholeCaptureTypes.push({
+                    typeIndex: wholeIndex,
+                    TypeName: topTypes[wholeIndex]["TypeName"],
+                    TotalBytes: topTypes[wholeIndex]["TotalBytes"],
+                    TickCount: topTypes[wholeIndex]["TickCount"],
+                    SmallCount: topTypes[wholeIndex]["SmallCount"],
+                    LargeCount: topTypes[wholeIndex]["LargeCount"],
+                    PinnedCount: topTypes[wholeIndex]["PinnedCount"]
+                });
+            }
+            // Already sorted server-side by TotalBytes descending - no
+            // re-sort needed.
+            return { types: wholeCaptureTypes, grandTotalBytes: summaryScope["totalSampledBytes"] };
+        }
+
+        var typeTimeline = summaryScope["typeTimeline"];
+        var buckets = typeTimeline["buckets"];
+        var bucketWidthMSec = typeTimeline["bucketWidthMSec"] || 0;
+
+        // One extra slot beyond topTypes.length for "Other" (typeTimeline's
+        // own last type - see allocationStats.js) - not itself rendered as
+        // a ranked row (topTypes never includes it either), but its bytes
+        // still belong in grandTotalBytes so the zoomed "% of Sampled"
+        // figure means the same thing the unzoomed one does: share of every
+        // sampled byte in range, not just the ranked subset of it.
+        var bytesByTypeIndex = new Array(typeTimeline["types"].length).fill(0);
+        for (var bucketIndex = 0; bucketIndex < buckets.length; ++bucketIndex) {
+            var bucket = buckets[bucketIndex];
+            var bucketStartMSec = bucket["bucketStartMSec"];
+            var bucketEndMSec = bucketStartMSec + bucketWidthMSec;
+            // Same overlap test as renderAllocationTypeTimelineChart's own
+            // bucket filter (allocationStats.js) - a bucket qualifies if it
+            // overlaps the zoom window at all, not just if its own start
+            // falls inside it.
+            if (bucketEndMSec <= zoomRange.startMSec || bucketStartMSec >= zoomRange.endMSec) {
+                continue;
+            }
+
+            var bytesByType = bucket["bytesByType"];
+            for (var typeIdx = 0; typeIdx < bytesByType.length; ++typeIdx) {
+                bytesByTypeIndex[typeIdx] += bytesByType[typeIdx];
+            }
+        }
+
+        var grandTotalBytes = 0;
+        for (var sumIndex = 0; sumIndex < bytesByTypeIndex.length; ++sumIndex) {
+            grandTotalBytes += bytesByTypeIndex[sumIndex];
+        }
+
+        var zoomedTypes = [];
+        for (var topIndex = 0; topIndex < topTypes.length; ++topIndex) {
+            zoomedTypes.push({
+                typeIndex: topIndex,
+                TypeName: topTypes[topIndex]["TypeName"],
+                TotalBytes: bytesByTypeIndex[topIndex] || 0
+            });
+        }
+        zoomedTypes.sort(function (left, right) { return right.TotalBytes - left.TotalBytes; });
+
+        return { types: zoomedTypes, grandTotalBytes: grandTotalBytes };
+    }
+
+    // Rebuilds one ranked-types table's <tr> rows (everything after its own
+    // header row) from zoomedStats, and toggles allocationTypeTableZoomed on
+    // the table itself so the CSS-hidden Tick/Small/Large/Pinned columns
+    // (ticksOnlyColumn - see AllocationSummaryRenderer.ts) show or hide to
+    // match. Matches AllocationSummaryRenderer.ts's renderTypeBreakdownPanel
+    // row markup exactly (same classes/attributes), just built client-side
+    // from possibly-recomputed data instead of the server-rendered original.
+    function renderRankedTypesTableRows(zoomedStats, scope) {
+        var mb = 1024 * 1024;
+        var rowsHtml = "";
+
+        for (var rowIndex = 0; rowIndex < zoomedStats.types.length; ++rowIndex) {
+            var typeStats = zoomedStats.types[rowIndex];
+            var totalBytes = typeStats["TotalBytes"];
+            var percentOfSampled = zoomedStats.grandTotalBytes > 0 ? (totalBytes * 100.0) / zoomedStats.grandTotalBytes : 0;
+
+            var tdTotalBytes = (totalBytes / mb).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            var tdPercent = percentOfSampled.toFixed(2);
+
+            // Only the unzoomed branch of computeZoomedTypeStats carries
+            // these through (the zoomed branch has no per-bucket data for
+            // them - see computeZoomedTypeStats's own comment) - undefined
+            // here means "leave the CSS-hidden cells empty", matching the
+            // ticksOnlyColumn hide rule these same cells already carry.
+            var tdTickCount = typeStats.TickCount !== undefined ? typeStats.TickCount : "";
+            var tdSmallCount = typeStats.SmallCount !== undefined ? typeStats.SmallCount : "";
+            var tdLargeCount = typeStats.LargeCount !== undefined ? typeStats.LargeCount : "";
+            var tdPinnedCount = typeStats.PinnedCount !== undefined ? typeStats.PinnedCount : "";
+
+            rowsHtml += `<tr class="typeRow" data-type-index="${typeStats.typeIndex}" data-scope="${scope}">` +
+                `<td>${typeStats.TypeName}</td>` +
+                `<td>${tdTotalBytes}</td>` +
+                `<td>${tdPercent}</td>` +
+                `<td class="ticksOnlyColumn">${tdTickCount}</td><td class="ticksOnlyColumn">${tdSmallCount}</td><td class="ticksOnlyColumn">${tdLargeCount}</td><td class="ticksOnlyColumn">${tdPinnedCount}</td>` +
+                `</tr>`;
+        }
+
+        return rowsHtml;
+    }
+
+    function updateOneRankedTypesTable(summaryScope, scope, zoomRange) {
+        var table = document.getElementById("allocationTypeTable-" + scope);
+        if (!table) {
+            return;
+        }
+
+        var zoomedStats = computeZoomedTypeStats(summaryScope, zoomRange);
+        var headerRow = table.getElementsByClassName("tableHeader")[0];
+        table.innerHTML = "";
+        table.appendChild(headerRow);
+        table.insertAdjacentHTML("beforeend", renderRankedTypesTableRows(zoomedStats, scope));
+        table.classList.toggle("allocationTypeTableZoomed", !!zoomRange);
+    }
+
+    // Called on every zoom change (see renderHeapContentsCharts below) -
+    // updates both the "all" and "loh" ranked types tables (whichever
+    // exist), not just whichever is currently visible behind the All
+    // Types/LOH Only toggle, so switching that toggle later shows
+    // already-correct data instead of needing its own separate trigger.
+    function updateRankedTypesTables(zoomRange) {
+        updateOneRankedTypesTable(allocationSummaryJson, "all", zoomRange);
+
+        var lohSummaryForTable = allocationSummaryJson["loh"];
+        if (lohSummaryForTable && lohSummaryForTable["topTypes"] && lohSummaryForTable["topTypes"].length > 0) {
+            updateOneRankedTypesTable(lohSummaryForTable, "loh", zoomRange);
+        }
+    }
+
+    // Rebuilds only the Heap Contents view's own charts - called both by the
+    // initial Heap Contents open (with the then-current sharedZoomRange, in
+    // case a GC chart was already zoomed first) and by applySharedZoom above
+    // (which also rebuilds the GC charts, keeping both views in sync
+    // regardless of which one a drag-select actually happened on). zoomRange
+    // is null for the full, unzoomed capture.
     function renderHeapContentsCharts(zoomRange) {
         destroyHeapContentsCharts();
-        heapContentsZoomRange = zoomRange;
         updateZoomStatusUi(zoomRange);
 
         var zoomOptionsForRate = { range: zoomRange, onRangeSelected: onHeapContentsRangeSelected };
@@ -1180,6 +1673,8 @@ var allocationDatasets = {};
                 heapContentsChartHandles.push(lohChartHandle);
             }
         }
+
+        updateRankedTypesTables(zoomRange);
     }
 
     var viewNavButtons = document.getElementsByClassName("viewNavButton");
@@ -1227,7 +1722,10 @@ var allocationDatasets = {};
                 gen0GcTimesMSecForCharts.sort(function (left, right) { return left - right; });
                 gen1GcTimesMSecForCharts.sort(function (left, right) { return left - right; });
 
-                renderHeapContentsCharts(null);
+                // Use whatever zoom is already applied (e.g. dragged on a GC
+                // chart before Heap Contents was ever opened) rather than
+                // always starting unzoomed.
+                renderHeapContentsCharts(sharedZoomRange);
 
                 wireHeapContentsInnerTabs();
                 allocationSummaryInjected = true;
@@ -1282,12 +1780,84 @@ var allocationDatasets = {};
         }
     }
 
+    // Builds this row's own subtree the first time it's expanded -
+    // drillDownStats.js's renderCallerRow/renderDrillDownTable only emit an
+    // empty data-lazy="true" placeholder for any row with children, so the
+    // nested-table HTML (the expensive part) only ever gets built for a
+    // subtree a user actually asked to see, not eagerly for all of them on
+    // every drill-down click. Safe to call on an already-built detailRow -
+    // it's a no-op (data-lazy is removed once built, so this just falls
+    // through).
+    function buildDrillDownRowIfLazy(detailRow) {
+        if (!detailRow || detailRow.getAttribute('data-lazy') !== 'true') {
+            return;
+        }
+
+        var builtHtml = buildLazyDrillDownSubtree(detailRow.id);
+        if (builtHtml !== null) {
+            detailRow.querySelector('.callerTreeCell').innerHTML = builtHtml;
+        }
+        detailRow.removeAttribute('data-lazy');
+    }
+
     // Bulk-toggles every collapsible row in the drill-down panel at once
     // (see the Expand All/Collapse All buttons in drillDownStats.js's
-    // renderDrillDownTable) - every node with at least one child is now
-    // individually collapsible (not just real branch points), so a deep
-    // tree can take many individual clicks to fully open or close by hand.
+    // renderDrillDownTable, and the leafMethodRow "reveal the whole story"
+    // click below) - every node with at least one child is now individually
+    // collapsible (not just real branch points), so a deep tree can take
+    // many individual clicks to fully open or close by hand.
+    //
+    // When expanding, this also has to *build* every still-lazy row under
+    // container first - building one level can introduce new
+    // still-collapsed-and-unbuilt rows one level deeper (a child that
+    // itself has children), so every newly-built row's own lazy children
+    // get queued up too, ensuring "expand everything under here" really
+    // does reach every depth, not just whatever happened to already exist.
+    // Collapsing never needs this - hiding already-built content via CSS is
+    // still cheap, and there's no reason to throw already-built DOM away.
+    //
+    // Deliberately an explicit worklist, not "re-run container.querySelector
+    // for the next lazy row until none are left" - re-querying the *whole*
+    // container on every single row is a real perf bug that shipped here
+    // once already: each call re-scans everything already built too, so a
+    // tree with N rows did on the order of N container-wide scans (each one
+    // itself O(container size)), which measurably stalled/froze the webview
+    // on a large capture's deep or wide call stacks. Scoping each lazy scan
+    // to only the subtree that specific build just produced keeps the total
+    // work proportional to N, not N^2.
     function setAllDrillDownRowsExpanded(container, expanded) {
+        if (expanded) {
+            var lazyQueue = [];
+
+            // container is sometimes itself a still-lazy .callPathsDetail row
+            // (a leafMethodRow's own detail row, the first time it's
+            // expanded) - Element.querySelector[All] only searches
+            // *descendants*, never the element it's called on, so container
+            // itself has to be queued explicitly rather than only its
+            // descendants (e.g. the whole drillDownPanel, for Expand All,
+            // which is never itself a lazy row).
+            if (container.classList && container.classList.contains('callPathsDetail')) {
+                lazyQueue.push(container);
+            }
+
+            var initialLazyRows = container.querySelectorAll('.callPathsDetail[data-lazy="true"]');
+            for (var initialIndex = 0; initialIndex < initialLazyRows.length; ++initialIndex) {
+                lazyQueue.push(initialLazyRows[initialIndex]);
+            }
+
+            while (lazyQueue.length > 0) {
+                var lazyRow = lazyQueue.pop();
+                buildDrillDownRowIfLazy(lazyRow);
+
+                // Scoped to the row just built, not the whole container -
+                // this is what keeps the total work linear (see above).
+                var newlyLazyRows = lazyRow.querySelectorAll('.callPathsDetail[data-lazy="true"]');
+                for (var newIndex = 0; newIndex < newlyLazyRows.length; ++newIndex) {
+                    lazyQueue.push(newlyLazyRows[newIndex]);
+                }
+            }
+        }
+
         var toggleRows = container.querySelectorAll('[data-expandable="true"]');
         for (var rowIndex = 0; rowIndex < toggleRows.length; ++rowIndex) {
             var toggleRow = toggleRows[rowIndex];
@@ -1337,7 +1907,7 @@ var allocationDatasets = {};
         var typeName = typeTimeline["types"][typeIndex];
         var bucketLabel = formatElapsedMsForAllocationChart(typeTimeline["buckets"][bucketIndex]["bucketStartMSec"]);
 
-        showDrillDownTab(renderDrillDownTable(cellEntry, typeName, bucketLabel, filterLabel, allocationSummaryJson["methodNames"]));
+        showDrillDownTab(renderDrillDownTable(cellEntry, typeName, bucketLabel, filterLabel, allocationSummaryJson["methodNames"], summaryScope["totalSampledBytes"]));
     }
 
     // Called from the click delegation in wireHeapContentsInnerTabs below
@@ -1351,7 +1921,7 @@ var allocationDatasets = {};
         var typeEntry = typeDrillDown ? typeDrillDown[typeIndex] : null;
         var typeName = summaryScope["topTypes"][typeIndex]["TypeName"];
 
-        showDrillDownTab(renderDrillDownTable(typeEntry, typeName, "Whole Capture", filterLabel, allocationSummaryJson["methodNames"]));
+        showDrillDownTab(renderDrillDownTable(typeEntry, typeName, "Whole Capture", filterLabel, allocationSummaryJson["methodNames"], summaryScope["totalSampledBytes"]));
     }
 
     function wireHeapContentsInnerTabs() {
@@ -1374,7 +1944,7 @@ var allocationDatasets = {};
         var resetZoomButton = document.getElementById('resetZoomButton');
         if (resetZoomButton) {
             resetZoomButton.addEventListener('click', function () {
-                renderHeapContentsCharts(null);
+                applySharedZoom(null);
             });
         }
 
@@ -1473,6 +2043,16 @@ var allocationDatasets = {};
                     return;
                 }
 
+                // A single caller row's own toggle only reveals its
+                // *immediate* children, lazily building just that one level
+                // the first time (see drillDownStats.js's renderCallerRow/
+                // buildLazyDrillDownSubtree) - deeper levels stay collapsed
+                // and unbuilt until expanded themselves.
+                var willExpandOneLevel = !leafRow.classList.contains('expanded');
+                if (willExpandOneLevel) {
+                    buildDrillDownRowIfLazy(detailRow);
+                }
+
                 leafRow.classList.toggle('expanded');
                 detailRow.classList.toggle('expanded');
             });
@@ -1486,11 +2066,21 @@ var allocationDatasets = {};
     // stating that as one function's own logic is clearer than trusting an
     // invariant across two separate ones):
     //   - Drill Down tab active: return to Charts (existing behavior).
-    //   - Charts tab active and a chart zoom is applied: reset the zoom back
-    //     to the full capture (see renderHeapContentsCharts) - only when
-    //     zoomed, so Backspace does nothing surprising otherwise.
+    //   - Charts tab active (either view) and a zoom is applied: reset
+    //     sharedZoomRange back to the full capture via applySharedZoom -
+    //     only when zoomed, so Backspace does nothing surprising otherwise.
+    //     The GC and Heap Contents views are mutually exclusive (only one
+    //     .viewPanel is ever active), so this can't conflict with the
+    //     Drill Down check above it.
     document.addEventListener('keydown', function (event) {
         if (event.key !== 'Backspace') {
+            return;
+        }
+
+        var gcViewPanel = document.getElementById('view-gc');
+        if (gcViewPanel && gcViewPanel.classList.contains('active') && sharedZoomRange) {
+            event.preventDefault();
+            applySharedZoom(null);
             return;
         }
 
@@ -1502,9 +2092,9 @@ var allocationDatasets = {};
         }
 
         var chartsPanelForZoom = document.getElementById('heapContents-tab-charts');
-        if (chartsPanelForZoom && chartsPanelForZoom.classList.contains('active') && heapContentsZoomRange) {
+        if (chartsPanelForZoom && chartsPanelForZoom.classList.contains('active') && sharedZoomRange) {
             event.preventDefault();
-            renderHeapContentsCharts(null);
+            applySharedZoom(null);
         }
     });
 

@@ -52,13 +52,37 @@ public readonly struct EventRecord
     public readonly int Version;
     public readonly long TimeStampRelativeQPC;
     public readonly long ThreadId;
-    public readonly int StackId;
+    // Resolved eagerly, at the moment this event is parsed (see
+    // Blocks/EventBlock.cs), against whatever StackBlock data has been read
+    // SO FAR - not a raw StackId int to be looked up later. This matters
+    // because StackId values are recyclable: NetTraceFormat_v5.md's own
+    // StackBlock section describes a *bounded* cache ("Events are only
+    // allowed to refer to a stack id if there is no sequence point in
+    // between the event and the stack") specifically so a reader doesn't
+    // need to keep every stack in memory - which means a later StackBlock
+    // can legitimately reuse a numeric id an earlier, already-evicted stack
+    // used. A single whole-file `Dictionary<int, long[]>`, looked up lazily
+    // after the entire file has been read (the original design), silently
+    // resolves EVERY event's StackId against whichever stack most recently
+    // claimed that number by the time parsing finished - which, for a real
+    // multi-million-event capture, is essentially never the stack that
+    // event's own StackId actually meant at the point it was recorded. This
+    // was a real, confirmed bug: cross-checked against
+    // Microsoft.Diagnostics.Tracing.TraceEvent on a real production capture,
+    // 0 of 30 sampled GCAllocationTick events' leaf frames agreed before this
+    // fix - every single stack was silently wrong, not just an occasional
+    // collision. Capturing the array reference at parse time (this field) is
+    // immune to later reuse of the same numeric id, since it holds the real
+    // long[] object directly rather than a number to re-look-up afterward.
+    // Empty (Array.Empty<long>()), never null, when the event has no stack
+    // (StackId 0, or stack-walking wasn't enabled for that event).
+    public readonly long[] Stack;
     public readonly Dictionary<string, object> Fields;
     public readonly byte[] PayloadBuffer;
     public readonly int PayloadOffset;
     public readonly int PayloadLength;
 
-    public EventRecord(string providerName, string eventName, int eventId, int version, long timeStampRelativeQpc, long threadId, int stackId, Dictionary<string, object> fields, byte[] payloadBuffer, int payloadOffset, int payloadLength)
+    public EventRecord(string providerName, string eventName, int eventId, int version, long timeStampRelativeQpc, long threadId, long[] stack, Dictionary<string, object> fields, byte[] payloadBuffer, int payloadOffset, int payloadLength)
     {
         this.ProviderName = providerName;
         this.EventName = eventName;
@@ -66,7 +90,7 @@ public readonly struct EventRecord
         this.Version = version;
         this.TimeStampRelativeQPC = timeStampRelativeQpc;
         this.ThreadId = threadId;
-        this.StackId = stackId;
+        this.Stack = stack;
         this.Fields = fields;
         this.PayloadBuffer = payloadBuffer;
         this.PayloadOffset = payloadOffset;

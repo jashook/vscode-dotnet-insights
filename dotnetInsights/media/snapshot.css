@@ -672,6 +672,28 @@
     padding: 8px;
 }
 
+/* [data-sort] scopes this to the per-GC detail table's headers specifically
+   (see GcDetailTableRenderer.ts) - the generation-breakdown tables share the
+   .detailTable/.tableHeader classes but aren't sortable, and shouldn't look
+   clickable either. */
+.detailTable th[data-sort]
+{
+    cursor: pointer;
+    user-select: none;
+}
+
+.detailTable th[data-sort]:hover
+{
+    background-color: rgba(87, 93, 182, 1);
+}
+
+.detailTable th .sortIndicator
+{
+    display: inline-block;
+    font-size: 10px;
+    width: 10px;
+}
+
 .detailTable tr:hover
 {
     background-color: lightblue;
@@ -718,6 +740,18 @@
 .typeRow
 {
     cursor: pointer;
+}
+
+/* Applied to the ranked types table itself (#allocationTypeTable-*) while a
+   chart zoom is applied - see snapshotGcStats.js's updateRankedTypesTables.
+   Tick Count/Small/Large/Pinned (see AllocationSummaryRenderer.ts's
+   ticksOnlyColumn) have no accurate figure for just the zoomed range (the
+   export only tracks Total Bytes per time bucket, not those counts), so
+   they're hidden entirely rather than showing stale whole-capture numbers
+   next to a freshly zoomed Bytes/% figure in the same row. */
+.allocationTypeTableZoomed .ticksOnlyColumn
+{
+    display: none;
 }
 
 .typeRow:hover
@@ -871,8 +905,9 @@
 }
 
 /* Every node with at least one child now gets its own nested
-   .callerTreeInner (see renderCallerChainRows) so it can be collapsed
-   independently, not just at real branch points - a straight, deep call
+   .callerTreeInner (see drillDownStats.js's renderCallerRow/
+   buildLazyDrillDownSubtree) so it can be collapsed independently, not just
+   at real branch points - a straight, deep call
    stack (common - 20-30 frames with no branching is normal) can nest 20-30
    of these inside each other. A nested table with width:auto shrinks to
    its own content instead of filling the <td> containing it (unlike a
@@ -891,6 +926,11 @@
 .bytesColumn
 {
     width: 9em;
+}
+
+.percentColumn
+{
+    width: 6em;
 }
 
 .ticksColumn

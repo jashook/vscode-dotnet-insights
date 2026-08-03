@@ -38,7 +38,7 @@ public static class GcJsonExporter
     // ticksBinaryPath: forwarded to AllocationSummaryBuilder.Write - see its
     // own comment on WriteTicks for why the allocation-tick array is a
     // binary sidecar file next to outputPath rather than inline JSON.
-    public static void WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, Dictionary<int, long[]> stacksById, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath)
+    public static void WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath)
     {
         using (FileStream fileStream = File.Create(outputPath))
         using (Utf8JsonWriter writer = new Utf8JsonWriter(fileStream))
@@ -53,7 +53,7 @@ public static class GcJsonExporter
             // parameter) to decide whether the nettrace-only "Heap Contents" view
             // has anything to show. See AllocationJsonExporter.cs.
             writer.WritePropertyName("allocationSummary");
-            AllocationSummaryBuilder.Write(writer, allocationEvents, stacksById, symbolTable, ticksBinaryPath);
+            AllocationSummaryBuilder.Write(writer, allocationEvents, symbolTable, ticksBinaryPath);
 
             writer.WritePropertyName("gcData");
             writer.WriteStartArray();

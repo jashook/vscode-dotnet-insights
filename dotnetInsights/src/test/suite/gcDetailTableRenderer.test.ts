@@ -11,6 +11,7 @@ function makeGc(id: number, pauseDurationMSec: number, overrides?: any): any {
         data: Object.assign({
             Id: id,
             DateTime: '2026-07-21T15:42:13.3255649-07:00',
+            PauseStartRelativeMSec: id * 1000,
             generation: 0,
             Type: 'AllocSmall',
             PauseDurationMSec: pauseDurationMSec,
@@ -86,6 +87,25 @@ describe('GcDetailTableRenderer', () => {
             assert.ok(html.includes('<td class="gcDateTimeCell" data-raw="2026-07-21T15:42:13.3255649-07:00"></td>'));
         });
 
+        // Column sorting (snapshotGcStats.js's setupDetailTableSortHandlers)
+        // reads each <th>'s data-sort attribute to decide how to compare
+        // that column's cells - pinned here so a future column reorder/
+        // rename can't silently drop or mislabel one.
+        it('marks every header with the data-sort type its column needs (number/date/text)', () => {
+            const html = renderGcDetailTable([makeGc(1, 1)]);
+
+            assert.ok(html.includes('<th data-sort="number"><span class="thLabel">GC Number</span>'));
+            assert.ok(html.includes('<th data-sort="date"><span class="thLabel">DateTime</span>'));
+            assert.ok(html.includes('<th data-sort="number"><span class="thLabel">Collection Generation</span>'));
+            assert.ok(html.includes('<th data-sort="text"><span class="thLabel">Type</span>'));
+            assert.ok(html.includes('<th data-sort="number"><span class="thLabel">Pause Time (mSec)</span>'));
+            assert.ok(html.includes('<th data-sort="text"><span class="thLabel">Reason</span>'));
+
+            // Every header - regardless of sort type - gets an (initially
+            // empty) sort-direction indicator span the click handler fills in.
+            assert.strictEqual((html.match(/<span class="sortIndicator"><\/span>/g) || []).length, 16);
+        });
+
         it('renders GenerationSizePOH as a real value, not the old NYI placeholder', () => {
             const html = renderGcDetailTable([makeGc(1, 1, { GenerationSizePOH: 2 * 1024 * 1024 })]);
 
@@ -109,12 +129,12 @@ describe('GcDetailTableRenderer', () => {
 
             const html = renderGcDetailTable(gcs);
 
-            assert.ok(html.includes('<tr class="expensiveGc"><td>1</td>'));
-            assert.ok(html.includes('<tr class="warnGc"><td>2</td>'));
-            assert.ok(html.includes('<tr class="interstingGc"><td>3</td>'));
-            assert.ok(html.includes('<tr class="somewhatInterestingGc"><td>4</td>'));
-            assert.ok(html.includes('<tr class="notSomewhatInterestingGc"><td>5</td>'));
-            assert.ok(html.includes('<tr><td>6</td>'));
+            assert.ok(html.includes('<tr class="expensiveGc" data-elapsed-msec="1000"><td>1</td>'));
+            assert.ok(html.includes('<tr class="warnGc" data-elapsed-msec="2000"><td>2</td>'));
+            assert.ok(html.includes('<tr class="interstingGc" data-elapsed-msec="3000"><td>3</td>'));
+            assert.ok(html.includes('<tr class="somewhatInterestingGc" data-elapsed-msec="4000"><td>4</td>'));
+            assert.ok(html.includes('<tr class="notSomewhatInterestingGc" data-elapsed-msec="5000"><td>5</td>'));
+            assert.ok(html.includes('<tr data-elapsed-msec="6000"><td>6</td>'));
         });
     });
 
@@ -126,7 +146,7 @@ describe('GcDetailTableRenderer', () => {
         it('renders one row per GC', () => {
             const html = renderGcDetailTable(gcs);
 
-            const dataRowMatches = html.match(/<tr(?: class="[a-zA-Z]*")?><td>\d+<\/td>/g) || [];
+            const dataRowMatches = html.match(/<tr(?: class="[a-zA-Z]*")? data-elapsed-msec="[^"]*"><td>\d+<\/td>/g) || [];
             assert.strictEqual(dataRowMatches.length, 140);
         });
 

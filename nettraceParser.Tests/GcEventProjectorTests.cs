@@ -31,7 +31,7 @@ public class GcEventProjectorTests
 
     private static EventRecord MakeRecord(int eventId, int version, long timeStampQpc, byte[] payloadBytes)
     {
-        return new EventRecord(ClrProviderName, "Test", eventId, version, timeStampQpc, threadId: 0, stackId: 0, fields: null, payloadBytes, payloadOffset: 0, payloadBytes.Length);
+        return new EventRecord(ClrProviderName, "Test", eventId, version, timeStampQpc, threadId: 0, stack: System.Array.Empty<long>(), fields: null, payloadBytes, payloadOffset: 0, payloadBytes.Length);
     }
 
     private static EventRecord MakeGcStart(int count, int depth, GCReason reason, long timeStampQpc)
@@ -221,7 +221,7 @@ public class GcEventProjectorTests
     {
         byte[] payload = new PayloadBuilder().WriteInt32(1).WriteInt32(0).WriteInt32(0).WriteInt32(0).WriteInt16(1).ToArray();
 
-        EventRecord foreignEvent = new EventRecord("Some-Other-Provider", "Whatever", ClrGcEventIds.GCStart, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackId: 0, fields: null, payload, payloadOffset: 0, payload.Length);
+        EventRecord foreignEvent = new EventRecord("Some-Other-Provider", "Whatever", ClrGcEventIds.GCStart, version: 1, timeStampRelativeQpc: 0, threadId: 0, stack: System.Array.Empty<long>(), fields: null, payload, payloadOffset: 0, payload.Length);
 
         List<GcEvent> completed = GcEventProjector.Project(new List<EventRecord> { foreignEvent }, pointerSize: 8, qpcFrequency: QpcFrequency, referenceUtc: ReferenceUtc, referenceQpc: 0);
 

@@ -31,14 +31,27 @@
 // tree (one row per frame, shared call prefixes merged so two paths
 // through the same caller don't duplicate rows) - every row with at least
 // one child gets its own collapse toggle, so any step can be independently
-// hidden, not just where the tree actually branches. A straight,
-// non-branching chain of callers still *starts* expanded (there's nothing
-// to decide yet, so nothing needs a click the first time a leaf is opened),
-// but that's just the initial state - it can still be collapsed like any
-// other row. Every row also shows its share of its *immediate* parent's
-// bytes (leaf rows: share of the whole scope's total; a caller row: share
-// of the row that expanded into it) - flame-graph style, not a share of the
-// grand total at every level.
+// hidden, not just where the tree actually branches. Every row also shows
+// its share of its *immediate* parent's bytes (leaf rows: share of the
+// whole scope's total; a caller row: share of the row that expanded into
+// it) - flame-graph style, not a share of the grand total at every level.
+//
+// Every row's caller subtree starts both collapsed AND unbuilt - only the
+// row's own <tr> is real HTML up front; its detail row is an empty
+// data-lazy="true" placeholder (see renderCallerRow) until a user actually
+// expands it, at which point buildLazyDrillDownSubtree (called from
+// snapshotGcStats.js's click handler) builds exactly one level of children
+// on demand. This is a real perf fix, not just a cosmetic default: a
+// capture with many distinct allocating methods, each with a deep
+// non-branching stack, used to recursively stringify every frame of every
+// one of them (up to DrillDownStacksPerCellLimit/PerTypeLimit stacks) on
+// every single click into this tab, before the user had asked to see any
+// of it - CSS-only display:none on an already-built subtree does not avoid
+// that cost (browsers still parse/construct hidden DOM), only not building
+// it at all does. Expanding a leaf row still reveals its *entire* chain in
+// one click (see setAllDrillDownRowsExpanded's build-then-expand loop) -
+// that just now means "build everything under here, on demand" instead of
+// "it was already built".
 
 // Real .NET type/method names can legitimately contain HTML-significant
 // characters (compiler-generated names like "Program.<Main>$" are common -
@@ -95,7 +108,19 @@ function groupStacksByLeaf(stacks, methodNames) {
         for (var frameIdx = 0; frameIdx < frameIndices.length; ++frameIdx) {
             frames[frameIdx] = methodNames[frameIndices[frameIdx]];
         }
-        var leafFrame = frames[0];
+
+        // A stack can have zero captured frames - seen in real production
+        // captures (not just the usual "<no stack captured>" sentinel
+        // AllocationJsonExporter.cs writes for that same situation, an
+        // empty frames array reaches here too). Group it under that same
+        // sentinel rather than leaving leafFrame undefined, which crashed
+        // formatFrameHtml (String.prototype.indexOf on undefined) and took
+        // down the *entire* drill-down render for this type/cell with it -
+        // one malformed stack among up to
+        // DrillDownStacksPerCellLimit/PerTypeLimit silently made every
+        // other (perfectly fine) stack for that type inaccessible too,
+        // since the exception happened before any row got built.
+        var leafFrame = frames.length > 0 ? frames[0] : "<no stack captured>";
 
         var group = groupsByLeaf.get(leafFrame);
         if (!group) {
@@ -161,7 +186,7 @@ function buildCallerTree(paths) {
 // than a new column so every row's column widths stay identical (see
 // CALLER_TREE_COLGROUP below) regardless of nesting depth.
 function formatBytesWithPercentage(totalBytes, parentTotalBytes, mb) {
-    var bytesText = (totalBytes / mb).toFixed(2);
+    var bytesText = (totalBytes / mb).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
     if (!(parentTotalBytes > 0)) {
         return bytesText;
@@ -169,6 +194,23 @@ function formatBytesWithPercentage(totalBytes, parentTotalBytes, mb) {
 
     var percentage = (totalBytes / parentTotalBytes) * 100;
     return `${bytesText} <span class="percentOfParent">(${percentage.toFixed(1)}%)</span>`;
+}
+
+// Own column, not folded into the Bytes cell like formatBytesWithPercentage
+// above - unlike that "share of immediate parent" figure (which changes
+// meaning at every depth), this is the same fixed denominator (the whole
+// scope's totalSampledBytes, across every type - see renderDrillDownTable's
+// grandTotalBytes) at every row and every depth, letting a row's share of
+// the entire capture be read directly instead of hand-multiplying this
+// type's own "% of Sampled" (shown in the ranked types table) by whatever
+// "% of parent" the flame-graph column shows at each level down to it.
+function formatPercentOfTotal(rowBytes, grandTotalBytes) {
+    if (!(grandTotalBytes > 0)) {
+        return "";
+    }
+
+    var percentage = (rowBytes / grandTotalBytes) * 100;
+    return `${percentage.toFixed(2)}%`;
 }
 
 // Shared by the outer table and every nested .callerTreeInner table so
@@ -180,19 +222,25 @@ function formatBytesWithPercentage(totalBytes, parentTotalBytes, mb) {
 // the other two pinned and a nested table's total width always matching
 // its containing colspan cell exactly, it converges to the same width in
 // both places without needing to state it twice.
-const CALLER_TREE_COLGROUP = `<colgroup><col><col class="bytesColumn"><col class="ticksColumn"></colgroup>`;
+const CALLER_TREE_COLGROUP = `<colgroup><col><col class="bytesColumn"><col class="percentColumn"><col class="ticksColumn"></colgroup>`;
 
 var callerRowIdCounter = 0;
 
-// Renders one frame (node) as its own row, then recurses. Every node with
-// at least one child gets its own toggle, so any step in the chain can be
-// collapsed independently - not just real branch points (more than one
-// child). A straight, non-branching continuation still starts expanded by
-// default (there's no decision to make yet, so nothing needs a click to
-// become visible the *first* time a leaf is opened) - only a real branch
-// point (more than one child) still starts collapsed - but unlike before,
-// that default is just a starting state, not the only state: every node's
-// subtree can be individually toggled either way from here.
+// rowId -> { kind: 'leaf', paths, mb, totalBytes } | { kind: 'caller', node, depth, mb } -
+// everything buildLazyDrillDownSubtree needs to build exactly one level of
+// a row's children, deferred until that row is actually expanded. Reset at
+// the start of every renderDrillDownTable call (a fresh drill-down click
+// replaces the whole panel, so any previous pending state is dead anyway).
+var pendingLazySubtrees = new Map();
+
+// Renders one caller frame (node) as its own row - never recurses into
+// node's own children. Every node with at least one child gets its own
+// toggle and an empty data-lazy="true" detail-row placeholder (its pending
+// subtree registered in pendingLazySubtrees, keyed by rowId) rather than
+// its children's rows built inline - see buildLazyDrillDownSubtree, called
+// from snapshotGcStats.js's click handler, which builds this same node's
+// immediate children (one level, itself calling renderCallerRow per child)
+// the first time this row is expanded.
 //
 // depth only advances at a real branch point (more than one child) - a
 // long straight chain of single-child continuations, wrapped in its own
@@ -200,13 +248,12 @@ var callerRowIdCounter = 0;
 // pushing further right on every single hop. A deep non-branching stack
 // (common - most call stacks don't branch at every frame) would otherwise
 // run out of horizontal room within a handful of frames.
-function renderCallerChainRows(node, depth, mb, parentTotalBytes) {
+function renderCallerRow(node, depth, mb, parentTotalBytes, grandTotalBytes) {
     var childEntries = Array.from(node.children.values());
     childEntries.sort(function (left, right) { return right.totalBytes - left.totalBytes; });
 
     var hasChildren = childEntries.length > 0;
     var isBranch = childEntries.length > 1;
-    var startsExpanded = childEntries.length === 1;
     var rowId = hasChildren ? `drillDownCaller${++callerRowIdCounter}` : null;
     var indentEm = (depth + 1) * 1.5;
 
@@ -219,11 +266,10 @@ function renderCallerChainRows(node, depth, mb, parentTotalBytes) {
     // before it, reading top-to-bottom as "called by, called by, ...".
     var calledByLabel = `<span class="stackRoleLabel calledByLabel">&#8593; Called by</span>`;
 
-    var expandedClass = startsExpanded ? ` expanded` : ``;
-
-    var rowHtml = `<tr class="callerRow${expandedClass}"${hasChildren ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
+    var rowHtml = `<tr class="callerRow"${hasChildren ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
         `<td style="padding-left: ${indentEm}em">${toggleHtml}${calledByLabel}${formatFrameHtml(node.frameName)}</td>` +
         `<td>${formatBytesWithPercentage(node.totalBytes, parentTotalBytes, mb)}</td>` +
+        `<td>${formatPercentOfTotal(node.totalBytes, grandTotalBytes)}</td>` +
         `<td>${node.tickCount}</td>` +
         `</tr>`;
 
@@ -236,13 +282,48 @@ function renderCallerChainRows(node, depth, mb, parentTotalBytes) {
     // straight continuation - flame-graph style, one hop's share of the
     // hop immediately before it, not a share of the overall total.
     var childDepth = isBranch ? depth + 1 : depth;
+    pendingLazySubtrees.set(rowId, { kind: 'caller', node: node, depth: childDepth, mb: mb, grandTotalBytes: grandTotalBytes });
+
+    return rowHtml + `<tr id="${rowId}" class="callPathsDetail" data-lazy="true"><td colspan="4" class="callerTreeCell"></td></tr>`;
+}
+
+// Builds exactly one level of a lazily-registered row's children (a leaf's
+// top-level callers, or a caller row's own children) and returns the
+// <table class="callerTreeInner">...</table> HTML ready to drop into that
+// row's (currently empty) .callerTreeCell - or null if rowId has already
+// been built (or was never lazy to begin with, e.g. a race from a
+// double-click). Consumes the pending entry - each subtree is only ever
+// built once, matching the rest of this page's render-once approach.
+function buildLazyDrillDownSubtree(rowId) {
+    var pending = pendingLazySubtrees.get(rowId);
+    if (!pending) {
+        return null;
+    }
+    pendingLazySubtrees.delete(rowId);
+
+    var childEntries;
+    var depth;
+    var parentTotalBytes;
+
+    if (pending.kind === 'leaf') {
+        var callerTreeRoot = buildCallerTree(pending.paths);
+        childEntries = Array.from(callerTreeRoot.children.values());
+        depth = 0;
+        parentTotalBytes = pending.totalBytes;
+    } else {
+        childEntries = Array.from(pending.node.children.values());
+        depth = pending.depth;
+        parentTotalBytes = pending.node.totalBytes;
+    }
+
+    childEntries.sort(function (left, right) { return right.totalBytes - left.totalBytes; });
 
     var childRowsHtml = "";
     for (var childIndex = 0; childIndex < childEntries.length; ++childIndex) {
-        childRowsHtml += renderCallerChainRows(childEntries[childIndex], childDepth, mb, node.totalBytes);
+        childRowsHtml += renderCallerRow(childEntries[childIndex], depth, pending.mb, parentTotalBytes, pending.grandTotalBytes);
     }
 
-    return rowHtml + `<tr id="${rowId}" class="callPathsDetail${expandedClass}"><td colspan="3" class="callerTreeCell"><table class="callerTreeInner">${CALLER_TREE_COLGROUP}${childRowsHtml}</table></td></tr>`;
+    return `<table class="callerTreeInner">${CALLER_TREE_COLGROUP}${childRowsHtml}</table>`;
 }
 
 // entry: either gcData["allocationSummary"]["drillDown"]["cells"]["{typeIndex}:{bucketIndex}"]
@@ -261,13 +342,18 @@ function renderCallerChainRows(node, depth, mb, parentTotalBytes) {
 // allocation of this type or only its LOH-kind ones. methodNames is always
 // allocationSummaryJson["methodNames"] (top-level, shared by both the
 // unfiltered and LOH-only scopes - see AllocationJsonExporter.cs) regardless
-// of which scope entry itself came from.
+// of which scope entry itself came from. grandTotalBytes is the calling
+// scope's own totalSampledBytes (allocationSummaryJson or .loh - the same
+// denominator the ranked types table's own "% of Sampled" column already
+// uses), threaded down to every row (leaf and caller alike) as a fixed-
+// denominator "% of Total" column alongside the existing flame-graph-style
+// "% of parent" figure folded into the Bytes cell.
 //
 // This header is sticky (position: sticky, see snapshot.css's
 // .drillDownHeader) so it stays visible while scrolling a long list of
 // allocating methods below - losing track of which type/filter you're
 // looking at was the specific complaint this addressed.
-function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel, methodNames) {
+function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel, methodNames, grandTotalBytes) {
     const scopeLine = `<p class="drillDownScopeLine">Scope: ${escapeHtmlForDrillDown(scopeLabel)} &nbsp;&bull;&nbsp; Filter: ${escapeHtmlForDrillDown(filterLabel)}</p>`;
     const typeHeading = `<h3 class="detailTableHeading drillDownTypeHeading">Type: ${escapeHtmlForDrillDown(typeName)}</h3>`;
 
@@ -279,6 +365,7 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel, methodNa
     const mb = 1024 * 1024;
     const leafGroups = groupStacksByLeaf(stacks, methodNames);
     callerRowIdCounter = 0;
+    pendingLazySubtrees.clear();
 
     // The true scope totals (every distinct call stack the C# side
     // aggregated, before it capped the "stacks" array) - NOT a sum over
@@ -295,7 +382,8 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel, methodNa
     const truncationNote = isTruncated
         ? ` <span class="drillDownTruncationNote">(showing top ${stacks.length.toLocaleString()} of ${distinctStackCount.toLocaleString()} distinct call stacks by bytes - some long-tail stacks aren't individually listed below, but are still counted in every total/percentage.)</span>`
         : ``;
-    const summaryLine = `<p class="drillDownSummary">${totalTicks.toLocaleString()} ticks, ${(totalBytes / mb).toFixed(2)} MB across ${leafGroups.length} allocating ${methodWord}.${truncationNote}</p>`;
+    const totalMbFormatted = (totalBytes / mb).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const summaryLine = `<p class="drillDownSummary">${totalTicks.toLocaleString()} ticks, ${totalMbFormatted} MB across ${leafGroups.length} allocating ${methodWord}.${truncationNote}</p>`;
 
     // Bulk-toggles every collapsible row at once (see snapshotGcStats.js's
     // click delegation on the drill-down panel) - now that every node with
@@ -318,20 +406,11 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel, methodNa
 
         // A leaf with exactly one path and no captured caller frames (the
         // "<no stack captured>" sentinel, or a real leaf whose stack walk
-        // just didn't go any deeper) has nothing further to show.
-        var hasCallerContext = !(group.paths.length === 1 && group.paths[0].callerFrames.length === 0);
-        var callerTreeRoot = hasCallerContext ? buildCallerTree(group.paths) : null;
-        var topLevelCallers = callerTreeRoot ? Array.from(callerTreeRoot.children.values()) : [];
-        topLevelCallers.sort(function (left, right) { return right.totalBytes - left.totalBytes; });
-
-        // Every leaf with at least one top-level caller gets a real toggle -
-        // not just ones with more than one (a real branch) - so any leaf's
-        // caller chain can be collapsed independently. A single top-level
-        // caller still starts expanded by default (nothing to decide yet),
-        // matching renderCallerChainRows' own default for a straight
-        // continuation one level down.
-        var isExpandable = topLevelCallers.length > 0;
-        var startsExpanded = topLevelCallers.length === 1;
+        // just didn't go any deeper) has nothing further to show. Otherwise,
+        // don't touch group.paths at all yet - buildCallerTree (and every
+        // frame's HTML) is deferred to buildLazyDrillDownSubtree, the first
+        // time this leaf is actually expanded (see pendingLazySubtrees).
+        var isExpandable = !(group.paths.length === 1 && group.paths[0].callerFrames.length === 0);
         var rowId = `drillDownLeaf${rowIndex}`;
 
         var toggleHtml = isExpandable
@@ -340,10 +419,10 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel, methodNa
 
         // Path count folds into the method cell as inline text (only when
         // there's more than one) rather than its own table column - every
-        // row, leaf or caller, at any depth, uses the exact same 3-column
-        // shape (Method/Bytes/Ticks) so their columns line up with each
-        // other (see .callerTreeInner's matching pinned widths in
-        // snapshot.css); a 4th column only leaf rows had would throw that
+        // row, leaf or caller, at any depth, uses the exact same 4-column
+        // shape (Method/Bytes/% of Total/Ticks) so their columns line up
+        // with each other (see .callerTreeInner's matching pinned widths in
+        // snapshot.css); a 5th column only leaf rows had would throw that
         // alignment off between a row and its own expanded detail beneath
         // it.
         var pathCountSuffix = group.paths.length > 1
@@ -353,35 +432,30 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel, methodNa
         // Explicit role label - this is the method that directly performed
         // the allocation (frames[0] in the underlying stack, before any
         // grouping/tree-building), not one of its callers. Paired with
-        // "Called by" on every row underneath it (see
-        // renderCallerChainRows), so the causal direction reads
-        // unambiguously top-to-bottom without needing to infer it from
-        // indentation alone.
+        // "Called by" on every row underneath it (see renderCallerRow), so
+        // the causal direction reads unambiguously top-to-bottom without
+        // needing to infer it from indentation alone.
         var allocationSiteLabel = `<span class="stackRoleLabel allocationSiteLabel">&#9679; Allocated in</span>`;
-        var expandedClass = startsExpanded ? ` expanded` : ``;
 
-        rows += `<tr class="leafMethodRow${expandedClass}"${isExpandable ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
+        rows += `<tr class="leafMethodRow"${isExpandable ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
             `<td>${toggleHtml}${allocationSiteLabel}${formatFrameHtml(group.leafFrame)}${pathCountSuffix}</td>` +
             `<td>${formatBytesWithPercentage(group.totalBytes, totalBytes, mb)}</td>` +
+            `<td>${formatPercentOfTotal(group.totalBytes, grandTotalBytes)}</td>` +
             `<td>${group.tickCount}</td>` +
             `</tr>`;
 
-        if (topLevelCallers.length === 0) {
+        if (!isExpandable) {
             continue;
         }
 
-        var callerRowsHtml = "";
-        for (var callerIndex = 0; callerIndex < topLevelCallers.length; ++callerIndex) {
-            callerRowsHtml += renderCallerChainRows(topLevelCallers[callerIndex], 0, mb, group.totalBytes);
-        }
-
-        rows += `<tr id="${rowId}" class="callPathsDetail${expandedClass}"><td colspan="3" class="callerTreeCell"><table class="callerTreeInner">${CALLER_TREE_COLGROUP}${callerRowsHtml}</table></td></tr>`;
+        pendingLazySubtrees.set(rowId, { kind: 'leaf', paths: group.paths, mb: mb, totalBytes: group.totalBytes, grandTotalBytes: grandTotalBytes });
+        rows += `<tr id="${rowId}" class="callPathsDetail" data-lazy="true"><td colspan="4" class="callerTreeCell"></td></tr>`;
     }
 
     // "Call Stack" rather than "Allocating Method" - this column now holds
     // both the allocation-site row and its "Called by" rows underneath (see
     // allocationSiteLabel/calledByLabel above), not just allocating methods.
-    const header = `<tr class="tableHeader"><th>Call Stack</th><th>Total Bytes (mb)</th><th>Tick Count</th></tr>`;
+    const header = `<tr class="tableHeader"><th>Call Stack</th><th>Total Bytes (mb)</th><th>% of Total</th><th>Tick Count</th></tr>`;
 
     return `${heading}<div class="detailTable drillDownTable"><table>${CALLER_TREE_COLGROUP}${header}${rows}</table></div>`;
 }

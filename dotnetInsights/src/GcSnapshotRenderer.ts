@@ -390,6 +390,19 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <div id="tab-charts" class="tabPanel active">
             ${captureTimeRangeHtml}
 
+            <!-- Shared drag-to-zoom status/reset affordance for every
+                 GC-over-time chart below (Pause Time, Usage Over Time,
+                 Fragmentation, per-Heap) - one zoom range applies to all of
+                 them at once, mirroring the Heap Contents view's own
+                 allocationZoomStatus (reused here via the same CSS classes,
+                 distinct ids so the two don't collide). Hidden until a zoom
+                 is actually applied - see snapshotGcStats.js's
+                 updateGcZoomStatusUi/renderGcCharts. -->
+            <div id="gcZoomStatus" class="allocationZoomStatus" style="display:none">
+                <span class="allocationZoomStatusLabel"></span>
+                <button id="resetGcZoomButton" class="resetZoomButton">Reset Zoom</button>
+            </div>
+
             <div id="timeSummary">Allocation Amount by Generation</div>
 
             <div class="summaryGcDiv">
