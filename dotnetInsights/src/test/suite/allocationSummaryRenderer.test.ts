@@ -133,8 +133,8 @@ describe('AllocationSummaryRenderer', () => {
             // updating every time a new data-* attribute is added.
             const dataRowMatches = html.match(/<tr class="typeRow"[^>]*>/g) || [];
             assert.strictEqual(dataRowMatches.length, 2);
-            assert.ok(html.includes('<td>System.Byte[]</td><td>3.00</td><td>75.00</td><td>30</td>'));
-            assert.ok(html.includes('<td>System.String</td><td>1.00</td><td>25.00</td><td>10</td>'));
+            assert.ok(html.includes('<td>System.Byte[]</td><td>3.00</td><td>75.00</td><td class="ticksOnlyColumn">30</td>'));
+            assert.ok(html.includes('<td>System.String</td><td>1.00</td><td>25.00</td><td class="ticksOnlyColumn">10</td>'));
         });
 
         // The allocation-rate line chart (raw ticks, no per-type/kind
@@ -151,7 +151,7 @@ describe('AllocationSummaryRenderer', () => {
             const rateChartIndex = html.indexOf('id="allocationTimelineChart"');
             const tilesIndex = html.indexOf('Sampled Allocations');
             const typeChartIndex = html.indexOf('id="allocationTypeTimelineChart-all"');
-            const tableIndex = html.indexOf('<table>');
+            const tableIndex = html.indexOf('<table id="allocationTypeTable-all">');
 
             assert.ok(rateChartIndex >= 0 && tilesIndex >= 0 && typeChartIndex >= 0 && tableIndex >= 0);
             assert.ok(rateChartIndex < tilesIndex);

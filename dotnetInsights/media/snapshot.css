@@ -742,6 +742,18 @@
     cursor: pointer;
 }
 
+/* Applied to the ranked types table itself (#allocationTypeTable-*) while a
+   chart zoom is applied - see snapshotGcStats.js's updateRankedTypesTables.
+   Tick Count/Small/Large/Pinned (see AllocationSummaryRenderer.ts's
+   ticksOnlyColumn) have no accurate figure for just the zoomed range (the
+   export only tracks Total Bytes per time bucket, not those counts), so
+   they're hidden entirely rather than showing stale whole-capture numbers
+   next to a freshly zoomed Bytes/% figure in the same row. */
+.allocationTypeTableZoomed .ticksOnlyColumn
+{
+    display: none;
+}
+
 .typeRow:hover
 {
     background-color: lightblue;

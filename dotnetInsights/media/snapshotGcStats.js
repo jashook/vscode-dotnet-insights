@@ -1467,6 +1467,143 @@ var allocationDatasets = {};
         }
     }
 
+    // Recomputes each type's byte total (and a matching grand total to
+    // percentage against) for zoomRange - or, when null, just wraps
+    // summaryScope's own server-computed topTypes/totalSampledBytes
+    // unchanged. Both branches return the same shape: an array of
+    // {typeIndex, TypeName, TotalBytes} sorted by TotalBytes descending
+    // (typeIndex is always the *original* position in topTypes/typeDrillDown,
+    // preserved through the re-sort so a zoomed row still resolves the right
+    // drill-down entry), plus grandTotalBytes to percentage each row against.
+    //
+    // Only possible because typeTimeline.buckets carries a real per-type
+    // byte breakdown per time bucket (see allocationStats.js's
+    // renderAllocationTypeTimelineChart, which reads the same field) -
+    // there's no equivalent per-bucket breakdown for tick/small/large/
+    // pinned counts, so those stay whole-capture-only (see
+    // updateRankedTypesTables's ticksOnlyColumn hiding).
+    function computeZoomedTypeStats(summaryScope, zoomRange) {
+        var topTypes = summaryScope["topTypes"];
+
+        if (!zoomRange) {
+            var wholeCaptureTypes = [];
+            for (var wholeIndex = 0; wholeIndex < topTypes.length; ++wholeIndex) {
+                wholeCaptureTypes.push({
+                    typeIndex: wholeIndex,
+                    TypeName: topTypes[wholeIndex]["TypeName"],
+                    TotalBytes: topTypes[wholeIndex]["TotalBytes"]
+                });
+            }
+            // Already sorted server-side by TotalBytes descending - no
+            // re-sort needed.
+            return { types: wholeCaptureTypes, grandTotalBytes: summaryScope["totalSampledBytes"] };
+        }
+
+        var typeTimeline = summaryScope["typeTimeline"];
+        var buckets = typeTimeline["buckets"];
+        var bucketWidthMSec = typeTimeline["bucketWidthMSec"] || 0;
+
+        // One extra slot beyond topTypes.length for "Other" (typeTimeline's
+        // own last type - see allocationStats.js) - not itself rendered as
+        // a ranked row (topTypes never includes it either), but its bytes
+        // still belong in grandTotalBytes so the zoomed "% of Sampled"
+        // figure means the same thing the unzoomed one does: share of every
+        // sampled byte in range, not just the ranked subset of it.
+        var bytesByTypeIndex = new Array(typeTimeline["types"].length).fill(0);
+        for (var bucketIndex = 0; bucketIndex < buckets.length; ++bucketIndex) {
+            var bucket = buckets[bucketIndex];
+            var bucketStartMSec = bucket["bucketStartMSec"];
+            var bucketEndMSec = bucketStartMSec + bucketWidthMSec;
+            // Same overlap test as renderAllocationTypeTimelineChart's own
+            // bucket filter (allocationStats.js) - a bucket qualifies if it
+            // overlaps the zoom window at all, not just if its own start
+            // falls inside it.
+            if (bucketEndMSec <= zoomRange.startMSec || bucketStartMSec >= zoomRange.endMSec) {
+                continue;
+            }
+
+            var bytesByType = bucket["bytesByType"];
+            for (var typeIdx = 0; typeIdx < bytesByType.length; ++typeIdx) {
+                bytesByTypeIndex[typeIdx] += bytesByType[typeIdx];
+            }
+        }
+
+        var grandTotalBytes = 0;
+        for (var sumIndex = 0; sumIndex < bytesByTypeIndex.length; ++sumIndex) {
+            grandTotalBytes += bytesByTypeIndex[sumIndex];
+        }
+
+        var zoomedTypes = [];
+        for (var topIndex = 0; topIndex < topTypes.length; ++topIndex) {
+            zoomedTypes.push({
+                typeIndex: topIndex,
+                TypeName: topTypes[topIndex]["TypeName"],
+                TotalBytes: bytesByTypeIndex[topIndex] || 0
+            });
+        }
+        zoomedTypes.sort(function (left, right) { return right.TotalBytes - left.TotalBytes; });
+
+        return { types: zoomedTypes, grandTotalBytes: grandTotalBytes };
+    }
+
+    // Rebuilds one ranked-types table's <tr> rows (everything after its own
+    // header row) from zoomedStats, and toggles allocationTypeTableZoomed on
+    // the table itself so the CSS-hidden Tick/Small/Large/Pinned columns
+    // (ticksOnlyColumn - see AllocationSummaryRenderer.ts) show or hide to
+    // match. Matches AllocationSummaryRenderer.ts's renderTypeBreakdownPanel
+    // row markup exactly (same classes/attributes), just built client-side
+    // from possibly-recomputed data instead of the server-rendered original.
+    function renderRankedTypesTableRows(zoomedStats, scope) {
+        var mb = 1024 * 1024;
+        var rowsHtml = "";
+
+        for (var rowIndex = 0; rowIndex < zoomedStats.types.length; ++rowIndex) {
+            var typeStats = zoomedStats.types[rowIndex];
+            var totalBytes = typeStats["TotalBytes"];
+            var percentOfSampled = zoomedStats.grandTotalBytes > 0 ? (totalBytes * 100.0) / zoomedStats.grandTotalBytes : 0;
+
+            var tdTotalBytes = (totalBytes / mb).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            var tdPercent = percentOfSampled.toFixed(2);
+
+            rowsHtml += `<tr class="typeRow" data-type-index="${typeStats.typeIndex}" data-scope="${scope}">` +
+                `<td>${typeStats.TypeName}</td>` +
+                `<td>${tdTotalBytes}</td>` +
+                `<td>${tdPercent}</td>` +
+                `<td class="ticksOnlyColumn"></td><td class="ticksOnlyColumn"></td><td class="ticksOnlyColumn"></td><td class="ticksOnlyColumn"></td>` +
+                `</tr>`;
+        }
+
+        return rowsHtml;
+    }
+
+    function updateOneRankedTypesTable(summaryScope, scope, zoomRange) {
+        var table = document.getElementById("allocationTypeTable-" + scope);
+        if (!table) {
+            return;
+        }
+
+        var zoomedStats = computeZoomedTypeStats(summaryScope, zoomRange);
+        var headerRow = table.getElementsByClassName("tableHeader")[0];
+        table.innerHTML = "";
+        table.appendChild(headerRow);
+        table.insertAdjacentHTML("beforeend", renderRankedTypesTableRows(zoomedStats, scope));
+        table.classList.toggle("allocationTypeTableZoomed", !!zoomRange);
+    }
+
+    // Called on every zoom change (see renderHeapContentsCharts below) -
+    // updates both the "all" and "loh" ranked types tables (whichever
+    // exist), not just whichever is currently visible behind the All
+    // Types/LOH Only toggle, so switching that toggle later shows
+    // already-correct data instead of needing its own separate trigger.
+    function updateRankedTypesTables(zoomRange) {
+        updateOneRankedTypesTable(allocationSummaryJson, "all", zoomRange);
+
+        var lohSummaryForTable = allocationSummaryJson["loh"];
+        if (lohSummaryForTable && lohSummaryForTable["topTypes"] && lohSummaryForTable["topTypes"].length > 0) {
+            updateOneRankedTypesTable(lohSummaryForTable, "loh", zoomRange);
+        }
+    }
+
     // Rebuilds only the Heap Contents view's own charts - called both by the
     // initial Heap Contents open (with the then-current sharedZoomRange, in
     // case a GC chart was already zoomed first) and by applySharedZoom above
@@ -1518,6 +1655,8 @@ var allocationDatasets = {};
                 heapContentsChartHandles.push(lohChartHandle);
             }
         }
+
+        updateRankedTypesTables(zoomRange);
     }
 
     var viewNavButtons = document.getElementsByClassName("viewNavButton");

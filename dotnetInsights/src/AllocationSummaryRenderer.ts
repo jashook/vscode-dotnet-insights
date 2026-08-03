@@ -170,16 +170,28 @@ function renderTypeBreakdownPanel(summary: any, scope: string, isActive: boolean
         // topTypes has at least one tick by construction, so its
         // typeDrillDown entry always has at least the "<no stack
         // captured>" placeholder even in the worst case.
-        rows += `<tr class="typeRow" data-type-index="${index}" data-scope="${scope}"><td>${tdTypeName}</td><td>${tdTotalBytes}</td><td>${tdPercent}</td><td>${tdTickCount}</td><td>${tdSmallCount}</td><td>${tdLargeCount}</td><td>${tdPinnedCount}</td></tr>`;
+        // ticksOnlyColumn marks the four columns snapshotGcStats.js's
+        // updateRankedTypesTables hides while a chart zoom is applied - the
+        // export has no per-time-bucket breakdown for Tick/Small/Large/
+        // Pinned counts (only Total Bytes, via typeTimeline.buckets), so
+        // there's no accurate zoomed-range figure to show there; hiding
+        // avoids showing stale whole-capture numbers next to a freshly
+        // zoomed Bytes/% figure in the same row.
+        rows += `<tr class="typeRow" data-type-index="${index}" data-scope="${scope}"><td>${tdTypeName}</td><td>${tdTotalBytes}</td><td>${tdPercent}</td><td class="ticksOnlyColumn">${tdTickCount}</td><td class="ticksOnlyColumn">${tdSmallCount}</td><td class="ticksOnlyColumn">${tdLargeCount}</td><td class="ticksOnlyColumn">${tdPinnedCount}</td></tr>`;
     }
 
-    const header = `<tr class="tableHeader"><th>Type Name</th><th>Total Bytes (mb)</th><th>% of Sampled</th><th>Tick Count</th><th>Small</th><th>Large</th><th>Pinned</th></tr>`;
+    const header = `<tr class="tableHeader"><th>Type Name</th><th>Total Bytes (mb)</th><th>% of Sampled</th><th class="ticksOnlyColumn">Tick Count</th><th class="ticksOnlyColumn">Small</th><th class="ticksOnlyColumn">Large</th><th class="ticksOnlyColumn">Pinned</th></tr>`;
 
+    // id lets snapshotGcStats.js's updateRankedTypesTables find and rebuild
+    // this table's rows on every zoom change, regardless of whether the
+    // All/LOH toggle wrapper (and its id="allocView-${scope}") is present -
+    // that wrapper is only rendered when LOH data exists (includeToggleWrapper
+    // below), so it isn't a reliable selector for the single-scope case.
     // allocationTypeTable (alongside the shared detailTable class) scopes the
     // wide/wrapping Type Name column CSS to just this table - other tables
     // sharing .detailTable (GC summary, generation breakdown) have short
     // first-column values (GC numbers) and shouldn't get that treatment.
-    const tableHtml = `<div class="detailTable allocationTypeTable"><table>${header}${rows}</table></div>`;
+    const tableHtml = `<div class="detailTable allocationTypeTable"><table id="allocationTypeTable-${scope}">${header}${rows}</table></div>`;
 
     // snapshotGcStats.js finds this canvas by its scoped id and renders into
     // it - both the "all" and "loh" charts are created once, up front (not
