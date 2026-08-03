@@ -459,7 +459,15 @@ export class DependencySetup {
             this.insights.roslynHelperPath = roslynHelperPath;
         }
 
-        if (nettraceParserPath === undefined || nettraceParserPath === null) {
+        // "" (not just undefined/null) means "not configured" too - clearing
+        // the setting's text box in the Settings UI (rather than using its
+        // reset/gear icon) leaves the value as an empty string, not removed
+        // entirely. Left unguarded, that empty string used to be treated as
+        // a real override, producing a `"" "<file>" --json "<output>"` shell
+        // command - `/bin/sh: : command not found` - so .nettrace files
+        // silently stopped opening ("<file> is corrupted or a incorrect
+        // type.") until the setting was actually removed, not just cleared.
+        if (nettraceParserPath === undefined || nettraceParserPath === null || nettraceParserPath === "") {
             const nettraceParserTempDir = path.join(outputPath, "nettraceParser");
 
             // Distributed as a self-contained native executable, same as
