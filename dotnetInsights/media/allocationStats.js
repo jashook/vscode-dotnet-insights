@@ -450,10 +450,22 @@ function renderAllocationTypeTimelineChart(canvasElement, typeTimeline, onSegmen
     var firstVisibleBucketAbsoluteIndex = 0;
     var buckets = allBuckets;
     if (zoomRange) {
+        // A bucket qualifies if it *overlaps* [startMSec, endMSec), not just
+        // if its own start falls inside that window - a zoom range dragged
+        // on a different chart (e.g. a GC chart's much finer elapsed-ms
+        // axis, now that one zoom range is shared across the whole webview -
+        // see snapshotGcStats.js's applySharedZoom) has no reason to align
+        // to this chart's bucket boundaries, and a narrow range landing
+        // entirely inside one wide bucket (bucketStartMSec before
+        // zoomRange.startMSec, but bucketStartMSec + bucketWidthMSec still
+        // after it) used to match zero buckets under a start-only test,
+        // silently returning null below and making the whole chart vanish.
+        var bucketWidthMSec = typeTimeline["bucketWidthMSec"] || 0;
         buckets = [];
         for (var scanIndex = 0; scanIndex < allBuckets.length; ++scanIndex) {
             var bucketStartMSec = allBuckets[scanIndex]["bucketStartMSec"];
-            if (bucketStartMSec < zoomRange.startMSec || bucketStartMSec >= zoomRange.endMSec) {
+            var bucketEndMSec = bucketStartMSec + bucketWidthMSec;
+            if (bucketEndMSec <= zoomRange.startMSec || bucketStartMSec >= zoomRange.endMSec) {
                 continue;
             }
             if (buckets.length === 0) {

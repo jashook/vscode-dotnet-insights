@@ -100,12 +100,17 @@ var allocationDatasets = {};
         return points;
     };
 
-    // ── Shared drag-to-zoom for every GC-over-time chart ─────────────────
-    // One zoom range applies across the Pause Time, Usage, Fragmentation and
-    // per-Heap charts at once (mirroring heapContentsZoomRange below), plus
-    // filters the Detailed tab's rows to the same range. null means "full
-    // capture, not zoomed".
-    var gcChartsZoomRange = null;
+    // ── Shared drag-to-zoom, across the entire webview ────────────────────
+    // One zoom range applies across every time-series chart on the page -
+    // the GC view's Pause Time/Usage/Fragmentation/per-Heap charts *and* the
+    // Heap Contents view's allocation-rate/type-timeline charts (see
+    // applySharedZoom below) - plus filters the Detailed tab's rows to the
+    // same range. null means "full capture, not zoomed". Declared once here
+    // (rather than as two independent per-view variables) so dragging a
+    // selection on any chart, in either view, moves every other chart to
+    // match - a GC-charts zoom and a Heap-Contents zoom used to be entirely
+    // separate state.
+    var sharedZoomRange = null;
 
     // {chart, zoomHandle} for the always-rebuilt charts (Pause Time, Usage,
     // Fragmentation once built) - destroyed/recreated on every zoom change.
@@ -115,7 +120,7 @@ var allocationDatasets = {};
     // so far (they're lazily constructed via IntersectionObserver - see
     // below) - a zoom change rebuilds only the ones already on screen, and
     // any heap chart built for the first time afterward picks up the
-    // then-current gcChartsZoomRange directly.
+    // then-current sharedZoomRange directly.
     var heapChartHandlesByIndex = {};
 
     function destroyGcCharts() {
@@ -139,7 +144,7 @@ var allocationDatasets = {};
     }
 
     function onGcChartsRangeSelected(startMSec, endMSec) {
-        renderGcCharts({ startMSec: startMSec, endMSec: endMSec });
+        applySharedZoom({ startMSec: startMSec, endMSec: endMSec });
     }
 
     function updateGcZoomStatusUi(zoomRange) {
@@ -161,11 +166,11 @@ var allocationDatasets = {};
         }
     }
 
-    // Hides Detailed-tab rows whose GC falls outside gcChartsZoomRange - a
+    // Hides Detailed-tab rows whose GC falls outside sharedZoomRange - a
     // no-op until both the Detailed tab has been opened at least once (see
     // detailTableInjected below) and a zoom is actually applied. Called both
     // on every zoom change and the first time the Detailed tab opens (in
-    // case a zoom was already applied on the Charts tab beforehand).
+    // case a zoom was already applied on a chart beforehand).
     function filterDetailTableToZoomRange() {
         if (!detailTableInjected) {
             return;
@@ -179,16 +184,18 @@ var allocationDatasets = {};
         for (var rowIndex = 1; rowIndex < detailTable.rows.length; ++rowIndex) {
             var row = detailTable.rows[rowIndex];
             var elapsedMsec = parseFloat(row.getAttribute('data-elapsed-msec'));
-            var isVisible = !gcChartsZoomRange || (elapsedMsec >= gcChartsZoomRange.startMSec && elapsedMsec <= gcChartsZoomRange.endMSec);
+            var isVisible = !sharedZoomRange || (elapsedMsec >= sharedZoomRange.startMSec && elapsedMsec <= sharedZoomRange.endMSec);
             row.style.display = isVisible ? "" : "none";
         }
     }
 
-    // Shared by the initial page load and every subsequent zoom change
-    // (drag-select on any GC chart, Reset Zoom, or Backspace) - zoomRange is
-    // null for the full, unzoomed capture. Only heap charts already built
-    // get rebuilt here; a heap chart built for the first time afterward
-    // (scrolled into view) just reads gcChartsZoomRange directly.
+    // Rebuilds only the GC view's own charts (Pause Time/Usage/Fragmentation
+    // + any per-heap chart already built) plus the Detailed table's row
+    // filter - called by applySharedZoom below, which also rebuilds the Heap
+    // Contents charts, so the two views' charts stay in sync regardless of
+    // which one a drag-select actually happened on. zoomRange is null for
+    // the full, unzoomed capture. A heap chart built for the first time
+    // afterward (scrolled into view) just reads sharedZoomRange directly.
     function renderGcCharts(zoomRange) {
         var previouslyBuiltHeapIndexes = [];
         for (var existingHeapIndexKey in heapChartHandlesByIndex) {
@@ -196,7 +203,6 @@ var allocationDatasets = {};
         }
 
         destroyGcCharts();
-        gcChartsZoomRange = zoomRange;
         updateGcZoomStatusUi(zoomRange);
 
         var pauseHandle = renderTotalGcPauseTimeChart(zoomRange);
@@ -224,6 +230,22 @@ var allocationDatasets = {};
         }
 
         filterDetailTableToZoomRange();
+    }
+
+    // Single entry point for every zoom change after page load (drag-select
+    // on ANY chart in either view, either Reset Zoom button, or Backspace) -
+    // updates sharedZoomRange once, then rebuilds both views' charts so a
+    // zoom applied while looking at the GC charts is already in place if the
+    // user switches to Heap Contents, and vice versa. renderHeapContentsCharts
+    // (defined further below) is a no-op for canvases that don't exist yet
+    // (the Heap Contents view is injected lazily on first open - see
+    // AllocationSummaryRenderer.ts/renderAllocationTimelineChart's own
+    // canvasElement-null guard), so calling it here even before that view
+    // has ever been opened is harmless.
+    function applySharedZoom(zoomRange) {
+        sharedZoomRange = zoomRange;
+        renderGcCharts(zoomRange);
+        renderHeapContentsCharts(zoomRange);
     }
 
     var gcStatsChart = document.getElementsByClassName("gcStatsChart")[0];
@@ -1009,9 +1031,11 @@ var allocationDatasets = {};
 
     // Initial (unzoomed) build of the Pause Time / Usage / Fragmentation
     // charts - mirrors renderHeapContentsCharts(null)'s role for the Heap
-    // Contents view. Runs before the per-heap setup below so
-    // gcChartsZoomRange is settled (still null, nothing to zoom yet) before
-    // any heap chart reads it.
+    // Contents view. Runs before the per-heap setup below so sharedZoomRange
+    // is settled (still null, nothing to zoom yet) before any heap chart
+    // reads it. Calls renderGcCharts directly, not applySharedZoom - the
+    // Heap Contents view has nothing to rebuild yet at page load (it's
+    // injected lazily on first open - see the viewNavButton handler below).
     renderGcCharts(null);
 
     // Click equivalent of the Backspace zoom-reset above - for anyone who
@@ -1022,7 +1046,7 @@ var allocationDatasets = {};
     var resetGcZoomButton = document.getElementById('resetGcZoomButton');
     if (resetGcZoomButton) {
         resetGcZoomButton.addEventListener('click', function () {
-            renderGcCharts(null);
+            applySharedZoom(null);
         });
     }
 
@@ -1030,16 +1054,16 @@ var allocationDatasets = {};
     // instance - building all of them synchronously on load is expensive and
     // most users never scroll down to see every heap. Defer each chart's
     // construction until its canvas actually scrolls into view. Whatever
-    // zoom is currently applied to the other GC charts (gcChartsZoomRange)
-    // is used immediately, so a heap chart that first appears while already
-    // zoomed doesn't flash the full range before narrowing.
+    // zoom is currently applied (sharedZoomRange) is used immediately, so a
+    // heap chart that first appears while already zoomed doesn't flash the
+    // full range before narrowing.
     if ('IntersectionObserver' in window) {
         var heapChartObserver = new IntersectionObserver(function (entries, observer) {
             for (var entryIndex = 0; entryIndex < entries.length; ++entryIndex) {
                 var entry = entries[entryIndex];
                 if (entry.isIntersecting) {
                     var heapIndex = parseInt(entry.target.getAttribute('data-heap-index'), 10);
-                    heapChartHandlesByIndex[heapIndex] = renderHeapChart(heapIndex, gcChartsZoomRange);
+                    heapChartHandlesByIndex[heapIndex] = renderHeapChart(heapIndex, sharedZoomRange);
                     observer.unobserve(entry.target);
                 }
             }
@@ -1051,7 +1075,7 @@ var allocationDatasets = {};
         }
     } else {
         for (var index = 0; index < heapCharts.length; ++index) {
-            heapChartHandlesByIndex[index] = renderHeapChart(index, gcChartsZoomRange);
+            heapChartHandlesByIndex[index] = renderHeapChart(index, sharedZoomRange);
         }
     }
 
@@ -1397,15 +1421,6 @@ var allocationDatasets = {};
     // keyed on data-view/id="view-*" instead of data-tab/id="tab-*".
     var allocationSummaryInjected = false;
 
-    // Drag-to-zoom state for the Heap Contents charts (see
-    // chartZoomHelper.js) - both the allocation-rate chart and whichever
-    // type-timeline chart(s) are currently rendered share one zoom range,
-    // so dragging a selection on any one of them re-renders all of them to
-    // the same [startMSec, endMSec) window. null means "full capture, not
-    // zoomed". Backspace resets straight back to null (not a step-by-step
-    // undo stack) - see the keydown listener further below.
-    var heapContentsZoomRange = null;
-
     // { chart, zoomHandle } for every currently-rendered Heap Contents
     // chart - detached/destroyed and rebuilt on every zoom change (renderHeapContentsCharts
     // below), since the same <canvas> elements persist across zoom changes
@@ -1430,7 +1445,7 @@ var allocationDatasets = {};
     }
 
     function onHeapContentsRangeSelected(startMSec, endMSec) {
-        renderHeapContentsCharts({ startMSec: startMSec, endMSec: endMSec });
+        applySharedZoom({ startMSec: startMSec, endMSec: endMSec });
     }
 
     function updateZoomStatusUi(zoomRange) {
@@ -1452,12 +1467,14 @@ var allocationDatasets = {};
         }
     }
 
-    // Shared by the initial Heap Contents open and every subsequent zoom
-    // change (drag-select or Backspace reset) - zoomRange is null for the
-    // full, unzoomed capture.
+    // Rebuilds only the Heap Contents view's own charts - called both by the
+    // initial Heap Contents open (with the then-current sharedZoomRange, in
+    // case a GC chart was already zoomed first) and by applySharedZoom above
+    // (which also rebuilds the GC charts, keeping both views in sync
+    // regardless of which one a drag-select actually happened on). zoomRange
+    // is null for the full, unzoomed capture.
     function renderHeapContentsCharts(zoomRange) {
         destroyHeapContentsCharts();
-        heapContentsZoomRange = zoomRange;
         updateZoomStatusUi(zoomRange);
 
         var zoomOptionsForRate = { range: zoomRange, onRangeSelected: onHeapContentsRangeSelected };
@@ -1548,7 +1565,10 @@ var allocationDatasets = {};
                 gen0GcTimesMSecForCharts.sort(function (left, right) { return left - right; });
                 gen1GcTimesMSecForCharts.sort(function (left, right) { return left - right; });
 
-                renderHeapContentsCharts(null);
+                // Use whatever zoom is already applied (e.g. dragged on a GC
+                // chart before Heap Contents was ever opened) rather than
+                // always starting unzoomed.
+                renderHeapContentsCharts(sharedZoomRange);
 
                 wireHeapContentsInnerTabs();
                 allocationSummaryInjected = true;
@@ -1767,7 +1787,7 @@ var allocationDatasets = {};
         var resetZoomButton = document.getElementById('resetZoomButton');
         if (resetZoomButton) {
             resetZoomButton.addEventListener('click', function () {
-                renderHeapContentsCharts(null);
+                applySharedZoom(null);
             });
         }
 
@@ -1889,23 +1909,21 @@ var allocationDatasets = {};
     // stating that as one function's own logic is clearer than trusting an
     // invariant across two separate ones):
     //   - Drill Down tab active: return to Charts (existing behavior).
-    //   - Charts tab active and a chart zoom is applied: reset the zoom back
-    //     to the full capture (see renderHeapContentsCharts) - only when
-    //     zoomed, so Backspace does nothing surprising otherwise.
-    //   - GC view active (either of its own tabs) and a GC chart zoom is
-    //     applied: same reset, for gcChartsZoomRange instead (see
-    //     renderGcCharts). The GC and Heap Contents views are mutually
-    //     exclusive (only one .viewPanel is ever active), so this can't
-    //     conflict with the two checks above.
+    //   - Charts tab active (either view) and a zoom is applied: reset
+    //     sharedZoomRange back to the full capture via applySharedZoom -
+    //     only when zoomed, so Backspace does nothing surprising otherwise.
+    //     The GC and Heap Contents views are mutually exclusive (only one
+    //     .viewPanel is ever active), so this can't conflict with the
+    //     Drill Down check above it.
     document.addEventListener('keydown', function (event) {
         if (event.key !== 'Backspace') {
             return;
         }
 
         var gcViewPanel = document.getElementById('view-gc');
-        if (gcViewPanel && gcViewPanel.classList.contains('active') && gcChartsZoomRange) {
+        if (gcViewPanel && gcViewPanel.classList.contains('active') && sharedZoomRange) {
             event.preventDefault();
-            renderGcCharts(null);
+            applySharedZoom(null);
             return;
         }
 
@@ -1917,9 +1935,9 @@ var allocationDatasets = {};
         }
 
         var chartsPanelForZoom = document.getElementById('heapContents-tab-charts');
-        if (chartsPanelForZoom && chartsPanelForZoom.classList.contains('active') && heapContentsZoomRange) {
+        if (chartsPanelForZoom && chartsPanelForZoom.classList.contains('active') && sharedZoomRange) {
             event.preventDefault();
-            renderHeapContentsCharts(null);
+            applySharedZoom(null);
         }
     });
 
