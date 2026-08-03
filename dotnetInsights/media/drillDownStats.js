@@ -284,7 +284,7 @@ function renderCallerRow(node, depth, mb, parentTotalBytes, grandTotalBytes) {
     var childDepth = isBranch ? depth + 1 : depth;
     pendingLazySubtrees.set(rowId, { kind: 'caller', node: node, depth: childDepth, mb: mb, grandTotalBytes: grandTotalBytes });
 
-    return rowHtml + `<tr id="${rowId}" class="callPathsDetail" data-lazy="true"><td colspan="3" class="callerTreeCell"></td></tr>`;
+    return rowHtml + `<tr id="${rowId}" class="callPathsDetail" data-lazy="true"><td colspan="4" class="callerTreeCell"></td></tr>`;
 }
 
 // Builds exactly one level of a lazily-registered row's children (a leaf's
@@ -419,10 +419,10 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel, methodNa
 
         // Path count folds into the method cell as inline text (only when
         // there's more than one) rather than its own table column - every
-        // row, leaf or caller, at any depth, uses the exact same 3-column
-        // shape (Method/Bytes/Ticks) so their columns line up with each
-        // other (see .callerTreeInner's matching pinned widths in
-        // snapshot.css); a 4th column only leaf rows had would throw that
+        // row, leaf or caller, at any depth, uses the exact same 4-column
+        // shape (Method/Bytes/% of Total/Ticks) so their columns line up
+        // with each other (see .callerTreeInner's matching pinned widths in
+        // snapshot.css); a 5th column only leaf rows had would throw that
         // alignment off between a row and its own expanded detail beneath
         // it.
         var pathCountSuffix = group.paths.length > 1
@@ -449,7 +449,7 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel, methodNa
         }
 
         pendingLazySubtrees.set(rowId, { kind: 'leaf', paths: group.paths, mb: mb, totalBytes: group.totalBytes, grandTotalBytes: grandTotalBytes });
-        rows += `<tr id="${rowId}" class="callPathsDetail" data-lazy="true"><td colspan="3" class="callerTreeCell"></td></tr>`;
+        rows += `<tr id="${rowId}" class="callPathsDetail" data-lazy="true"><td colspan="4" class="callerTreeCell"></td></tr>`;
     }
 
     // "Call Stack" rather than "Allocating Method" - this column now holds
