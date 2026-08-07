@@ -215,6 +215,50 @@ public class TypeDrillDownBuilderTests
     }
 
     [Fact]
+    public void TypeDrillDown_FoldsDistinctStacksSharingTheSameLeafFrameIntoOneEntry()
+    {
+        // Two genuinely distinct full call stacks (different callers) that
+        // share the same leaf (immediate allocating) frame - see
+        // AllocationJsonExporter.FoldByLeafFrame's own doc comment for why
+        // ranking/capping raw full stacks directly (the original design)
+        // could silently drop a large but diffuse real allocator whose
+        // bytes were spread across many slightly-different call paths, none
+        // individually big enough to make the cap.
+        List<AllocationEvent> events = new List<AllocationEvent>
+        {
+            new AllocationEvent(timestamp: default, relativeMSec: 0, allocationAmount: 300, allocationKind: GCAllocationKind.Small, typeName: "TypeA", heapIndex: 0, stack: new long[] { 1000, 2000 }),
+            new AllocationEvent(timestamp: default, relativeMSec: 0, allocationAmount: 700, allocationKind: GCAllocationKind.Small, typeName: "TypeA", heapIndex: 0, stack: new long[] { 1000, 3000 })
+        };
+
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>
+        {
+            MakeRundownEvent(1000, 10, "SharedLeaf"),
+            MakeRundownEvent(2000, 10, "CallerA"),
+            MakeRundownEvent(3000, 10, "CallerB")
+        }, pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
+
+        JsonObject summary = Build(events, symbolTable);
+        JsonObject typeAEntry = summary["typeDrillDown"][0].AsObject();
+        JsonArray stacks = typeAEntry["stacks"].AsArray();
+
+        // Two distinct full stacks, but one folded entry - the two callers
+        // are genuinely different, only their shared leaf makes them fold.
+        Assert.Single(stacks);
+        Assert.Equal(1000, stacks[0]["totalBytes"].GetValue<long>());
+        Assert.Equal(2, stacks[0]["tickCount"].GetValue<int>());
+        Assert.Equal(2, stacks[0]["distinctStackCount"].GetValue<int>());
+
+        JsonArray methodNames = summary["methodNames"].AsArray();
+        JsonArray frames = stacks[0]["frames"].AsArray();
+        Assert.Equal("SharedLeaf", methodNames[frames[0].GetValue<int>()].GetValue<string>());
+
+        // The true type-level totals (raw, pre-fold distinct stack count)
+        // are unaffected by folding - both real distinct stacks still count.
+        Assert.Equal(2, typeAEntry["distinctStackCount"].GetValue<int>());
+        Assert.Equal(1000, typeAEntry["totalBytes"].GetValue<long>());
+    }
+
+    [Fact]
     public void TypeDrillDown_GroupsTicksWithNoCapturedStackUnderAPlaceholder()
     {
         // Both events have no captured stack (Array.Empty<long>()) - real
