@@ -66,10 +66,9 @@
 // one of them on every single click into this tab, before the user had
 // asked to see any of it - CSS-only display:none on an already-built
 // subtree does not avoid that cost (browsers still parse/construct hidden
-// DOM), only not building it at all does. Expanding a leaf row still
-// reveals its *entire* chain in one click (see setAllDrillDownRowsExpanded's
-// build-then-expand loop) - that just now means "build everything under
-// here, on demand" instead of "it was already built".
+// DOM), only not building it at all does. Every row - leaf rows included -
+// expands exactly one level per click; only the "Expand All" button walks
+// the whole tree (see snapshotGcStats.js's setAllDrillDownRowsExpanded).
 
 // Real .NET type/method names can legitimately contain HTML-significant
 // characters (compiler-generated names like "Program.<Main>$" are common -
@@ -112,19 +111,27 @@ function formatBytes(totalBytes, mb) {
     return (totalBytes / mb).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-// "% of Self" column: this row's share of its immediate containing total -
-// for a leaf row, this type's own grand total (entry.totalBytes, the same
-// value formatPercentOfTotal below compares against a *different*,
-// whole-capture denominator for); for a caller row, its immediate parent
-// frame's total (flame-graph style - a row's share of the hop immediately
-// before it, not of the overall total, so this changes meaning at every
-// depth unlike formatPercentOfTotal's fixed denominator).
-function formatPercentOfSelf(rowBytes, parentTotalBytes) {
-    if (!(parentTotalBytes > 0)) {
+// "% of Site" column: this row's share of the ALLOCATION SITE it sits
+// under - for a leaf row, this scope's own total (entry.totalBytes; there's
+// no allocation site above a leaf, so it falls back to "how much of this
+// scope does this one site account for"), and for every caller row beneath
+// it, that leaf's own totalBytes, held constant for the entire chain.
+//
+// This used to be share-of-IMMEDIATE-PARENT (flame-graph style). That is
+// 100% by definition for any node that is its parent's only child, so a
+// long non-branching stack - the common case, since most call stacks don't
+// branch at every frame - rendered as a wall of "100.0%" that conveyed
+// nothing and read as a broken column. Measuring against the fixed
+// allocation-site total instead keeps the number meaningful and directly
+// comparable at every depth: it only drops below 100% where callers
+// genuinely split, and the size of that drop is exactly how much of the
+// site that branch accounts for.
+function formatPercentOfSelf(rowBytes, siteTotalBytes) {
+    if (!(siteTotalBytes > 0)) {
         return "";
     }
 
-    var percentage = (rowBytes / parentTotalBytes) * 100;
+    var percentage = (rowBytes / siteTotalBytes) * 100;
     return `${percentage.toFixed(1)}%`;
 }
 
@@ -186,7 +193,7 @@ var currentMethodNames = null;
 // the role label ("Allocated in" vs "Called by"), whether there's a
 // left-indent, and what "parent" totalBytes means for % of Self (see
 // formatPercentOfSelf's own comment) - both callers below supply those.
-function renderTreeRow(rowId, roleLabelHtml, frameHtml, indentAttr, node, parentTotalBytes, grandTotalBytes, mb) {
+function renderTreeRow(rowId, roleLabelHtml, frameHtml, indentAttr, node, percentDenominatorBytes, grandTotalBytes, mb, branchClass, siteTotalBytes) {
     var children = node["children"] || [];
     var hasChildren = children.length > 0;
 
@@ -202,10 +209,16 @@ function renderTreeRow(rowId, roleLabelHtml, frameHtml, indentAttr, node, parent
         ? ` <span class="pathCount">(${node["distinctStackCount"].toLocaleString()} call paths)</span>`
         : ``;
 
-    var rowHtml = `<tr class="${roleLabelHtml.rowClass}"${hasChildren ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
+    // branchClass (see .drillDownAltBranch in snapshot.css) alternates
+    // across sibling branches so each one - a top-level allocation site's
+    // whole chain, or a deeper branch point's own children and everything
+    // under them - reads as a distinct visual group. "" for the
+    // non-alternating half, never omitted from the class list entirely, so
+    // the space-join below stays simple.
+    var rowHtml = `<tr class="${roleLabelHtml.rowClass} ${branchClass}"${hasChildren ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
         `<td${indentAttr}>${toggleHtml}${roleLabelHtml.html}${frameHtml}${pathCountSuffix}</td>` +
         `<td>${formatBytes(node["totalBytes"], mb)}</td>` +
-        `<td>${formatPercentOfSelf(node["totalBytes"], parentTotalBytes)}</td>` +
+        `<td>${formatPercentOfSelf(node["totalBytes"], percentDenominatorBytes)}</td>` +
         `<td>${formatPercentOfTotal(node["totalBytes"], grandTotalBytes)}</td>` +
         `<td>${node["tickCount"]}</td>` +
         `</tr>`;
@@ -214,41 +227,82 @@ function renderTreeRow(rowId, roleLabelHtml, frameHtml, indentAttr, node, parent
         return rowHtml;
     }
 
-    pendingLazySubtrees.set(rowId, { node: node, depth: 0, mb: mb, grandTotalBytes: grandTotalBytes });
+    pendingLazySubtrees.set(rowId, { node: node, depth: 0, mb: mb, grandTotalBytes: grandTotalBytes, branchClass: branchClass, siteTotalBytes: siteTotalBytes });
+
+    // Deliberately NOT tinted with branchClass, unlike the visible row
+    // above - this row is purely a structural wrapper around the next
+    // nested level's own <table> (see buildLazyDrillDownSubtree), and that
+    // nested table's own rows already carry the correct (possibly
+    // re-alternated) tint themselves. Tinting this wrapper too used to
+    // stack a second copy of the same semi-transparent background behind
+    // every nested level, compounding darker with each level of depth -
+    // a long non-branching chain could visibly darken from a faint gray
+    // toward black by 15-20 frames down, which also made it look like
+    // hovering one row was "spreading" a highlight into its children when
+    // it was really just this pre-existing static darkening sitting right
+    // where a user happened to click to expand.
     return rowHtml + `<tr id="${rowId}" class="callPathsDetail" data-lazy="true"><td colspan="5" class="callerTreeCell"></td></tr>`;
 }
 
-// Explicit role labels, not just indentation - every step away from the
-// allocation site (the leaf row) is a caller of the step before it,
-// reading top-to-bottom as "called by, called by, ...".
-const ALLOCATION_SITE_ROLE = { rowClass: "leafMethodRow", html: `<span class="stackRoleLabel allocationSiteLabel">&#9679; Allocated in</span>` };
-const CALLED_BY_ROLE = { rowClass: "callerRow", html: `<span class="stackRoleLabel calledByLabel">&#8593; Called by</span>` };
+// Row roles now carry only a CSS class, no prefix content of their own.
+//
+// These used to render an icon (a filled circle / an up-arrow) plus a text
+// label ("Allocated in" / "Called by") before every method name. Both were
+// dropped. The icons competed visually with the leafMethodToggle triangle
+// (see renderTreeRow), which was actively confusing on caller rows: every
+// such row is simultaneously a child of the row above it AND a parent of
+// the row below it, so it carried two arrow-like glyphs pointing in
+// unrelated directions. The text label was then pure noise on its own -
+// every caller row in the table reads the identical "Called by", so it
+// spent horizontal space repeating a word that never distinguished one row
+// from another. The triangle plus indentation carries the structure, and
+// the one genuinely distinct row (the allocation site) is still marked by
+// .leafMethodRow's own styling.
+const ALLOCATION_SITE_ROLE = { rowClass: "leafMethodRow", html: `` };
+const CALLED_BY_ROLE = { rowClass: "callerRow", html: `` };
+
+// Per-level indent for caller rows (see renderCallerRow). Deliberately
+// smaller than one full text indent: every hop now steps right, and a real
+// stack runs 20-30 frames, so a large step would consume the Call Stack
+// column before the chain finished. Small enough to fit that depth, big
+// enough to still read as a step.
+const CALLER_INDENT_EM_PER_LEVEL = 0.85;
+
+// Ceiling on that accumulated indent. Past this depth rows stop stepping
+// right and stack vertically instead - losing the depth cue is a far
+// better failure mode than squeezing long fully-qualified method names into
+// a sliver of column, and by that depth the reader is following one chain
+// anyway rather than comparing indent levels.
+const CALLER_INDENT_MAX_EM = 17;
 
 // Renders one caller frame (a tree node at depth >= 1) as its own row.
-// depth only advances at a real branch point (more than one child) - a
-// long straight chain of single-child continuations stays at one indent
-// level instead of pushing further right on every single hop. A deep
-// non-branching stack (common - most call stacks don't branch at every
-// frame) would otherwise run out of horizontal room within a handful of
-// frames.
-function renderCallerRow(node, depth, mb, parentTotalBytes, grandTotalBytes) {
+//
+// depth advances on EVERY hop, so a row is always indented one step further
+// than the row that expanded into it - the same relationship the first
+// level already showed against its allocation site, applied at every level
+// below that. This used to advance only at real branch points, on the
+// theory that a deep non-branching stack (common - most call stacks don't
+// branch at every frame) would run out of horizontal room otherwise. That
+// left a whole 20+ frame chain sharing one indent, which made a parent and
+// its child visually indistinguishable - the exact thing indentation is
+// for. Room is bought back with a smaller per-level step (see
+// CALLER_INDENT_EM_PER_LEVEL) plus a hard ceiling (CALLER_INDENT_MAX_EM),
+// so depth stays readable without pushing long method names off the
+// column.
+function renderCallerRow(node, depth, mb, percentDenominatorBytes, grandTotalBytes, branchClass, siteTotalBytes) {
     var children = node["children"] || [];
     var rowId = children.length > 0 ? `drillDownCaller${++callerRowIdCounter}` : null;
-    var indentEm = (depth + 1) * 1.5;
+    var uncappedIndentEm = (depth + 1) * CALLER_INDENT_EM_PER_LEVEL;
+    var indentEm = uncappedIndentEm < CALLER_INDENT_MAX_EM ? uncappedIndentEm : CALLER_INDENT_MAX_EM;
     var frameHtml = formatFrameHtml(currentMethodNames[node["frame"]]);
 
-    var rowHtml = renderTreeRow(rowId, CALLED_BY_ROLE, frameHtml, ` style="padding-left: ${indentEm}em"`, node, parentTotalBytes, grandTotalBytes, mb);
+    var rowHtml = renderTreeRow(rowId, CALLED_BY_ROLE, frameHtml, ` style="padding-left: ${indentEm}em"`, node, percentDenominatorBytes, grandTotalBytes, mb, branchClass, siteTotalBytes);
 
     if (children.length === 0) {
         return rowHtml;
     }
 
-    // Every child's percentage is measured against *this* node's bytes,
-    // regardless of whether this row itself is a branch point or a
-    // straight continuation - flame-graph style, one hop's share of the
-    // hop immediately before it, not a share of the overall total.
-    var isBranch = children.length > 1;
-    pendingLazySubtrees.set(rowId, { node: node, depth: isBranch ? depth + 1 : depth, mb: mb, grandTotalBytes: grandTotalBytes });
+    pendingLazySubtrees.set(rowId, { node: node, depth: depth + 1, mb: mb, grandTotalBytes: grandTotalBytes, branchClass: branchClass, siteTotalBytes: siteTotalBytes });
 
     return rowHtml;
 }
@@ -269,11 +323,28 @@ function buildLazyDrillDownSubtree(rowId) {
     pendingLazySubtrees.delete(rowId);
 
     var children = pending.node["children"] || [];
-    var parentTotalBytes = pending.node["totalBytes"];
+
+    // Every hop down the caller tree flips shade relative to THIS node's
+    // own branchClass - see .drillDownAltBranch in snapshot.css. At a real
+    // branch point (more than one child), the first child keeps this
+    // node's own shade (continuing the branch that was already
+    // established) and every other child flips to the toggled shade,
+    // alternating from there. A node with exactly one child isn't a
+    // branch, but it still flips - a long non-branching chain reads as a
+    // continuous zebra stripe going deeper, one flip per hop, rather than
+    // one flat color for the entire chain. Only the toggle target itself
+    // depends on pending.branchClass, not two hardcoded values, so this
+    // keeps working correctly no matter how many hops deep a chain
+    // already is by the time it gets here.
+    var isBranch = children.length > 1;
+    var toggledClass = pending.branchClass === "drillDownAltBranch" ? "" : "drillDownAltBranch";
 
     var childRowsHtml = "";
     for (var childIndex = 0; childIndex < children.length; ++childIndex) {
-        childRowsHtml += renderCallerRow(children[childIndex], pending.depth, pending.mb, parentTotalBytes, pending.grandTotalBytes);
+        var childBranchClass = isBranch
+            ? (childIndex % 2 === 1 ? toggledClass : pending.branchClass)
+            : toggledClass;
+        childRowsHtml += renderCallerRow(children[childIndex], pending.depth, pending.mb, pending.siteTotalBytes, pending.grandTotalBytes, childBranchClass, pending.siteTotalBytes);
     }
 
     return `<table class="callerTreeInner">${CALLER_TREE_COLGROUP}${childRowsHtml}</table>`;
@@ -374,14 +445,28 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel, methodNa
         // "immediate parent" above a leaf, so this is the closest
         // equivalent: how much of this type's own allocations this one
         // allocation site accounts for. No left-indent (depth 0).
-        rows += renderTreeRow(rowId, ALLOCATION_SITE_ROLE, frameHtml, ``, leafNode, totalBytes, grandTotalBytes, mb);
+        //
+        // Top-level leaf rows are never tinted (always "" here) -
+        // .drillDownAltBranch (see snapshot.css) is meant to distinguish
+        // sibling call-path branches once a row is expanded, not to zebra-
+        // stripe the ranked list of allocation sites itself. Each leaf's
+        // own direct children still alternate correctly the first time
+        // it's expanded (see buildLazyDrillDownSubtree's isBranch case,
+        // which computes a fresh alternation among a node's own children
+        // independent of the node's own branchClass) - only the top-level
+        // list itself opts out.
+        // percentDenominator for a leaf row is this whole scope's total
+        // (there's no allocation site "above" a leaf); siteTotalBytes is
+        // the leaf's OWN total, which every caller row beneath it then
+        // measures against - see formatPercentOfSelf.
+        rows += renderTreeRow(rowId, ALLOCATION_SITE_ROLE, frameHtml, ``, leafNode, totalBytes, grandTotalBytes, mb, "", leafNode["totalBytes"]);
     }
 
     // "Call Stack" rather than "Allocating Method" - this column now holds
     // both the allocation-site row and its "Called by" rows underneath (see
     // ALLOCATION_SITE_ROLE/CALLED_BY_ROLE above), not just allocating
     // methods.
-    const header = `<tr class="tableHeader"><th>Call Stack</th><th>Total Bytes (mb)</th><th>% of Self</th><th>% of Total</th><th>Tick Count</th></tr>`;
+    const header = `<tr class="tableHeader"><th>Call Stack</th><th>Total Bytes (mb)</th><th>% of Site</th><th>% of Total</th><th>Tick Count</th></tr>`;
 
     return `${heading}<div class="detailTable drillDownTable"><table>${CALLER_TREE_COLGROUP}${header}${rows}</table></div>`;
 }

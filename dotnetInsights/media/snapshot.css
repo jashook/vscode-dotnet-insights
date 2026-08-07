@@ -694,7 +694,21 @@
     width: 10px;
 }
 
-.detailTable tr:hover
+/* :not(.callPathsDetail) matters specifically for the drill-down table:
+   CSS :hover applies to an element AND every one of its DOM ancestors, not
+   just the exact element under the pointer - and a .callPathsDetail row
+   (see drillDownStats.js's renderTreeRow) is a real DOM ancestor of its
+   entire nested subtree (it's the <tr> whose own <td> contains the next
+   level's <table>). Without this exclusion, hovering any row buried deep
+   in an expanded call chain made :hover match every single
+   .callPathsDetail wrapper above it too - all the way up to the root leaf
+   row's own wrapper - and since each wrapper's box spans the full height
+   of everything nested inside it, its lightblue background showed through
+   behind the *entire* chain at once, not just the one row actually under
+   the pointer. .callPathsDetail rows are purely structural containers
+   (no cursor:pointer, not independently clickable), so excluding them here
+   loses nothing. */
+.detailTable tr:hover:not(.callPathsDetail)
 {
     background-color: lightblue;
 }
@@ -897,11 +911,25 @@
    use the exact same colgroup, which is what makes a caller row's Bytes/
    Ticks numbers actually line up under the leaf row's numbers above it.
    The Method column is deliberately left unset in both so it can hold
-   long names. */
+   long names.
+
+   width was previously "auto", on the assumption a top-level <table> (not
+   inside a table-cell) naturally stretches to fill its container the way a
+   <div> would - it doesn't. A <table>'s default sizing is shrink-to-fit,
+   like inline-block, not stretch-to-fill; combined with table-layout:fixed,
+   "auto" makes the browser re-derive the table's own overall width from
+   whichever row currently needs the most space. That happened to look right
+   on first render (only short, unindented leaf rows visible), but expanding
+   a deeply-indented row (see buildLazyDrillDownSubtree) changes what the
+   "widest row" needs and could visibly resize/narrow the whole table -
+   exactly the same shrink-to-content bug .callerTreeInner below already
+   documents and fixes for nested tables. width:100% here applies the same
+   fix one level up, so the outer table's width stays anchored to its
+   container regardless of what gets expanded/collapsed inside it. */
 .drillDownTable table
 {
     table-layout: fixed;
-    width: auto;
+    width: 100%;
 }
 
 /* Every node with at least one child now gets its own nested
@@ -1026,11 +1054,17 @@
     background-color: lightblue;
 }
 
+/* vertical-align:middle because the default (baseline) left the glyph
+   visibly riding above the row's text - a ▸ sits high in its own em box,
+   and rotate(90deg) below spins it about its center without moving that
+   baseline-aligned box, so the expanded state floated even higher. */
 .leafMethodToggle
 {
     display: inline-block;
-    width: 1.2em;
+    text-align: center;
     transition: transform 0.15s ease;
+    vertical-align: middle;
+    width: 1.2em;
 }
 
 .leafMethodToggleEmpty
@@ -1042,6 +1076,32 @@
 .callerRow.expanded .leafMethodToggle
 {
     transform: rotate(90deg);
+}
+
+/* Alternates a light tint across sibling branches - a top-level allocation
+   site and everything nested under it, or, deeper in the tree, a real
+   branch point's own children and everything nested under each - so a long
+   scrolled-out call stack reads as distinct chains instead of one
+   visually undifferentiated block. Assigned once per branch in
+   drillDownStats.js (renderDrillDownTable's leafGroups loop,
+   buildLazyDrillDownSubtree's branch-point case) and inherited unchanged
+   down every non-branching continuation beneath it, so one branch's tint
+   stays consistent all the way to its own leaves - re-alternating only
+   where the tree actually branches again. Specificity is lower than both
+   hover rules below so hovering a tinted row still visibly highlights on
+   top of it.
+
+   rgba(0, 0, 0, 0.045) (the original value here) measured as essentially
+   imperceptible against this page's real background - a mid-gray at
+   noticeably higher opacity instead, verified readable in a real
+   screenshot at this exact value. Mid-gray rather than pure black so this
+   still reads against a dark theme too (this codebase has no other
+   dark-theme-specific styling to match, but a pure black overlay would be
+   invisible on a dark background while a mid-gray one lightens it, giving
+   *some* contrast either direction). */
+.drillDownAltBranch
+{
+    background-color: rgba(120, 120, 120, 0.18);
 }
 
 .callPathsDetail
@@ -1088,9 +1148,40 @@
     border-top: 1px solid rgba(0, 0, 0, 0.15);
     padding-bottom: 4px;
     padding-top: 4px;
+}
+
+/* Scoped to :first-child (the Call Stack cell). This used to apply to every
+   td in a caller row, which silently left-aligned that row's NUMERIC cells
+   too - so a single column rendered three different ways at once: header
+   centered (th default), leaf-row numbers centered (.detailTable td), and
+   caller-row numbers left. The numeric columns are right-aligned below
+   instead, so only the method-name cell needs left. */
+.callerRow td:first-child
+{
     text-align: left;
     white-space: normal;
     word-break: break-word;
+}
+
+/* Every column except Call Stack holds a number (bytes, two percentages, a
+   tick count) - right-aligned so decimal points and digit places line up
+   down the column, and applied to th and td together so the header sits
+   over its own values instead of centered independently of them. Covers
+   the nested .callerTreeInner tables too, since they live inside this same
+   .drillDownTable container and share its colgroup widths. */
+.drillDownTable th:not(:first-child),
+.drillDownTable td:not(:first-child)
+{
+    text-align: right;
+}
+
+/* .detailTable th uses padding:8px while td uses 4px, which left every
+   header's text sitting exactly 4px left of the values underneath it once
+   both were right-aligned. Only the right padding needs to match - the
+   header keeps its roomier 8px elsewhere. */
+.drillDownTable th:not(:first-child)
+{
+    padding-right: 4px;
 }
 
 .methodTypePrefix

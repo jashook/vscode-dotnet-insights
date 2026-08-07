@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 
 import { renderAllocationSummaryTable } from "./AllocationSummaryRenderer";
@@ -5,6 +6,35 @@ import { adaptivelyBucketTicks } from "./AllocationTicksBucketer";
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
 import { formatHumanDateTime, renderGcDetailTable } from "./GcDetailTableRenderer";
 import { computeAllocationAmountStats, computePauseTimeStats } from "./GcStatsCalculations";
+
+// A media/ file's webview URI, with the file's own last-modified time
+// appended as a ?v= query param.
+//
+// webview.asWebviewUri produces a byte-identical URI for a given file every
+// time, and Electron's network stack caches what it serves from that URI -
+// so an edited media/*.js or media/*.css can keep serving its PREVIOUS
+// contents to a webview, with nothing short of a full VS Code restart
+// reliably clearing it. That ambiguity ("is my fix wrong, or am I looking
+// at a stale copy?") cost several confusing round-trips during drill-down
+// table work. Keying the URI on mtime keeps normal caching intact for an
+// unchanged file (same mtime -> same URI -> cache hit) while guaranteeing
+// any actual edit produces a URI that cannot hit a stale entry. This also
+// matters for shipped upgrades, where media/ changes but the URI otherwise
+// wouldn't - the same stale-cache trap DependencySetup.ts's version-marker
+// files already guard against for downloaded helper binaries.
+function mediaWebviewUri(webview: vscode.Webview, extensionUri: vscode.Uri, fileName: string): vscode.Uri {
+    const fileUri = vscode.Uri.joinPath(extensionUri, 'media', fileName);
+    const webviewUri = webview.asWebviewUri(fileUri);
+
+    try {
+        return webviewUri.with({ query: `v=${fs.statSync(fileUri.fsPath).mtimeMs}` });
+    } catch (statError) {
+        // Unreadable/missing file: fall back to the un-versioned URI rather
+        // than failing the whole render - the <script>/<link> tag failing on
+        // its own is a much clearer symptom than a blank webview.
+        return webviewUri;
+    }
+}
 
 // Renders the summary tiles + Chart.js graphs shared by every "static GC
 // snapshot" input source (DotnetInsightsGcSnapshotEditor's .gcinfo/XML path,
@@ -256,14 +286,14 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
     const nonce = getNonce();
 
-    const mainUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'snapshot.css'));
-    const styleResetUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'reset.css'));
-    const styleVSCodeUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'vscode.css'));
+    const mainUri = mediaWebviewUri(webview, extensionUri, 'snapshot.css');
+    const styleResetUri = mediaWebviewUri(webview, extensionUri, 'reset.css');
+    const styleVSCodeUri = mediaWebviewUri(webview, extensionUri, 'vscode.css');
 
-    const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'snapshotGcStats.js'));
-    const chartZoomScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'chartZoomHelper.js'));
-    const allocationScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'allocationStats.js'));
-    const drillDownScriptUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'media', 'drillDownStats.js'));
+    const scriptUri = mediaWebviewUri(webview, extensionUri, 'snapshotGcStats.js');
+    const chartZoomScriptUri = mediaWebviewUri(webview, extensionUri, 'chartZoomHelper.js');
+    const allocationScriptUri = mediaWebviewUri(webview, extensionUri, 'allocationStats.js');
+    const drillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'drillDownStats.js');
 
     const chartjs = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'chart.js', 'dist', 'Chart.min.js'));
 
