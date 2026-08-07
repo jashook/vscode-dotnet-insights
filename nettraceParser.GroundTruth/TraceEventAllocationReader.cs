@@ -71,6 +71,17 @@ public static class TraceEventAllocationReader
                     // for why the diff test does the stripping itself,
                     // trying both forms.
                     record.LeafMethodName = stack != null ? stack.CodeAddress.FullMethodName : null;
+
+                    // Walk Caller to the outermost frame, leaf first - the
+                    // same order nettraceParser's own AllocationEvent.Stack
+                    // uses (see Blocks/StackBlock.cs), so the diff test can
+                    // compare the two index-for-index without either side
+                    // reversing.
+                    for (TraceCallStack frame = stack; frame != null; frame = frame.Caller)
+                    {
+                        record.Frames.Add(frame.CodeAddress.FullMethodName);
+                    }
+
                     records.Add(record);
                 }
             }
