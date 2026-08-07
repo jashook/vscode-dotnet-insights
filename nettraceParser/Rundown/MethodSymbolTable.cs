@@ -57,6 +57,11 @@ public class MethodSymbolTable
         public string DisplayName;
         public double LoadRelativeMSec;
         public double UnloadRelativeMSec;
+        // Assigned once, sequentially, at Build time (insertion order - NOT
+        // this range's position in sortedRanges, which gets reordered by
+        // StartAddress) - see ResolveId/NameForId's own comment for why
+        // this exists.
+        public int Id;
     }
 
     private const string ClrProviderName = "Microsoft-Windows-DotNETRuntime";
@@ -70,15 +75,62 @@ public class MethodSymbolTable
     private readonly List<MethodRange> sortedRanges;
     private readonly long maxRangeSize;
 
-    private MethodSymbolTable(List<MethodRange> sortedRanges, long maxRangeSize)
+    // Last range Resolve/ResolveId actually matched for a given address,
+    // kept purely as a fast-path cache - a real capture resolves the same
+    // handful of hot call-site addresses across huge numbers of distinct
+    // stacks (a caller-tree fold walks every frame of every raw stack -
+    // see AllocationJsonExporter.cs's BuildCallerTree), and the full binary
+    // search + backward scan below was measured (dotnet-trace, a real
+    // capture) as this whole export's single largest cost once that tree
+    // build was added. A cache hit is only ever trusted after re-checking
+    // the SAME [LoadRelativeMSec, UnloadRelativeMSec) condition the slow
+    // path already enforces, so this changes nothing about correctness
+    // (an address that got reused for a different method at a different
+    // time still falls through to the real scan below, exactly as if this
+    // cache didn't exist) - it only skips redoing the search when the
+    // cached candidate's own window still covers the new call, which is
+    // the overwhelmingly common case (most methods aren't reused at all).
+    private readonly Dictionary<long, MethodRange> lastMatchedRangeByAddress = new Dictionary<long, MethodRange>();
+
+    // namesById[range.Id] == range.DisplayName, in the same insertion order
+    // Ids were assigned in at Build time - see ResolveId/NameForId's own
+    // comment for why callers building a large data structure keyed by
+    // "which method is this" (rather than needing the name itself
+    // immediately) should prefer ResolveId over Resolve.
+    private readonly List<string> namesById;
+
+    // Ids for addresses that never matched any real range (or matched one
+    // whose validity window didn't cover the call - see ResolveId's
+    // fallback path) - assigned lazily, on first sight, offset past every
+    // real range's Id (namesById.Count, fixed at construction) so the two
+    // id spaces never collide. Also incidentally caches the "<unresolved
+    // 0x...>" string's own formatting cost, previously redone on every
+    // single call for the same never-resolved address.
+    private readonly Dictionary<long, int> unresolvedIdByAddress = new Dictionary<long, int>();
+    private readonly List<string> unresolvedNames = new List<string>();
+
+    private MethodSymbolTable(List<MethodRange> sortedRanges, long maxRangeSize, List<string> namesById)
     {
         this.sortedRanges = sortedRanges;
         this.maxRangeSize = maxRangeSize;
+        this.namesById = namesById;
     }
 
     public static MethodSymbolTable Build(List<EventRecord> events, int pointerSize, long qpcFrequency, long referenceQpc)
     {
         List<MethodRange> ranges = new List<MethodRange>();
+        List<string> namesById = new List<string>();
+        // Content-keyed, not per-range - two distinct MethodRanges (e.g.
+        // two tiered-JIT code versions of the same source method) can
+        // share the exact same DisplayName, and callers keying a data
+        // structure by ResolveId's own id (see AllocationJsonExporter.cs's
+        // BuildCallerTree) expect that case to merge into one entry, the
+        // same as it always would have via the resolved string's own
+        // content equality (Resolve's original, string-keyed behavior).
+        // Interning here, once per distinct range at Build time, keeps
+        // that merging guarantee while still handing hot-path callers a
+        // cheap int id instead of a string to key by.
+        Dictionary<string, int> idByDisplayName = new Dictionary<string, int>();
 
         // MethodID -> ranges awaiting a matching MethodUnloadVerbose,
         // oldest-load-first. A MethodID (like an address) can be reused
@@ -149,6 +201,20 @@ public class MethodSymbolTable
             // capture rather than guessing a too-late lower bound.
             range.LoadRelativeMSec = isLoad ? ComputeRelativeMSec(in record, qpcFrequency, referenceQpc) : 0;
             range.UnloadRelativeMSec = double.MaxValue;
+            // Content-interned, not insertion order - see idByDisplayName's
+            // own comment: two ranges with the same DisplayName must share
+            // one id so they merge for callers keying by ResolveId, the
+            // same as they always would have via Resolve's own string
+            // content equality.
+            int displayNameId;
+            if (!idByDisplayName.TryGetValue(range.DisplayName, out displayNameId))
+            {
+                displayNameId = namesById.Count;
+                namesById.Add(range.DisplayName);
+                idByDisplayName[range.DisplayName] = displayNameId;
+            }
+
+            range.Id = displayNameId;
             ranges.Add(range);
 
             long rangeSize = range.EndAddress - range.StartAddress;
@@ -172,7 +238,7 @@ public class MethodSymbolTable
 
         ranges.Sort(CompareByStartAddress);
 
-        return new MethodSymbolTable(ranges, maxRangeSize);
+        return new MethodSymbolTable(ranges, maxRangeSize, namesById);
     }
 
     private static double ComputeRelativeMSec(in EventRecord record, long qpcFrequency, long referenceQpc)
@@ -193,8 +259,43 @@ public class MethodSymbolTable
     // that captured it (or, for an aggregate merging several ticks sharing
     // one StackId, a representative one - see AllocationJsonExporter.cs's
     // StackAggregate.FirstSeenRelativeMSec).
+    //
+    // Thin wrapper over ResolveId/NameForId, kept for callers that just
+    // want the name directly (tests, and any one-off resolution not on a
+    // hot path) - see ResolveId's own comment for why a caller building a
+    // large data structure keyed by "which method is this" should call
+    // ResolveId instead and only convert to a string once it actually
+    // needs one.
     public string Resolve(long instructionPointer, double relativeMSec)
     {
+        return this.NameForId(this.ResolveId(instructionPointer, relativeMSec));
+    }
+
+    // Same address+time resolution as Resolve, but returns a small stable
+    // integer identity instead of the resolved display name string -
+    // callers building a data structure keyed by "which distinct method is
+    // this" (see AllocationJsonExporter.cs's BuildCallerTree, which builds
+    // a call-stack tree by walking every frame of every raw stack) can use
+    // this as a MUCH cheaper dictionary key than the resolved string
+    // itself: an int compare/hash instead of hashing the whole string's
+    // content on every dictionary operation, which was measured
+    // (dotnet-trace, a real capture) as this whole export's single largest
+    // cost once that tree build started keying its nodes by resolved name.
+    // Guaranteed: two calls return the same id if and only if they'd have
+    // returned the same DisplayName from Resolve (not just equal
+    // *content* - literally the same underlying range, or the same
+    // memoized unresolved-address slot), and a given id's name never
+    // changes for this table's lifetime - call NameForId once the string
+    // is actually needed (e.g., at JSON-write time), not on this hot path.
+    public int ResolveId(long instructionPointer, double relativeMSec)
+    {
+        MethodRange lastMatched;
+        if (this.lastMatchedRangeByAddress.TryGetValue(instructionPointer, out lastMatched)
+            && relativeMSec >= lastMatched.LoadRelativeMSec && relativeMSec < lastMatched.UnloadRelativeMSec)
+        {
+            return lastMatched.Id;
+        }
+
         int lowIndex = 0;
         int highIndex = this.sortedRanges.Count - 1;
         int foundIndex = -1;
@@ -227,7 +328,7 @@ public class MethodSymbolTable
         // the largest-possible method size couldn't span the gap, no
         // earlier range can either) - this keeps the scan from ever
         // degrading to a full linear pass over every range in the file.
-        string fallbackDisplayName = null;
+        MethodRange fallbackRange = null;
         for (int scanIndex = foundIndex; scanIndex >= 0; --scanIndex)
         {
             MethodRange candidate = this.sortedRanges[scanIndex];
@@ -244,7 +345,8 @@ public class MethodSymbolTable
 
             if (relativeMSec >= candidate.LoadRelativeMSec && relativeMSec < candidate.UnloadRelativeMSec)
             {
-                return candidate.DisplayName;
+                this.lastMatchedRangeByAddress[instructionPointer] = candidate;
+                return candidate.Id;
             }
 
             // Address matches but this candidate's own validity window
@@ -252,14 +354,43 @@ public class MethodSymbolTable
             // missing Load/Unload data) - kept only as a last resort so a
             // frame still resolves to *something* real rather than
             // silently regressing to "unresolved" for captures whose
-            // Load/Unload timing isn't perfectly clean.
-            if (fallbackDisplayName == null)
+            // Load/Unload timing isn't perfectly clean. Deliberately NOT
+            // cached into lastMatchedRangeByAddress - this range's own
+            // window does not actually cover this call, so trusting it for
+            // a *different* future relativeMSec could be wrong; only a
+            // genuinely-validated match (above) is safe to cache.
+            if (fallbackRange == null)
             {
-                fallbackDisplayName = candidate.DisplayName;
+                fallbackRange = candidate;
             }
         }
 
-        return fallbackDisplayName ?? $"<unresolved 0x{instructionPointer:X}>";
+        if (fallbackRange != null)
+        {
+            return fallbackRange.Id;
+        }
+
+        int unresolvedId;
+        if (!this.unresolvedIdByAddress.TryGetValue(instructionPointer, out unresolvedId))
+        {
+            unresolvedId = this.namesById.Count + this.unresolvedNames.Count;
+            this.unresolvedNames.Add($"<unresolved 0x{instructionPointer:X}>");
+            this.unresolvedIdByAddress[instructionPointer] = unresolvedId;
+        }
+
+        return unresolvedId;
+    }
+
+    // See ResolveId's own comment - id must have come from this same
+    // MethodSymbolTable instance's own ResolveId.
+    public string NameForId(int id)
+    {
+        if (id < this.namesById.Count)
+        {
+            return this.namesById[id];
+        }
+
+        return this.unresolvedNames[id - this.namesById.Count];
     }
 
     private static int CompareByStartAddress(MethodRange left, MethodRange right)

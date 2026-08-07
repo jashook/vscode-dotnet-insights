@@ -147,35 +147,40 @@ public class DrillDownBuilderTests
         // Only one type -> typeIndex 0. bucketWidthMSec=1000, so 100ms is
         // bucket 0 and 1500ms is bucket 1.
         JsonObject bucket0Cell = cells["0:0"].AsObject();
-        JsonArray bucket0Stacks = bucket0Cell["stacks"].AsArray();
-        Assert.Equal(2, bucket0Stacks.Count);
+        JsonArray bucket0Children = bucket0Cell["children"].AsArray();
+        Assert.Equal(2, bucket0Children.Count);
         Assert.Equal(2, bucket0Cell["distinctStackCount"].GetValue<int>());
         Assert.Equal(350, bucket0Cell["totalBytes"].GetValue<long>());
         Assert.Equal(3, bucket0Cell["totalTickCount"].GetValue<int>());
         // Sorted descending by totalBytes: the aggregated stackId=10 (300)
-        // before stackId=20 (50).
-        Assert.Equal(300, bucket0Stacks[0]["totalBytes"].GetValue<long>());
-        Assert.Equal(2, bucket0Stacks[0]["tickCount"].GetValue<int>());
-        Assert.Equal("MethodTen", ResolveFrameName(summary, bucket0Stacks[0]["frames"][0]));
-        Assert.Equal(50, bucket0Stacks[1]["totalBytes"].GetValue<long>());
-        Assert.Equal("MethodTwenty", ResolveFrameName(summary, bucket0Stacks[1]["frames"][0]));
+        // before stackId=20 (50). Both are single-frame stacks (see
+        // StackFor), so each is its own leaf with no further children.
+        Assert.Equal(300, bucket0Children[0]["totalBytes"].GetValue<long>());
+        Assert.Equal(2, bucket0Children[0]["tickCount"].GetValue<int>());
+        Assert.Equal("MethodTen", ResolveFrameName(summary, bucket0Children[0]["frame"]));
+        Assert.Equal(50, bucket0Children[1]["totalBytes"].GetValue<long>());
+        Assert.Equal("MethodTwenty", ResolveFrameName(summary, bucket0Children[1]["frame"]));
 
-        JsonArray bucket1Stacks = cells["0:1"]["stacks"].AsArray();
-        Assert.Single(bucket1Stacks);
-        Assert.Equal(999, bucket1Stacks[0]["totalBytes"].GetValue<long>());
+        JsonArray bucket1Children = cells["0:1"]["children"].AsArray();
+        Assert.Single(bucket1Children);
+        Assert.Equal(999, bucket1Children[0]["totalBytes"].GetValue<long>());
         Assert.Equal(999, cells["0:1"]["totalBytes"].GetValue<long>());
     }
 
     [Fact]
-    public void Build_DrillDown_FoldsDistinctStacksSharingTheSameLeafFrameIntoOneEntry()
+    public void Build_DrillDown_PreservesEveryDistinctCallerUnderASharedLeafFrame()
     {
         // Two genuinely distinct full call stacks (different callers) that
-        // share the same leaf (immediate allocating) frame - see
-        // AllocationJsonExporter.FoldByLeafFrame's own doc comment for why
-        // ranking/capping raw full stacks directly (the original design)
-        // could silently drop a large but diffuse real allocator whose
-        // bytes were spread across many slightly-different call paths, none
-        // individually big enough to make the cap.
+        // share the same leaf (immediate allocating) frame - the real bug
+        // this guards against: an earlier version of this export picked
+        // only one "representative" raw stack per leaf frame to display,
+        // which silently discarded every *other* real caller for that leaf
+        // (confirmed against a real capture: PerfView showed System.Uri as
+        // a top caller of System.String.Ctor, invisible under that design
+        // because the one kept representative stack for String.Ctor
+        // happened to go through a different caller). BuildCallerTree must
+        // instead fold both raw stacks into the SAME leaf node while
+        // preserving both callers as distinct children of it.
         List<AllocationEvent> events = new List<AllocationEvent>
         {
             new AllocationEvent(timestamp: default, relativeMSec: 100, allocationAmount: 300, allocationKind: GCAllocationKind.Small, typeName: "TypeA", heapIndex: 0, stack: new long[] { 1000, 2000 }),
@@ -191,18 +196,43 @@ public class DrillDownBuilderTests
 
         JsonObject summary = Build(events, symbolTable);
         JsonObject cell = summary["drillDown"]["cells"]["0:0"].AsObject();
-        JsonArray cellStacks = cell["stacks"].AsArray();
+        JsonArray cellChildren = cell["children"].AsArray();
 
-        // Two distinct full stacks, but one folded entry - the two callers
-        // are genuinely different, only their shared leaf makes them fold.
-        Assert.Single(cellStacks);
-        Assert.Equal(1000, cellStacks[0]["totalBytes"].GetValue<long>());
-        Assert.Equal(2, cellStacks[0]["tickCount"].GetValue<int>());
-        Assert.Equal(2, cellStacks[0]["distinctStackCount"].GetValue<int>());
-        Assert.Equal("SharedLeaf", ResolveFrameName(summary, cellStacks[0]["frames"][0]));
+        // One leaf node - both raw stacks share it, aggregating both.
+        Assert.Single(cellChildren);
+        JsonObject leafNode = cellChildren[0].AsObject();
+        Assert.Equal("SharedLeaf", ResolveFrameName(summary, leafNode["frame"]));
+        Assert.Equal(1000, leafNode["totalBytes"].GetValue<long>());
+        Assert.Equal(2, leafNode["tickCount"].GetValue<int>());
+        Assert.Equal(2, leafNode["distinctStackCount"].GetValue<int>());
 
-        // The true cell-level totals (raw, pre-fold distinct stack count)
-        // are unaffected by folding - both real distinct stacks still count.
+        // Both real callers must be preserved as distinct children - not
+        // folded down to a single arbitrary representative.
+        JsonArray callers = leafNode["children"].AsArray();
+        Assert.Equal(2, leafNode["totalChildCount"].GetValue<int>());
+        Assert.Equal(2, callers.Count);
+
+        JsonObject callerA = null;
+        JsonObject callerB = null;
+        foreach (JsonNode callerNode in callers)
+        {
+            string callerName = ResolveFrameName(summary, callerNode["frame"]);
+            if (callerName == "CallerA")
+            {
+                callerA = callerNode.AsObject();
+            }
+            else if (callerName == "CallerB")
+            {
+                callerB = callerNode.AsObject();
+            }
+        }
+
+        Assert.NotNull(callerA);
+        Assert.NotNull(callerB);
+        Assert.Equal(300, callerA["totalBytes"].GetValue<long>());
+        Assert.Equal(700, callerB["totalBytes"].GetValue<long>());
+
+        // The true cell-level totals are unaffected either way.
         Assert.Equal(2, cell["distinctStackCount"].GetValue<int>());
         Assert.Equal(1000, cell["totalBytes"].GetValue<long>());
     }
@@ -230,7 +260,7 @@ public class DrillDownBuilderTests
         int totalDrillDownTickCount = 0;
         foreach (KeyValuePair<string, JsonNode> cellEntry in cells)
         {
-            foreach (JsonNode stackEntry in cellEntry.Value["stacks"].AsArray())
+            foreach (JsonNode stackEntry in cellEntry.Value["children"].AsArray())
             {
                 totalDrillDownTickCount += stackEntry["tickCount"].GetValue<int>();
             }
@@ -259,12 +289,12 @@ public class DrillDownBuilderTests
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
         JsonObject summary = Build(events, symbolTable);
 
-        JsonArray cellStacks = summary["drillDown"]["cells"]["0:0"]["stacks"].AsArray();
+        JsonArray cellChildren = summary["drillDown"]["cells"]["0:0"]["children"].AsArray();
 
-        Assert.Single(cellStacks);
-        Assert.Equal(300, cellStacks[0]["totalBytes"].GetValue<long>());
-        Assert.Equal(2, cellStacks[0]["tickCount"].GetValue<int>());
-        Assert.Equal("<no stack captured>", ResolveFrameName(summary, cellStacks[0]["frames"][0]));
+        Assert.Single(cellChildren);
+        Assert.Equal(300, cellChildren[0]["totalBytes"].GetValue<long>());
+        Assert.Equal(2, cellChildren[0]["tickCount"].GetValue<int>());
+        Assert.Equal("<no stack captured>", ResolveFrameName(summary, cellChildren[0]["frame"]));
     }
 
     [Fact]
@@ -282,14 +312,15 @@ public class DrillDownBuilderTests
         JsonObject summary = Build(events, symbolTable);
 
         JsonObject cell = summary["drillDown"]["cells"]["0:0"].AsObject();
-        JsonArray cellStacks = cell["stacks"].AsArray();
+        JsonArray cellChildren = cell["children"].AsArray();
 
-        Assert.Equal(50, cellStacks.Count);
+        Assert.Equal(50, cellChildren.Count);
+        Assert.Equal(60, cell["totalChildCount"].GetValue<int>());
         // Largest kept (stackId=1, amount=999) must be first (descending sort).
-        Assert.Equal(999, cellStacks[0]["totalBytes"].GetValue<long>());
+        Assert.Equal(999, cellChildren[0]["totalBytes"].GetValue<long>());
         // Smallest kept must still beat every dropped one (stackId 51-60,
         // amounts 949 down to 940).
-        long smallestKept = cellStacks[cellStacks.Count - 1]["totalBytes"].GetValue<long>();
+        long smallestKept = cellChildren[cellChildren.Count - 1]["totalBytes"].GetValue<long>();
         Assert.True(smallestKept >= 950, $"Expected the smallest kept stack to still be >= 950, got {smallestKept}");
 
         // The whole point of shipping totalBytes/totalTickCount/
@@ -308,13 +339,13 @@ public class DrillDownBuilderTests
         Assert.Equal(trueTotalBytes, cell["totalBytes"].GetValue<long>());
 
         long summedCappedStacksOnly = 0;
-        foreach (JsonNode stackEntry in cellStacks)
+        foreach (JsonNode stackEntry in cellChildren)
         {
             summedCappedStacksOnly += stackEntry["totalBytes"].GetValue<long>();
         }
 
         Assert.True(summedCappedStacksOnly < cell["totalBytes"].GetValue<long>(),
-            "Summing only the capped stacks array should undercount the true cell total once the cap is exceeded.");
+            "Summing only the capped children array should undercount the true cell total once the cap is exceeded.");
     }
 
     [Fact]
@@ -385,9 +416,9 @@ public class DrillDownBuilderTests
         Assert.Equal(1, lohCell["distinctStackCount"].GetValue<int>());
         Assert.Equal(5000, lohCell["totalBytes"].GetValue<long>());
 
-        JsonArray lohStacks = lohCell["stacks"].AsArray();
-        Assert.Single(lohStacks);
-        Assert.Equal(5000, lohStacks[0]["totalBytes"].GetValue<long>());
+        JsonArray lohChildren = lohCell["children"].AsArray();
+        Assert.Single(lohChildren);
+        Assert.Equal(5000, lohChildren[0]["totalBytes"].GetValue<long>());
 
         JsonArray lohTypeDrillDown = loh["typeDrillDown"].AsArray();
         Assert.Single(lohTypeDrillDown);
@@ -397,7 +428,7 @@ public class DrillDownBuilderTests
     private static long SumCellBytes(JsonObject cells, string cellKey)
     {
         long total = 0;
-        foreach (JsonNode stackEntry in cells[cellKey]["stacks"].AsArray())
+        foreach (JsonNode stackEntry in cells[cellKey]["children"].AsArray())
         {
             total += stackEntry["totalBytes"].GetValue<long>();
         }

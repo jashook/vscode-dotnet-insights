@@ -231,20 +231,37 @@ public class RealCaptureTests
         bool foundRealFrame = false;
         foreach (KeyValuePair<string, JsonNode> cellEntry in cells)
         {
-            foreach (JsonNode stackEntry in cellEntry.Value["stacks"].AsArray())
+            if (ContainsRealResolvedFrame(cellEntry.Value["children"].AsArray(), methodNames))
             {
-                foreach (JsonNode frame in stackEntry["frames"].AsArray())
-                {
-                    string frameName = methodNames[frame.GetValue<int>()].GetValue<string>();
-                    if (!frameName.StartsWith("<unresolved") && frameName != "<no stack captured>")
-                    {
-                        foundRealFrame = true;
-                    }
-                }
+                foundRealFrame = true;
+                break;
             }
         }
 
         Assert.True(foundRealFrame, "Expected at least one real (non-placeholder) resolved frame across all drillDown cells.");
+    }
+
+    // Walks a call-stack tree node's children (see AllocationJsonExporter.cs's
+    // BuildCallerTree/WriteCallerTreeChildren) looking for any frame that
+    // resolved to a real method name, at any depth - not just the top-level
+    // leaf frames.
+    private static bool ContainsRealResolvedFrame(JsonArray nodes, JsonArray methodNames)
+    {
+        foreach (JsonNode node in nodes)
+        {
+            string frameName = methodNames[node["frame"].GetValue<int>()].GetValue<string>();
+            if (!frameName.StartsWith("<unresolved") && frameName != "<no stack captured>")
+            {
+                return true;
+            }
+
+            if (ContainsRealResolvedFrame(node["children"].AsArray(), methodNames))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
 

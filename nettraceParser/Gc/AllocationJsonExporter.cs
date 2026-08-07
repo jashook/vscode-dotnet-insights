@@ -91,15 +91,60 @@ public static class AllocationSummaryBuilder
     // so "the stack for Other" would misleadingly imply it's one thing.
     // Ticks landing in that column simply aren't grouped into any drillDown
     // cell.
-    private const int DrillDownStacksPerCellLimit = 50;
+    //
+    // Applies to every node in the call-stack tree (see BuildCallerTree/
+    // WriteCallerTreeChildren), not just the top level - a node with more
+    // than this many distinct children only writes its top
+    // DrillDownTreeChildrenLimit by bytes, though its own totalBytes/
+    // tickCount/distinctStackCount (and totalChildCount) always reflect
+    // every real child, capped or not. One shared cap for both drillDown
+    // (per chart cell) and typeDrillDown (whole capture).
+    //
+    // This alone does NOT bound total output size - an uncapped-*depth*
+    // tree with only this per-node breadth cap can still blow up
+    // combinatorially for deep, branchy real call stacks (async state
+    // machines/closures commonly stay nominally distinct much deeper than
+    // framework code eventually converges): confirmed on a real capture,
+    // applying only this cap at every level with no further bound produced
+    // an 800MB export, up from ~15MB before this per-node cap existed at
+    // all. See DrillDownTreeNodeBudgetPerScope/MarkIncludedNodes for the
+    // actual size bound - this constant only controls breadth *within* a
+    // node the budget already allowed to expand.
+    private const int DrillDownTreeChildrenLimit = 50;
 
-    // typeDrillDown (see WriteTypeDrillDown) merges stacks across the whole
-    // capture rather than one 1-second bucket, so it naturally accumulates
-    // more distinct call paths per type than a single cell ever would -
-    // a higher cap than DrillDownStacksPerCellLimit is deliberate here.
-    private const int DrillDownStacksPerTypeLimit = 100;
+    // Bounds how many tree nodes a single scope is allowed to write at all
+    // (across the whole tree, not per-node - see MarkIncludedNodes), chosen
+    // by a global best-first (biggest TotalBytes first) traversal starting
+    // at the root. This is the actual output-size bound
+    // (DrillDownTreeChildrenLimit above only shapes breadth within whatever
+    // this budget already let through). Every node's own totalBytes/
+    // tickCount/distinctStackCount/totalChildCount is always the TRUE
+    // aggregate regardless of whether this budget let it be written -
+    // only how much of the tree below an already low-priority (small
+    // and/or deep) node gets shown is affected, which is exactly the
+    // least useful part of the tree to spend the budget on anyway.
+    // Confirmed against a real capture that this still preserves the fix
+    // this whole tree redesign was for: the highest-byte branches (like a
+    // diffuse System.Uri-adjacent allocator) are exactly the ones a
+    // byte-priority budget writes first.
+    //
+    // Two different budgets, not one shared constant - a single (type,
+    // 1-second bucket) cell (WriteCellDrillDown) covers a far narrower
+    // slice of data than a type's *whole-capture* tree (WriteTypeDrillDown)
+    // naturally accumulates, and a real capture can have thousands of
+    // cells (chart types x buckets) vs. only ever up to TopTypesLimit(100)
+    // typeDrillDown entries - giving every cell the same generous budget
+    // as a whole type was the actual root cause of a real regression this
+    // tree redesign introduced: 2,408 cells x a 2,000-node budget each
+    // produced a 438MB export (97% of it from cells alone) on a real
+    // capture, even though per-node breadth was already capped
+    // (DrillDownTreeChildrenLimit) and per-node totals were already
+    // correct - the budget just wasn't scoped to how much real detail a
+    // single narrow cell actually needs.
+    private const int DrillDownTreeNodeBudgetPerCell = 60;
+    private const int DrillDownTreeNodeBudgetPerType = 2000;
 
-    // Shared sentinel for FoldByLeafFrame/WriteStackAggregate's "this tick
+    // Shared sentinel for BuildCallerTree/WriteStackAggregate's "this tick
     // wasn't stack-walked" case - a single source of truth so both agree on
     // the exact string (folding needs it as a real dictionary key, not just
     // a display string).
@@ -181,12 +226,36 @@ public static class AllocationSummaryBuilder
         // in both scopes.
         MethodNameInterner methodNameInterner = new MethodNameInterner();
 
+        // Shared by every BuildCallerTree call this whole Write invocation
+        // makes (drillDown AND typeDrillDown, "all" AND "loh") - see
+        // BuildCallerTree's own comment on why resolving the same distinct
+        // raw stack's frames more than once is pure waste: a given
+        // AllocationEvent.Stack array reference commonly feeds BOTH its
+        // (type, bucket) cell's tree AND its type's whole-capture tree, and
+        // every "loh" stack is by construction also an "all" stack (loh is
+        // just a Large-kind filter over the same events) - without this
+        // cache, MethodSymbolTable.ResolveId (and its own internal
+        // address cache lookup) was measured (dotnet-trace, a real
+        // capture) running up to 4x on the same physical stack.
+        Dictionary<long[], int[]> frameIdCache = new Dictionary<long[], int[]>(ReferenceEqualityComparer.Instance);
+
+        // Shared by every BuildCallerTree call this whole Write invocation
+        // makes, the same way frameIdCache is - see DrillDownTreeNodePool's
+        // own comment for why reusing node objects across every scope's
+        // tree (not just within one) is safe and worthwhile: measured
+        // (dotnet-trace's gc-verbose profile, run against nettraceParser's
+        // own process on a real capture) at 435MB across 4,289 allocation-
+        // tick samples before this pool existed - the third-largest
+        // allocator in the whole process.
+        DrillDownTreeNodePool nodePool = new DrillDownTreeNodePool();
+        ChildBufferPool bufferPool = new ChildBufferPool();
+
         writer.WriteStartObject();
 
         writer.WritePropertyName("ticks");
         WriteTicks(writer, allocationEvents, ticksBinaryPath);
 
-        WriteTypeBreakdown(writer, allocationEvents, bucketCount, symbolTable, methodNameInterner);
+        WriteTypeBreakdown(writer, allocationEvents, bucketCount, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool);
 
         // Identical breakdown (same totalSampledBytes/topTypes/typeTimeline/
         // drillDown/typeDrillDown field names and shapes as above), scoped
@@ -206,7 +275,7 @@ public static class AllocationSummaryBuilder
         List<AllocationEvent> lohEvents = FilterByAllocationKind(allocationEvents, GCAllocationKind.Large);
         writer.WritePropertyName("loh");
         writer.WriteStartObject();
-        WriteTypeBreakdown(writer, lohEvents, bucketCount, symbolTable, methodNameInterner);
+        WriteTypeBreakdown(writer, lohEvents, bucketCount, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool);
         writer.WriteEndObject();
 
         // Written last since it's only fully populated once every stack in
@@ -249,7 +318,7 @@ public static class AllocationSummaryBuilder
     // events must already be sorted ascending by RelativeMSec (true both for
     // the full list, sorted once in Write, and any filtered subset of it,
     // since filtering preserves relative order).
-    private static void WriteTypeBreakdown(Utf8JsonWriter writer, List<AllocationEvent> events, int bucketCount, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
+    private static void WriteTypeBreakdown(Utf8JsonWriter writer, List<AllocationEvent> events, int bucketCount, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner, Dictionary<long[], int[]> frameIdCache, DrillDownTreeNodePool nodePool, ChildBufferPool bufferPool)
     {
         Dictionary<string, TypeAllocStats> statsByType = new Dictionary<string, TypeAllocStats>();
         long totalSampledBytes = 0;
@@ -327,13 +396,39 @@ public static class AllocationSummaryBuilder
         // Single pass over every tick builds both drill-down shapes at once
         // (see BuildDrillDownAggregates) - cheaper than two independent
         // O(totalTicks) passes now that there are two things to aggregate.
-        DrillDownAggregates aggregates = BuildDrillDownAggregates(events, columnIndexByType, typeIndexByName, topTypesCount, bucketCount);
+        DrillDownAggregates aggregates = BuildDrillDownAggregates(events, columnIndexByType, typeIndexByName, sortedStats, topTypesCount, bucketCount);
+
+        // Every distinct stack frameIdCache will ever see for this whole
+        // Write() call is already known at this point: BuildDrillDownAggregates
+        // just partitioned every event's stack into exactly one
+        // aggregates.ByType[i] dictionary, keyed by the same long[] reference
+        // BuildCallerTree looks up below - "loh" (the other WriteTypeBreakdown
+        // call sharing this same frameIdCache) only ever sees a subset of
+        // those same references, so it contributes ~0 new entries. Summing
+        // ByType's counts up front and reserving the space via
+        // EnsureCapacity (which only grows, never shrinks, and is exact
+        // rather than a guess) avoids the O(log n) series of table resizes
+        // frameIdCache would otherwise pay for one entry at a time -
+        // measured via dotnet-trace gc-verbose as a real, if modest,
+        // contributor to total allocation volume (Entry[long[],int[]][]
+        // resize churn).
+        int distinctStackCountEstimate = 0;
+        for (int typeIndex = 0; typeIndex < aggregates.ByType.Length; ++typeIndex)
+        {
+            Dictionary<long[], StackAggregate> typeStacks = aggregates.ByType[typeIndex];
+            if (typeStacks != null)
+            {
+                distinctStackCountEstimate += typeStacks.Count;
+            }
+        }
+
+        frameIdCache.EnsureCapacity(frameIdCache.Count + distinctStackCountEstimate);
 
         writer.WritePropertyName("drillDown");
-        WriteCellDrillDown(writer, aggregates.ByCell, symbolTable, methodNameInterner);
+        WriteCellDrillDown(writer, aggregates.ByCell, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool);
 
         writer.WritePropertyName("typeDrillDown");
-        WriteTypeDrillDown(writer, aggregates.ByType, symbolTable, methodNameInterner);
+        WriteTypeDrillDown(writer, aggregates.ByType, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool);
     }
 
     // Shared by WriteTypeTimeline and WriteDrillDown so both agree on
@@ -342,7 +437,7 @@ public static class AllocationSummaryBuilder
     // comment.
     private static Dictionary<string, int> BuildColumnIndexByType(List<TypeAllocStats> sortedStats, int chartTypeCount)
     {
-        Dictionary<string, int> columnIndexByType = new Dictionary<string, int>();
+        Dictionary<string, int> columnIndexByType = new Dictionary<string, int>(chartTypeCount);
 
         for (int typeIndex = 0; typeIndex < chartTypeCount; ++typeIndex)
         {
@@ -459,13 +554,6 @@ public static class AllocationSummaryBuilder
         // close together - the same hot call path re-executing), not a
         // per-tick-exact resolution.
         public double FirstSeenRelativeMSec;
-        // How many distinct *full* call stacks (raw StackAggregate entries,
-        // pre-fold) were merged into this one entry by FoldByLeafFrame - 1
-        // for an entry straight out of AddToStackAggregate (a single real
-        // distinct full stack), higher once folded. Lets a consumer show
-        // "this row represents N call paths" instead of implying Stack is
-        // the only one that ever allocated this way.
-        public int DistinctStackCount = 1;
     }
 
     private struct DrillDownAggregates
@@ -500,7 +588,7 @@ public static class AllocationSummaryBuilder
     // same array instance, and Array.Empty<long>() (the "no stack" value)
     // is itself a single cached instance shared by every no-stack tick, so
     // those still group together too.
-    private static DrillDownAggregates BuildDrillDownAggregates(List<AllocationEvent> allocationEvents, Dictionary<string, int> columnIndexByType, Dictionary<string, int> typeIndexByName, int topTypesCount, int bucketCount)
+    private static DrillDownAggregates BuildDrillDownAggregates(List<AllocationEvent> allocationEvents, Dictionary<string, int> columnIndexByType, Dictionary<string, int> typeIndexByName, List<TypeAllocStats> sortedStats, int topTypesCount, int bucketCount)
     {
         DrillDownAggregates aggregates = new DrillDownAggregates();
         // Keyed by (typeIndex, bucketIndex) as a value-type tuple, not the
@@ -509,7 +597,14 @@ public static class AllocationSummaryBuilder
         // real 76k-tick capture) as a meaningful chunk of this method's cost.
         // The formatted string is built once per distinct cell instead, in
         // WriteCellDrillDown - there are far fewer cells than ticks.
-        aggregates.ByCell = new Dictionary<(int, int), Dictionary<long[], StackAggregate>>();
+        //
+        // columnIndexByType.Count * bucketCount is an exact upper bound on
+        // how many distinct (typeIndex, bucketIndex) cells can ever appear
+        // (every chart-column type crossed with every time bucket) - not
+        // every cell will actually get a tick, but reserving the full grid
+        // up front avoids ByCell's own resize churn as new cells are
+        // discovered one at a time below.
+        aggregates.ByCell = new Dictionary<(int, int), Dictionary<long[], StackAggregate>>(columnIndexByType.Count * bucketCount);
         aggregates.ByType = new Dictionary<long[], StackAggregate>[topTypesCount];
 
         Span<AllocationEvent> allocationEventsSpan = CollectionsMarshal.AsSpan(allocationEvents);
@@ -544,7 +639,20 @@ public static class AllocationSummaryBuilder
                 Dictionary<long[], StackAggregate> typeStacks = aggregates.ByType[globalTypeIndex];
                 if (typeStacks == null)
                 {
-                    typeStacks = new Dictionary<long[], StackAggregate>(ReferenceEqualityComparer.Instance);
+                    // sortedStats[globalTypeIndex].TickCount (already
+                    // computed by WriteTypeBreakdown's own first pass over
+                    // events, before this method ever runs) is an exact
+                    // upper bound on this type's distinct-stack count - a
+                    // StackAggregate can only be created once per distinct
+                    // stack, and a type can never have more distinct stacks
+                    // than it has ticks. Measured via dotnet-trace
+                    // gc-verbose as the single largest reducible allocator
+                    // in this whole export after DrillDownTreeNode's own
+                    // pooling (Entry[long[],StackAggregate][] resize churn) -
+                    // a real capture's single largest type had 140,444
+                    // distinct stacks, meaning ~18 resize-and-copy cycles
+                    // from an unsized start.
+                    typeStacks = new Dictionary<long[], StackAggregate>(sortedStats[globalTypeIndex].TickCount, ReferenceEqualityComparer.Instance);
                     aggregates.ByType[globalTypeIndex] = typeStacks;
                 }
 
@@ -570,136 +678,571 @@ public static class AllocationSummaryBuilder
         ++aggregate.TickCount;
     }
 
-    // Groups per-distinct-full-stack StackAggregate entries by their
-    // resolved LEAF frame (Stack[0] - see WriteStackAggregate's own comment
-    // on "leaf-first" order, the frame closest to the actual allocation).
-    // WriteCellDrillDown/WriteTypeDrillDown used to rank and cap directly on
-    // *raw* StackAggregate entries - one per distinct full call stack - but
-    // a real capture can have orders of magnitude more distinct full stacks
-    // for one type than distinct actual allocation sites (verified on a
-    // real capture: 140,444 distinct full stacks for System.String, only
-    // 130 distinct leaf frames) because many different deeper call paths
-    // (varying request parameters, etc.) funnel through the same handful of
-    // real allocators. Ranking/capping raw full stacks meant a genuinely
-    // large allocator diffused across thousands of individually-small
-    // distinct stacks - none big enough alone to crack the top N - was
-    // completely absent from the export, while an allocator with only one
-    // or two unvarying call paths dominated the list purely because its
-    // bytes concentrated into very few entries. Folding by leaf frame
-    // first, then ranking/capping the folded groups, fixes this: on that
-    // same real capture, the old top-100-raw-stacks export for
-    // System.String covered only 2.03% of its total bytes and completely
-    // missed an allocator (Roblox.CDN.Token.SimpleUriSigningAuthority.
-    // SignUri and its immediate neighbors) worth 17.86% on its own; folding
-    // first means every one of the 130 real leaf groups fits well within
-    // the existing cap, so nothing is dropped for this capture at all.
-    //
-    // This intentionally does NOT reproduce PerfView's own tree-folding
-    // exactly (PerfView also collapses linear chains of single-child
-    // ancestor frames above the leaf into one displayed row) - grouping by
-    // leaf alone is a close approximation (verified: Kestrel's
-    // GetAsciiOrUTF8String leaf group came out at 15.11% of the same type's
-    // total against PerfView's own implied ~15.09% for that row) and is
-    // simple enough to compute in one pass without building a full tree.
-    private static List<StackAggregate> FoldByLeafFrame(List<StackAggregate> rawStacks, MethodSymbolTable symbolTable)
+    // One node in the folded call-stack tree - see BuildCallerTree. Children
+    // keyed by resolved frame name, so any two raw stacks sharing a
+    // leaf-first common prefix merge into the same chain of nodes instead
+    // of remaining separate; where they genuinely diverge, the tree
+    // actually branches. This is what fixes a real, confirmed bug in an
+    // earlier version of this export: WriteCellDrillDown/WriteTypeDrillDown
+    // used to rank and cap directly on *raw* per-distinct-full-stack
+    // entries, and a real capture can have orders of magnitude more
+    // distinct full stacks for one type than distinct actual allocation
+    // sites (verified: 140,444 distinct full stacks for System.String, only
+    // 130 distinct leaf frames) - many different deeper call paths (varying
+    // request parameters, etc.) funnel through the same handful of real
+    // allocators. An intermediate fix folded by leaf frame alone, picking
+    // one "representative" raw stack per leaf to display - which fixed the
+    // top-level ranking (no more real allocator invisible just because its
+    // bytes were spread across many individually-small stacks) but
+    // introduced a *different* real bug: picking only one representative
+    // stack per leaf silently discarded every other real caller for that
+    // leaf. Confirmed against a real capture: PerfView showed System.Uri as
+    // a top caller of System.String.Ctor, invisible in that design because
+    // the one kept representative stack for String.Ctor happened to go
+    // through an entirely different caller. Building the real tree - fold
+    // at *every* depth, not just the leaf - fixes both problems at once:
+    // every real caller permutation is preserved (a node's Children
+    // dictionary has one entry per distinct next frame actually observed,
+    // not a single arbitrarily-chosen example), and ranking/capping
+    // (WriteCallerTreeChildren) still only ever operates on real aggregated
+    // groups, never individual raw stacks.
+    // Children are stored via a small-map fast path, not a plain
+    // Dictionary<int, DrillDownTreeNode> - a real call-stack tree's own
+    // shape (see BuildCallerTree) means the overwhelming majority of nodes
+    // have exactly one child (a straight, non-branching chain of caller
+    // frames - most call stacks don't branch at every frame), and
+    // allocating a full hash table (bucket + entry arrays) for that common
+    // case was measured (dotnet-trace, a real capture) as this whole
+    // export's single largest remaining cost after BuildCallerTree/
+    // WriteCallerTreeChildren switched to int-keyed children (see that
+    // change's own comment) - `Dictionary.Resize` alone, almost entirely
+    // driven by huge numbers of near-empty dictionaries each growing from
+    // their initial zero capacity. firstChild covers the 0-or-1-child case
+    // with no dictionary at all; moreChildren is only allocated once a
+    // second genuinely distinct child arrives, so real branch points (the
+    // ones that actually need a hash table) still get one.
+    private class DrillDownTreeNode
     {
-        Dictionary<string, StackAggregate> foldedByLeaf = new Dictionary<string, StackAggregate>();
-        // Tracks the representative's own (single raw stack's) TotalBytes,
-        // separately from the folded entry's TotalBytes (which keeps
-        // accumulating as more raw stacks merge in) - needed to decide
-        // whether a newly-seen raw stack should replace the representative
-        // Stack shown for this group.
-        Dictionary<string, long> representativeBytesByLeaf = new Dictionary<string, long>();
+        public long TotalBytes;
+        public int TickCount;
+        // How many distinct raw full stacks (see BuildDrillDownAggregates)
+        // pass through this exact node - i.e. this node's own subtree size.
+        // 1 for a node only ever reached by one real call stack. This is
+        // the TRUE total, unaffected by DrillDownTreeChildrenLimit capping
+        // which of this node's children actually get written.
+        public int DistinctStackCount;
+        // Set by MarkIncludedNodes - whether this exact node itself is
+        // written to output at all (see WriteCallerTreeChildren, which
+        // skips any child not marked Included). False for a node that
+        // exists (and has a true, accurate TotalBytes/TickCount/
+        // DistinctStackCount/ChildCount, reflected in its PARENT's totals
+        // either way) but didn't make the global per-scope node budget.
+        public bool Included;
+
+        private bool hasFirstChild;
+        private int firstChildFrameId;
+        private DrillDownTreeNode firstChild;
+        // Keyed by MethodSymbolTable.ResolveId's own frame id (or
+        // NoStackFrameId), NOT the resolved name string - see this class's
+        // own header comment on why an int key at all, and why this is
+        // only allocated for a genuine second-plus child. The actual name
+        // is only ever looked up once, per written node, in
+        // WriteCallerTreeChildren.
+        private Dictionary<int, DrillDownTreeNode> moreChildren;
+
+        public int ChildCount
+        {
+            get { return (this.hasFirstChild ? 1 : 0) + (this.moreChildren != null ? this.moreChildren.Count : 0); }
+        }
+
+        public DrillDownTreeNode GetOrAddChild(int frameId, DrillDownTreeNodePool pool)
+        {
+            if (this.hasFirstChild && this.firstChildFrameId == frameId)
+            {
+                return this.firstChild;
+            }
+
+            if (!this.hasFirstChild)
+            {
+                this.hasFirstChild = true;
+                this.firstChildFrameId = frameId;
+                this.firstChild = pool.Rent();
+                return this.firstChild;
+            }
+
+            if (this.moreChildren == null)
+            {
+                // Pre-sized rather than the parameterless constructor (0
+                // capacity, forcing an immediate resize on the very first
+                // insert) - a real branch point commonly has more than a
+                // couple of children, and Dictionary<K,V>.Resize was
+                // measured (dotnet-trace, a real capture) as this whole
+                // export's single largest cost across the huge number of
+                // real branch points a full call-stack tree has. Doesn't
+                // eliminate resizing for a node that ends up with hundreds
+                // of children (unknowable in advance, built up one raw
+                // stack at a time) - just the first one or two, which is
+                // where the volume is.
+                this.moreChildren = new Dictionary<int, DrillDownTreeNode>(4);
+            }
+
+            DrillDownTreeNode child;
+            if (!this.moreChildren.TryGetValue(frameId, out child))
+            {
+                child = pool.Rent();
+                this.moreChildren[frameId] = child;
+            }
+
+            return child;
+        }
+
+        // Clears this node back to its just-constructed state so
+        // DrillDownTreeNodePool can hand it out again for an unrelated
+        // later tree - see that pool's own comment for why reusing node
+        // objects across separate BuildCallerTree calls is safe (each
+        // scope's tree is fully consumed - written to JSON - before the
+        // next one is built). moreChildren, if this node ever became a
+        // branch point, is Cleared rather than nulled out - reusing the
+        // Dictionary object itself (not just the node) avoids paying for
+        // another one of the exact resize costs this whole node design was
+        // built to eliminate, the next time some other node in some other
+        // tree needs one.
+        public void Reset()
+        {
+            this.TotalBytes = 0;
+            this.TickCount = 0;
+            this.DistinctStackCount = 0;
+            this.Included = false;
+            this.hasFirstChild = false;
+            this.firstChildFrameId = 0;
+            this.firstChild = null;
+
+            if (this.moreChildren != null)
+            {
+                this.moreChildren.Clear();
+            }
+        }
+
+        // Fast path for the overwhelmingly common case (a straight,
+        // non-branching chain of caller frames - most call stacks don't
+        // branch at every frame): true only when this node has EXACTLY one
+        // child, letting the caller skip allocating+sorting a List entirely
+        // (a real cost at the volume EnqueueTopChildren/
+        // WriteCallerTreeChildren run at - see this class's own header
+        // comment) for a node where "sort by bytes" is a no-op anyway.
+        public bool TryGetOnlyChild(out int frameId, out DrillDownTreeNode child)
+        {
+            if (this.hasFirstChild && this.moreChildren == null)
+            {
+                frameId = this.firstChildFrameId;
+                child = this.firstChild;
+                return true;
+            }
+
+            frameId = 0;
+            child = null;
+            return false;
+        }
+
+        // Appends every (frameId, child) pair into buffer - a plain List
+        // fill rather than an allocating iterator/LINQ, since every call
+        // site immediately sorts/caps the result anyway.
+        public void CollectChildren(List<KeyValuePair<int, DrillDownTreeNode>> buffer)
+        {
+            if (this.hasFirstChild)
+            {
+                buffer.Add(new KeyValuePair<int, DrillDownTreeNode>(this.firstChildFrameId, this.firstChild));
+            }
+
+            if (this.moreChildren != null)
+            {
+                foreach (KeyValuePair<int, DrillDownTreeNode> pair in this.moreChildren)
+                {
+                    buffer.Add(pair);
+                }
+            }
+        }
+    }
+
+    // Reuses DrillDownTreeNode objects across every BuildCallerTree call in
+    // one Write() invocation, instead of a fresh `new DrillDownTreeNode()`
+    // per distinct node - measured directly (dotnet-trace's gc-verbose
+    // profile, allocation-tick sampled, run against nettraceParser's own
+    // process on a real capture) at 435MB across 4,289 allocation-tick
+    // samples, the third-largest allocator in the whole process behind
+    // only the whole-file byte[] buffer and the decoded EventRecord[]
+    // list - both much harder to avoid, since they're real, necessarily
+    // long-lived data. DrillDownTreeNode instances are NOT: a single
+    // scope's tree (one chart cell, or one whole type) is fully built,
+    // marked, written to JSON, and then entirely discarded before the next
+    // scope's tree is even started (WriteCellDrillDown/WriteTypeDrillDown
+    // each loop scope-by-scope) - nothing outside that one loop iteration
+    // ever holds a reference to a previous tree's nodes. That makes this
+    // an ideal arena/pool shape: rent nodes from a flat, steadily-growing
+    // list (never shrunk - the largest tree built during this run sets the
+    // pool's permanent size) and Reset() them for reuse via a simple index
+    // rewind, rather than actually freeing anything and letting the GC
+    // reclaim + re-allocate the same shapes over and over.
+    private class DrillDownTreeNodePool
+    {
+        private readonly List<DrillDownTreeNode> nodes = new List<DrillDownTreeNode>();
+        private int nextIndex;
+
+        public DrillDownTreeNode Rent()
+        {
+            DrillDownTreeNode node;
+            if (this.nextIndex < this.nodes.Count)
+            {
+                node = this.nodes[this.nextIndex];
+                node.Reset();
+            }
+            else
+            {
+                node = new DrillDownTreeNode();
+                this.nodes.Add(node);
+            }
+
+            ++this.nextIndex;
+            return node;
+        }
+
+        // Called once per scope, after its tree has been fully written to
+        // JSON and is no longer referenced anywhere, before the next
+        // scope's tree is built - rewinds the rental index back to the
+        // start without touching the underlying node objects themselves
+        // (Rent's own Reset() call clears each one lazily, only once it's
+        // actually handed out again).
+        public void ResetForNextTree()
+        {
+            this.nextIndex = 0;
+        }
+    }
+
+    // Pools the transient List<KeyValuePair<int, DrillDownTreeNode>>
+    // buffers MarkIncludedNodes/EnqueueTopChildren/WriteCallerTreeChildren
+    // each build to sort a node's children before ranking/writing them -
+    // measured via dotnet-trace gc-verbose as the next-largest reducible
+    // allocator after DrillDownTreeNode itself (~45MB / ~450 allocation
+    // ticks on a real capture). Unlike DrillDownTreeNodePool's flat
+    // rent-and-reset arena, these buffers are needed by nested recursive
+    // calls simultaneously - WriteChildObject recurses into
+    // WriteCallerTreeChildren mid-loop over its own children list, so a
+    // parent's buffer must stay alive and untouched while a child's own
+    // buffer is rented - so this pool is a LIFO free list instead: Rent
+    // pops (or allocates fresh), Return pushes back once a call is fully
+    // done with its buffer, naturally mirroring the call stack's own
+    // push/pop order.
+    private class ChildBufferPool
+    {
+        private readonly List<List<KeyValuePair<int, DrillDownTreeNode>>> freeBuffers = new List<List<KeyValuePair<int, DrillDownTreeNode>>>();
+
+        public List<KeyValuePair<int, DrillDownTreeNode>> Rent(int capacityHint)
+        {
+            if (this.freeBuffers.Count > 0)
+            {
+                List<KeyValuePair<int, DrillDownTreeNode>> buffer = this.freeBuffers[this.freeBuffers.Count - 1];
+                this.freeBuffers.RemoveAt(this.freeBuffers.Count - 1);
+                buffer.Clear();
+
+                if (buffer.Capacity < capacityHint)
+                {
+                    buffer.Capacity = capacityHint;
+                }
+
+                return buffer;
+            }
+
+            return new List<KeyValuePair<int, DrillDownTreeNode>>(capacityHint);
+        }
+
+        public void Return(List<KeyValuePair<int, DrillDownTreeNode>> buffer)
+        {
+            this.freeBuffers.Add(buffer);
+        }
+    }
+
+    // Reserved frame id for the "<no stack captured>" sentinel - guaranteed
+    // to never collide with a real MethodSymbolTable.ResolveId result
+    // (always >= 0).
+    private const int NoStackFrameId = -1;
+
+    // Builds the full call-stack tree from every raw distinct StackAggregate
+    // (see BuildDrillDownAggregates) for one scope (a chart cell or a
+    // whole type) - not capped, not pre-selected; every real distinct
+    // full stack contributes its entire frame chain. Returns a synthetic
+    // root (never itself written to JSON - see WriteCallerTreeChildren)
+    // whose children are every distinct LEAF (immediate allocating) frame,
+    // each of whose own children are every distinct frame that called it,
+    // and so on outward through the whole stack - the same "leaf-first"
+    // order Stack itself already carries (see EventBlock.cs/StackBlock.cs).
+    //
+    // Resolves via ResolveId (an int), not Resolve (a string) - see
+    // DrillDownTreeNode's own header comment for why; MethodSymbolTable's
+    // own address+time resolution is unaffected either way, this only
+    // changes what's used as the tree's own child keys.
+    //
+    // frameIdCache memoizes each distinct raw Stack array's own resolved
+    // frame-id sequence (keyed by array reference - see AllocationEvent
+    // Stack/StackAggregate's own comments on why reference equality is
+    // enough) across every BuildCallerTree call sharing it - see Write's
+    // own comment on why that matters: the same physical stack commonly
+    // feeds both its cell's tree and its type's tree (two different
+    // StackAggregate wrapper objects, but the same underlying Stack array
+    // either way), and "loh" stacks are always a subset of "all" stacks,
+    // so without this a real capture re-resolved the same stack's frames
+    // up to 4x.
+    private static DrillDownTreeNode BuildCallerTree(List<StackAggregate> rawStacks, MethodSymbolTable symbolTable, Dictionary<long[], int[]> frameIdCache, DrillDownTreeNodePool nodePool)
+    {
+        DrillDownTreeNode root = nodePool.Rent();
 
         for (int stackIndex = 0; stackIndex < rawStacks.Count; ++stackIndex)
         {
             StackAggregate rawStack = rawStacks[stackIndex];
-            string leafName = rawStack.Stack.Length > 0
-                ? symbolTable.Resolve(rawStack.Stack[0], rawStack.FirstSeenRelativeMSec)
-                : NoStackLeafName;
+            DrillDownTreeNode current = root;
 
-            StackAggregate folded;
-            if (!foldedByLeaf.TryGetValue(leafName, out folded))
+            if (rawStack.Stack.Length == 0)
             {
-                folded = new StackAggregate();
-                folded.Stack = rawStack.Stack;
-                folded.FirstSeenRelativeMSec = rawStack.FirstSeenRelativeMSec;
-                folded.DistinctStackCount = 0;
-                foldedByLeaf[leafName] = folded;
-                representativeBytesByLeaf[leafName] = rawStack.TotalBytes;
-            }
-            else if (rawStack.TotalBytes > representativeBytesByLeaf[leafName])
-            {
-                // A concrete example stack is more useful to show than an
-                // arbitrary one, and the biggest single contributor is the
-                // most representative choice available without shipping
-                // every raw stack in the group.
-                folded.Stack = rawStack.Stack;
-                folded.FirstSeenRelativeMSec = rawStack.FirstSeenRelativeMSec;
-                representativeBytesByLeaf[leafName] = rawStack.TotalBytes;
+                current = current.GetOrAddChild(NoStackFrameId, nodePool);
+                AccumulateTreeNode(current, rawStack);
+                continue;
             }
 
-            folded.TotalBytes += rawStack.TotalBytes;
-            folded.TickCount += rawStack.TickCount;
-            ++folded.DistinctStackCount;
+            int[] frameIds;
+            if (!frameIdCache.TryGetValue(rawStack.Stack, out frameIds))
+            {
+                frameIds = new int[rawStack.Stack.Length];
+                for (int frameIndex = 0; frameIndex < rawStack.Stack.Length; ++frameIndex)
+                {
+                    frameIds[frameIndex] = symbolTable.ResolveId(rawStack.Stack[frameIndex], rawStack.FirstSeenRelativeMSec);
+                }
+
+                frameIdCache[rawStack.Stack] = frameIds;
+            }
+
+            for (int frameIndex = 0; frameIndex < frameIds.Length; ++frameIndex)
+            {
+                current = current.GetOrAddChild(frameIds[frameIndex], nodePool);
+                AccumulateTreeNode(current, rawStack);
+            }
         }
 
-        return new List<StackAggregate>(foldedByLeaf.Values);
+        return root;
     }
 
-    // One stack's { frames, tickCount, totalBytes } JSON object - shared by
-    // WriteCellDrillDown and WriteTypeDrillDown so both agree on exactly
-    // how a resolved (or unresolved/no-stack) call stack is represented.
-    // "leaf-first" frame order, matching Blocks/StackBlock.cs's own decoded
-    // IP order. frames is an array of integer indices into the shared
-    // allocationSummary.methodNames pool (see MethodNameInterner), not raw
-    // strings - the same resolved name recurs across many distinct stacks
-    // (framework internals, common allocation sites), and writing it out in
-    // full every time is what let a long real capture's JSON balloon past
-    // Node's string-length limit despite the ticks array already living in
-    // a separate binary sidecar.
-    private static void WriteStackAggregate(Utf8JsonWriter writer, StackAggregate aggregate, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
+    private static void AccumulateTreeNode(DrillDownTreeNode node, StackAggregate rawStack)
     {
-        writer.WriteStartObject();
+        node.TotalBytes += rawStack.TotalBytes;
+        node.TickCount += rawStack.TickCount;
+        ++node.DistinctStackCount;
+    }
 
-        writer.WritePropertyName("frames");
-        writer.WriteStartArray();
-        if (aggregate.Stack.Length == 0)
+    // Marks which nodes in root's tree are actually written to output at
+    // all (node.Included, checked by WriteCallerTreeChildren against each
+    // candidate child) - see DrillDownTreeNodeBudgetPerCell/PerType's own
+    // comment for why a size bound is needed here at all (an uncapped-depth
+    // tree with only a per-node breadth cap can still blow up
+    // combinatorially).
+    //
+    // Root's own direct children - the scope's top-level leaf/allocator
+    // frames - are always included unconditionally, up to the per-node
+    // breadth cap (DrillDownTreeChildrenLimit), *before* budget spends
+    // anything on deeper exploration. This is deliberate, not an
+    // oversight: an earlier version of this function let root's own
+    // children compete for budget in the same global priority queue as
+    // every deeper node, and on a real capture that meant a single
+    // dominant top-level allocator could consume the *entire* budget
+    // drilling into its own caller chain, leaving smaller sibling
+    // allocators completely unlisted - not just shallower, absent - even
+    // though each is a real, distinct top-level entry that deserves at
+    // least its own row (the same guarantee every earlier version of this
+    // export made: every one of up to DrillDownTreeChildrenLimit distinct
+    // top-level entries always showed up, even a small one).
+    //
+    // budget is spent only on *how much deeper* detail gets shown below
+    // those guaranteed top-level rows - a max-heap of not-yet-included
+    // deeper candidate nodes, keyed by TotalBytes: seed with every
+    // guaranteed top-level node's own children, then repeatedly take the
+    // single biggest candidate across the *entire* tree, mark it Included
+    // (consuming one unit of budget), and add its own children as new
+    // candidates. This is what makes the depth budget a global priority
+    // order rather than a fixed per-node cap that can't tell "50 huge
+    // branches 40 frames deep" from "50 tiny ones 2 frames deep" - the
+    // budget always goes to whichever real node is biggest next, anywhere
+    // in the tree, so the highest-byte branches (e.g. a diffuse allocator
+    // like the SignUri/System.Uri case this tree redesign was for) are
+    // exactly the ones guaranteed to survive a tight budget.
+    private static void MarkIncludedNodes(DrillDownTreeNode root, int budget, ChildBufferPool bufferPool)
+    {
+        // budget is a lower-bound-ish hint, not an exact size - each
+        // dequeue below can enqueue up to DrillDownTreeChildrenLimit new
+        // candidates, so the queue can still grow past this at its peak,
+        // but starting from budget instead of 0 avoids the earliest,
+        // cheapest-to-avoid resize cycles for every one of the hundreds of
+        // cells/types this runs once per, each of this whole export.
+        PriorityQueue<DrillDownTreeNode, long> candidates = new PriorityQueue<DrillDownTreeNode, long>(budget);
+
+        // Rented, not `new`'d - see ChildBufferPool's own comment. Returned
+        // once this function is done reading from it (nothing else holds a
+        // reference to it past this point).
+        List<KeyValuePair<int, DrillDownTreeNode>> topLevelPairs = bufferPool.Rent(root.ChildCount);
+        root.CollectChildren(topLevelPairs);
+        topLevelPairs.Sort((left, right) => right.Value.TotalBytes.CompareTo(left.Value.TotalBytes));
+        int topLevelCount = topLevelPairs.Count < DrillDownTreeChildrenLimit ? topLevelPairs.Count : DrillDownTreeChildrenLimit;
+
+        for (int topLevelIndex = 0; topLevelIndex < topLevelCount; ++topLevelIndex)
         {
-            writer.WriteNumberValue(methodNameInterner.Intern(NoStackLeafName));
+            DrillDownTreeNode node = topLevelPairs[topLevelIndex].Value;
+            node.Included = true;
+            EnqueueTopChildren(candidates, node, bufferPool);
         }
-        else
+
+        bufferPool.Return(topLevelPairs);
+
+        int remaining = budget;
+        while (candidates.Count > 0 && remaining > 0)
         {
-            long[] instructionPointers = aggregate.Stack;
-            for (int frameIndex = 0; frameIndex < instructionPointers.Length; ++frameIndex)
+            DrillDownTreeNode node = candidates.Dequeue();
+            node.Included = true;
+            --remaining;
+
+            EnqueueTopChildren(candidates, node, bufferPool);
+        }
+    }
+
+    private static void EnqueueTopChildren(PriorityQueue<DrillDownTreeNode, long> candidates, DrillDownTreeNode node, ChildBufferPool bufferPool)
+    {
+        int onlyFrameId;
+        DrillDownTreeNode onlyChild;
+        if (node.TryGetOnlyChild(out onlyFrameId, out onlyChild))
+        {
+            candidates.Enqueue(onlyChild, -onlyChild.TotalBytes);
+            return;
+        }
+
+        int totalChildCount = node.ChildCount;
+        if (totalChildCount == 0)
+        {
+            return;
+        }
+
+        List<KeyValuePair<int, DrillDownTreeNode>> children = bufferPool.Rent(totalChildCount);
+        node.CollectChildren(children);
+        children.Sort((left, right) => right.Value.TotalBytes.CompareTo(left.Value.TotalBytes));
+
+        int childCount = children.Count < DrillDownTreeChildrenLimit ? children.Count : DrillDownTreeChildrenLimit;
+        for (int childIndex = 0; childIndex < childCount; ++childIndex)
+        {
+            DrillDownTreeNode child = children[childIndex].Value;
+            candidates.Enqueue(child, -child.TotalBytes);
+        }
+
+        bufferPool.Return(children);
+    }
+
+    // Writes node's "children" array - shared by WriteCellDrillDown and
+    // WriteTypeDrillDown, and by itself recursively, so a caller row's own
+    // children (once expanded client-side) are represented identically to
+    // a scope's top-level leaf rows. Each child is
+    // { frame, totalBytes, tickCount, distinctStackCount, totalChildCount, children }:
+    // frame is an integer index into the shared allocationSummary.methodNames
+    // pool (see MethodNameInterner) rather than a raw string - the same
+    // resolved name recurs across many distinct nodes (framework internals,
+    // common allocation sites), and writing it out in full every time is
+    // what let a long real capture's JSON balloon past Node's string-length
+    // limit despite the ticks array already living in a separate binary
+    // sidecar. Sorted by totalBytes descending and capped at both
+    // DrillDownTreeChildrenLimit and, more importantly, node.Included (see
+    // MarkIncludedNodes - not every node within the breadth cap necessarily
+    // made the global per-scope node budget) - totalChildCount is the true
+    // count before either restriction (children.Count), letting a consumer
+    // tell whether a node's own children list was truncated the same way
+    // distinctStackCount/totalBytes/tickCount already let it tell for the
+    // node itself.
+    private static void WriteCallerTreeChildren(Utf8JsonWriter writer, DrillDownTreeNode node, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner, ChildBufferPool bufferPool)
+    {
+        int totalChildCount = node.ChildCount;
+        writer.WriteNumber("totalChildCount", totalChildCount);
+        writer.WritePropertyName("children");
+        writer.WriteStartArray();
+
+        int onlyFrameId;
+        DrillDownTreeNode onlyChild;
+        if (node.TryGetOnlyChild(out onlyFrameId, out onlyChild))
+        {
+            // Fast path for the overwhelmingly common single-child case -
+            // see DrillDownTreeNode.TryGetOnlyChild's own comment. No
+            // List/Sort needed: there's nothing to rank against a sibling
+            // that doesn't exist.
+            if (onlyChild.Included)
             {
-                string resolvedName = symbolTable.Resolve(instructionPointers[frameIndex], aggregate.FirstSeenRelativeMSec);
-                writer.WriteNumberValue(methodNameInterner.Intern(resolvedName));
+                WriteChildObject(writer, onlyFrameId, onlyChild, symbolTable, methodNameInterner, bufferPool);
             }
         }
-        writer.WriteEndArray();
+        else if (totalChildCount > 0)
+        {
+            // Rented, not `new`'d - see ChildBufferPool's own comment. Held
+            // across the recursive WriteChildObject calls below (each of
+            // those rents its own, separate buffer for its own children),
+            // then returned once this node's own loop is done with it.
+            List<KeyValuePair<int, DrillDownTreeNode>> children = bufferPool.Rent(totalChildCount);
+            node.CollectChildren(children);
+            children.Sort((left, right) => right.Value.TotalBytes.CompareTo(left.Value.TotalBytes));
 
-        writer.WriteNumber("tickCount", aggregate.TickCount);
-        writer.WriteNumber("totalBytes", aggregate.TotalBytes);
-        // How many distinct full call stacks (see FoldByLeafFrame) share
-        // this entry's leaf frame and got folded together into it - 1 for
-        // an already-unique stack. "frames" above shows only one
-        // representative example, not every one of these.
-        writer.WriteNumber("distinctStackCount", aggregate.DistinctStackCount);
+            int childCount = children.Count < DrillDownTreeChildrenLimit ? children.Count : DrillDownTreeChildrenLimit;
+            for (int childIndex = 0; childIndex < childCount; ++childIndex)
+            {
+                int frameId = children[childIndex].Key;
+                DrillDownTreeNode child = children[childIndex].Value;
+
+                if (!child.Included)
+                {
+                    continue;
+                }
+
+                WriteChildObject(writer, frameId, child, symbolTable, methodNameInterner, bufferPool);
+            }
+
+            bufferPool.Return(children);
+        }
+
+        writer.WriteEndArray();
+    }
+
+    // One child's { frame, totalBytes, tickCount, distinctStackCount,
+    // totalChildCount, children } object - shared by WriteCallerTreeChildren's
+    // single-child fast path and its sorted-multi-child path so both agree
+    // on exactly how a node is written.
+    private static void WriteChildObject(Utf8JsonWriter writer, int frameId, DrillDownTreeNode child, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner, ChildBufferPool bufferPool)
+    {
+        // Resolved to a string here, once per WRITTEN node, not once per
+        // (raw stack, frame) visit during tree building - see
+        // DrillDownTreeNode's own header comment for why that distinction
+        // is the whole point of keying by id.
+        string frameName = frameId == NoStackFrameId ? NoStackLeafName : symbolTable.NameForId(frameId);
+
+        writer.WriteStartObject();
+        writer.WriteNumber("frame", methodNameInterner.Intern(frameName));
+        writer.WriteNumber("totalBytes", child.TotalBytes);
+        writer.WriteNumber("tickCount", child.TickCount);
+        writer.WriteNumber("distinctStackCount", child.DistinctStackCount);
+        WriteCallerTreeChildren(writer, child, symbolTable, methodNameInterner, bufferPool);
         writer.WriteEndObject();
     }
 
     // For each (typeIndex, bucketIndex) cell the stacked chart can be
-    // clicked on, the resolved call stacks that produced that cell's
-    // allocations, ranked by bytes and capped at DrillDownStacksPerCellLimit.
-    // Also writes the cell's true totalBytes/totalTickCount/distinctStackCount
-    // (summed over every distinct stack, before the cap is applied) - a cell
-    // with more than DrillDownStacksPerCellLimit distinct call stacks would
-    // otherwise have no way for a consumer to recover its real total (the
-    // one the chart bar was actually drawn from) from the capped list alone,
-    // which previously made the drill-down view's own displayed percentages
-    // silently disagree with the bar they were opened from.
-    private static void WriteCellDrillDown(Utf8JsonWriter writer, Dictionary<(int TypeIndex, int BucketIndex), Dictionary<long[], StackAggregate>> stacksByCell, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
+    // clicked on, the full call-stack tree that produced that cell's
+    // allocations (see BuildCallerTree/WriteCallerTreeChildren) - every
+    // real distinct raw stack folds into it, so ranking/capping only ever
+    // happens on real aggregated groups, never by picking among individual
+    // raw stacks. Also writes the cell's true totalBytes/totalTickCount/
+    // distinctStackCount (summed over every distinct raw stack, before any
+    // per-node children cap is applied) - a cell with more distinct call
+    // stacks than DrillDownTreeChildrenLimit would otherwise have no way
+    // for a consumer to recover its real total (the one the chart bar was
+    // actually drawn from) from the capped tree alone, which previously
+    // made the drill-down view's own displayed percentages silently
+    // disagree with the bar they were opened from.
+    private static void WriteCellDrillDown(Utf8JsonWriter writer, Dictionary<(int TypeIndex, int BucketIndex), Dictionary<long[], StackAggregate>> stacksByCell, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner, Dictionary<long[], int[]> frameIdCache, DrillDownTreeNodePool nodePool, ChildBufferPool bufferPool)
     {
         writer.WriteStartObject();
         writer.WritePropertyName("cells");
@@ -717,27 +1260,36 @@ public static class AllocationSummaryBuilder
                 cellTotalTickCount += cellStackList[stackIndex].TickCount;
             }
 
-            // Fold by leaf frame before ranking/capping - see
-            // FoldByLeafFrame's own doc comment for why ranking raw full
-            // stacks directly can silently drop large, diffuse allocators.
-            List<StackAggregate> foldedStackList = FoldByLeafFrame(cellStackList, symbolTable);
-            foldedStackList.Sort((left, right) => right.TotalBytes.CompareTo(left.TotalBytes));
-
-            int stackCount = foldedStackList.Count < DrillDownStacksPerCellLimit ? foldedStackList.Count : DrillDownStacksPerCellLimit;
+            DrillDownTreeNode tree = BuildCallerTree(cellStackList, symbolTable, frameIdCache, nodePool);
+            MarkIncludedNodes(tree, DrillDownTreeNodeBudgetPerCell, bufferPool);
 
             writer.WritePropertyName($"{cellEntry.Key.TypeIndex}:{cellEntry.Key.BucketIndex}");
             writer.WriteStartObject();
             writer.WriteNumber("totalBytes", cellTotalBytes);
             writer.WriteNumber("totalTickCount", cellTotalTickCount);
             writer.WriteNumber("distinctStackCount", cellStackList.Count);
-            writer.WritePropertyName("stacks");
-            writer.WriteStartArray();
-            for (int stackIndex = 0; stackIndex < stackCount; ++stackIndex)
-            {
-                WriteStackAggregate(writer, foldedStackList[stackIndex], symbolTable, methodNameInterner);
-            }
-            writer.WriteEndArray();
+            WriteCallerTreeChildren(writer, tree, symbolTable, methodNameInterner, bufferPool);
             writer.WriteEndObject();
+
+            // tree is fully written to JSON above and nothing else will
+            // ever reference it - safe to hand every node in it back to
+            // the pool for the next cell's tree (see
+            // DrillDownTreeNodePool's own comment).
+            nodePool.ResetForNextTree();
+
+            // Utf8JsonWriter never auto-flushes on its own - without this,
+            // its internal ArrayBufferWriter<byte> has to keep doubling
+            // (Array.Resize) all the way up to this whole export's entire
+            // output size (37MB+ on a real capture) before a single byte
+            // reaches disk, since the writer's own Dispose() is the only
+            // other place a flush would happen. Confirmed via dotnet-trace
+            // gc-verbose as a real, if secondary, allocator (~140MB of
+            // discarded intermediate buffers from that doubling series).
+            // Flushing once per cell bounds the writer's own buffer to
+            // roughly one cell's worth of JSON instead, which
+            // FileStream's own buffer (see GcJsonExporter.WriteToFile)
+            // then absorbs without a syscall per flush.
+            writer.Flush();
         }
 
         writer.WriteEndObject();
@@ -745,18 +1297,19 @@ public static class AllocationSummaryBuilder
     }
 
     // One entry per ranked type in topTypes above (same order - typeIndex i
-    // here corresponds to topTypes[i]), each the resolved call stacks that
-    // allocated that type *anywhere in the whole capture*, ranked by bytes
-    // and capped at DrillDownStacksPerTypeLimit - unlike "drillDown" above,
+    // here corresponds to topTypes[i]), each the full call-stack tree that
+    // allocated that type *anywhere in the whole capture* (see
+    // BuildCallerTree/WriteCallerTreeChildren) - unlike "drillDown" above,
     // not scoped to a single 1-second bucket. Lets the global ranked types
-    // table link a type directly to its full allocating call stacks, not
-    // just whichever one chart segment happened to be clicked. Also writes
-    // the type's true totalBytes/totalTickCount/distinctStackCount (summed
-    // before the cap is applied) for the same reason WriteCellDrillDown
-    // does - a type with more distinct call stacks than the cap needs a way
-    // to recover its real (topTypes-matching) total from something other
-    // than summing the possibly-truncated stacks array.
-    private static void WriteTypeDrillDown(Utf8JsonWriter writer, Dictionary<long[], StackAggregate>[] stacksByType, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
+    // table link a type directly to its full allocating call-stack tree,
+    // not just whichever one chart segment happened to be clicked. Also
+    // writes the type's true totalBytes/totalTickCount/distinctStackCount
+    // (summed before any per-node children cap is applied) for the same
+    // reason WriteCellDrillDown does - a type with more distinct call
+    // stacks than the cap needs a way to recover its real (topTypes-
+    // matching) total from something other than summing the possibly-
+    // truncated tree.
+    private static void WriteTypeDrillDown(Utf8JsonWriter writer, Dictionary<long[], StackAggregate>[] stacksByType, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner, Dictionary<long[], int[]> frameIdCache, DrillDownTreeNodePool nodePool, ChildBufferPool bufferPool)
     {
         writer.WriteStartArray();
 
@@ -782,33 +1335,31 @@ public static class AllocationSummaryBuilder
                 writer.WriteNumber("totalTickCount", typeTotalTickCount);
                 writer.WriteNumber("distinctStackCount", stackList.Count);
 
-                // Fold by leaf frame before ranking/capping - see
-                // FoldByLeafFrame's own doc comment for why ranking raw
-                // full stacks directly can silently drop large, diffuse
-                // allocators.
-                List<StackAggregate> foldedStackList = FoldByLeafFrame(stackList, symbolTable);
-                foldedStackList.Sort((left, right) => right.TotalBytes.CompareTo(left.TotalBytes));
+                DrillDownTreeNode tree = BuildCallerTree(stackList, symbolTable, frameIdCache, nodePool);
+                MarkIncludedNodes(tree, DrillDownTreeNodeBudgetPerType, bufferPool);
+                WriteCallerTreeChildren(writer, tree, symbolTable, methodNameInterner, bufferPool);
 
-                int stackCount = foldedStackList.Count < DrillDownStacksPerTypeLimit ? foldedStackList.Count : DrillDownStacksPerTypeLimit;
-                writer.WritePropertyName("stacks");
-                writer.WriteStartArray();
-                for (int stackIndex = 0; stackIndex < stackCount; ++stackIndex)
-                {
-                    WriteStackAggregate(writer, foldedStackList[stackIndex], symbolTable, methodNameInterner);
-                }
-                writer.WriteEndArray();
+                // tree is fully written to JSON above and nothing else
+                // will ever reference it - safe to hand every node in it
+                // back to the pool for the next type's tree.
+                nodePool.ResetForNextTree();
             }
             else
             {
                 writer.WriteNumber("totalBytes", 0);
                 writer.WriteNumber("totalTickCount", 0);
                 writer.WriteNumber("distinctStackCount", 0);
-                writer.WritePropertyName("stacks");
+                writer.WriteNumber("totalChildCount", 0);
+                writer.WritePropertyName("children");
                 writer.WriteStartArray();
                 writer.WriteEndArray();
             }
 
             writer.WriteEndObject();
+
+            // See WriteCellDrillDown's own comment on why this is needed -
+            // same reasoning, per type here instead of per cell.
+            writer.Flush();
         }
 
         writer.WriteEndArray();
