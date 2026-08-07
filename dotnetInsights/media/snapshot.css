@@ -1137,12 +1137,3 @@
     color: rgba(0, 0, 0, 0.55);
     font-size: 0.9em;
 }
-
-/* A row's share of its immediate parent's bytes (flame-graph style, not a
-   share of the grand total at every level - see drillDownStats.js's
-   formatBytesWithPercentage). */
-.percentOfParent
-{
-    color: rgba(0, 0, 0, 0.55);
-    font-size: 0.9em;
-}
