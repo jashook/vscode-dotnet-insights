@@ -99,6 +99,12 @@ public static class AllocationSummaryBuilder
     // a higher cap than DrillDownStacksPerCellLimit is deliberate here.
     private const int DrillDownStacksPerTypeLimit = 100;
 
+    // Shared sentinel for FoldByLeafFrame/WriteStackAggregate's "this tick
+    // wasn't stack-walked" case - a single source of truth so both agree on
+    // the exact string (folding needs it as a real dictionary key, not just
+    // a display string).
+    private const string NoStackLeafName = "<no stack captured>";
+
     // Deduplicates resolved method-name strings across every stack this
     // exporter writes (both the "all" and "loh" scopes share one instance -
     // see Write) into a single shared pool, referenced from each stack's
@@ -453,6 +459,13 @@ public static class AllocationSummaryBuilder
         // close together - the same hot call path re-executing), not a
         // per-tick-exact resolution.
         public double FirstSeenRelativeMSec;
+        // How many distinct *full* call stacks (raw StackAggregate entries,
+        // pre-fold) were merged into this one entry by FoldByLeafFrame - 1
+        // for an entry straight out of AddToStackAggregate (a single real
+        // distinct full stack), higher once folded. Lets a consumer show
+        // "this row represents N call paths" instead of implying Stack is
+        // the only one that ever allocated this way.
+        public int DistinctStackCount = 1;
     }
 
     private struct DrillDownAggregates
@@ -557,6 +570,83 @@ public static class AllocationSummaryBuilder
         ++aggregate.TickCount;
     }
 
+    // Groups per-distinct-full-stack StackAggregate entries by their
+    // resolved LEAF frame (Stack[0] - see WriteStackAggregate's own comment
+    // on "leaf-first" order, the frame closest to the actual allocation).
+    // WriteCellDrillDown/WriteTypeDrillDown used to rank and cap directly on
+    // *raw* StackAggregate entries - one per distinct full call stack - but
+    // a real capture can have orders of magnitude more distinct full stacks
+    // for one type than distinct actual allocation sites (verified on a
+    // real capture: 140,444 distinct full stacks for System.String, only
+    // 130 distinct leaf frames) because many different deeper call paths
+    // (varying request parameters, etc.) funnel through the same handful of
+    // real allocators. Ranking/capping raw full stacks meant a genuinely
+    // large allocator diffused across thousands of individually-small
+    // distinct stacks - none big enough alone to crack the top N - was
+    // completely absent from the export, while an allocator with only one
+    // or two unvarying call paths dominated the list purely because its
+    // bytes concentrated into very few entries. Folding by leaf frame
+    // first, then ranking/capping the folded groups, fixes this: on that
+    // same real capture, the old top-100-raw-stacks export for
+    // System.String covered only 2.03% of its total bytes and completely
+    // missed an allocator (Roblox.CDN.Token.SimpleUriSigningAuthority.
+    // SignUri and its immediate neighbors) worth 17.86% on its own; folding
+    // first means every one of the 130 real leaf groups fits well within
+    // the existing cap, so nothing is dropped for this capture at all.
+    //
+    // This intentionally does NOT reproduce PerfView's own tree-folding
+    // exactly (PerfView also collapses linear chains of single-child
+    // ancestor frames above the leaf into one displayed row) - grouping by
+    // leaf alone is a close approximation (verified: Kestrel's
+    // GetAsciiOrUTF8String leaf group came out at 15.11% of the same type's
+    // total against PerfView's own implied ~15.09% for that row) and is
+    // simple enough to compute in one pass without building a full tree.
+    private static List<StackAggregate> FoldByLeafFrame(List<StackAggregate> rawStacks, MethodSymbolTable symbolTable)
+    {
+        Dictionary<string, StackAggregate> foldedByLeaf = new Dictionary<string, StackAggregate>();
+        // Tracks the representative's own (single raw stack's) TotalBytes,
+        // separately from the folded entry's TotalBytes (which keeps
+        // accumulating as more raw stacks merge in) - needed to decide
+        // whether a newly-seen raw stack should replace the representative
+        // Stack shown for this group.
+        Dictionary<string, long> representativeBytesByLeaf = new Dictionary<string, long>();
+
+        for (int stackIndex = 0; stackIndex < rawStacks.Count; ++stackIndex)
+        {
+            StackAggregate rawStack = rawStacks[stackIndex];
+            string leafName = rawStack.Stack.Length > 0
+                ? symbolTable.Resolve(rawStack.Stack[0], rawStack.FirstSeenRelativeMSec)
+                : NoStackLeafName;
+
+            StackAggregate folded;
+            if (!foldedByLeaf.TryGetValue(leafName, out folded))
+            {
+                folded = new StackAggregate();
+                folded.Stack = rawStack.Stack;
+                folded.FirstSeenRelativeMSec = rawStack.FirstSeenRelativeMSec;
+                folded.DistinctStackCount = 0;
+                foldedByLeaf[leafName] = folded;
+                representativeBytesByLeaf[leafName] = rawStack.TotalBytes;
+            }
+            else if (rawStack.TotalBytes > representativeBytesByLeaf[leafName])
+            {
+                // A concrete example stack is more useful to show than an
+                // arbitrary one, and the biggest single contributor is the
+                // most representative choice available without shipping
+                // every raw stack in the group.
+                folded.Stack = rawStack.Stack;
+                folded.FirstSeenRelativeMSec = rawStack.FirstSeenRelativeMSec;
+                representativeBytesByLeaf[leafName] = rawStack.TotalBytes;
+            }
+
+            folded.TotalBytes += rawStack.TotalBytes;
+            folded.TickCount += rawStack.TickCount;
+            ++folded.DistinctStackCount;
+        }
+
+        return new List<StackAggregate>(foldedByLeaf.Values);
+    }
+
     // One stack's { frames, tickCount, totalBytes } JSON object - shared by
     // WriteCellDrillDown and WriteTypeDrillDown so both agree on exactly
     // how a resolved (or unresolved/no-stack) call stack is represented.
@@ -576,7 +666,7 @@ public static class AllocationSummaryBuilder
         writer.WriteStartArray();
         if (aggregate.Stack.Length == 0)
         {
-            writer.WriteNumberValue(methodNameInterner.Intern("<no stack captured>"));
+            writer.WriteNumberValue(methodNameInterner.Intern(NoStackLeafName));
         }
         else
         {
@@ -591,6 +681,11 @@ public static class AllocationSummaryBuilder
 
         writer.WriteNumber("tickCount", aggregate.TickCount);
         writer.WriteNumber("totalBytes", aggregate.TotalBytes);
+        // How many distinct full call stacks (see FoldByLeafFrame) share
+        // this entry's leaf frame and got folded together into it - 1 for
+        // an already-unique stack. "frames" above shows only one
+        // representative example, not every one of these.
+        writer.WriteNumber("distinctStackCount", aggregate.DistinctStackCount);
         writer.WriteEndObject();
     }
 
@@ -613,7 +708,6 @@ public static class AllocationSummaryBuilder
         foreach (KeyValuePair<(int TypeIndex, int BucketIndex), Dictionary<long[], StackAggregate>> cellEntry in stacksByCell)
         {
             List<StackAggregate> cellStackList = new List<StackAggregate>(cellEntry.Value.Values);
-            cellStackList.Sort((left, right) => right.TotalBytes.CompareTo(left.TotalBytes));
 
             long cellTotalBytes = 0;
             int cellTotalTickCount = 0;
@@ -623,7 +717,13 @@ public static class AllocationSummaryBuilder
                 cellTotalTickCount += cellStackList[stackIndex].TickCount;
             }
 
-            int stackCount = cellStackList.Count < DrillDownStacksPerCellLimit ? cellStackList.Count : DrillDownStacksPerCellLimit;
+            // Fold by leaf frame before ranking/capping - see
+            // FoldByLeafFrame's own doc comment for why ranking raw full
+            // stacks directly can silently drop large, diffuse allocators.
+            List<StackAggregate> foldedStackList = FoldByLeafFrame(cellStackList, symbolTable);
+            foldedStackList.Sort((left, right) => right.TotalBytes.CompareTo(left.TotalBytes));
+
+            int stackCount = foldedStackList.Count < DrillDownStacksPerCellLimit ? foldedStackList.Count : DrillDownStacksPerCellLimit;
 
             writer.WritePropertyName($"{cellEntry.Key.TypeIndex}:{cellEntry.Key.BucketIndex}");
             writer.WriteStartObject();
@@ -634,7 +734,7 @@ public static class AllocationSummaryBuilder
             writer.WriteStartArray();
             for (int stackIndex = 0; stackIndex < stackCount; ++stackIndex)
             {
-                WriteStackAggregate(writer, cellStackList[stackIndex], symbolTable, methodNameInterner);
+                WriteStackAggregate(writer, foldedStackList[stackIndex], symbolTable, methodNameInterner);
             }
             writer.WriteEndArray();
             writer.WriteEndObject();
@@ -669,7 +769,6 @@ public static class AllocationSummaryBuilder
             if (typeStacks != null)
             {
                 List<StackAggregate> stackList = new List<StackAggregate>(typeStacks.Values);
-                stackList.Sort((left, right) => right.TotalBytes.CompareTo(left.TotalBytes));
 
                 long typeTotalBytes = 0;
                 int typeTotalTickCount = 0;
@@ -683,12 +782,19 @@ public static class AllocationSummaryBuilder
                 writer.WriteNumber("totalTickCount", typeTotalTickCount);
                 writer.WriteNumber("distinctStackCount", stackList.Count);
 
-                int stackCount = stackList.Count < DrillDownStacksPerTypeLimit ? stackList.Count : DrillDownStacksPerTypeLimit;
+                // Fold by leaf frame before ranking/capping - see
+                // FoldByLeafFrame's own doc comment for why ranking raw
+                // full stacks directly can silently drop large, diffuse
+                // allocators.
+                List<StackAggregate> foldedStackList = FoldByLeafFrame(stackList, symbolTable);
+                foldedStackList.Sort((left, right) => right.TotalBytes.CompareTo(left.TotalBytes));
+
+                int stackCount = foldedStackList.Count < DrillDownStacksPerTypeLimit ? foldedStackList.Count : DrillDownStacksPerTypeLimit;
                 writer.WritePropertyName("stacks");
                 writer.WriteStartArray();
                 for (int stackIndex = 0; stackIndex < stackCount; ++stackIndex)
                 {
-                    WriteStackAggregate(writer, stackList[stackIndex], symbolTable, methodNameInterner);
+                    WriteStackAggregate(writer, foldedStackList[stackIndex], symbolTable, methodNameInterner);
                 }
                 writer.WriteEndArray();
             }
