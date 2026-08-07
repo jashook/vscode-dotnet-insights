@@ -180,30 +180,36 @@ function buildCallerTree(paths) {
     return root;
 }
 
-// Bytes cell content for one row: the raw mb figure plus, when a parent
-// total is known, that row's share of it in parentheses - e.g.
-// "1.23 (45.6%)". Folded into the existing Bytes column as text rather
-// than a new column so every row's column widths stay identical (see
-// CALLER_TREE_COLGROUP below) regardless of nesting depth.
-function formatBytesWithPercentage(totalBytes, parentTotalBytes, mb) {
-    var bytesText = (totalBytes / mb).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-    if (!(parentTotalBytes > 0)) {
-        return bytesText;
-    }
-
-    var percentage = (totalBytes / parentTotalBytes) * 100;
-    return `${bytesText} <span class="percentOfParent">(${percentage.toFixed(1)}%)</span>`;
+// Bytes cell content for one row: just the raw mb figure - see
+// formatPercentOfSelf below for this row's share of whatever total
+// directly contains it, its own column rather than folded into this cell.
+function formatBytes(totalBytes, mb) {
+    return (totalBytes / mb).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-// Own column, not folded into the Bytes cell like formatBytesWithPercentage
-// above - unlike that "share of immediate parent" figure (which changes
-// meaning at every depth), this is the same fixed denominator (the whole
-// scope's totalSampledBytes, across every type - see renderDrillDownTable's
-// grandTotalBytes) at every row and every depth, letting a row's share of
-// the entire capture be read directly instead of hand-multiplying this
-// type's own "% of Sampled" (shown in the ranked types table) by whatever
-// "% of parent" the flame-graph column shows at each level down to it.
+// "% of Self" column: this row's share of its immediate containing total -
+// for a leaf row, this type's own grand total (entry.totalBytes, the same
+// value formatPercentOfTotal below compares against a *different*,
+// whole-capture denominator for); for a caller row, its immediate parent
+// frame's total (flame-graph style - a row's share of the hop immediately
+// before it, not of the overall total, so this changes meaning at every
+// depth unlike formatPercentOfTotal's fixed denominator).
+function formatPercentOfSelf(rowBytes, parentTotalBytes) {
+    if (!(parentTotalBytes > 0)) {
+        return "";
+    }
+
+    var percentage = (rowBytes / parentTotalBytes) * 100;
+    return `${percentage.toFixed(1)}%`;
+}
+
+// "% of Total" column - unlike formatPercentOfSelf above (whose denominator
+// changes meaning at every depth), this is the same fixed denominator (the
+// whole scope's totalSampledBytes, across every type - see
+// renderDrillDownTable's grandTotalBytes) at every row and every depth,
+// letting a row's share of the entire capture be read directly instead of
+// hand-multiplying this type's own "% of Sampled" (shown in the ranked
+// types table) by whatever "% of Self" shows at each level down to it.
 function formatPercentOfTotal(rowBytes, grandTotalBytes) {
     if (!(grandTotalBytes > 0)) {
         return "";
@@ -214,15 +220,16 @@ function formatPercentOfTotal(rowBytes, grandTotalBytes) {
 }
 
 // Shared by the outer table and every nested .callerTreeInner table so
-// their Bytes/Ticks columns land at identical widths regardless of
-// nesting depth - table-layout:fixed sizes columns from explicit <col>
-// widths rather than per-row content, which is what actually makes a
-// caller row's numbers line up under the leaf row's numbers above it.
-// The first (Method) column is intentionally left unset in both - with
-// the other two pinned and a nested table's total width always matching
-// its containing colspan cell exactly, it converges to the same width in
-// both places without needing to state it twice.
-const CALLER_TREE_COLGROUP = `<colgroup><col><col class="bytesColumn"><col class="percentColumn"><col class="ticksColumn"></colgroup>`;
+// their Bytes/% columns land at identical widths regardless of nesting
+// depth - table-layout:fixed sizes columns from explicit <col> widths
+// rather than per-row content, which is what actually makes a caller row's
+// numbers line up under the leaf row's numbers above it. The first (Method)
+// column is intentionally left unset in both - with the rest pinned and a
+// nested table's total width always matching its containing colspan cell
+// exactly, it converges to the same width in both places without needing
+// to state it twice. Two percentColumn entries: % of Self, then % of Total
+// (see the header built in renderDrillDownTable).
+const CALLER_TREE_COLGROUP = `<colgroup><col><col class="bytesColumn"><col class="percentColumn"><col class="percentColumn"><col class="ticksColumn"></colgroup>`;
 
 var callerRowIdCounter = 0;
 
@@ -268,7 +275,8 @@ function renderCallerRow(node, depth, mb, parentTotalBytes, grandTotalBytes) {
 
     var rowHtml = `<tr class="callerRow"${hasChildren ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
         `<td style="padding-left: ${indentEm}em">${toggleHtml}${calledByLabel}${formatFrameHtml(node.frameName)}</td>` +
-        `<td>${formatBytesWithPercentage(node.totalBytes, parentTotalBytes, mb)}</td>` +
+        `<td>${formatBytes(node.totalBytes, mb)}</td>` +
+        `<td>${formatPercentOfSelf(node.totalBytes, parentTotalBytes)}</td>` +
         `<td>${formatPercentOfTotal(node.totalBytes, grandTotalBytes)}</td>` +
         `<td>${node.tickCount}</td>` +
         `</tr>`;
@@ -284,7 +292,7 @@ function renderCallerRow(node, depth, mb, parentTotalBytes, grandTotalBytes) {
     var childDepth = isBranch ? depth + 1 : depth;
     pendingLazySubtrees.set(rowId, { kind: 'caller', node: node, depth: childDepth, mb: mb, grandTotalBytes: grandTotalBytes });
 
-    return rowHtml + `<tr id="${rowId}" class="callPathsDetail" data-lazy="true"><td colspan="4" class="callerTreeCell"></td></tr>`;
+    return rowHtml + `<tr id="${rowId}" class="callPathsDetail" data-lazy="true"><td colspan="5" class="callerTreeCell"></td></tr>`;
 }
 
 // Builds exactly one level of a lazily-registered row's children (a leaf's
@@ -346,8 +354,9 @@ function buildLazyDrillDownSubtree(rowId) {
 // scope's own totalSampledBytes (allocationSummaryJson or .loh - the same
 // denominator the ranked types table's own "% of Sampled" column already
 // uses), threaded down to every row (leaf and caller alike) as a fixed-
-// denominator "% of Total" column alongside the existing flame-graph-style
-// "% of parent" figure folded into the Bytes cell.
+// denominator "% of Total" column alongside "% of Self" (see
+// formatPercentOfSelf), whose own denominator changes meaning at every
+// depth (flame-graph style).
 //
 // This header is sticky (position: sticky, see snapshot.css's
 // .drillDownHeader) so it stays visible while scrolling a long list of
@@ -419,12 +428,12 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel, methodNa
 
         // Path count folds into the method cell as inline text (only when
         // there's more than one) rather than its own table column - every
-        // row, leaf or caller, at any depth, uses the exact same 4-column
-        // shape (Method/Bytes/% of Total/Ticks) so their columns line up
-        // with each other (see .callerTreeInner's matching pinned widths in
-        // snapshot.css); a 5th column only leaf rows had would throw that
-        // alignment off between a row and its own expanded detail beneath
-        // it.
+        // row, leaf or caller, at any depth, uses the exact same 5-column
+        // shape (Method/Bytes/% of Self/% of Total/Ticks) so their columns
+        // line up with each other (see .callerTreeInner's matching pinned
+        // widths in snapshot.css); a 6th column only leaf rows had would
+        // throw that alignment off between a row and its own expanded
+        // detail beneath it.
         var pathCountSuffix = group.paths.length > 1
             ? ` <span class="pathCount">(${group.paths.length} call paths)</span>`
             : ``;
@@ -437,9 +446,15 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel, methodNa
         // needing to infer it from indentation alone.
         var allocationSiteLabel = `<span class="stackRoleLabel allocationSiteLabel">&#9679; Allocated in</span>`;
 
+        // A leaf row's "% of Self" is measured against totalBytes (this
+        // type's own grand total, entry.totalBytes) - there's no real
+        // "immediate parent" above a leaf, so this is the closest
+        // equivalent: how much of this type's own allocations this one
+        // allocation site accounts for.
         rows += `<tr class="leafMethodRow"${isExpandable ? ` data-expandable="true" data-target="${rowId}"` : ``}>` +
             `<td>${toggleHtml}${allocationSiteLabel}${formatFrameHtml(group.leafFrame)}${pathCountSuffix}</td>` +
-            `<td>${formatBytesWithPercentage(group.totalBytes, totalBytes, mb)}</td>` +
+            `<td>${formatBytes(group.totalBytes, mb)}</td>` +
+            `<td>${formatPercentOfSelf(group.totalBytes, totalBytes)}</td>` +
             `<td>${formatPercentOfTotal(group.totalBytes, grandTotalBytes)}</td>` +
             `<td>${group.tickCount}</td>` +
             `</tr>`;
@@ -449,13 +464,13 @@ function renderDrillDownTable(entry, typeName, scopeLabel, filterLabel, methodNa
         }
 
         pendingLazySubtrees.set(rowId, { kind: 'leaf', paths: group.paths, mb: mb, totalBytes: group.totalBytes, grandTotalBytes: grandTotalBytes });
-        rows += `<tr id="${rowId}" class="callPathsDetail" data-lazy="true"><td colspan="4" class="callerTreeCell"></td></tr>`;
+        rows += `<tr id="${rowId}" class="callPathsDetail" data-lazy="true"><td colspan="5" class="callerTreeCell"></td></tr>`;
     }
 
     // "Call Stack" rather than "Allocating Method" - this column now holds
     // both the allocation-site row and its "Called by" rows underneath (see
     // allocationSiteLabel/calledByLabel above), not just allocating methods.
-    const header = `<tr class="tableHeader"><th>Call Stack</th><th>Total Bytes (mb)</th><th>% of Total</th><th>Tick Count</th></tr>`;
+    const header = `<tr class="tableHeader"><th>Call Stack</th><th>Total Bytes (mb)</th><th>% of Self</th><th>% of Total</th><th>Tick Count</th></tr>`;
 
     return `${heading}<div class="detailTable drillDownTable"><table>${CALLER_TREE_COLGROUP}${header}${rows}</table></div>`;
 }
