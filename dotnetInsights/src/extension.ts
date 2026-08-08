@@ -307,7 +307,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const lastestVersionNumber = "0.8.3";
     const latestListenerVersionNumber = "1.6.2";
     const latestRoslynVersionNumber = "1.6.2";
-    const latestNettraceParserVersionNumber = "1.6.6";
+    const latestNettraceParserVersionNumber = "1.6.7";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;

@@ -69,6 +69,25 @@ if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
     long symbolTableMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 
+    int totalEventCount = file.Events.Count;
+
+    // Nothing past this point ever reads file/file.Events again -
+    // GcEventProjector.Project, AllocationEventProjector.Project, and
+    // MethodSymbolTable.Build above all just iterate it and hand back
+    // brand-new derived structures; none of them stash a reference to the
+    // list itself. But `file` is still a GC root for the rest of this
+    // method's stack frame regardless, so without dropping it here, every
+    // gen2 GC during the jsonExport call below still has to trace
+    // file.Events's full backing array - a real 5-minute capture holds
+    // 4.29M+ EventRecord structs, each carrying 5 reference-typed fields
+    // (ProviderName/EventName/Stack/Fields/PayloadBuffer) - tens of millions
+    // of pointer slots per full mark pass. Confirmed via dotnet-trace
+    // gc-verbose as the actual dominant per-gen2-pause cost - the raw
+    // byte[] file buffer it's decoded from has zero embedded object
+    // references and costs the mark phase nothing to trace no matter how
+    // large it is, despite looking like the obvious culprit by raw size.
+    file = null;
+
     string processName = Path.GetFileNameWithoutExtension(filePath);
 
     GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, symbolTable, processName, ticksBinaryPath);
@@ -77,7 +96,7 @@ if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
     long totalMs = totalStopwatch.ElapsedMilliseconds;
 
     Console.Error.WriteLine(
-        $"Timing: read={readMs}ms ({file.Events.Count} events) " +
+        $"Timing: read={readMs}ms ({totalEventCount} events) " +
         $"gcProject={gcProjectMs}ms ({gcEventsForJson.Count} GCs) " +
         $"allocationProject={allocationProjectMs}ms ({allocationEventsForJson.Count} ticks) " +
         $"symbolTable={symbolTableMs}ms jsonExport={jsonExportMs}ms total={totalMs}ms");
