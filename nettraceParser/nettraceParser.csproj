@@ -24,7 +24,22 @@
       service where Server GC's larger memory footprint would be a concern.
     -->
     <ServerGarbageCollection>true</ServerGarbageCollection>
-    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>
+    <!--
+      Was false (a deliberate earlier choice, per this section's own
+      comment above about why Server GC alone was already worth turning
+      on). Re-measured via dotnet-trace's gc-verbose profile on a real
+      capture with today's caller-tree drill-down work in place (which
+      allocates far more total garbage than the code this comment
+      originally described): 5 GCs, up to 580ms each, 1.26 SECONDS of
+      total pause time out of a ~3.3-3.7s run - roughly a third of the
+      whole process blocked in stop-the-world collection, since
+      Concurrent=false means every gen2 GC is fully blocking with no
+      background overlap. Server GC's own concurrent (background) mode
+      lets a gen2 collection's mark phase run mostly alongside the
+      mutator instead - worth the small per-allocation write-barrier
+      overhead given how much blocking pause time is on the table here.
+    -->
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
 
 </Project>

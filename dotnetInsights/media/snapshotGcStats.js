@@ -1800,6 +1800,67 @@ var allocationDatasets = {};
         detailRow.removeAttribute('data-lazy');
     }
 
+    // Expands one row, then keeps going for as long as there was no real
+    // choice to make.
+    //
+    // A row with exactly one child presents no decision - the chain simply
+    // continues - so stopping there just charges the reader another click
+    // to learn nothing. This follows that single-child run down, building
+    // and expanding each hop, and stops at the first node that actually
+    // branches (2+ children, a genuine fork worth choosing at) or at the
+    // end of the chain. On a real request-pipeline stack that collapses
+    // 20-odd mechanical clicks into one while still stopping exactly where
+    // the reader has something to decide.
+    //
+    // Note this deliberately does NOT recurse into a branch's children: if
+    // the row being expanded has several children, they're revealed and
+    // that's it - auto-following each of their runs is what made the old
+    // "expand everything" behavior an unreadable flat dump.
+    function expandDrillDownRowFollowingLinearRun(toggleRow, detailRow) {
+        buildDrillDownRowIfLazy(detailRow);
+        toggleRow.classList.add('expanded');
+        detailRow.classList.add('expanded');
+
+        var currentDetailRow = detailRow;
+        for (;;) {
+            // The <table class="callerTreeInner"> holding this level's rows.
+            // Rows of deeper levels live inside their own nested tables, so
+            // innerTable.rows is exactly this one level.
+            var innerTable = currentDetailRow.querySelector('table.callerTreeInner');
+            if (!innerTable) {
+                return;
+            }
+
+            var childRows = [];
+            for (var rowIndex = 0; rowIndex < innerTable.rows.length; ++rowIndex) {
+                if (innerTable.rows[rowIndex].classList.contains('callerRow')) {
+                    childRows.push(innerTable.rows[rowIndex]);
+                }
+            }
+
+            // 0 children: chain ended. 2+: a real branch - stop and let the
+            // reader pick which one to follow.
+            if (childRows.length !== 1) {
+                return;
+            }
+
+            var onlyChildRow = childRows[0];
+            if (onlyChildRow.getAttribute('data-expandable') !== 'true') {
+                return;
+            }
+
+            var onlyChildDetailRow = document.getElementById(onlyChildRow.getAttribute('data-target'));
+            if (!onlyChildDetailRow) {
+                return;
+            }
+
+            buildDrillDownRowIfLazy(onlyChildDetailRow);
+            onlyChildRow.classList.add('expanded');
+            onlyChildDetailRow.classList.add('expanded');
+            currentDetailRow = onlyChildDetailRow;
+        }
+    }
+
     // Bulk-toggles every collapsible row in the drill-down panel at once
     // (see the Expand All/Collapse All buttons in drillDownStats.js's
     // renderDrillDownTable, and the leafMethodRow "reveal the whole story"
@@ -2024,37 +2085,33 @@ var allocationDatasets = {};
                     return;
                 }
 
-                // Expanding/collapsing the root (leaf/allocation-site) row
-                // reveals or hides the *entire* call stack beneath it in one
-                // click, not just the next level - that's the "show me the
-                // whole story for this allocation" action a user reaches
-                // for first, and previously meant clicking through every
-                // intermediate branch point one at a time even though a
-                // straight (non-branching) run already showed itself
-                // automatically. A caller row deeper in the tree still
-                // toggles just its own immediate children, so a
-                // fully-expanded stack can still be selectively
-                // re-collapsed one branch at a time.
-                if (leafRow.classList.contains('leafMethodRow')) {
-                    var willExpand = !leafRow.classList.contains('expanded');
-                    setAllDrillDownRowsExpanded(detailRow, willExpand);
-                    leafRow.classList.toggle('expanded', willExpand);
-                    detailRow.classList.toggle('expanded', willExpand);
+                // EVERY row - the leaf/allocation-site row included - reveals
+                // only its own *immediate* children, lazily building just
+                // that one level the first time (see drillDownStats.js's
+                // renderCallerRow/buildLazyDrillDownSubtree); deeper levels
+                // stay collapsed and unbuilt until expanded themselves.
+                //
+                // A leaf row used to special-case into
+                // setAllDrillDownRowsExpanded, expanding its ENTIRE chain in
+                // one click on the theory that "show me the whole story" is
+                // what a user wants first. On real data that turned out to
+                // actively obscure the story: a request-pipeline stack is
+                // largely one non-branching chain 20+ frames deep, so one
+                // click dumped 20+ rows that all repeat the same bytes/
+                // percentage (correctly - a caller of a caller accounts for
+                // exactly the same allocations until the paths diverge),
+                // burying the handful of rows where something actually
+                // branches. Expanding one hop at a time keeps each click's
+                // output readable and makes a real branch visible as soon as
+                // it's reached. "Expand All" is still there for anyone who
+                // does want the whole tree at once.
+                if (leafRow.classList.contains('expanded')) {
+                    leafRow.classList.remove('expanded');
+                    detailRow.classList.remove('expanded');
                     return;
                 }
 
-                // A single caller row's own toggle only reveals its
-                // *immediate* children, lazily building just that one level
-                // the first time (see drillDownStats.js's renderCallerRow/
-                // buildLazyDrillDownSubtree) - deeper levels stay collapsed
-                // and unbuilt until expanded themselves.
-                var willExpandOneLevel = !leafRow.classList.contains('expanded');
-                if (willExpandOneLevel) {
-                    buildDrillDownRowIfLazy(detailRow);
-                }
-
-                leafRow.classList.toggle('expanded');
-                detailRow.classList.toggle('expanded');
+                expandDrillDownRowFollowingLinearRun(leafRow, detailRow);
             });
         }
     }

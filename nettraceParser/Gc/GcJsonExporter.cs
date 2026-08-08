@@ -38,9 +38,16 @@ public static class GcJsonExporter
     // ticksBinaryPath: forwarded to AllocationSummaryBuilder.Write - see its
     // own comment on WriteTicks for why the allocation-tick array is a
     // binary sidecar file next to outputPath rather than inline JSON.
+    // 1MB, not FileStream's own small default (4096 bytes) - AllocationSummaryBuilder
+    // now calls writer.Flush() once per drill-down cell/type (hundreds of
+    // times on a real capture) instead of only once at Dispose, so most of
+    // those flushes should just append into this buffer rather than each
+    // becoming its own write() syscall.
+    private const int OutputFileStreamBufferSize = 1024 * 1024;
+
     public static void WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath)
     {
-        using (FileStream fileStream = File.Create(outputPath))
+        using (FileStream fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, OutputFileStreamBufferSize))
         using (Utf8JsonWriter writer = new Utf8JsonWriter(fileStream))
         {
             writer.WriteStartObject();

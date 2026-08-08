@@ -147,11 +147,11 @@ public class TypeDrillDownBuilderTests
 
         JsonObject summary = Build(events, symbolTable);
         JsonObject typeAEntry = summary["typeDrillDown"][0].AsObject();
-        JsonArray stacksForTypeA = typeAEntry["stacks"].AsArray();
+        JsonArray childrenForTypeA = typeAEntry["children"].AsArray();
 
-        Assert.Single(stacksForTypeA);
-        Assert.Equal(350, stacksForTypeA[0]["totalBytes"].GetValue<long>());
-        Assert.Equal(2, stacksForTypeA[0]["tickCount"].GetValue<int>());
+        Assert.Single(childrenForTypeA);
+        Assert.Equal(350, childrenForTypeA[0]["totalBytes"].GetValue<long>());
+        Assert.Equal(2, childrenForTypeA[0]["tickCount"].GetValue<int>());
         Assert.Equal(350, typeAEntry["totalBytes"].GetValue<long>());
         Assert.Equal(2, typeAEntry["totalTickCount"].GetValue<int>());
         Assert.Equal(1, typeAEntry["distinctStackCount"].GetValue<int>());
@@ -184,9 +184,9 @@ public class TypeDrillDownBuilderTests
         Assert.Equal(8, cells.Count);
 
         // ...but its typeDrillDown entry (index 8, last-ranked) is still populated.
-        JsonArray lastTypeStacks = typeDrillDown[8]["stacks"].AsArray();
-        Assert.Single(lastTypeStacks);
-        Assert.Equal(100, lastTypeStacks[0]["totalBytes"].GetValue<long>());
+        JsonArray lastTypeChildren = typeDrillDown[8]["children"].AsArray();
+        Assert.Single(lastTypeChildren);
+        Assert.Equal(100, lastTypeChildren[0]["totalBytes"].GetValue<long>());
     }
 
     [Fact]
@@ -208,22 +208,30 @@ public class TypeDrillDownBuilderTests
 
         JsonObject summary = Build(events, symbolTable);
         JsonArray methodNames = summary["methodNames"].AsArray();
-        JsonArray frames = summary["typeDrillDown"][0]["stacks"][0]["frames"].AsArray();
 
-        Assert.Equal("Leaf", methodNames[frames[0].GetValue<int>()].GetValue<string>());
-        Assert.Equal("Caller", methodNames[frames[1].GetValue<int>()].GetValue<string>());
+        // "leaf-first" now means the tree's own top-level child is the leaf
+        // frame, and ITS child is the caller - not a flat frames array.
+        JsonObject leafNode = summary["typeDrillDown"][0]["children"][0].AsObject();
+        Assert.Equal("Leaf", methodNames[leafNode["frame"].GetValue<int>()].GetValue<string>());
+
+        JsonObject callerNode = leafNode["children"][0].AsObject();
+        Assert.Equal("Caller", methodNames[callerNode["frame"].GetValue<int>()].GetValue<string>());
     }
 
     [Fact]
-    public void TypeDrillDown_FoldsDistinctStacksSharingTheSameLeafFrameIntoOneEntry()
+    public void TypeDrillDown_PreservesEveryDistinctCallerUnderASharedLeafFrame()
     {
         // Two genuinely distinct full call stacks (different callers) that
-        // share the same leaf (immediate allocating) frame - see
-        // AllocationJsonExporter.FoldByLeafFrame's own doc comment for why
-        // ranking/capping raw full stacks directly (the original design)
-        // could silently drop a large but diffuse real allocator whose
-        // bytes were spread across many slightly-different call paths, none
-        // individually big enough to make the cap.
+        // share the same leaf (immediate allocating) frame - the real bug
+        // this guards against: an earlier version of this export picked
+        // only one "representative" raw stack per leaf frame to display,
+        // which silently discarded every *other* real caller for that leaf
+        // (confirmed against a real capture: PerfView showed System.Uri as
+        // a top caller of System.String.Ctor, invisible under that design
+        // because the one kept representative stack for String.Ctor
+        // happened to go through a different caller). BuildCallerTree must
+        // instead fold both raw stacks into the SAME leaf node while
+        // preserving both callers as distinct children of it.
         List<AllocationEvent> events = new List<AllocationEvent>
         {
             new AllocationEvent(timestamp: default, relativeMSec: 0, allocationAmount: 300, allocationKind: GCAllocationKind.Small, typeName: "TypeA", heapIndex: 0, stack: new long[] { 1000, 2000 }),
@@ -239,21 +247,44 @@ public class TypeDrillDownBuilderTests
 
         JsonObject summary = Build(events, symbolTable);
         JsonObject typeAEntry = summary["typeDrillDown"][0].AsObject();
-        JsonArray stacks = typeAEntry["stacks"].AsArray();
+        JsonArray children = typeAEntry["children"].AsArray();
 
-        // Two distinct full stacks, but one folded entry - the two callers
-        // are genuinely different, only their shared leaf makes them fold.
-        Assert.Single(stacks);
-        Assert.Equal(1000, stacks[0]["totalBytes"].GetValue<long>());
-        Assert.Equal(2, stacks[0]["tickCount"].GetValue<int>());
-        Assert.Equal(2, stacks[0]["distinctStackCount"].GetValue<int>());
-
+        // One leaf node - both raw stacks share it, aggregating both.
+        Assert.Single(children);
+        JsonObject leafNode = children[0].AsObject();
         JsonArray methodNames = summary["methodNames"].AsArray();
-        JsonArray frames = stacks[0]["frames"].AsArray();
-        Assert.Equal("SharedLeaf", methodNames[frames[0].GetValue<int>()].GetValue<string>());
+        Assert.Equal("SharedLeaf", methodNames[leafNode["frame"].GetValue<int>()].GetValue<string>());
+        Assert.Equal(1000, leafNode["totalBytes"].GetValue<long>());
+        Assert.Equal(2, leafNode["tickCount"].GetValue<int>());
+        Assert.Equal(2, leafNode["distinctStackCount"].GetValue<int>());
 
-        // The true type-level totals (raw, pre-fold distinct stack count)
-        // are unaffected by folding - both real distinct stacks still count.
+        // Both real callers must be preserved as distinct children - not
+        // folded down to a single arbitrary representative.
+        JsonArray callers = leafNode["children"].AsArray();
+        Assert.Equal(2, leafNode["totalChildCount"].GetValue<int>());
+        Assert.Equal(2, callers.Count);
+
+        JsonObject callerA = null;
+        JsonObject callerB = null;
+        foreach (JsonNode callerNode in callers)
+        {
+            string callerName = methodNames[callerNode["frame"].GetValue<int>()].GetValue<string>();
+            if (callerName == "CallerA")
+            {
+                callerA = callerNode.AsObject();
+            }
+            else if (callerName == "CallerB")
+            {
+                callerB = callerNode.AsObject();
+            }
+        }
+
+        Assert.NotNull(callerA);
+        Assert.NotNull(callerB);
+        Assert.Equal(300, callerA["totalBytes"].GetValue<long>());
+        Assert.Equal(700, callerB["totalBytes"].GetValue<long>());
+
+        // The true type-level totals are unaffected either way.
         Assert.Equal(2, typeAEntry["distinctStackCount"].GetValue<int>());
         Assert.Equal(1000, typeAEntry["totalBytes"].GetValue<long>());
     }
@@ -274,24 +305,24 @@ public class TypeDrillDownBuilderTests
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
         JsonObject summary = Build(events, symbolTable);
 
-        JsonArray stacks = summary["typeDrillDown"][0]["stacks"].AsArray();
+        JsonArray children = summary["typeDrillDown"][0]["children"].AsArray();
 
-        Assert.Single(stacks);
-        Assert.Equal(300, stacks[0]["totalBytes"].GetValue<long>());
-        Assert.Equal(2, stacks[0]["tickCount"].GetValue<int>());
+        Assert.Single(children);
+        Assert.Equal(300, children[0]["totalBytes"].GetValue<long>());
+        Assert.Equal(2, children[0]["tickCount"].GetValue<int>());
 
-        int frameIndex = stacks[0]["frames"][0].GetValue<int>();
+        int frameIndex = children[0]["frame"].GetValue<int>();
         Assert.Equal("<no stack captured>", summary["methodNames"][frameIndex].GetValue<string>());
     }
 
     [Fact]
-    public void TypeDrillDown_CapsStacksPerTypeAtOneHundredKeepingTheLargestByBytesButTotalsStillReflectAllOfThem()
+    public void TypeDrillDown_CapsChildrenPerNodeAtFiftyKeepingTheLargestByBytesButTotalsStillReflectAllOfThem()
     {
         List<AllocationEvent> events = new List<AllocationEvent>();
 
-        for (int stackId = 1; stackId <= 110; ++stackId)
+        for (int stackId = 1; stackId <= 60; ++stackId)
         {
-            // Descending bytes by id, so the top 100 kept are ids 1-100.
+            // Descending bytes by id, so the top 50 kept are ids 1-50.
             events.Add(MakeEvent("TypeA", amount: 1000 - stackId, relativeMSec: 0, stackId: stackId));
         }
 
@@ -299,24 +330,25 @@ public class TypeDrillDownBuilderTests
         JsonObject summary = Build(events, symbolTable);
 
         JsonObject typeAEntry = summary["typeDrillDown"][0].AsObject();
-        JsonArray stacks = typeAEntry["stacks"].AsArray();
+        JsonArray children = typeAEntry["children"].AsArray();
 
-        Assert.Equal(100, stacks.Count);
-        Assert.Equal(999, stacks[0]["totalBytes"].GetValue<long>());
-        long smallestKept = stacks[stacks.Count - 1]["totalBytes"].GetValue<long>();
-        Assert.True(smallestKept >= 899, $"Expected the smallest kept stack to still be >= 899, got {smallestKept}");
+        Assert.Equal(50, children.Count);
+        Assert.Equal(60, typeAEntry["totalChildCount"].GetValue<int>());
+        Assert.Equal(999, children[0]["totalBytes"].GetValue<long>());
+        long smallestKept = children[children.Count - 1]["totalBytes"].GetValue<long>();
+        Assert.True(smallestKept >= 950, $"Expected the smallest kept stack to still be >= 950, got {smallestKept}");
 
         // Same reconciliation guarantee as the per-cell cap
         // (DrillDownBuilderTests.Build_DrillDown_CapsStacksPerCellAtFiftyKeepingTheLargestByBytes) -
         // topTypes[0].TotalBytes (the number the global table and its chart
         // bars are built from) must match typeDrillDown[0].totalBytes
-        // exactly, even though the "stacks" array itself only lists the top
-        // 100 of the 110 distinct call stacks that produced it.
-        Assert.Equal(110, typeAEntry["distinctStackCount"].GetValue<int>());
-        Assert.Equal(110, typeAEntry["totalTickCount"].GetValue<int>());
+        // exactly, even though the "children" array itself only lists the
+        // top 50 of the 60 distinct call stacks that produced it.
+        Assert.Equal(60, typeAEntry["distinctStackCount"].GetValue<int>());
+        Assert.Equal(60, typeAEntry["totalTickCount"].GetValue<int>());
 
         long trueTotalBytes = 0;
-        for (int stackId = 1; stackId <= 110; ++stackId)
+        for (int stackId = 1; stackId <= 60; ++stackId)
         {
             trueTotalBytes += 1000 - stackId;
         }

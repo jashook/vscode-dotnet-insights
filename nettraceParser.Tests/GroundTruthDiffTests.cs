@@ -259,6 +259,109 @@ public class GroundTruthDiffTests
         int parenIndex = fullMethodName.LastIndexOf('(');
         return parenIndex >= 0 ? fullMethodName.Substring(0, parenIndex) : fullMethodName;
     }
+
+    // Diffs each allocation tick's ENTIRE resolved call stack - every caller
+    // frame, in order - against TraceEvent, not just its leaf.
+    //
+    // The leaf-only test above is what the StackId-recycling investigation
+    // needed, and it passes cleanly, but it can only ever prove the
+    // allocation *site* resolved correctly. The drill-down view's whole
+    // caller tree (AllocationJsonExporter's BuildCallerTree) is built from
+    // the frames ABOVE that leaf, so a chain that's truncated, mis-ordered,
+    // or missing frames would render a confidently wrong caller tree while
+    // the leaf-only diff still reported zero mismatches. Comparing full
+    // chains is the only thing that actually covers what the drill-down
+    // renders.
+    [Fact]
+    public void AllocationEventProjector_Project_FullStacksMatchTraceEventGroundTruth()
+    {
+        string fixturePath = Environment.GetEnvironmentVariable(FixtureEnvVar);
+        if (string.IsNullOrEmpty(fixturePath) || !File.Exists(fixturePath))
+        {
+            return;
+        }
+
+        NettraceFile file = NettraceFile.Read(fixturePath);
+        long referenceQpc = file.Header.SyncTimeQPC;
+
+        List<AllocationEvent> parsedEvents = AllocationEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, referenceQpc);
+
+        List<(double RelativeMSec, long AllocationAmount, string TypeName, List<string> Frames)> parsedTuples = new List<(double, long, string, List<string>)>(parsedEvents.Count);
+        foreach (AllocationEvent parsedEvent in parsedEvents)
+        {
+            List<string> frames = new List<string>(parsedEvent.Stack.Length);
+            for (int frameIndex = 0; frameIndex < parsedEvent.Stack.Length; ++frameIndex)
+            {
+                frames.Add(symbolTable.Resolve(parsedEvent.Stack[frameIndex], parsedEvent.RelativeMSec));
+            }
+
+            parsedTuples.Add((parsedEvent.RelativeMSec, parsedEvent.AllocationAmount, parsedEvent.TypeName, frames));
+        }
+
+        // Same ordering/zip strategy as the leaf-only test above.
+        parsedTuples.Sort((left, right) =>
+        {
+            int msecCompare = left.RelativeMSec.CompareTo(right.RelativeMSec);
+            if (msecCompare != 0)
+            {
+                return msecCompare;
+            }
+
+            int amountCompare = left.AllocationAmount.CompareTo(right.AllocationAmount);
+            if (amountCompare != 0)
+            {
+                return amountCompare;
+            }
+
+            return string.CompareOrdinal(left.TypeName, right.TypeName);
+        });
+
+        List<AllocationTruthRecord> truthRecords = TraceEventAllocationReader.Read(fixturePath);
+
+        Assert.True(parsedTuples.Count == truthRecords.Count, $"Tick count differs: nettraceParser={parsedTuples.Count}, groundTruth={truthRecords.Count} (fixture: {fixturePath})");
+
+        List<string> diffs = new List<string>();
+        int depthMismatchCount = 0;
+        int frameMismatchCount = 0;
+        int compareCount = Math.Min(parsedTuples.Count, truthRecords.Count);
+
+        for (int tickIndex = 0; tickIndex < compareCount; ++tickIndex)
+        {
+            (double RelativeMSec, long AllocationAmount, string TypeName, List<string> Frames) parsedTuple = parsedTuples[tickIndex];
+            AllocationTruthRecord truthRecord = truthRecords[tickIndex];
+
+            if (parsedTuple.Frames.Count != truthRecord.Frames.Count)
+            {
+                ++depthMismatchCount;
+                if (diffs.Count < 50)
+                {
+                    diffs.Add($"Tick @{parsedTuple.RelativeMSec:F4}ms ({parsedTuple.TypeName}): stack DEPTH differs (nettraceParser={parsedTuple.Frames.Count} frames, groundTruth={truthRecord.Frames.Count} frames)");
+                }
+
+                continue;
+            }
+
+            for (int frameIndex = 0; frameIndex < parsedTuple.Frames.Count; ++frameIndex)
+            {
+                string parsedFrame = parsedTuple.Frames[frameIndex];
+                string truthFrame = truthRecord.Frames[frameIndex];
+
+                if (parsedFrame != truthFrame && parsedFrame != StripParams(truthFrame))
+                {
+                    ++frameMismatchCount;
+                    if (diffs.Count < 50)
+                    {
+                        diffs.Add($"Tick @{parsedTuple.RelativeMSec:F4}ms ({parsedTuple.TypeName}): frame[{frameIndex}] differs (nettraceParser={parsedFrame ?? "<null>"}, groundTruth={truthFrame ?? "<null>"})");
+                    }
+
+                    break;
+                }
+            }
+        }
+
+        Assert.True(diffs.Count == 0, $"Full-stack mismatch across {compareCount} ticks: {depthMismatchCount} with differing depth, {frameMismatchCount} with a differing frame (fixture: {fixturePath}):\n" + string.Join("\n", diffs));
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

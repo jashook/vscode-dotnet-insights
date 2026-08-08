@@ -22,6 +22,7 @@ namespace DotnetInsights.NetTrace {
 ////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 
 using FastSerialization;
@@ -66,15 +67,32 @@ public class StackBlock : IFastSerializable, IFastSerializableVersion
         deserializer.Read(out firstId);
         deserializer.Read(out count);
 
+        // Reused across every entry in this block instead of a fresh
+        // byte[stackBytesCount] per stack - a single block can have
+        // thousands of entries, and allocating (then immediately
+        // discarding, once decoded into the persisted long[] below) a new
+        // buffer for every one of them was measured (dotnet-trace, a real
+        // capture) as a meaningful share of this whole parser's cost. Only
+        // grows when a bigger stack than any seen so far in this block
+        // shows up; the decoded long[] instructionPointers below is the
+        // only thing that actually needs to survive past this loop
+        // iteration (it's what gets stored into stacksById), so scratch
+        // space for the raw bytes is safe to reuse.
+        byte[] scratchBuffer = Array.Empty<byte>();
+
         for (int entryIndex = 0; entryIndex < count; ++entryIndex)
         {
             int stackBytesCount;
             deserializer.Read(out stackBytesCount);
 
-            byte[] stackBytes = new byte[stackBytesCount];
-            deserializer.Read(stackBytes, 0, stackBytesCount);
+            if (scratchBuffer.Length < stackBytesCount)
+            {
+                scratchBuffer = new byte[stackBytesCount];
+            }
 
-            long[] instructionPointers = DecodeInstructionPointers(stackBytes, this.pointerSize);
+            deserializer.Read(scratchBuffer, 0, stackBytesCount);
+
+            long[] instructionPointers = DecodeInstructionPointers(scratchBuffer, stackBytesCount, this.pointerSize);
 
             int stackId = firstId + entryIndex;
             this.stacksById[stackId] = instructionPointers;
@@ -83,10 +101,12 @@ public class StackBlock : IFastSerializable, IFastSerializableVersion
         deserializer.Reader.Goto((StreamLabel)blockContentEnd);
     }
 
-    private static long[] DecodeInstructionPointers(byte[] stackBytes, int pointerSize)
+    private static long[] DecodeInstructionPointers(byte[] stackBytes, int stackBytesLength, int pointerSize)
     {
-        int ipCount = stackBytes.Length / pointerSize;
+        int ipCount = stackBytesLength / pointerSize;
         long[] instructionPointers = new long[ipCount];
+
+        ReadOnlySpan<byte> stackBytesSpan = stackBytes.AsSpan(0, stackBytesLength);
 
         for (int ipIndex = 0; ipIndex < ipCount; ++ipIndex)
         {
@@ -94,11 +114,11 @@ public class StackBlock : IFastSerializable, IFastSerializableVersion
 
             if (pointerSize == 4)
             {
-                instructionPointers[ipIndex] = BitConverter.ToUInt32(stackBytes, offset);
+                instructionPointers[ipIndex] = BinaryPrimitives.ReadUInt32LittleEndian(stackBytesSpan.Slice(offset, 4));
             }
             else
             {
-                instructionPointers[ipIndex] = BitConverter.ToInt64(stackBytes, offset);
+                instructionPointers[ipIndex] = BinaryPrimitives.ReadInt64LittleEndian(stackBytesSpan.Slice(offset, 8));
             }
         }
 

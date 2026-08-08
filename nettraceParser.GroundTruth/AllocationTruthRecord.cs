@@ -25,6 +25,11 @@ namespace DotnetInsights.NetTrace.GroundTruth {
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+using System.Collections.Generic;
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
 public class AllocationTruthRecord
 {
     public double RelativeMSec;
@@ -36,6 +41,19 @@ public class AllocationTruthRecord
     // nettraceParser's side; the diff test treats "no stack on either side"
     // as agreement, not a skip.
     public string LeafMethodName;
+
+    // The tick's FULL call stack, leaf frame first (Frames[0] ==
+    // LeafMethodName), walking TraceCallStack.Caller to the outermost frame.
+    // Empty, never null, when the tick wasn't stack-walked.
+    //
+    // LeafMethodName above only ever proved that the *allocation site* was
+    // resolved correctly - which is what the StackId-recycling investigation
+    // needed at the time. It says nothing about whether the CALLERS above
+    // that leaf are right, and the drill-down view's whole caller tree is
+    // built from exactly those callers, so a chain could be silently wrong
+    // (wrong order, truncated, frames dropped) with the leaf-only diff still
+    // reporting 0 mismatches. This closes that gap.
+    public List<string> Frames = new List<string>();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
