@@ -28,6 +28,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 
+using DotnetInsights.NetTrace.Exceptions;
+using DotnetInsights.NetTrace.Overview;
 using DotnetInsights.NetTrace.Rundown;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -45,7 +47,7 @@ public static class GcJsonExporter
     // becoming its own write() syscall.
     private const int OutputFileStreamBufferSize = 1024 * 1024;
 
-    public static void WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath)
+    public static void WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath)
     {
         using (FileStream fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, OutputFileStreamBufferSize))
         using (Utf8JsonWriter writer = new Utf8JsonWriter(fileStream))
@@ -61,6 +63,35 @@ public static class GcJsonExporter
             // has anything to show. See AllocationJsonExporter.cs.
             writer.WritePropertyName("allocationSummary");
             AllocationSummaryBuilder.Write(writer, allocationEvents, symbolTable, ticksBinaryPath);
+
+            // "exceptionSummary" is only meaningful for nettrace input, same
+            // as allocationSummary above - the .gcinfo/XML path never sets
+            // this key either. See ExceptionJsonExporter.cs.
+            writer.WritePropertyName("exceptionSummary");
+            ExceptionJsonExporter.Write(writer, exceptionEvents, symbolTable);
+
+            // "eventOverview" is also nettrace-only (same reasoning), but
+            // unlike allocationSummary/exceptionSummary above it's always
+            // meaningful whenever it's present at all - every nettrace
+            // capture has *some* events, even one with zero GCs/allocations/
+            // exceptions. See Overview/EventOverviewBuilder.cs.
+            writer.WritePropertyName("eventOverview");
+            writer.WriteStartObject();
+            writer.WriteNumber("totalEventCount", eventOverview.TotalEventCount);
+            writer.WritePropertyName("eventTypes");
+            writer.WriteStartArray();
+            for (int eventTypeIndex = 0; eventTypeIndex < eventOverview.EventTypes.Count; ++eventTypeIndex)
+            {
+                EventTypeCount eventTypeCount = eventOverview.EventTypes[eventTypeIndex];
+                writer.WriteStartObject();
+                writer.WriteString("providerName", eventTypeCount.ProviderName);
+                writer.WriteString("displayName", eventTypeCount.DisplayName);
+                writer.WriteNumber("eventId", eventTypeCount.EventId);
+                writer.WriteNumber("count", eventTypeCount.Count);
+                writer.WriteEndObject();
+            }
+            writer.WriteEndArray();
+            writer.WriteEndObject();
 
             writer.WritePropertyName("gcData");
             writer.WriteStartArray();

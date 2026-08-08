@@ -33,6 +33,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 
+using DotnetInsights.NetTrace.Exceptions;
 using DotnetInsights.NetTrace.Gc;
 using DotnetInsights.NetTrace.GroundTruth;
 using DotnetInsights.NetTrace.Rundown;
@@ -361,6 +362,119 @@ public class GroundTruthDiffTests
         }
 
         Assert.True(diffs.Count == 0, $"Full-stack mismatch across {compareCount} ticks: {depthMismatchCount} with differing depth, {frameMismatchCount} with a differing frame (fixture: {fixturePath}):\n" + string.Join("\n", diffs));
+    }
+
+    // Exception-event analog of the allocation full-stack test above -
+    // diffs ExceptionEventProjector's decoded fields AND each throw's
+    // entire resolved call stack against TraceEvent. This is the same
+    // pattern that caught the StackId-recycling bug for allocation ticks
+    // (see that test's own header comment); running it here too is what
+    // actually confirms ExceptionThrown_V1's own StackId is resolved
+    // correctly, not just that its fixed-offset payload fields decode to
+    // the right values (RealCaptureTests.cs's pinned-value coverage already
+    // exercises that half against a known-good sample, but a pin can't
+    // catch a bug shared between "what this code computes" and "what its
+    // own pin expects").
+    [Fact]
+    public void ExceptionEventProjector_Project_MatchesTraceEventGroundTruth()
+    {
+        string fixturePath = Environment.GetEnvironmentVariable(FixtureEnvVar);
+        if (string.IsNullOrEmpty(fixturePath) || !File.Exists(fixturePath))
+        {
+            return;
+        }
+
+        NettraceFile file = NettraceFile.Read(fixturePath);
+        long referenceQpc = file.Header.SyncTimeQPC;
+
+        List<ExceptionEvent> parsedEvents = ExceptionEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, referenceQpc);
+
+        List<(double RelativeMSec, string ExceptionType, string ExceptionMessage, int HResult, int Flags, List<string> Frames)> parsedTuples = new List<(double, string, string, int, int, List<string>)>(parsedEvents.Count);
+        foreach (ExceptionEvent parsedEvent in parsedEvents)
+        {
+            List<string> frames = new List<string>(parsedEvent.Stack.Length);
+            for (int frameIndex = 0; frameIndex < parsedEvent.Stack.Length; ++frameIndex)
+            {
+                frames.Add(symbolTable.Resolve(parsedEvent.Stack[frameIndex], parsedEvent.RelativeMSec));
+            }
+
+            parsedTuples.Add((parsedEvent.RelativeMSec, parsedEvent.ExceptionType, parsedEvent.ExceptionMessage, parsedEvent.HResult, (int)parsedEvent.Flags, frames));
+        }
+
+        // Same tie-break ordering as TraceEventExceptionReader.Read - both
+        // sides compute RelativeMSec from the same underlying QPC
+        // delta/frequency, so a positional zip after this sort pairs up the
+        // same real throw on both sides.
+        parsedTuples.Sort((left, right) =>
+        {
+            int msecCompare = left.RelativeMSec.CompareTo(right.RelativeMSec);
+            if (msecCompare != 0)
+            {
+                return msecCompare;
+            }
+
+            int typeCompare = string.CompareOrdinal(left.ExceptionType, right.ExceptionType);
+            if (typeCompare != 0)
+            {
+                return typeCompare;
+            }
+
+            return string.CompareOrdinal(left.ExceptionMessage, right.ExceptionMessage);
+        });
+
+        List<ExceptionTruthRecord> truthRecords = TraceEventExceptionReader.Read(fixturePath);
+
+        Assert.True(parsedTuples.Count == truthRecords.Count, $"Exception count differs: nettraceParser={parsedTuples.Count}, groundTruth={truthRecords.Count} (fixture: {fixturePath})");
+
+        List<string> diffs = new List<string>();
+        int compareCount = Math.Min(parsedTuples.Count, truthRecords.Count);
+
+        for (int exceptionIndex = 0; exceptionIndex < compareCount; ++exceptionIndex)
+        {
+            (double RelativeMSec, string ExceptionType, string ExceptionMessage, int HResult, int Flags, List<string> Frames) parsedTuple = parsedTuples[exceptionIndex];
+            ExceptionTruthRecord truthRecord = truthRecords[exceptionIndex];
+
+            if (parsedTuple.ExceptionType != truthRecord.ExceptionType)
+            {
+                diffs.Add($"Exception @{parsedTuple.RelativeMSec:F4}ms: ExceptionType differs (nettraceParser={parsedTuple.ExceptionType}, groundTruth={truthRecord.ExceptionType})");
+            }
+
+            if (parsedTuple.ExceptionMessage != truthRecord.ExceptionMessage)
+            {
+                diffs.Add($"Exception @{parsedTuple.RelativeMSec:F4}ms ({parsedTuple.ExceptionType}): ExceptionMessage differs (nettraceParser={parsedTuple.ExceptionMessage}, groundTruth={truthRecord.ExceptionMessage})");
+            }
+
+            if (parsedTuple.HResult != truthRecord.HResult)
+            {
+                diffs.Add($"Exception @{parsedTuple.RelativeMSec:F4}ms ({parsedTuple.ExceptionType}): HResult differs (nettraceParser=0x{parsedTuple.HResult:X}, groundTruth=0x{truthRecord.HResult:X})");
+            }
+
+            if (parsedTuple.Flags != truthRecord.Flags)
+            {
+                diffs.Add($"Exception @{parsedTuple.RelativeMSec:F4}ms ({parsedTuple.ExceptionType}): Flags differs (nettraceParser={parsedTuple.Flags}, groundTruth={truthRecord.Flags})");
+            }
+
+            if (parsedTuple.Frames.Count != truthRecord.Frames.Count)
+            {
+                diffs.Add($"Exception @{parsedTuple.RelativeMSec:F4}ms ({parsedTuple.ExceptionType}): stack DEPTH differs (nettraceParser={parsedTuple.Frames.Count} frames, groundTruth={truthRecord.Frames.Count} frames)");
+                continue;
+            }
+
+            for (int frameIndex = 0; frameIndex < parsedTuple.Frames.Count; ++frameIndex)
+            {
+                string parsedFrame = parsedTuple.Frames[frameIndex];
+                string truthFrame = truthRecord.Frames[frameIndex];
+
+                if (parsedFrame != truthFrame && parsedFrame != StripParams(truthFrame))
+                {
+                    diffs.Add($"Exception @{parsedTuple.RelativeMSec:F4}ms ({parsedTuple.ExceptionType}): frame[{frameIndex}] differs (nettraceParser={parsedFrame ?? "<null>"}, groundTruth={truthFrame ?? "<null>"})");
+                    break;
+                }
+            }
+        }
+
+        Assert.True(diffs.Count == 0, $"{diffs.Count} mismatch(es) across {compareCount} exceptions between nettraceParser and TraceEvent ground truth (fixture: {fixturePath}):\n" + string.Join("\n", diffs.Count > 50 ? diffs.GetRange(0, 50) : diffs));
     }
 }
 

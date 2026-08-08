@@ -20,7 +20,9 @@ using System.Diagnostics;
 using System.IO;
 
 using DotnetInsights.NetTrace;
+using DotnetInsights.NetTrace.Exceptions;
 using DotnetInsights.NetTrace.Gc;
+using DotnetInsights.NetTrace.Overview;
 using DotnetInsights.NetTrace.Rundown;
 
 if (args.Length < 1)
@@ -34,7 +36,21 @@ string filePath = args[0];
 Stopwatch totalStopwatch = Stopwatch.StartNew();
 Stopwatch phaseStopwatch = Stopwatch.StartNew();
 
+// Suppress GC for the read phase only - see ReadPhaseGcSuppression.cs for
+// the full measured rationale (that phase allocates ~2.6x the file size and
+// retains essentially all of it, so its collections reclaim almost nothing
+// while still paying full mark/promote cost). Declines on its own for small
+// inputs or when the machine can't back a full-read budget, so this is safe
+// to call unconditionally.
+long noGcBudgetBytes = ReadPhaseGcSuppression.ComputeBudgetBytes(new FileInfo(filePath).Length, GC.GetGCMemoryInfo().TotalAvailableMemoryBytes);
+bool suppressedGcForRead = ReadPhaseGcSuppression.TryStart(noGcBudgetBytes);
+
 NettraceFile file = NettraceFile.Read(filePath);
+
+if (suppressedGcForRead)
+{
+    ReadPhaseGcSuppression.End();
+}
 
 long readMs = phaseStopwatch.ElapsedMilliseconds;
 phaseStopwatch.Restart();
@@ -65,6 +81,14 @@ if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
     long allocationProjectMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 
+    List<ExceptionEvent> exceptionEventsForJson = ExceptionEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);
+    long exceptionProjectMs = phaseStopwatch.ElapsedMilliseconds;
+    phaseStopwatch.Restart();
+
+    EventOverview eventOverviewForJson = EventOverviewBuilder.Build(file.Events);
+    long eventOverviewMs = phaseStopwatch.ElapsedMilliseconds;
+    phaseStopwatch.Restart();
+
     MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, referenceQpc);
     long symbolTableMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
@@ -72,7 +96,8 @@ if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
     int totalEventCount = file.Events.Count;
 
     // Nothing past this point ever reads file/file.Events again -
-    // GcEventProjector.Project, AllocationEventProjector.Project, and
+    // GcEventProjector.Project, AllocationEventProjector.Project,
+    // ExceptionEventProjector.Project, EventOverviewBuilder.Build, and
     // MethodSymbolTable.Build above all just iterate it and hand back
     // brand-new derived structures; none of them stash a reference to the
     // list itself. But `file` is still a GC root for the rest of this
@@ -90,16 +115,29 @@ if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
 
     string processName = Path.GetFileNameWithoutExtension(filePath);
 
-    GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, symbolTable, processName, ticksBinaryPath);
+    GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, symbolTable, processName, ticksBinaryPath);
     long jsonExportMs = phaseStopwatch.ElapsedMilliseconds;
 
     long totalMs = totalStopwatch.ElapsedMilliseconds;
 
+    // GC.GetTotalPauseDuration() is this PROCESS's own real, cumulative
+    // stop-the-world pause time (a real .NET API, not sampled/estimated) -
+    // reported alongside the phase breakdown specifically so "why did this
+    // run take longer" can be answered directly (was more of it spent
+    // paused in GC?) without needing a separate dotnet-trace attach, which
+    // has its own confound: attach latency (the trace only starts once the
+    // diagnostic pipe handshake completes, arbitrarily late relative to
+    // process start) can silently miss whichever GCs happen earliest in a
+    // given run, making cross-run GC-time comparisons via two independent
+    // traces unreliable in a way this in-process counter isn't.
     Console.Error.WriteLine(
         $"Timing: read={readMs}ms ({totalEventCount} events) " +
         $"gcProject={gcProjectMs}ms ({gcEventsForJson.Count} GCs) " +
         $"allocationProject={allocationProjectMs}ms ({allocationEventsForJson.Count} ticks) " +
-        $"symbolTable={symbolTableMs}ms jsonExport={jsonExportMs}ms total={totalMs}ms");
+        $"exceptionProject={exceptionProjectMs}ms ({exceptionEventsForJson.Count} exceptions) " +
+        $"eventOverview={eventOverviewMs}ms ({eventOverviewForJson.EventTypes.Count} distinct event types) " +
+        $"symbolTable={symbolTableMs}ms jsonExport={jsonExportMs}ms total={totalMs}ms " +
+        $"gcPause={GC.GetTotalPauseDuration().TotalMilliseconds:F1}ms gcCounts=[{GC.CollectionCount(0)},{GC.CollectionCount(1)},{GC.CollectionCount(2)}]");
 
     return;
 }

@@ -122,6 +122,35 @@ only if these stop matching observed behavior:
   (`gcEvent.Timestamp.ToLocalTime().ToString("o")`), not UTC — the extension
   renders it directly, so getting this wrong shows the wrong wall-clock time
   to the user, not just a wrong offset string.
+- **GC is suppressed for the read phase only** (`ReadPhaseGcSuppression.cs`,
+  via `GC.TryStartNoGCRegion`). `NettraceFile.Read` allocates ~2.6x the
+  input file's size and retains essentially all of it (`StackBlock`'s
+  decoded `long[]` stacks live on `EventRecord.Stack` for the process's
+  life), so the generational GC's "most objects die young" assumption is
+  simply false there: measured collections reclaimed **0.6–2.0 KB each**
+  while still paying full mark/promote cost, and ~100% gen0 survival filled
+  gen1 at gen0's own rate, escalating into repeated full gen2 collections.
+  On a real 737MB/4.29M-event capture this took the run from 2745–3656ms to
+  a stable 2543–2558ms, GC pause 167–419ms → 0.0ms, collections [4,3,3] →
+  [1,1,1], **and peak RSS 2.31GB → 1.82GB** (no promotion copying), with
+  byte-identical JSON output. It also removed a large run-to-run bimodality
+  where the baseline randomly alternated ~2750ms/~3650ms depending on
+  whether the GC escalated to 3 full collections or 1.
+  **Undersizing the budget is worse than not doing this at all** — a
+  region exhausted mid-read forces an induced collection and exits, which
+  measured 3743ms/[5,4,4] against a 3561ms/[4,3,3] baseline. Hence
+  `ComputeBudgetBytes` returns 0 (declining entirely) rather than ever
+  requesting a budget it isn't confident covers the whole read.
+  `DOTNET_GCgen0size` was also measured as an alternative (best case
+  −520ms at 32MB) but is strictly worse: it's a deployment-time env var the
+  extension would have to set when spawning the process, and larger values
+  *slowed* `jsonExport` by ~400ms even while speeding up `read`.
+- The `--json` timing line reports `gcPause=`/`gcCounts=[gen0,gen1,gen2]`
+  (from `GC.GetTotalPauseDuration()`/`GC.CollectionCount`) precisely so
+  "why was this run slower" is answerable without a `dotnet-trace` attach —
+  which has its own confound here, since attach latency can silently miss
+  whichever GCs fire earliest, making cross-run comparisons from two
+  independent traces unreliable in a way this in-process counter isn't.
 
 Packaging: `nettraceParser/pack.py` (Python — a bash version was explicitly
 rejected in favor of this). Publishes self-contained, non-single-file builds

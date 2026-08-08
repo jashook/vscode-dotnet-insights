@@ -572,6 +572,21 @@
     background-color: rgba(72, 83, 136, 0.9);
 }
 
+/* A tab whose event type doesn't exist in this particular capture (e.g. the
+   GC tab when a nettrace only has exceptions, or vice versa) - visible so
+   it's clear the capture was checked for this data and came up empty,
+   rather than silently missing, but not clickable (native `disabled`, not
+   a CSS-only look - blocks keyboard activation too, not just pointer
+   clicks). Overrides .viewNavButton's own cursor/background rather than
+   relying on the browser's default disabled styling, which reads poorly
+   against this button's custom colors. */
+.viewNavButton:disabled
+{
+    background-color: rgba(174, 207, 27, 0.35);
+    color: rgba(255, 255, 255, 0.6);
+    cursor: not-allowed;
+}
+
 .viewPanel
 {
     display: none;

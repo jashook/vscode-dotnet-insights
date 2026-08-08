@@ -71,6 +71,58 @@ public class MethodSymbolTableTests
     }
 
     [Fact]
+    public void ClrMethodRecord_DecodeHeader_MatchesTheFullDecodesHeaderFieldsWithoutTouchingStrings()
+    {
+        byte[] payload = MakeMethodDCStartVerbosePayload(
+            methodId: 0x0000000109542030,
+            moduleId: 0x0000000108AB2D00,
+            methodStartAddress: 4450820184,
+            methodSize: 1152,
+            methodToken: 0x06000859,
+            methodFlags: 398,
+            methodNamespace: "System.Buffers.SearchValues",
+            methodName: "TryGetSingleRange",
+            signature: "generic bool  (...)",
+            pointerSize: 8);
+
+        long methodId;
+        long methodStartAddress;
+        long methodSize;
+        bool succeeded = ClrMethodRecord.DecodeHeader(new PayloadReader(payload, 8), out methodId, out methodStartAddress, out methodSize);
+
+        Assert.True(succeeded);
+        Assert.Equal(0x0000000109542030, methodId);
+        Assert.Equal(4450820184, methodStartAddress);
+        Assert.Equal(1152, methodSize);
+    }
+
+    [Fact]
+    public void ClrMethodRecord_DecodeDisplayName_MatchesTheFullDecodesDisplayName()
+    {
+        byte[] payload = MakeMethodDCStartVerbosePayload(
+            methodId: 1, moduleId: 2, methodStartAddress: 1000, methodSize: 16, methodToken: 0x06000001, methodFlags: 0,
+            methodNamespace: "System.Buffers.SearchValues", methodName: "TryGetSingleRange", signature: "generic bool  (...)", pointerSize: 8);
+
+        string displayName = ClrMethodRecord.DecodeDisplayName(new PayloadReader(payload, 8));
+
+        Assert.Equal("System.Buffers.SearchValues.TryGetSingleRange", displayName);
+    }
+
+    [Fact]
+    public void ClrMethodRecord_DecodeHeader_FailsForATruncatedPayloadTheSameAsTheFullDecode()
+    {
+        byte[] truncatedPayload = new byte[4]; // Nowhere near long enough for even the fixed header fields.
+
+        long methodId;
+        long methodStartAddress;
+        long methodSize;
+        bool succeeded = ClrMethodRecord.DecodeHeader(new PayloadReader(truncatedPayload, 8), out methodId, out methodStartAddress, out methodSize);
+
+        Assert.False(succeeded);
+        Assert.Null(ClrMethodRecord.Decode(new PayloadReader(truncatedPayload, 8)));
+    }
+
+    [Fact]
     public void ClrMethodRecord_Decode_UsesBareMethodNameWhenNamespaceIsEmpty()
     {
         byte[] payload = MakeMethodDCStartVerbosePayload(
@@ -108,6 +160,81 @@ public class MethodSymbolTableTests
         string resolved = symbolTable.Resolve(9999, 0);
 
         Assert.StartsWith("<unresolved", resolved);
+    }
+
+    // MethodSymbolTable no longer decodes/interns DisplayName at Build
+    // time - it's deferred to the first real ResolveId match (see
+    // MethodRange/EnsureResolved's own comments: a real capture's method-
+    // rundown volume is dominated by methods no resolved stack frame ever
+    // looks up, so paying the two-string-decode-plus-concat cost for every
+    // one of them regardless was measured as significant waste). These two
+    // tests cover the correctness risks that laziness introduces that the
+    // original eager-Build-time design didn't have to worry about.
+    [Fact]
+    public void MethodSymbolTable_ResolveId_MergesTwoRangesWithIdenticalContentIntoOneIdEvenWhenResolvedLazily()
+    {
+        // Simulates two tiered-JIT code versions of the same source method
+        // at different addresses - AllocationJsonExporter.cs's BuildCallerTree
+        // depends on both resolving to the SAME id so they fold into one
+        // drill-down tree node, exactly as they always would have via
+        // Resolve's own string content equality.
+        List<EventRecord> events = new List<EventRecord>
+        {
+            MakeRundownEvent(startAddress: 1000, size: 100, name: "TypeA.MethodA"),
+            MakeRundownEvent(startAddress: 5000, size: 100, name: "TypeA.MethodA")
+        };
+
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(events, pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
+
+        int firstId = symbolTable.ResolveId(1050, 0);
+        int secondId = symbolTable.ResolveId(5050, 0);
+
+        Assert.Equal(firstId, secondId);
+        Assert.Equal("TypeA.MethodA", symbolTable.NameForId(firstId));
+    }
+
+    // The real bug this test guards against: unresolvedIdByAddress used to
+    // offset its own ids past "namesById.Count, fixed at construction" -
+    // true under the old eager design (every real id was minted before any
+    // Resolve call could ever run), but no longer true now that real ids
+    // are minted lazily, interleaved in time with unresolved-address ids.
+    // Minting an unresolved id BEFORE a real id (growing namesById
+    // afterward) must not corrupt NameForId's lookup for that earlier
+    // unresolved id.
+    [Fact]
+    public void MethodSymbolTable_NameForId_StaysCorrectWhenUnresolvedAndRealIdsAreInterleaved()
+    {
+        List<EventRecord> events = new List<EventRecord>
+        {
+            MakeRundownEvent(startAddress: 1000, size: 100, name: "TypeA.MethodA"),
+            MakeRundownEvent(startAddress: 2000, size: 100, name: "TypeB.MethodB")
+        };
+
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(events, pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
+
+        // Mint an unresolved id FIRST, before any real range is ever
+        // resolved (namesById is still empty at this point).
+        int unresolvedId = symbolTable.ResolveId(9999, 0);
+        Assert.StartsWith("<unresolved", symbolTable.NameForId(unresolvedId));
+
+        // Now mint two real ids, growing namesById past where it was when
+        // unresolvedId was computed.
+        int idA = symbolTable.ResolveId(1050, 0);
+        int idB = symbolTable.ResolveId(2050, 0);
+
+        Assert.Equal("TypeA.MethodA", symbolTable.NameForId(idA));
+        Assert.Equal("TypeB.MethodB", symbolTable.NameForId(idB));
+        // The original unresolved id must still resolve correctly even
+        // though namesById has grown since it was minted.
+        Assert.StartsWith("<unresolved", symbolTable.NameForId(unresolvedId));
+
+        // A second unresolved address, minted after real ids already grew
+        // namesById, must not collide with idA/idB.
+        int secondUnresolvedId = symbolTable.ResolveId(8888, 0);
+        Assert.NotEqual(idA, secondUnresolvedId);
+        Assert.NotEqual(idB, secondUnresolvedId);
+        Assert.NotEqual(unresolvedId, secondUnresolvedId);
+        Assert.StartsWith("<unresolved", symbolTable.NameForId(secondUnresolvedId));
     }
 
     [Fact]

@@ -31,6 +31,13 @@ var allocationDatasets = {};
     // the "Heap Contents" nav button's first click.
     var allocationSummaryJson = JSON.parse(document.getElementById("allocationSummaryJson").textContent);
 
+    // null when sourceFormat !== "nettrace" or the capture had zero
+    // exception events - see GcSnapshotRenderer.ts's hasExceptions. Eagerly
+    // parsed for the same reason allocationSummaryJson is (JSON.parse
+    // itself is cheap; only the DOM built from it is deferred to the
+    // "Exceptions" nav button's first click).
+    var exceptionSummaryJson = JSON.parse(document.getElementById("exceptionSummaryJson").textContent);
+
     // Full human-readable form for tooltips (space isn't constrained there
     // the way it is on an axis tick) - mirrors GcDetailTableRenderer.ts's
     // formatHumanDateTime exactly, e.g. "21-Jul-2026 03:42:13 PM PDT".
@@ -111,6 +118,15 @@ var allocationDatasets = {};
     // match - a GC-charts zoom and a Heap-Contents zoom used to be entirely
     // separate state.
     var sharedZoomRange = null;
+
+    // The zoom range most recently cleared by a reset (Backspace, swipe-
+    // back, or either Reset Zoom button) - lets a single forward gesture/
+    // action restore it, mirroring browser back/forward. Set inside
+    // applySharedZoom itself (see below) rather than at each reset call
+    // site, so every existing way of resetting picks it up automatically.
+    // A fresh manual zoom (drag-select) invalidates it, same as a new
+    // navigation clearing forward history in a browser.
+    var zoomRangeForForward = null;
 
     // {chart, zoomHandle} for the always-rebuilt charts (Pause Time, Usage,
     // Fragmentation once built) - destroyed/recreated on every zoom change.
@@ -242,80 +258,107 @@ var allocationDatasets = {};
     // AllocationSummaryRenderer.ts/renderAllocationTimelineChart's own
     // canvasElement-null guard), so calling it here even before that view
     // has ever been opened is harmless.
-    function applySharedZoom(zoomRange) {
+    // isForwardRestore is true only when performGoForwardAction is replaying
+    // zoomRangeForForward - every other caller (drag-select, either Reset
+    // Zoom button, Backspace, swipe-back) omits it. That's enough to
+    // maintain single-level undo/redo without touching any of those other
+    // call sites: clearing an active zoom (zoomRange === null while one was
+    // set) stashes it for forward, and applying any *other* new range
+    // (a real drag-select, not a forward replay) drops the stashed one,
+    // same as a browser dropping forward history on a fresh navigation.
+    function applySharedZoom(zoomRange, isForwardRestore) {
+        if (zoomRange === null && sharedZoomRange !== null) {
+            zoomRangeForForward = sharedZoomRange;
+        } else if (!isForwardRestore) {
+            zoomRangeForForward = null;
+        }
+
         sharedZoomRange = zoomRange;
         renderGcCharts(zoomRange);
         renderHeapContentsCharts(zoomRange);
     }
 
+    // Both canvases (and hence both charts) are absent entirely when this
+    // capture has zero GCs - see GcSnapshotRenderer.ts's own `if (gcs.length
+    // > 0)` guard around canvasData. A real capture with no GCs (e.g. an
+    // exceptions-only nettrace) is now a real, reachable case (the GC tab
+    // itself stays visible-but-disabled rather than omitted - see
+    // GcSnapshotRenderer.ts's viewTabBar), so these can no longer assume
+    // the canvas exists unconditionally the way they used to.
     var gcStatsChart = document.getElementsByClassName("gcStatsChart")[0];
+    var gcCountChart = null;
 
-    const gcStatsChartChartContext = gcStatsChart;
-    const context = gcStatsChartChartContext.getContext('2d');
+    if (gcStatsChart) {
+        const gcStatsChartChartContext = gcStatsChart;
+        const context = gcStatsChartChartContext.getContext('2d');
 
-    var gcCountChart = new Chart(context, {
-        "type": 'bar',
-        data: {
-            labels: [
-                "0",
-                "1",
-                "2"
-            ],
-            datasets: [{
-                label: "GC Count By Generation",
-                data: gcCountsByGen,
-                backgroundColor: [
-                    "rgba(72, 83, 136, 0.2)",
-                    "rgba(96, 165, 69, 0.2)",
-                    "rgba(141, 31, 95, 0.2)"
-                ]
-            }]
-        },
-        options: {
-            animation: { duration: 0 },
-            "maintainAspectRatio": false
-        }
-    });
+        gcCountChart = new Chart(context, {
+            "type": 'bar',
+            data: {
+                labels: [
+                    "0",
+                    "1",
+                    "2"
+                ],
+                datasets: [{
+                    label: "GC Count By Generation",
+                    data: gcCountsByGen,
+                    backgroundColor: [
+                        "rgba(72, 83, 136, 0.2)",
+                        "rgba(96, 165, 69, 0.2)",
+                        "rgba(141, 31, 95, 0.2)"
+                    ]
+                }]
+            },
+            options: {
+                animation: { duration: 0 },
+                "maintainAspectRatio": false
+            }
+        });
+    }
 
     var gcStatsTimeChart = document.getElementsByClassName("gcStatsTimeChart")[0];
+    var gcTimeCountChart = null;
 
-    const gcStatsTimeChartChartContext = gcStatsTimeChart;
-    const newContext = gcStatsTimeChartChartContext.getContext('2d');
+    if (gcStatsTimeChart) {
+        const gcStatsTimeChartChartContext = gcStatsTimeChart;
+        const newContext = gcStatsTimeChartChartContext.getContext('2d');
 
-    var gcTimeCountChart = new Chart(newContext, {
-        "type": 'bar',
-        data: {
-            labels: [
-                "0",
-                "1",
-                "2"
-            ],
-            datasets: [{
-                label: "Total Time In GC By Generation",
-                data: totalTimeInEachGcJson,
-                backgroundColor: [
-                    "rgba(72, 83, 136, 0.2)",
-                    "rgba(96, 165, 69, 0.2)",
-                    "rgba(141, 31, 95, 0.2)"
-                ]
-            }]
-        },
-        options: {
-            scales: {
-                yAxes: [{
-                    ticks: {
-                        beginAtZero: true
-                    },
-                    scaleLabel: {
-                        display: true,
-                        labelString: "Time in ms"
-                    }
-                }],
+        gcTimeCountChart = new Chart(newContext, {
+            "type": 'bar',
+            data: {
+                labels: [
+                    "0",
+                    "1",
+                    "2"
+                ],
+                datasets: [{
+                    label: "Total Time In GC By Generation",
+                    data: totalTimeInEachGcJson,
+                    backgroundColor: [
+                        "rgba(72, 83, 136, 0.2)",
+                        "rgba(96, 165, 69, 0.2)",
+                        "rgba(141, 31, 95, 0.2)"
+                    ]
+                }]
             },
-            animation: { duration: 0 },
-            "maintainAspectRatio": false,
-        }
-    });
+            options: {
+                scales: {
+                    yAxes: [{
+                        ticks: {
+                            beginAtZero: true
+                        },
+                        scaleLabel: {
+                            display: true,
+                            labelString: "Time in ms"
+                        }
+                    }],
+                },
+                animation: { duration: 0 },
+                "maintainAspectRatio": false,
+            }
+        });
+    }
 
     // LOH isn't a distinct GC generation - LOH is swept as part of Gen 2
     // (full) GCs, so a GC's "generation" field alone can't identify it. A GC
@@ -1420,6 +1463,7 @@ var allocationDatasets = {};
     // deeper, inside #view-gc. Same show/hide-via-active-class mechanism,
     // keyed on data-view/id="view-*" instead of data-tab/id="tab-*".
     var allocationSummaryInjected = false;
+    var exceptionSummaryInjected = false;
 
     // { chart, zoomHandle } for every currently-rendered Heap Contents
     // chart - detached/destroyed and rebuilt on every zoom change (renderHeapContentsCharts
@@ -1677,6 +1721,38 @@ var allocationDatasets = {};
         updateRankedTypesTables(zoomRange);
     }
 
+    // Overview is now the default active view for nettrace input (see
+    // GcSnapshotRenderer.ts) - #view-gc, and every chart built into it, can
+    // now start out `display:none` (.viewPanel's own CSS) rather than
+    // always being the visible default the way it used to be. Chart.js
+    // measures a canvas's size once at construction time and does not
+    // recover on its own once its container later becomes visible - a
+    // real, confirmed pitfall, not hypothetical - so every GC-view chart
+    // built so far (gcCountChart/gcTimeCountChart above, plus
+    // renderGcCharts's own gcChartHandles/heapChartHandlesByIndex, all
+    // built eagerly at page load regardless of which tab is active) needs
+    // an explicit resize() once the GC tab actually becomes visible.
+    // Cheap/idempotent to call even when the charts were already visible
+    // (e.g. gcinfo format, where GC still starts active) - Chart.js's own
+    // resize() is a no-op-ish recompute, not a rebuild.
+    function resizeGcViewCharts() {
+        if (gcCountChart) {
+            gcCountChart.resize();
+        }
+
+        if (gcTimeCountChart) {
+            gcTimeCountChart.resize();
+        }
+
+        for (var handleIndex = 0; handleIndex < gcChartHandles.length; ++handleIndex) {
+            gcChartHandles[handleIndex].chart.resize();
+        }
+
+        for (var heapIndexKey in heapChartHandlesByIndex) {
+            heapChartHandlesByIndex[heapIndexKey].chart.resize();
+        }
+    }
+
     var viewNavButtons = document.getElementsByClassName("viewNavButton");
     for (var viewButtonIndex = 0; viewButtonIndex < viewNavButtons.length; ++viewButtonIndex) {
         viewNavButtons[viewButtonIndex].addEventListener('click', function (event) {
@@ -1695,7 +1771,9 @@ var allocationDatasets = {};
             event.currentTarget.classList.add('active');
             document.getElementById('view-' + targetView).classList.add('active');
 
-            if (targetView === 'heapContents' && !allocationSummaryInjected) {
+            if (targetView === 'gc') {
+                resizeGcViewCharts();
+            } else if (targetView === 'heapContents' && !allocationSummaryInjected) {
                 var holder = document.getElementById("allocationSummaryHtml");
                 var allocationSummaryHtml = holder.innerHTML.slice(4, holder.innerHTML.length - 3);
 
@@ -1729,6 +1807,14 @@ var allocationDatasets = {};
 
                 wireHeapContentsInnerTabs();
                 allocationSummaryInjected = true;
+            } else if (targetView === 'exceptions' && !exceptionSummaryInjected) {
+                var exceptionHolder = document.getElementById("exceptionSummaryHtml");
+                var exceptionSummaryHtml = exceptionHolder.innerHTML.slice(4, exceptionHolder.innerHTML.length - 3);
+
+                document.getElementById('view-exceptions').innerHTML = exceptionSummaryHtml;
+
+                wireExceptionsInnerTabs();
+                exceptionSummaryInjected = true;
             }
         });
     }
@@ -2116,44 +2202,374 @@ var allocationDatasets = {};
         }
     }
 
-    // Backspace has two mutually-exclusive meanings on this page, checked in
-    // the same listener so their precedence is explicit rather than relying
-    // on two independent listeners never happening to both fire (which
-    // they can't anyway, since a tab being active is exclusive - but
-    // stating that as one function's own logic is clearer than trusting an
-    // invariant across two separate ones):
+    // "Types"/"Drill Down" inner tabs within the Exceptions view - mirrors
+    // switchHeapContentsTab above exactly, keyed on its own
+    // exceptionsTabButton-equivalent (still the shared heapContentsTabButton/
+    // heapContentsTabPanel CSS classes - see ExceptionSummaryRenderer.ts,
+    // which reuses that styling rather than duplicating it) but its own
+    // data-exceptiontab/id="exceptions-tab-*" so it never collides with the
+    // Heap Contents view's identically-shaped tab bar.
+    function switchExceptionsTab(targetTab) {
+        var buttons = document.querySelectorAll('#view-exceptions .heapContentsTabButton');
+        for (var buttonIndex = 0; buttonIndex < buttons.length; ++buttonIndex) {
+            buttons[buttonIndex].classList.remove('active');
+            if (buttons[buttonIndex].getAttribute('data-exceptiontab') === targetTab) {
+                buttons[buttonIndex].classList.add('active');
+            }
+        }
+
+        var panels = document.querySelectorAll('#view-exceptions .heapContentsTabPanel');
+        for (var panelIndex = 0; panelIndex < panels.length; ++panelIndex) {
+            panels[panelIndex].classList.remove('active');
+        }
+        document.getElementById('exceptions-tab-' + targetTab).classList.add('active');
+
+        var backButton = document.getElementById('backToExceptionTypesButton');
+        if (backButton) {
+            backButton.style.display = (targetTab === 'drilldown') ? 'inline-block' : 'none';
+        }
+    }
+
+    // Unlike goBackToChartsView, there's no chart/scroll target to restore -
+    // the Types panel is just the ranked table, already at the top.
+    function goBackToExceptionTypesView() {
+        switchExceptionsTab('types');
+    }
+
+    // Mirrors buildDrillDownRowIfLazy, against exceptionDrillDownStats.js's
+    // buildLazyExceptionDrillDownSubtree and the data-exception-lazy
+    // attribute (see that file's header comment on why this is a parallel
+    // implementation rather than a shared one).
+    function buildExceptionDrillDownRowIfLazy(detailRow) {
+        if (!detailRow || detailRow.getAttribute('data-exception-lazy') !== 'true') {
+            return;
+        }
+
+        var builtHtml = buildLazyExceptionDrillDownSubtree(detailRow.id);
+        if (builtHtml !== null) {
+            detailRow.querySelector('.callerTreeCell').innerHTML = builtHtml;
+        }
+        detailRow.removeAttribute('data-exception-lazy');
+    }
+
+    // Mirrors expandDrillDownRowFollowingLinearRun - see that function's own
+    // comment for the full rationale (follow a non-branching chain down to
+    // the first real fork or the end, in one click).
+    function expandExceptionDrillDownRowFollowingLinearRun(toggleRow, detailRow) {
+        buildExceptionDrillDownRowIfLazy(detailRow);
+        toggleRow.classList.add('expanded');
+        detailRow.classList.add('expanded');
+
+        var currentDetailRow = detailRow;
+        for (;;) {
+            var innerTable = currentDetailRow.querySelector('table.callerTreeInner');
+            if (!innerTable) {
+                return;
+            }
+
+            var childRows = [];
+            for (var rowIndex = 0; rowIndex < innerTable.rows.length; ++rowIndex) {
+                if (innerTable.rows[rowIndex].classList.contains('callerRow')) {
+                    childRows.push(innerTable.rows[rowIndex]);
+                }
+            }
+
+            if (childRows.length !== 1) {
+                return;
+            }
+
+            var onlyChildRow = childRows[0];
+            if (onlyChildRow.getAttribute('data-exception-expandable') !== 'true') {
+                return;
+            }
+
+            var onlyChildDetailRow = document.getElementById(onlyChildRow.getAttribute('data-exception-target'));
+            if (!onlyChildDetailRow) {
+                return;
+            }
+
+            buildExceptionDrillDownRowIfLazy(onlyChildDetailRow);
+            onlyChildRow.classList.add('expanded');
+            onlyChildDetailRow.classList.add('expanded');
+            currentDetailRow = onlyChildDetailRow;
+        }
+    }
+
+    // Mirrors setAllDrillDownRowsExpanded, against the data-exception-*
+    // attribute names - see that function's own comment for why this is an
+    // explicit worklist rather than a container-wide re-scan per row.
+    function setAllExceptionDrillDownRowsExpanded(container, expanded) {
+        if (expanded) {
+            var lazyQueue = [];
+
+            if (container.classList && container.classList.contains('callPathsDetail')) {
+                lazyQueue.push(container);
+            }
+
+            var initialLazyRows = container.querySelectorAll('.callPathsDetail[data-exception-lazy="true"]');
+            for (var initialIndex = 0; initialIndex < initialLazyRows.length; ++initialIndex) {
+                lazyQueue.push(initialLazyRows[initialIndex]);
+            }
+
+            while (lazyQueue.length > 0) {
+                var lazyRow = lazyQueue.pop();
+                buildExceptionDrillDownRowIfLazy(lazyRow);
+
+                var newlyLazyRows = lazyRow.querySelectorAll('.callPathsDetail[data-exception-lazy="true"]');
+                for (var newIndex = 0; newIndex < newlyLazyRows.length; ++newIndex) {
+                    lazyQueue.push(newlyLazyRows[newIndex]);
+                }
+            }
+        }
+
+        var toggleRows = container.querySelectorAll('[data-exception-expandable="true"]');
+        for (var rowIndex = 0; rowIndex < toggleRows.length; ++rowIndex) {
+            var toggleRow = toggleRows[rowIndex];
+            var detailRow = document.getElementById(toggleRow.getAttribute('data-exception-target'));
+
+            if (expanded) {
+                toggleRow.classList.add('expanded');
+                if (detailRow) {
+                    detailRow.classList.add('expanded');
+                }
+            } else {
+                toggleRow.classList.remove('expanded');
+                if (detailRow) {
+                    detailRow.classList.remove('expanded');
+                }
+            }
+        }
+    }
+
+    // Mirrors showDrillDownTab - injects the rendered table, reveals the
+    // tab button (hidden until there's actually something to show), and
+    // switches to it.
+    function showExceptionDrillDownTab(drillDownHtml) {
+        document.getElementById('exceptions-tab-drilldown').innerHTML = drillDownHtml;
+
+        var exceptionDrillDownTabButton = document.getElementById('exceptionDrillDownTabButton');
+        if (exceptionDrillDownTabButton) {
+            exceptionDrillDownTabButton.style.display = 'inline-block';
+        }
+
+        switchExceptionsTab('drilldown');
+    }
+
+    // Called from the click delegation in wireExceptionsInnerTabs below when
+    // a row in the ranked exception-types table is clicked. Scoped to that
+    // type across the whole capture (ExceptionJsonExporter.cs's
+    // typeDrillDown - a parallel array to topTypes), mirroring
+    // onTypeDrillDownClick - simpler than that function since there's no
+    // per-chart-cell entry point or All/LOH scope to resolve here.
+    function onExceptionTypeDrillDownClick(typeIndex) {
+        var typeDrillDown = exceptionSummaryJson["typeDrillDown"];
+        var typeEntry = typeDrillDown ? typeDrillDown[typeIndex] : null;
+        var typeName = exceptionSummaryJson["topTypes"][typeIndex]["TypeName"];
+
+        showExceptionDrillDownTab(renderExceptionDrillDownTable(typeEntry, typeName, exceptionSummaryJson["methodNames"], exceptionSummaryJson["totalExceptionCount"]));
+    }
+
+    function wireExceptionsInnerTabs() {
+        var exceptionsTabButtons = document.querySelectorAll('#view-exceptions .heapContentsTabButton');
+        for (var tabButtonIndex = 0; tabButtonIndex < exceptionsTabButtons.length; ++tabButtonIndex) {
+            exceptionsTabButtons[tabButtonIndex].addEventListener('click', function (event) {
+                switchExceptionsTab(event.currentTarget.getAttribute('data-exceptiontab'));
+            });
+        }
+
+        var backToExceptionTypesButton = document.getElementById('backToExceptionTypesButton');
+        if (backToExceptionTypesButton) {
+            backToExceptionTypesButton.addEventListener('click', goBackToExceptionTypesView);
+        }
+
+        // Ranked exception-types table rows (ExceptionSummaryRenderer.ts) -
+        // injected once (not rebuilt per click like the drill-down panel
+        // itself), so a direct listener on its shared container is fine
+        // here rather than needing delegation on something more stable.
+        var typesPanel = document.getElementById('exceptions-tab-types');
+        if (typesPanel) {
+            typesPanel.addEventListener('click', function (event) {
+                var typeRow = event.target.closest('.exceptionTypeRow');
+                if (!typeRow) {
+                    return;
+                }
+
+                onExceptionTypeDrillDownClick(parseInt(typeRow.getAttribute('data-exception-type-index'), 10));
+            });
+        }
+
+        // Event delegation, attached once to the panel itself rather than
+        // per-row - exceptionDrillDownStats.js's renderExceptionDrillDownTable
+        // rebuilds this panel's entire innerHTML on every ranked-table-row
+        // click, which would otherwise silently drop any listeners attached
+        // directly to its rows. Mirrors the Heap Contents drill-down panel's
+        // own delegation, against the data-exception-* attribute names and
+        // exceptionDrillDown*Btn classes.
+        var exceptionDrillDownPanel = document.getElementById('exceptions-tab-drilldown');
+        if (exceptionDrillDownPanel) {
+            exceptionDrillDownPanel.addEventListener('click', function (event) {
+                if (event.target.closest('.exceptionDrillDownExpandAllBtn')) {
+                    setAllExceptionDrillDownRowsExpanded(exceptionDrillDownPanel, true);
+                    return;
+                }
+
+                if (event.target.closest('.exceptionDrillDownCollapseAllBtn')) {
+                    setAllExceptionDrillDownRowsExpanded(exceptionDrillDownPanel, false);
+                    return;
+                }
+
+                var leafRow = event.target.closest('[data-exception-expandable="true"]');
+                if (!leafRow) {
+                    return;
+                }
+
+                var detailRow = document.getElementById(leafRow.getAttribute('data-exception-target'));
+                if (!detailRow) {
+                    return;
+                }
+
+                if (leafRow.classList.contains('expanded')) {
+                    leafRow.classList.remove('expanded');
+                    detailRow.classList.remove('expanded');
+                    return;
+                }
+
+                expandExceptionDrillDownRowFollowingLinearRun(leafRow, detailRow);
+            });
+        }
+    }
+
+    // "Go back" has two mutually-exclusive meanings on this page, checked in
+    // one function so their precedence is explicit rather than relying on
+    // two independent call sites never happening to both fire (which they
+    // can't anyway, since a tab being active is exclusive - but stating
+    // that as one function's own logic is clearer than trusting an
+    // invariant across separate ones):
     //   - Drill Down tab active: return to Charts (existing behavior).
     //   - Charts tab active (either view) and a zoom is applied: reset
     //     sharedZoomRange back to the full capture via applySharedZoom -
-    //     only when zoomed, so Backspace does nothing surprising otherwise.
+    //     only when zoomed, so going back does nothing surprising otherwise.
     //     The GC and Heap Contents views are mutually exclusive (only one
     //     .viewPanel is ever active), so this can't conflict with the
     //     Drill Down check above it.
+    // Shared by both the Backspace key and the macOS two-finger swipe-back
+    // trackpad gesture below - returns true if it actually did something,
+    // so each caller only preventDefault()s a real navigation/zoom-reset
+    // rather than swallowing every keystroke or wheel tick unconditionally.
+    var performGoBackAction = function () {
+        var gcViewPanel = document.getElementById('view-gc');
+        if (gcViewPanel && gcViewPanel.classList.contains('active') && sharedZoomRange) {
+            applySharedZoom(null);
+            return true;
+        }
+
+        var drillDownPanel = document.getElementById('heapContents-tab-drilldown');
+        if (drillDownPanel && drillDownPanel.classList.contains('active')) {
+            goBackToChartsView();
+            return true;
+        }
+
+        var exceptionDrillDownPanel = document.getElementById('exceptions-tab-drilldown');
+        if (exceptionDrillDownPanel && exceptionDrillDownPanel.classList.contains('active')) {
+            goBackToExceptionTypesView();
+            return true;
+        }
+
+        var chartsPanelForZoom = document.getElementById('heapContents-tab-charts');
+        if (chartsPanelForZoom && chartsPanelForZoom.classList.contains('active') && sharedZoomRange) {
+            applySharedZoom(null);
+            return true;
+        }
+
+        return false;
+    };
+
+    // The forward counterpart to performGoBackAction above - restores
+    // zoomRangeForForward (the range a prior reset just cleared) via
+    // applySharedZoom's isForwardRestore path. Only meaningful for the
+    // zoom-reset half of "back", not the Drill Down "return to Charts"
+    // half - there's no equivalent "forward into Drill Down" concept, and
+    // sharedZoomRange being null is what actually gates whether there's
+    // anything to redo, same as a browser disabling its forward button
+    // once you're not "back" in history.
+    var performGoForwardAction = function () {
+        if (sharedZoomRange || !zoomRangeForForward) {
+            return false;
+        }
+
+        var gcViewPanel = document.getElementById('view-gc');
+        var chartsPanelForZoom = document.getElementById('heapContents-tab-charts');
+        var zoomableViewActive = (gcViewPanel && gcViewPanel.classList.contains('active')) ||
+            (chartsPanelForZoom && chartsPanelForZoom.classList.contains('active'));
+
+        if (!zoomableViewActive) {
+            return false;
+        }
+
+        applySharedZoom(zoomRangeForForward, true);
+        return true;
+    };
+
     document.addEventListener('keydown', function (event) {
         if (event.key !== 'Backspace') {
             return;
         }
 
-        var gcViewPanel = document.getElementById('view-gc');
-        if (gcViewPanel && gcViewPanel.classList.contains('active') && sharedZoomRange) {
+        if (performGoBackAction()) {
             event.preventDefault();
-            applySharedZoom(null);
-            return;
-        }
-
-        var drillDownPanel = document.getElementById('heapContents-tab-drilldown');
-        if (drillDownPanel && drillDownPanel.classList.contains('active')) {
-            event.preventDefault();
-            goBackToChartsView();
-            return;
-        }
-
-        var chartsPanelForZoom = document.getElementById('heapContents-tab-charts');
-        if (chartsPanelForZoom && chartsPanelForZoom.classList.contains('active') && sharedZoomRange) {
-            event.preventDefault();
-            applySharedZoom(null);
         }
     });
+
+    // macOS two-finger swipe-back/forward (trackpad) mirror Backspace/redo
+    // above. A physical swipe doesn't arrive as one discrete event - it's a
+    // burst of many 'wheel' events, so a horizontal-dominant burst is
+    // accumulated until it crosses the threshold in either direction, fires
+    // the matching action once, then ignores the rest of that burst (a
+    // short quiet gap resets the accumulator for the next gesture).
+    // Pinch-to-zoom also arrives as 'wheel' with ctrlKey set on Chromium/
+    // macOS, and plain vertical scrolling has deltaY dominant - both are
+    // excluded so this only fires on an actual horizontal swipe.
+    //
+    // Direction: with macOS's default "natural" scrolling, the back gesture
+    // (fingers swipe left-to-right, as if dragging the previous page in
+    // from the left) reports negative deltaX - the same sign Chrome itself
+    // keys its built-in swipe-to-go-back navigation off of; forward
+    // (fingers swipe right-to-left) is the positive-deltaX mirror image. If
+    // a user has natural scrolling disabled these fire on the opposite
+    // swipe directions instead; swap the two branches below if that's ever
+    // reported.
+    var SWIPE_THRESHOLD_PX = 60;
+    var SWIPE_GESTURE_IDLE_RESET_MS = 400;
+    var swipeAccumulatedDeltaX = 0;
+    var swipeGestureResetTimer = null;
+
+    document.addEventListener('wheel', function (event) {
+        if (event.ctrlKey || Math.abs(event.deltaX) <= Math.abs(event.deltaY)) {
+            swipeAccumulatedDeltaX = 0;
+            return;
+        }
+
+        clearTimeout(swipeGestureResetTimer);
+        swipeGestureResetTimer = setTimeout(function () {
+            swipeAccumulatedDeltaX = 0;
+        }, SWIPE_GESTURE_IDLE_RESET_MS);
+
+        swipeAccumulatedDeltaX += event.deltaX;
+
+        if (swipeAccumulatedDeltaX <= -SWIPE_THRESHOLD_PX) {
+            swipeAccumulatedDeltaX = 0;
+
+            if (performGoBackAction()) {
+                event.preventDefault();
+            }
+        } else if (swipeAccumulatedDeltaX >= SWIPE_THRESHOLD_PX) {
+            swipeAccumulatedDeltaX = 0;
+
+            if (performGoForwardAction()) {
+                event.preventDefault();
+            }
+        }
+    }, { passive: false });
 
     // ── Heap Snapshot (gcHeapAnalyzer output) ────────────────────────────────
     // File is read entirely in the webview via FileReader — no extension-host
