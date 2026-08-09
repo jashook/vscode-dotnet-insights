@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 
 import { renderAllocationSummaryTable } from "./AllocationSummaryRenderer";
 import { adaptivelyBucketTicks } from "./AllocationTicksBucketer";
+import { renderCpuProfileView } from "./CpuProfileRenderer";
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
 import { renderEventOverviewTable } from "./EventOverviewRenderer";
 import { renderExceptionSummaryTable } from "./ExceptionSummaryRenderer";
@@ -163,6 +164,19 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const eventOverview = gcData["eventOverview"];
     const hasOverview = isNettrace && eventOverview !== null && eventOverview !== undefined;
     const eventOverviewHtml = hasOverview ? renderEventOverviewTable(eventOverview) : "";
+
+    // "Profile" (CPU sample-based flame graph + hot methods table) - same
+    // format-level/data-emptiness gating as Heap Contents/Exceptions above
+    // (see Cpu/CpuProfileJsonExporter.cs). cpuProfileJson carries the raw
+    // flameTree/methodNames data media/flameGraph.js needs to build the
+    // flame graph entirely client-side (see CpuProfileRenderer.ts's own
+    // header comment) - hotMethods is included too so the table can be
+    // resorted without a round trip, but flameGraph.js is the only reader
+    // that actually needs flameTree.
+    const cpuProfile = gcData["cpuProfile"];
+    const hasCpuProfile = isNettrace && cpuProfile !== null && cpuProfile !== undefined && cpuProfile["totalSampleCount"] !== null && cpuProfile["totalSampleCount"] !== undefined && cpuProfile["totalSampleCount"] > 0;
+    const cpuProfileHtml = hasCpuProfile ? renderCpuProfileView(cpuProfile) : "";
+    const cpuProfileJson = escapeJsonForInlineScript(hasCpuProfile ? JSON.stringify(cpuProfile) : "null");
 
     var totalNumbers = computePauseTimeStats(gcs);
 
@@ -335,6 +349,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const allocationScriptUri = mediaWebviewUri(webview, extensionUri, 'allocationStats.js');
     const drillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'drillDownStats.js');
     const exceptionDrillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'exceptionDrillDownStats.js');
+    const flameGraphScriptUri = mediaWebviewUri(webview, extensionUri, 'flameGraph.js');
 
     const chartjs = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'chart.js', 'dist', 'Chart.min.js'));
 
@@ -436,24 +451,26 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <script type="application/json" id="totalTimeInEachGcJson">${totalTimeInEachGcJson}</script>
             <script type="application/json" id="allocationSummaryJson">${allocationSummaryJson}</script>
             <script type="application/json" id="exceptionSummaryJson">${exceptionSummaryJson}</script>
+            <script type="application/json" id="cpuProfileJson">${cpuProfileJson}</script>
 
             <!-- High-level view switcher (Overview / GC / Heap Contents /
-                 Exceptions / eventually Profile) - browser-tab style,
-                 sitting above the file name so it doesn't consume
-                 horizontal width from the content below the way a left-nav
-                 sidebar would. For nettrace input, Overview is always the
-                 default active tab (even when GC has data) and every other
-                 tab stays visible-but-disabled when this particular
-                 capture has none of that event type, rather than
-                 disappearing - lets a user see at a glance what kinds of
-                 events this capture does/doesn't have. gcinfo format only
-                 ever has the one GC tab, unconditionally enabled and
-                 default-active, exactly as before. -->
+                 Exceptions / Profile) - browser-tab style, sitting above
+                 the file name so it doesn't consume horizontal width from
+                 the content below the way a left-nav sidebar would. For
+                 nettrace input, Overview is always the default active tab
+                 (even when GC has data) and every other tab stays visible-
+                 but-disabled when this particular capture has none of that
+                 event type, rather than disappearing - lets a user see at
+                 a glance what kinds of events this capture does/doesn't
+                 have. gcinfo format only ever has the one GC tab,
+                 unconditionally enabled and default-active, exactly as
+                 before. -->
             <div class="viewTabBar">
                 ${isNettrace ? `<button class="viewNavButton active" data-view="overview">Overview</button>` : ``}
                 <button class="viewNavButton${isNettrace ? `` : ` active`}" data-view="gc"${isNettrace && !hasGc ? ` disabled title="No GC events in this capture"` : ``}>GC</button>
                 ${isNettrace ? `<button class="viewNavButton" data-view="heapContents"${hasHeapContents ? `` : ` disabled title="No allocation events in this capture"`}>Heap Contents</button>` : ``}
                 ${isNettrace ? `<button class="viewNavButton" data-view="exceptions"${hasExceptions ? `` : ` disabled title="No exception events in this capture"`}>Exceptions</button>` : ``}
+                ${isNettrace ? `<button class="viewNavButton" data-view="profile"${hasCpuProfile ? `` : ` disabled title="No CPU samples in this capture"`}>Profile</button>` : ``}
             </div>
 
             <h2 class="divider">${gcData["processName"]}</h2>
@@ -643,11 +660,19 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
                  constructed only on the "Exceptions" nav button's first
                  click. -->
             <span style="display:none" id="exceptionSummaryHtml"><!--${exceptionSummaryHtml}--></span>` : ``}
+            ${hasCpuProfile ? `<div id="view-profile" class="viewPanel"></div>
+            <!-- Same lazy-inject pattern as allocationSummaryHtml above -
+                 constructed only on the "Profile" nav button's first click.
+                 The flame graph itself still isn't built at that point -
+                 it needs cpuProfileJson (see media/flameGraph.js), not just
+                 this HTML - see snapshotGcStats.js's view switcher. -->
+            <span style="display:none" id="cpuProfileHtml"><!--${cpuProfileHtml}--></span>` : ``}
 
             <script nonce="${nonce}" src="${chartZoomScriptUri}"></script>
             <script nonce="${nonce}" src="${allocationScriptUri}"></script>
             <script nonce="${nonce}" src="${drillDownScriptUri}"></script>
             <script nonce="${nonce}" src="${exceptionDrillDownScriptUri}"></script>
+            <script nonce="${nonce}" src="${flameGraphScriptUri}"></script>
             <script nonce="${nonce}" src="${scriptUri}"></script>
         </body>
     </html>`;

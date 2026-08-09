@@ -28,6 +28,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 
+using DotnetInsights.NetTrace.Cpu;
 using DotnetInsights.NetTrace.Exceptions;
 using DotnetInsights.NetTrace.Overview;
 using DotnetInsights.NetTrace.Rundown;
@@ -47,7 +48,7 @@ public static class GcJsonExporter
     // becoming its own write() syscall.
     private const int OutputFileStreamBufferSize = 1024 * 1024;
 
-    public static void WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath)
+    public static void WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath)
     {
         using (FileStream fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, OutputFileStreamBufferSize))
         using (Utf8JsonWriter writer = new Utf8JsonWriter(fileStream))
@@ -92,6 +93,12 @@ public static class GcJsonExporter
             }
             writer.WriteEndArray();
             writer.WriteEndObject();
+
+            // "cpuProfile" is also nettrace-only (same reasoning as
+            // allocationSummary/exceptionSummary above) - the .gcinfo/XML
+            // path never sets this key either. See Cpu/CpuProfileJsonExporter.cs.
+            writer.WritePropertyName("cpuProfile");
+            CpuProfileJsonExporter.Write(writer, sampleEvents, symbolTable);
 
             writer.WritePropertyName("gcData");
             writer.WriteStartArray();
@@ -191,6 +198,29 @@ public static class GcJsonExporter
 
                 writer.WriteEndObject();
                 writer.WriteEndObject();
+
+                // Utf8JsonWriter never auto-flushes on its own - this loop
+                // writes ~20 top-level fields plus a full Heaps/Generations
+                // breakdown (17 fields x 5 generations x however many
+                // heaps) per GC, with no flush anywhere in it before this
+                // fix, so its internal ArrayBufferWriter<byte> buffer had
+                // to keep doubling (System.Array.Resize) across the WHOLE
+                // gcData array before any of it reached disk - same root
+                // cause as AllocationJsonExporter.cs's own
+                // WriteCellDrillDown/WriteTypeDrillDown and
+                // Cpu/CpuProfileJsonExporter.cs's own WriteFlameTreeNode
+                // (see both files' matching comments). Confirmed via
+                // dotnet-trace profiling nettraceParser's own process
+                // against a real capture with a nontrivial GC/heap count:
+                // this exact call chain (WriteToFile -> Utf8JsonWriter.
+                // WriteNumber -> ... -> Array.Resize) was ~34% of the
+                // WHOLE process's sampled CPU time - the single largest
+                // remaining cost even after fixing the same bug in
+                // CpuProfileJsonExporter.cs. Flushing once per GC (not
+                // once per heap/generation - a real capture's GC count is
+                // small enough that finer granularity isn't needed) bounds
+                // the buffer to roughly one GC's own JSON.
+                writer.Flush();
             }
 
             writer.WriteEndArray();

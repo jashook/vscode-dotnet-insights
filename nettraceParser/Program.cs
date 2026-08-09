@@ -20,6 +20,7 @@ using System.Diagnostics;
 using System.IO;
 
 using DotnetInsights.NetTrace;
+using DotnetInsights.NetTrace.Cpu;
 using DotnetInsights.NetTrace.Exceptions;
 using DotnetInsights.NetTrace.Gc;
 using DotnetInsights.NetTrace.Overview;
@@ -93,15 +94,20 @@ if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
     long symbolTableMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 
+    List<SampleEvent> sampleEventsForJson = SampleProfileEventProjector.Project(file.Events, file.Header.QPCFrequency, referenceQpc);
+    long sampleProjectMs = phaseStopwatch.ElapsedMilliseconds;
+    phaseStopwatch.Restart();
+
     int totalEventCount = file.Events.Count;
 
     // Nothing past this point ever reads file/file.Events again -
     // GcEventProjector.Project, AllocationEventProjector.Project,
-    // ExceptionEventProjector.Project, EventOverviewBuilder.Build, and
-    // MethodSymbolTable.Build above all just iterate it and hand back
-    // brand-new derived structures; none of them stash a reference to the
-    // list itself. But `file` is still a GC root for the rest of this
-    // method's stack frame regardless, so without dropping it here, every
+    // ExceptionEventProjector.Project, EventOverviewBuilder.Build,
+    // MethodSymbolTable.Build, and SampleProfileEventProjector.Project above
+    // all just iterate it and hand back brand-new derived structures; none
+    // of them stash a reference to the list itself. But `file` is still a
+    // GC root for the rest of this method's stack frame regardless, so
+    // without dropping it here, every
     // gen2 GC during the jsonExport call below still has to trace
     // file.Events's full backing array - a real 5-minute capture holds
     // 4.29M+ EventRecord structs, each carrying 5 reference-typed fields
@@ -115,7 +121,7 @@ if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
 
     string processName = Path.GetFileNameWithoutExtension(filePath);
 
-    GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, symbolTable, processName, ticksBinaryPath);
+    GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, symbolTable, processName, ticksBinaryPath);
     long jsonExportMs = phaseStopwatch.ElapsedMilliseconds;
 
     long totalMs = totalStopwatch.ElapsedMilliseconds;
@@ -136,7 +142,9 @@ if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
         $"allocationProject={allocationProjectMs}ms ({allocationEventsForJson.Count} ticks) " +
         $"exceptionProject={exceptionProjectMs}ms ({exceptionEventsForJson.Count} exceptions) " +
         $"eventOverview={eventOverviewMs}ms ({eventOverviewForJson.EventTypes.Count} distinct event types) " +
-        $"symbolTable={symbolTableMs}ms jsonExport={jsonExportMs}ms total={totalMs}ms " +
+        $"symbolTable={symbolTableMs}ms " +
+        $"sampleProject={sampleProjectMs}ms ({sampleEventsForJson.Count} samples) " +
+        $"jsonExport={jsonExportMs}ms total={totalMs}ms " +
         $"gcPause={GC.GetTotalPauseDuration().TotalMilliseconds:F1}ms gcCounts=[{GC.CollectionCount(0)},{GC.CollectionCount(1)},{GC.CollectionCount(2)}]");
 
     return;
@@ -232,6 +240,32 @@ if (Environment.GetEnvironmentVariable("NETTRACE_DEBUG") != null)
     foreach (KeyValuePair<int, int> kv in eventIdCounts)
     {
         Console.WriteLine($"  EventId={kv.Key} count={kv.Value} version={eventIdVersion[kv.Key]} payloadLen={eventIdPayloadLen[kv.Key]}");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("== Microsoft-DotNETCore-SampleProfiler EventId histogram (debug) ==");
+
+    Dictionary<int, int> sampleEventIdCounts = new Dictionary<int, int>();
+    Dictionary<int, int> sampleEventIdVersion = new Dictionary<int, int>();
+    Dictionary<int, int> sampleEventIdPayloadLen = new Dictionary<int, int>();
+    Dictionary<int, int> sampleEventIdStackLen = new Dictionary<int, int>();
+    foreach (EventRecord record in file.Events)
+    {
+        if (record.ProviderName != "Microsoft-DotNETCore-SampleProfiler")
+        {
+            continue;
+        }
+
+        sampleEventIdCounts.TryGetValue(record.EventId, out int sampleCount);
+        sampleEventIdCounts[record.EventId] = sampleCount + 1;
+        sampleEventIdVersion[record.EventId] = record.Version;
+        sampleEventIdPayloadLen[record.EventId] = record.PayloadLength;
+        sampleEventIdStackLen[record.EventId] = record.Stack.Length;
+    }
+
+    foreach (KeyValuePair<int, int> kv in sampleEventIdCounts)
+    {
+        Console.WriteLine($"  EventId={kv.Key} count={kv.Value} version={sampleEventIdVersion[kv.Key]} payloadLen={sampleEventIdPayloadLen[kv.Key]} stackLen(lastSeen)={sampleEventIdStackLen[kv.Key]}");
     }
 }
 

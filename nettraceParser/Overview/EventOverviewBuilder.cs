@@ -7,13 +7,10 @@
 // (Microsoft-Windows-DotNETRuntime, Microsoft-Windows-DotNETRuntimeRundown)
 // is manifest-based and has an empty EventName (see EventBlock.cs's own
 // comment, and Exceptions/ClrExceptionTypes.cs's header comment). For those,
-// DisplayName falls back to a friendly lookup for EventIds this codebase
-// already names elsewhere (Gc/ClrGcTypes.cs's ClrGcEventIds,
-// Exceptions/ClrExceptionTypes.cs's ClrExceptionEventIds), and to a plain
-// "EventID {n}" for everything else (including every Rundown event) rather
-// than guessing at unverified manifest names - honest about what this tool
-// actually knows, matching this codebase's existing "only support/name what's
-// been verified" convention.
+// DisplayName comes from ClrEventNames.cs's full generated EventId -> name
+// tables (both providers, every event TraceEvent knows about - see that
+// file), falling back to a plain "EventID {n}" only for an id genuinely
+// outside them.
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace DotnetInsights.NetTrace.Overview {
@@ -24,9 +21,6 @@ namespace DotnetInsights.NetTrace.Overview {
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-
-using DotnetInsights.NetTrace.Exceptions;
-using DotnetInsights.NetTrace.Gc;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -61,25 +55,6 @@ public readonly struct EventOverview
 
 public static class EventOverviewBuilder
 {
-    private const string ClrProviderName = "Microsoft-Windows-DotNETRuntime";
-
-    // Only the CLR-provider EventIds this codebase already decodes/names
-    // elsewhere - see this file's own header comment on why everything else
-    // falls back to "EventID {n}" instead of a guessed name.
-    private static readonly Dictionary<int, string> ClrFriendlyNames = new Dictionary<int, string>
-    {
-        { ClrGcEventIds.GCStart, "GCStart" },
-        { ClrGcEventIds.GCEnd, "GCEnd" },
-        { ClrGcEventIds.GCRestartEEEnd, "GCRestartEEEnd" },
-        { ClrGcEventIds.GCHeapStats, "GCHeapStats" },
-        { ClrGcEventIds.GCSuspendEEEnd, "GCSuspendEEEnd" },
-        { ClrGcEventIds.GCSuspendEEBegin, "GCSuspendEEBegin" },
-        { ClrGcEventIds.GCAllocationTick, "GCAllocationTick" },
-        { ClrGcEventIds.GCPerHeapHistory, "GCPerHeapHistory" },
-        { ClrGcEventIds.GCGlobalHeapHistory, "GCGlobalHeapHistory" },
-        { ClrExceptionEventIds.ExceptionThrown, "ExceptionThrown" },
-    };
-
     // Holds one distinct key's running Count and first-seen EventName -
     // merges what used to be two separate Dictionary<(string,int), _>
     // lookups (countsByKey/eventNameByKey) into one, halving the per-event
@@ -177,6 +152,11 @@ public static class EventOverviewBuilder
         return new EventOverview(events.Count, eventTypes);
     }
 
+    // Precedence: the record's OWN EventName wins when it has one (a
+    // self-describing provider like Microsoft-DotNETCore-EventPipe knows its
+    // event's real name better than any table here could), then the
+    // generated CLR tables, then an honest "EventID {n}" placeholder for
+    // anything genuinely unknown.
     private static string ResolveDisplayName(string providerName, int eventId, string eventName)
     {
         if (!string.IsNullOrEmpty(eventName))
@@ -184,9 +164,9 @@ public static class EventOverviewBuilder
             return eventName;
         }
 
-        if (providerName == ClrProviderName && ClrFriendlyNames.TryGetValue(eventId, out string friendlyName))
+        if (ClrEventNames.TryGetName(providerName, eventId, out string knownName))
         {
-            return friendlyName;
+            return knownName;
         }
 
         return $"EventID {eventId}";

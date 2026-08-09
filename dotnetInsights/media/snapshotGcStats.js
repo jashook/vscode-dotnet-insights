@@ -38,6 +38,13 @@ var allocationDatasets = {};
     // "Exceptions" nav button's first click).
     var exceptionSummaryJson = JSON.parse(document.getElementById("exceptionSummaryJson").textContent);
 
+    // null when sourceFormat !== "nettrace" or the capture had zero CPU
+    // samples - see GcSnapshotRenderer.ts's hasCpuProfile. Eagerly parsed
+    // for the same reason allocationSummaryJson/exceptionSummaryJson are -
+    // only the flame graph DOM built from it (media/flameGraph.js) is
+    // deferred to the "Profile" nav button's first click.
+    var cpuProfileJson = JSON.parse(document.getElementById("cpuProfileJson").textContent);
+
     // Full human-readable form for tooltips (space isn't constrained there
     // the way it is on an axis tick) - mirrors GcDetailTableRenderer.ts's
     // formatHumanDateTime exactly, e.g. "21-Jul-2026 03:42:13 PM PDT".
@@ -1306,15 +1313,13 @@ var allocationDatasets = {};
         document.getElementById("generationBreakdownSection").innerHTML = buildAllGenerationBreakdownTables(showAllGenFields);
     }
 
-    // Click-to-sort for the Detailed tab's per-GC table. The table is only
-    // ever built once per webview session (see detailTableHtml above), so
-    // this reorders the already-rendered <tr> elements in place rather than
-    // re-deriving values from the original gcs array - matching the
-    // render-once/mutate-the-DOM approach the rest of this lazy-inject path
-    // already uses.
-    var currentSortColumnIndex = -1;
-    var currentSortAscending = true;
-
+    // Click-to-sort, shared by every lazily-injected table on this page
+    // (the Detailed tab's per-GC table, and the Profile tab's Hot Methods
+    // table - see CpuProfileRenderer.ts). Each table is only ever built
+    // once per webview session, so this reorders the already-rendered <tr>
+    // elements in place rather than re-deriving values from the original
+    // source array - matching the render-once/mutate-the-DOM approach the
+    // rest of this lazy-inject path already uses.
     function detailTableSortValue(cell, sortType) {
         if (sortType === 'date') {
             // The DateTime cell's own data-raw attribute (an ISO-8601
@@ -1367,6 +1372,14 @@ var allocationDatasets = {};
         if (!table) {
             return;
         }
+
+        // Scoped to this one call/table (not module-level) - two distinct
+        // tables (Detailed tab, Profile tab's Hot Methods table) each get
+        // their own independent "which column, which direction" state, so
+        // sorting one table's column 2 doesn't leave a stale ascending/
+        // descending toggle for an unrelated table's own column 2.
+        var currentSortColumnIndex = -1;
+        var currentSortAscending = true;
 
         var headerCells = table.rows[0].cells;
         for (var headerIndex = 0; headerIndex < headerCells.length; ++headerIndex) {
@@ -1464,6 +1477,7 @@ var allocationDatasets = {};
     // keyed on data-view/id="view-*" instead of data-tab/id="tab-*".
     var allocationSummaryInjected = false;
     var exceptionSummaryInjected = false;
+    var cpuProfileInjected = false;
 
     // { chart, zoomHandle } for every currently-rendered Heap Contents
     // chart - detached/destroyed and rebuilt on every zoom change (renderHeapContentsCharts
@@ -1815,6 +1829,28 @@ var allocationDatasets = {};
 
                 wireExceptionsInnerTabs();
                 exceptionSummaryInjected = true;
+            } else if (targetView === 'profile' && !cpuProfileInjected) {
+                var cpuProfileHolder = document.getElementById("cpuProfileHtml");
+                var cpuProfileHtml = cpuProfileHolder.innerHTML.slice(4, cpuProfileHolder.innerHTML.length - 3);
+
+                document.getElementById('view-profile').innerHTML = cpuProfileHtml;
+
+                wireProfileInnerTabs();
+                setupDetailTableSortHandlers(document.getElementById('profile-tab-hotmethods'));
+
+                // Flame Graph is the default-active inner tab (see
+                // CpuProfileRenderer.ts), so it's built immediately here
+                // rather than deferred to a further click - cpuProfileJson
+                // is already parsed eagerly above (see this file's own
+                // header), so this is just the client-side DOM build.
+                renderFlameGraph(
+                    document.getElementById('flameGraphContainer'),
+                    document.getElementById('flameGraphBreadcrumb'),
+                    document.getElementById('flameGraphResetZoomBtn'),
+                    document.getElementById('flameGraphTooltip'),
+                    cpuProfileJson);
+
+                cpuProfileInjected = true;
             }
         });
     }
@@ -2236,6 +2272,30 @@ var allocationDatasets = {};
         switchExceptionsTab('types');
     }
 
+    // "Flame Graph"/"Hot Methods" inner tabs within the Profile view -
+    // mirrors switchExceptionsTab above exactly (same shared
+    // heapContentsTabButton/heapContentsTabPanel CSS classes - see
+    // CpuProfileRenderer.ts) but its own data-profiletab/id="profile-tab-*"
+    // so it never collides with either of the other two identically-shaped
+    // tab bars. No back button - unlike Heap Contents/Exceptions, these two
+    // tabs are just two equally-primary views of the same data, not a
+    // summary/drill-down pair.
+    function switchProfileTab(targetTab) {
+        var buttons = document.querySelectorAll('#view-profile .heapContentsTabButton');
+        for (var buttonIndex = 0; buttonIndex < buttons.length; ++buttonIndex) {
+            buttons[buttonIndex].classList.remove('active');
+            if (buttons[buttonIndex].getAttribute('data-profiletab') === targetTab) {
+                buttons[buttonIndex].classList.add('active');
+            }
+        }
+
+        var panels = document.querySelectorAll('#view-profile .heapContentsTabPanel');
+        for (var panelIndex = 0; panelIndex < panels.length; ++panelIndex) {
+            panels[panelIndex].classList.remove('active');
+        }
+        document.getElementById('profile-tab-' + targetTab).classList.add('active');
+    }
+
     // Mirrors buildDrillDownRowIfLazy, against exceptionDrillDownStats.js's
     // buildLazyExceptionDrillDownSubtree and the data-exception-lazy
     // attribute (see that file's header comment on why this is a parallel
@@ -2369,6 +2429,15 @@ var allocationDatasets = {};
         showExceptionDrillDownTab(renderExceptionDrillDownTable(typeEntry, typeName, exceptionSummaryJson["methodNames"], exceptionSummaryJson["totalExceptionCount"]));
     }
 
+    function wireProfileInnerTabs() {
+        var profileTabButtons = document.querySelectorAll('#view-profile .heapContentsTabButton');
+        for (var tabButtonIndex = 0; tabButtonIndex < profileTabButtons.length; ++tabButtonIndex) {
+            profileTabButtons[tabButtonIndex].addEventListener('click', function (event) {
+                switchProfileTab(event.currentTarget.getAttribute('data-profiletab'));
+            });
+        }
+    }
+
     function wireExceptionsInnerTabs() {
         var exceptionsTabButtons = document.querySelectorAll('#view-exceptions .heapContentsTabButton');
         for (var tabButtonIndex = 0; tabButtonIndex < exceptionsTabButtons.length; ++tabButtonIndex) {
@@ -2481,6 +2550,15 @@ var allocationDatasets = {};
             return true;
         }
 
+        // Profile view's Flame Graph tab - flameGraphSwipeZoomOut (see
+        // media/flameGraph.js) already checks its own "actually zoomed"
+        // condition and returns false otherwise, same contract every other
+        // branch above follows.
+        var flameGraphPanel = document.getElementById('profile-tab-flame');
+        if (flameGraphPanel && flameGraphPanel.classList.contains('active') && flameGraphSwipeZoomOut()) {
+            return true;
+        }
+
         return false;
     };
 
@@ -2493,6 +2571,17 @@ var allocationDatasets = {};
     // anything to redo, same as a browser disabling its forward button
     // once you're not "back" in history.
     var performGoForwardAction = function () {
+        // Profile view's Flame Graph tab - checked independently of the
+        // sharedZoomRange/zoomRangeForForward pair below, which is specific
+        // to the GC/Heap Contents charts and unrelated to flameGraph.js's
+        // own zoomChain state. flameGraphSwipeZoomForward already checks
+        // its own "currently unzoomed AND has something to restore"
+        // condition.
+        var flameGraphPanel = document.getElementById('profile-tab-flame');
+        if (flameGraphPanel && flameGraphPanel.classList.contains('active') && flameGraphSwipeZoomForward()) {
+            return true;
+        }
+
         if (sharedZoomRange || !zoomRangeForForward) {
             return false;
         }

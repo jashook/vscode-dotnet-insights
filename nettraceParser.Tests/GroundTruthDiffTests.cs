@@ -33,6 +33,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 
+using DotnetInsights.NetTrace.Cpu;
 using DotnetInsights.NetTrace.Exceptions;
 using DotnetInsights.NetTrace.Gc;
 using DotnetInsights.NetTrace.GroundTruth;
@@ -475,6 +476,77 @@ public class GroundTruthDiffTests
         }
 
         Assert.True(diffs.Count == 0, $"{diffs.Count} mismatch(es) across {compareCount} exceptions between nettraceParser and TraceEvent ground truth (fixture: {fixturePath}):\n" + string.Join("\n", diffs.Count > 50 ? diffs.GetRange(0, 50) : diffs));
+    }
+
+    // Diffs every CPU sample's resolved LEAF frame - the frame
+    // CpuProfileJsonExporter's hot-methods table ranks by self time (see
+    // Cpu/CpuProfileJsonExporter.cs's own header comment: self-count
+    // increments frameIds[0]) - against TraceEvent. Same rationale/pattern
+    // as AllocationEventProjector_Project_StackLeafFramesMatchTraceEventGroundTruth
+    // above: this is the class of bug (stack resolved against the wrong
+    // StackId-recycled entry, or against the wrong method-address-reuse
+    // window) that's invisible to nettraceParser's own pinned-value tests,
+    // since those pins were derived from nettraceParser's own output.
+    [Fact]
+    public void SampleProfileEventProjector_Project_StackLeafFramesMatchTraceEventGroundTruth()
+    {
+        string fixturePath = Environment.GetEnvironmentVariable(FixtureEnvVar);
+        if (string.IsNullOrEmpty(fixturePath) || !File.Exists(fixturePath))
+        {
+            return;
+        }
+
+        NettraceFile file = NettraceFile.Read(fixturePath);
+        long referenceQpc = file.Header.SyncTimeQPC;
+
+        List<SampleEvent> parsedEvents = SampleProfileEventProjector.Project(file.Events, file.Header.QPCFrequency, referenceQpc);
+        MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, referenceQpc);
+
+        List<(double RelativeMSec, long ThreadId, string LeafMethodName)> parsedTuples = new List<(double, long, string)>(parsedEvents.Count);
+        foreach (SampleEvent parsedEvent in parsedEvents)
+        {
+            string leaf = parsedEvent.Stack.Length > 0 ? symbolTable.Resolve(parsedEvent.Stack[0], parsedEvent.RelativeMSec) : null;
+            parsedTuples.Add((parsedEvent.RelativeMSec, parsedEvent.ThreadId, leaf));
+        }
+
+        // Same (RelativeMSec, ThreadId) tie-break ordering as
+        // TraceEventCpuSampleReader.Read - both sides compute RelativeMSec
+        // from the same underlying QPC delta/frequency, so a positional zip
+        // after this sort pairs up the same real sample on both sides.
+        parsedTuples.Sort((left, right) =>
+        {
+            int msecCompare = left.RelativeMSec.CompareTo(right.RelativeMSec);
+            if (msecCompare != 0)
+            {
+                return msecCompare;
+            }
+
+            return left.ThreadId.CompareTo(right.ThreadId);
+        });
+
+        List<CpuSampleTruthRecord> truthRecords = TraceEventCpuSampleReader.Read(fixturePath);
+
+        Assert.True(parsedTuples.Count == truthRecords.Count, $"Sample count differs: nettraceParser={parsedTuples.Count}, groundTruth={truthRecords.Count} (fixture: {fixturePath})");
+
+        List<string> diffs = new List<string>();
+        int compareCount = Math.Min(parsedTuples.Count, truthRecords.Count);
+
+        for (int sampleIndex = 0; sampleIndex < compareCount; ++sampleIndex)
+        {
+            (double RelativeMSec, long ThreadId, string LeafMethodName) parsedTuple = parsedTuples[sampleIndex];
+            CpuSampleTruthRecord truthRecord = truthRecords[sampleIndex];
+
+            // Compare against both the raw ground-truth name and its
+            // paren-stripped form - see AllocationTruthRecord.LeafMethodName's
+            // own doc comment on why a single fixed normalization doesn't
+            // work for dynamic/Reflection.Emit methods.
+            if (parsedTuple.LeafMethodName != truthRecord.LeafMethodName && parsedTuple.LeafMethodName != StripParams(truthRecord.LeafMethodName))
+            {
+                diffs.Add($"Sample @{parsedTuple.RelativeMSec:F4}ms (thread {parsedTuple.ThreadId}): leaf frame differs (nettraceParser={parsedTuple.LeafMethodName ?? "<no stack>"}, groundTruth={truthRecord.LeafMethodName ?? "<no stack>"})");
+            }
+        }
+
+        Assert.True(diffs.Count == 0, $"{diffs.Count} of {compareCount} CPU sample leaf frame(s) mismatched between nettraceParser and TraceEvent ground truth (fixture: {fixturePath}):\n" + string.Join("\n", diffs.Count > 50 ? diffs.GetRange(0, 50) : diffs));
     }
 }
 

@@ -1243,3 +1243,152 @@
     color: rgba(0, 0, 0, 0.55);
     font-size: 0.9em;
 }
+
+/* Profile view (CPU sample flame graph + Hot Methods table - see
+   CpuProfileRenderer.ts/media/flameGraph.js). The Flame Graph/Hot Methods
+   inner tab bar itself reuses .heapContentsTabBar/.heapContentsTabButton/
+   .heapContentsTabPanel directly (see switchProfileTab in
+   snapshotGcStats.js) rather than duplicating that styling - only the
+   content specific to each tab needs new rules here. */
+
+.cpuHotMethodsTable td:first-child,
+.cpuHotMethodsTable th:first-child
+{
+    text-align: left;
+    white-space: normal;
+    width: 30em;
+    word-break: break-word;
+}
+
+.flameGraphToolbar
+{
+    align-items: center;
+    display: flex;
+    margin: 1em 0 0.5em;
+    min-height: 2em;
+}
+
+.flameGraphBreadcrumb
+{
+    font-size: 13px;
+}
+
+.flameGraphBreadcrumbEntry
+{
+    color: rgba(72, 83, 136, 1);
+    cursor: pointer;
+}
+
+.flameGraphBreadcrumbEntry:hover
+{
+    text-decoration: underline;
+}
+
+.flameGraphBreadcrumbEntry:last-child
+{
+    color: inherit;
+    cursor: default;
+    font-weight: bold;
+    text-decoration: none;
+}
+
+.flameGraphBreadcrumbSep
+{
+    color: rgba(0, 0, 0, 0.4);
+    margin: 0 0.3em;
+}
+
+.flameGraphToolbar .resetZoomButton
+{
+    margin-right: 1em;
+}
+
+/* Height is set inline (see media/flameGraph.js's renderFlameGraphFrames) -
+   depends on the currently-zoomed subtree's own max depth, not knowable
+   here. position:relative anchors every absolutely-positioned
+   .flameGraphFrame's own top/left to this container, not the page. */
+.flameGraphContainer
+{
+    background: var(--vscode-editor-background, #ffffff);
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+}
+
+/* top/left/width are set inline per-frame (percentages of
+   .flameGraphContainer's own width, plus a pixel row offset - see
+   media/flameGraph.js's FLAME_ROW_HEIGHT_PX) - this only carries the fixed
+   per-frame chrome. A 1px border (not a margin/gap) keeps adjacent same-row
+   frames visually separated without perturbing the percentage-based width
+   math that positions them. */
+.flameGraphFrame
+{
+    background-color: rgba(174, 207, 27, 0.85);
+    border: 1px solid var(--vscode-editor-background, #ffffff);
+    box-sizing: border-box;
+    cursor: pointer;
+    height: 22px;
+    overflow: hidden;
+    position: absolute;
+    white-space: nowrap;
+}
+
+.flameGraphFrame:hover
+{
+    background-color: rgba(174, 207, 27, 1);
+}
+
+.flameGraphFrameUnresolved
+{
+    background-color: rgba(0, 0, 0, 0.35);
+    font-style: italic;
+}
+
+.flameGraphFrameUnresolved:hover
+{
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+.flameGraphFrameLabel
+{
+    color: rgba(0, 0, 0, 0.85);
+    display: block;
+    font-size: 12px;
+    line-height: 20px;
+    overflow: hidden;
+    padding: 0 4px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Positioned inline (left/top, following the cursor - see
+   media/flameGraph.js's showFlameGraphTooltip) rather than anchored to a
+   specific frame, since a frame's own box can be a few pixels wide at the
+   deep end of a real flame graph - far too narrow to anchor a multi-line
+   tooltip to directly. */
+.flameGraphTooltip
+{
+    background: var(--vscode-editorHoverWidget-background, #f3f3f3);
+    border: 1px solid var(--vscode-editorHoverWidget-border, rgba(0, 0, 0, 0.2));
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+    font-size: 12px;
+    max-width: 32em;
+    padding: 0.5em 0.75em;
+    pointer-events: none;
+    position: fixed;
+    z-index: 1000;
+}
+
+.flameGraphTooltipName
+{
+    font-weight: bold;
+    margin-bottom: 0.3em;
+    word-break: break-word;
+}
+
+.flameGraphTooltipStats
+{
+    color: rgba(0, 0, 0, 0.65);
+}

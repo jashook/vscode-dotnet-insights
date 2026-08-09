@@ -110,6 +110,17 @@ function makeExceptionTypeEntry(typeName: string, count: number): any {
     return { TypeName: typeName, Count: count, PercentOfTotal: 0, SampleMessage: 'test message' };
 }
 
+// Builds a minimal synthetic cpuProfile entry matching
+// Cpu/CpuProfileJsonExporter.cs's Write output shape.
+function makeCpuProfile(totalSampleCount: number, overrides?: any): any {
+    return Object.assign({
+        totalSampleCount: totalSampleCount,
+        hotMethods: [],
+        flameTree: { frame: -1, totalSamples: 0, totalChildCount: 0, children: [] },
+        methodNames: []
+    }, overrides);
+}
+
 // Builds a minimal synthetic eventOverview entry matching
 // EventOverviewBuilder.cs's Build output shape (as written by
 // GcJsonExporter.cs).
@@ -522,6 +533,40 @@ describe('GcSnapshotRenderer - view switcher and sourceFormat gating', () => {
         const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'nettrace');
 
         assert.ok(!/data-view="exceptions"[^>]*\bdisabled\b/.test(html));
+    });
+
+    it('disables the "Profile" nav button for sourceFormat "nettrace" when cpuProfile has zero samples', () => {
+        const gcData = {
+            processName: 'test.exe',
+            gcData: [makeFullGc(1)],
+            cpuProfile: makeCpuProfile(0)
+        };
+
+        const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'nettrace');
+
+        assert.ok(html.includes('data-view="profile"'));
+        assert.ok(/data-view="profile"[^>]*\bdisabled\b/.test(html));
+    });
+
+    it('enables the "Profile" nav button for sourceFormat "nettrace" with a populated cpuProfile', () => {
+        const gcData = {
+            processName: 'test.exe',
+            gcData: [makeFullGc(1)],
+            cpuProfile: makeCpuProfile(3, { hotMethods: [{ frame: 0, selfSamples: 3, totalSamples: 3 }], methodNames: ['Program.Main'] })
+        };
+
+        const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'nettrace');
+
+        assert.ok(!/data-view="profile"[^>]*\bdisabled\b/.test(html));
+        assert.ok(html.includes('Program.Main'));
+    });
+
+    it('omits the "Profile" nav button for sourceFormat "gcinfo"', () => {
+        const gcData = { processName: 'test.exe', gcData: [makeFullGc(1)] };
+
+        const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'gcinfo');
+
+        assert.ok(!html.includes('data-view="profile"'));
     });
 
     it('disables the "GC" nav button for sourceFormat "nettrace" when the capture has zero GCs, and defaults to Overview', () => {
