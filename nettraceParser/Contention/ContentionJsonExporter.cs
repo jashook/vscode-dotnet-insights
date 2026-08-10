@@ -587,10 +587,33 @@ public static class ContentionJsonExporter
         int remainingSegmentBudget = MaxOwnershipSegments;
         int remainingDrillDownBudget = MaxLockDrillDownNodes;
 
+        // Union of every thread seen blocked inside thread-pool work,
+        // across all locks - lets the view mark which thread ids in its
+        // filter list are pool workers (and offer "pool threads only")
+        // without re-deriving it per lock in the webview.
+        HashSet<long> allPoolThreadIds = new HashSet<long>();
+
+        foreach (KeyValuePair<long, LockStats> entry in statsByLockId)
+        {
+            foreach (long poolThreadId in entry.Value.PoolWaiterThreadIds)
+            {
+                allPoolThreadIds.Add(poolThreadId);
+            }
+        }
+
         writer.WriteStartObject();
         writer.WriteNumber("minRelativeMSec", minRelativeMSec);
         writer.WriteNumber("maxRelativeMSec", maxRelativeMSec);
         writer.WriteNumber("totalDistinctLockCount", statsByLockId.Count);
+        writer.WritePropertyName("poolThreadIds");
+        writer.WriteStartArray();
+
+        foreach (long poolThreadId in allPoolThreadIds)
+        {
+            writer.WriteNumberValue(poolThreadId);
+        }
+
+        writer.WriteEndArray();
         writer.WritePropertyName("locks");
         writer.WriteStartArray();
 

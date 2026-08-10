@@ -158,11 +158,6 @@ function renderLockTimelinePanel(lockTimeline: any): string {
                     <option value="poolthreads">Pool threads blocked</option>
                 </select>
             </label>
-            <label class="lockTimelineControl">Thread
-                <select id="lockThreadFilterSelect">
-                    <option value="all">All threads</option>
-                </select>
-            </label>
             <button id="lockTimelineResetZoomBtn" class="resetZoomButton" style="display:none">Reset Zoom</button>
             <span id="lockTimelineZoomLabel" class="lockTimelineZoomLabel"></span>
             <span class="lockTimelineHint">Drag to zoom · double-click to reset · click a lock name for its stacks</span>
@@ -174,15 +169,29 @@ function renderLockTimelinePanel(lockTimeline: any): string {
                 </div>
                 <div id="lockTimelineTooltip" class="lockTimelineTooltip" style="display:none"></div>
             </div>
-            <div class="lockFilterPanel">
-                <div class="lockFilterHeader">
-                    <span id="lockFilterHeaderLabel">Locks</span>
-                    <span class="lockFilterButtons">
-                        <button id="lockFilterAllBtn" class="resetZoomButton">All</button>
-                        <button id="lockFilterNoneBtn" class="resetZoomButton">None</button>
-                    </span>
+            <div class="lockSidebar">
+                <div class="lockFilterPanel">
+                    <div class="lockFilterHeader">
+                        <span id="lockFilterHeaderLabel">Locks</span>
+                        <span class="lockFilterButtons">
+                            <button id="lockFilterAllBtn" class="resetZoomButton">All</button>
+                            <button id="lockFilterNoneBtn" class="resetZoomButton">None</button>
+                        </span>
+                    </div>
+                    <div id="lockFilterList" class="lockFilterList"></div>
                 </div>
-                <div id="lockFilterList" class="lockFilterList"></div>
+                <div class="lockFilterPanel">
+                    <div class="lockFilterHeader">
+                        <span id="threadFilterHeaderLabel">Threads</span>
+                        <span class="lockFilterButtons">
+                            <button id="threadFilterAllBtn" class="resetZoomButton">All</button>
+                            <button id="threadFilterNoneBtn" class="resetZoomButton">None</button>
+                            <button id="threadFilterPoolBtn" class="resetZoomButton" title="Select only managed thread-pool workers">Pool</button>
+                        </span>
+                    </div>
+                    <input id="threadFilterSearch" class="threadFilterSearch" type="text" placeholder="Find thread id…">
+                    <div id="threadFilterList" class="lockFilterList"></div>
+                </div>
             </div>
         </div>
         <div id="lockStackPanel" class="lockStackPanel" style="display:none">

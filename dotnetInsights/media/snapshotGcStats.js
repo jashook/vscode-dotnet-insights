@@ -4467,11 +4467,46 @@ var allocationDatasets = {};
             });
         }
 
-        var threadSelect = document.getElementById('lockThreadFilterSelect');
-        if (threadSelect) {
-            threadSelect.addEventListener('change', function (event) {
-                var rawValue = event.currentTarget.value;
-                setLockTimelineThreadFilter(rawValue === 'all' ? null : parseInt(rawValue, 10));
+        var threadFilterList = document.getElementById('threadFilterList');
+        if (threadFilterList) {
+            // Delegated - the list is rebuilt on every selection change and
+            // on every search keystroke, so per-checkbox listeners would be
+            // re-bound (and leaked) each time.
+            threadFilterList.addEventListener('change', function (event) {
+                var checkbox = event.target.closest('.threadFilterCheckbox');
+                if (!checkbox) {
+                    return;
+                }
+
+                setLockTimelineThreadSelected(parseInt(checkbox.getAttribute('data-thread-id'), 10), checkbox.checked);
+            });
+        }
+
+        var threadSearch = document.getElementById('threadFilterSearch');
+        if (threadSearch) {
+            threadSearch.addEventListener('input', function () {
+                refreshLockTimelineThreadList();
+            });
+        }
+
+        var threadAllBtn = document.getElementById('threadFilterAllBtn');
+        if (threadAllBtn) {
+            threadAllBtn.addEventListener('click', function () {
+                setLockTimelineThreadSelectionMode('all');
+            });
+        }
+
+        var threadNoneBtn = document.getElementById('threadFilterNoneBtn');
+        if (threadNoneBtn) {
+            threadNoneBtn.addEventListener('click', function () {
+                setLockTimelineThreadSelectionMode('none');
+            });
+        }
+
+        var threadPoolBtn = document.getElementById('threadFilterPoolBtn');
+        if (threadPoolBtn) {
+            threadPoolBtn.addEventListener('click', function () {
+                setLockTimelineThreadSelectionMode('pool');
             });
         }
 

@@ -184,21 +184,28 @@
         return (valueMSec * 1000).toFixed(1) + ' µs';
     }
 
-    // True when this segment survives the current thread filter. The filter
-    // matches EITHER role deliberately: "focus on thread N" means both "what
+    // True when this segment survives the current thread filter, which is a
+    // SET of individually selected threads rather than a single choice -
+    // isolating a lock usually means following a handful of related threads
+    // (a pool worker and whoever it's blocked behind), not one at a time.
+    //
+    // Matches EITHER role deliberately: "show me thread N" means both "what
     // was N holding up" and "what was N blocked behind", and needing two
-    // separate controls to ask those would be worse than one that answers
-    // both at once (the tooltip still names each role explicitly).
+    // separate controls to ask those would be worse than one answering both
+    // (the tooltip still names each role explicitly).
+    //
+    // threadFilterAll short-circuits the common case so the per-segment draw
+    // loop does no Set lookups at all until a filter is actually applied.
     function segmentMatchesThreadFilter(segment) {
-        if (state.threadFilterId === null) {
+        if (state.threadFilterAll) {
             return true;
         }
 
-        return segment['ownerThreadId'] === state.threadFilterId || segment['waiterThreadId'] === state.threadFilterId;
+        return state.selectedThreadIds.has(segment['ownerThreadId']) || state.selectedThreadIds.has(segment['waiterThreadId']);
     }
 
     function lockHasMatchingSegment(lockEntry) {
-        if (state.threadFilterId === null) {
+        if (state.threadFilterAll) {
             return true;
         }
 
@@ -684,15 +691,10 @@
 
     // ---- thread filter ----
 
-    function renderThreadFilterOptions() {
-        var select = document.getElementById('lockThreadFilterSelect');
-        if (!select) {
-            return;
-        }
-
-        // Counted across every lock, both roles, so the dropdown ranks
-        // threads by how involved in contention they actually are rather
-        // than by thread id.
+    // Builds the thread roster once: every thread seen in any segment, in
+    // either role, ranked by how involved in contention it actually is
+    // rather than by thread id (which is arbitrary).
+    function buildThreadRoster() {
         var involvementByThread = new Map();
 
         for (var lockIndex = 0; lockIndex < state.locks.length; ++lockIndex) {
@@ -714,17 +716,61 @@
 
         var threads = [];
         involvementByThread.forEach(function (count, threadId) {
-            threads.push({ threadId: threadId, count: count });
+            threads.push({ threadId: threadId, count: count, isPool: state.poolThreadIds.has(threadId) });
         });
         threads.sort(function (left, right) { return right.count - left.count; });
 
-        var html = '<option value="all">All threads (' + threads.length + ')</option>';
-        for (var threadIndex = 0; threadIndex < threads.length; ++threadIndex) {
-            html += '<option value="' + threads[threadIndex].threadId + '">' +
-                threads[threadIndex].threadId + ' (' + threads[threadIndex].count.toLocaleString() + ')</option>';
+        state.threads = threads;
+    }
+
+    function renderThreadFilterList() {
+        var list = document.getElementById('threadFilterList');
+        var header = document.getElementById('threadFilterHeaderLabel');
+        if (!list) {
+            return;
         }
 
-        select.innerHTML = html;
+        var searchInput = document.getElementById('threadFilterSearch');
+        var searchText = searchInput ? searchInput.value.trim() : '';
+        var html = '';
+        var shownCount = 0;
+
+        for (var threadIndex = 0; threadIndex < state.threads.length; ++threadIndex) {
+            var thread = state.threads[threadIndex];
+
+            // Search narrows what's LISTED, never what's selected - typing
+            // in the box must not silently change the chart.
+            if (searchText.length > 0 && String(thread.threadId).indexOf(searchText) === -1) {
+                continue;
+            }
+
+            ++shownCount;
+            var checked = (state.threadFilterAll || state.selectedThreadIds.has(thread.threadId)) ? ' checked' : '';
+            var poolBadge = thread.isPool ? '<span class="threadPoolBadge" title="Managed thread-pool worker">pool</span>' : '';
+
+            html += '<label class="lockFilterItem threadFilterItem">' +
+                '<span class="lockFilterTopLine">' +
+                '<input type="checkbox" class="threadFilterCheckbox" data-thread-id="' + thread.threadId + '"' + checked + '>' +
+                '<span class="threadFilterId">' + thread.threadId + '</span>' +
+                poolBadge +
+                '<span class="lockFilterStat">' + thread.count.toLocaleString() + '</span>' +
+                '</span>' +
+                '</label>';
+        }
+
+        list.innerHTML = html;
+
+        if (header) {
+            var selectedCount = state.threadFilterAll ? state.threads.length : state.selectedThreadIds.size;
+            header.textContent = 'Threads (' + selectedCount.toLocaleString() + '/' + state.threads.length.toLocaleString() +
+                (searchText.length > 0 ? ', ' + shownCount + ' listed' : '') + ')';
+        }
+    }
+
+    // Recomputes threadFilterAll from the selection, so the fast path stays
+    // correct when every thread happens to be checked again.
+    function syncThreadFilterAllFlag() {
+        state.threadFilterAll = state.selectedThreadIds.size === state.threads.length;
     }
 
     // ---- per-lock stack panel ----
@@ -800,7 +846,10 @@
                 order: [],
                 rankMetric: 'wait',
                 topLockCount: 40,
-                threadFilterId: null,
+                poolThreadIds: new Set(lockTimelineJson['poolThreadIds'] || []),
+                threads: [],
+                selectedThreadIds: new Set(),
+                threadFilterAll: true,
                 selectedLockIndex: -1,
                 rowHeight: LOCK_ROW_HEIGHT,
                 fullStartMSec: lockTimelineJson['minRelativeMSec'],
@@ -828,7 +877,16 @@
 
             attachCanvasHandlers(canvas);
             computeOrder();
-            renderThreadFilterOptions();
+            buildThreadRoster();
+
+            // Seed the selection with every thread so unchecking one is a
+            // subtraction from "everything", which is how the lock list
+            // already behaves.
+            for (var threadIndex = 0; threadIndex < state.threads.length; ++threadIndex) {
+                state.selectedThreadIds.add(state.threads[threadIndex].threadId);
+            }
+
+            renderThreadFilterList();
             renderLockFilterList();
         }
 
@@ -865,14 +923,49 @@
         draw();
     };
 
-    window.setLockTimelineThreadFilter = function (threadIdOrNull) {
+    window.setLockTimelineThreadSelected = function (threadId, isSelected) {
         if (state === null) {
             return;
         }
 
-        state.threadFilterId = threadIdOrNull;
+        if (isSelected) {
+            state.selectedThreadIds.add(threadId);
+        } else {
+            state.selectedThreadIds.delete(threadId);
+        }
+
+        syncThreadFilterAllFlag();
+        renderThreadFilterList();
         renderLockFilterList();
         draw();
+    };
+
+    // mode: 'all' | 'none' | 'pool'
+    window.setLockTimelineThreadSelectionMode = function (mode) {
+        if (state === null) {
+            return;
+        }
+
+        state.selectedThreadIds.clear();
+
+        for (var threadIndex = 0; threadIndex < state.threads.length; ++threadIndex) {
+            var thread = state.threads[threadIndex];
+
+            if (mode === 'all' || (mode === 'pool' && thread.isPool)) {
+                state.selectedThreadIds.add(thread.threadId);
+            }
+        }
+
+        syncThreadFilterAllFlag();
+        renderThreadFilterList();
+        renderLockFilterList();
+        draw();
+    };
+
+    window.refreshLockTimelineThreadList = function () {
+        if (state !== null) {
+            renderThreadFilterList();
+        }
     };
 
     window.selectLockTimelineLock = function (lockIndex) {
