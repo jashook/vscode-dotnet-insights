@@ -209,6 +209,76 @@ public class CpuProfileJsonExporterTests
         Assert.Equal("<no stack captured>", methodNames[noStackChild.GetProperty("frame").GetInt32()].GetString());
         Assert.Equal(1, noStackChild.GetProperty("totalSamples").GetInt64());
     }
+
+    // Regression: methodNames used to be written BEFORE hotMethodDrillDown
+    // (see Write's own comment on why it's ordered after now) - since
+    // WriteFlameTreeNode interns names as it writes, and a per-METHOD
+    // drill-down tree's own separate node budget can include callers the
+    // whole-capture flameTree's shared/global budget excluded, any name
+    // interned ONLY during hotMethodDrillDown was silently missing from
+    // the already-written methodNames array, leaving hotMethodDrillDown's
+    // own "frame" fields pointing past the end of it. Confirmed against a
+    // real 19.7M-sample production capture (not reproducible at this
+    // fixture's own tiny scale - the budget-exclusion this depends on only
+    // kicks in with thousands of distinct call stacks - see this test's
+    // own limitation note below), where it broke the Profile view's own
+    // expand-a-method-row UI for whichever hot methods happened to hit it.
+    //
+    // This test can't reproduce the exact BUDGET-EXCLUSION trigger at unit-
+    // test scale, but it does assert the actual INVARIANT that was
+    // violated - every "frame" index anywhere in the output (hotMethods,
+    // flameTree, hotMethodDrillDown, all recursively) must be a valid
+    // methodNames index - across every stack shape this file's other tests
+    // already construct (recursive frames, multi-level callers, the
+    // synthetic no-stack-captured frame), so any future change that
+    // reintroduces an out-of-order write/intern dependency anywhere in
+    // this file has a real chance of tripping it.
+    [Fact]
+    public void Write_EveryFrameReferenceAnywhereInOutputIsWithinBoundsOfMethodNames()
+    {
+        long[] stackA = new long[] { 0x1010, 0x2010 }; // MethodA, caller MethodB
+        long[] stackRecursive = new long[] { 0x1010, 0x1020, 0x2010 }; // MethodA, MethodA, MethodB
+        long[] stackDeep = new long[] { 0x1010, 0x2010, 0x3010 }; // MethodA, MethodB, MethodC
+
+        List<SampleEvent> sampleEvents = new List<SampleEvent>
+        {
+            new SampleEvent(0.0, threadId: 1, stackA),
+            new SampleEvent(1.0, threadId: 1, stackRecursive),
+            new SampleEvent(2.0, threadId: 1, stackDeep),
+            new SampleEvent(3.0, threadId: 2, Array.Empty<long>()),
+        };
+
+        JsonDocument document = WriteAndParse(sampleEvents, MakeSymbolTable());
+        JsonElement root = document.RootElement;
+        int methodNamesLength = root.GetProperty("methodNames").GetArrayLength();
+
+        foreach (JsonElement hotMethod in root.GetProperty("hotMethods").EnumerateArray())
+        {
+            AssertFrameInBounds(hotMethod.GetProperty("frame").GetInt32(), methodNamesLength, "hotMethods");
+        }
+
+        AssertEveryFrameInTreeInBounds(root.GetProperty("flameTree"), methodNamesLength, "flameTree");
+
+        foreach (JsonElement drillDownRoot in root.GetProperty("hotMethodDrillDown").EnumerateArray())
+        {
+            AssertEveryFrameInTreeInBounds(drillDownRoot, methodNamesLength, "hotMethodDrillDown");
+        }
+    }
+
+    private static void AssertEveryFrameInTreeInBounds(JsonElement node, int methodNamesLength, string treeName)
+    {
+        AssertFrameInBounds(node.GetProperty("frame").GetInt32(), methodNamesLength, treeName);
+
+        foreach (JsonElement child in node.GetProperty("children").EnumerateArray())
+        {
+            AssertEveryFrameInTreeInBounds(child, methodNamesLength, treeName);
+        }
+    }
+
+    private static void AssertFrameInBounds(int frame, int methodNamesLength, string treeName)
+    {
+        Assert.True(frame >= 0 && frame < methodNamesLength, $"{treeName} referenced frame index {frame}, but methodNames only has {methodNamesLength} entries");
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////

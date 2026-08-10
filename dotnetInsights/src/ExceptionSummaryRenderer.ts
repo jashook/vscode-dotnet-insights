@@ -23,12 +23,14 @@ export function renderExceptionSummaryTable(exceptionSummary: any): string {
     const totalExceptionCount = exceptionSummary["totalExceptionCount"];
     const distinctTypeCount = exceptionSummary["distinctTypeCount"];
 
+    // Total/Distinct Types tile ids let rebuildExceptionTypesTable
+    // (snapshotGcStats.js) rewrite them after a row is hidden.
     const summaryTilesHtml = `
         <div class="summaryGcDiv">
             <div class="total">
                 <div>Exceptions</div>
-                <div>Total<span>${totalExceptionCount}</span></div>
-                <div>Distinct Types<span>${distinctTypeCount}</span></div>
+                <div>Total<span id="exceptionsTotalTile">${totalExceptionCount}</span></div>
+                <div>Distinct Types<span id="exceptionsDistinctTypesTile">${distinctTypeCount}</span></div>
             </div>
         </div>`;
 
@@ -46,11 +48,22 @@ export function renderExceptionSummaryTable(exceptionSummary: any): string {
         // parallel array to topTypes, one entry per row here, and every
         // type in topTypes has at least one throw by construction, so its
         // typeDrillDown entry always has at least the "<no stack captured>"
-        // placeholder even in the worst case.
-        rows += `<tr class="typeRow exceptionTypeRow" data-exception-type-index="${index}"><td>${tdTypeName}</td><td>${tdCount}</td><td>${tdPercent}</td><td>${escapeHtml(tdSampleMessage)}</td></tr>`;
+        // placeholder even in the worst case. rowHideBtn is its own cell
+        // (not sharing the Type Name cell) since the whole row is already a
+        // click-navigate target - see snapshotGcStats.js's click delegation,
+        // which checks .rowHideBtn before its .exceptionTypeRow fallthrough.
+        rows += `<tr class="typeRow exceptionTypeRow" data-exception-type-index="${index}"><td class="rowHideColumn"><button class="rowHideBtn" type="button" title="Hide this row">&#10005;</button></td><td>${tdTypeName}</td><td>${tdCount}</td><td>${tdPercent}</td><td>${escapeHtml(tdSampleMessage)}</td></tr>`;
     }
 
-    const header = `<tr class="tableHeader"><th>Exception Type</th><th>Count</th><th>% of Total</th><th>Sample Message</th></tr>`;
+    const header = `<tr class="tableHeader"><th class="rowHideColumn"></th><th>Exception Type</th><th>Count</th><th>% of Total</th><th>Sample Message</th></tr>`;
+
+    // Hidden until at least one row is hidden - same allocationZoomStatus
+    // idiom as every other hide-status bar on this page.
+    const hideStatusHtml = `
+        <div class="allocationZoomStatus" id="exceptionTypesHideStatus" style="display:none">
+            <span class="allocationZoomStatusLabel" id="exceptionTypesHideStatusLabel"></span>
+            <button class="resetZoomButton" id="exceptionTypesShowAllBtn">Show all</button>
+        </div>`;
 
     // id lets a future zoom/filter feature find and rebuild this table's
     // rows the same way allocationTypeTable does today - not used yet
@@ -65,7 +78,7 @@ export function renderExceptionSummaryTable(exceptionSummary: any): string {
             <button class="backToChartsButton" id="backToExceptionTypesButton" style="display:none">&larr; Back to Types (Backspace)</button>
         </div>`;
 
-    const typesPanelHtml = `<div id="exceptions-tab-types" class="heapContentsTabPanel active">${summaryTilesHtml}${tableHtml}</div>`;
+    const typesPanelHtml = `<div id="exceptions-tab-types" class="heapContentsTabPanel active">${summaryTilesHtml}${hideStatusHtml}${tableHtml}</div>`;
     const drillDownPanelHtml = `<div id="exceptions-tab-drilldown" class="heapContentsTabPanel"></div>`;
 
     return `${exceptionsTabBar}${typesPanelHtml}${drillDownPanelHtml}`;

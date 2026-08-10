@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 
 import { renderAllocationSummaryTable } from "./AllocationSummaryRenderer";
 import { adaptivelyBucketTicks } from "./AllocationTicksBucketer";
+import { renderContentionView } from "./ContentionRenderer";
 import { renderCpuProfileView } from "./CpuProfileRenderer";
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
 import { renderEventOverviewTable } from "./EventOverviewRenderer";
@@ -25,7 +26,7 @@ import { computeAllocationAmountStats, computePauseTimeStats } from "./GcStatsCa
 // matters for shipped upgrades, where media/ changes but the URI otherwise
 // wouldn't - the same stale-cache trap DependencySetup.ts's version-marker
 // files already guard against for downloaded helper binaries.
-function mediaWebviewUri(webview: vscode.Webview, extensionUri: vscode.Uri, fileName: string): vscode.Uri {
+export function mediaWebviewUri(webview: vscode.Webview, extensionUri: vscode.Uri, fileName: string): vscode.Uri {
     const fileUri = vscode.Uri.joinPath(extensionUri, 'media', fileName);
     const webviewUri = webview.asWebviewUri(fileUri);
 
@@ -177,6 +178,14 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const hasCpuProfile = isNettrace && cpuProfile !== null && cpuProfile !== undefined && cpuProfile["totalSampleCount"] !== null && cpuProfile["totalSampleCount"] !== undefined && cpuProfile["totalSampleCount"] > 0;
     const cpuProfileHtml = hasCpuProfile ? renderCpuProfileView(cpuProfile) : "";
     const cpuProfileJson = escapeJsonForInlineScript(hasCpuProfile ? JSON.stringify(cpuProfile) : "null");
+
+    // "Contention" (CLR Contention/Start + Stop event pairs) - same
+    // format-level/data-emptiness gating as Heap Contents/Exceptions above
+    // (see Contention/ContentionJsonExporter.cs).
+    const contentionSummary = gcData["contentionSummary"];
+    const hasContention = isNettrace && contentionSummary !== null && contentionSummary !== undefined && contentionSummary["totalContentionCount"] !== null && contentionSummary["totalContentionCount"] !== undefined && contentionSummary["totalContentionCount"] > 0;
+    const contentionHtml = hasContention ? renderContentionView(contentionSummary) : "";
+    const contentionSummaryJson = escapeJsonForInlineScript(hasContention ? JSON.stringify(contentionSummary) : "null");
 
     var totalNumbers = computePauseTimeStats(gcs);
 
@@ -349,6 +358,8 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const allocationScriptUri = mediaWebviewUri(webview, extensionUri, 'allocationStats.js');
     const drillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'drillDownStats.js');
     const exceptionDrillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'exceptionDrillDownStats.js');
+    const cpuDrillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'cpuDrillDownStats.js');
+    const contentionDrillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'contentionDrillDownStats.js');
     const flameGraphScriptUri = mediaWebviewUri(webview, extensionUri, 'flameGraph.js');
 
     const chartjs = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'chart.js', 'dist', 'Chart.min.js'));
@@ -452,9 +463,10 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <script type="application/json" id="allocationSummaryJson">${allocationSummaryJson}</script>
             <script type="application/json" id="exceptionSummaryJson">${exceptionSummaryJson}</script>
             <script type="application/json" id="cpuProfileJson">${cpuProfileJson}</script>
+            <script type="application/json" id="contentionSummaryJson">${contentionSummaryJson}</script>
 
-            <!-- High-level view switcher (Overview / GC / Heap Contents /
-                 Exceptions / Profile) - browser-tab style, sitting above
+            <!-- High-level view switcher (Overview / Profile / GC / Heap
+                 Contents / Exceptions) - browser-tab style, sitting above
                  the file name so it doesn't consume horizontal width from
                  the content below the way a left-nav sidebar would. For
                  nettrace input, Overview is always the default active tab
@@ -467,10 +479,11 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
                  before. -->
             <div class="viewTabBar">
                 ${isNettrace ? `<button class="viewNavButton active" data-view="overview">Overview</button>` : ``}
+                ${isNettrace ? `<button class="viewNavButton" data-view="profile"${hasCpuProfile ? `` : ` disabled title="No CPU samples in this capture"`}>Profile</button>` : ``}
                 <button class="viewNavButton${isNettrace ? `` : ` active`}" data-view="gc"${isNettrace && !hasGc ? ` disabled title="No GC events in this capture"` : ``}>GC</button>
                 ${isNettrace ? `<button class="viewNavButton" data-view="heapContents"${hasHeapContents ? `` : ` disabled title="No allocation events in this capture"`}>Heap Contents</button>` : ``}
                 ${isNettrace ? `<button class="viewNavButton" data-view="exceptions"${hasExceptions ? `` : ` disabled title="No exception events in this capture"`}>Exceptions</button>` : ``}
-                ${isNettrace ? `<button class="viewNavButton" data-view="profile"${hasCpuProfile ? `` : ` disabled title="No CPU samples in this capture"`}>Profile</button>` : ``}
+                ${isNettrace ? `<button class="viewNavButton" data-view="contention"${hasContention ? `` : ` disabled title="No contention events in this capture"`}>Contention</button>` : ``}
             </div>
 
             <h2 class="divider">${gcData["processName"]}</h2>
@@ -506,7 +519,16 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
             <div id="timeSummary">Allocation Amount by Generation</div>
 
-            <div class="summaryGcDiv">
+            <!-- id lets rebuildGcSummaryTiles (snapshotGcStats.js) find and
+                 fully rebuild this block's innerHTML after a GC Detailed
+                 table row is hidden, mirroring the exact template below with
+                 recomputed numbers (a JS port of GcStatsCalculations.ts's
+                 computeAllocationAmountStats, same "preserved as-is"
+                 lexicographic-sort median quirk that file documents) - same
+                 "recompute -> rebuild whole block" discipline
+                 updateOneRankedTypesTable already uses for the Allocation
+                 ranked-types table. -->
+            <div class="summaryGcDiv" id="allocationAmountSummaryGcDiv">
                 <div class="total">
                     <div>Total</div>
                     <div>Total<span>${allocTotal} ${totalTotalValue}</span></div>
@@ -551,7 +573,10 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
             <div id="timeSummary">Time Spent by Generation</div>
 
-            <div class="summaryGcDiv time">
+            <!-- Same rebuild-in-place convention as
+                 allocationAmountSummaryGcDiv above, driven by a JS port of
+                 computePauseTimeStats instead. -->
+            <div class="summaryGcDiv time" id="timeSpentSummaryGcDiv">
                 <div class="total">
                     <div>Total</div>
                     <div>Count<span>${timeinsideEachGc.length}</span></div>
@@ -660,6 +685,11 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
                  constructed only on the "Exceptions" nav button's first
                  click. -->
             <span style="display:none" id="exceptionSummaryHtml"><!--${exceptionSummaryHtml}--></span>` : ``}
+            ${hasContention ? `<div id="view-contention" class="viewPanel"></div>
+            <!-- Same lazy-inject pattern as exceptionSummaryHtml above -
+                 constructed only on the "Contention" nav button's first
+                 click. -->
+            <span style="display:none" id="contentionHtml"><!--${contentionHtml}--></span>` : ``}
             ${hasCpuProfile ? `<div id="view-profile" class="viewPanel"></div>
             <!-- Same lazy-inject pattern as allocationSummaryHtml above -
                  constructed only on the "Profile" nav button's first click.
@@ -672,6 +702,8 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <script nonce="${nonce}" src="${allocationScriptUri}"></script>
             <script nonce="${nonce}" src="${drillDownScriptUri}"></script>
             <script nonce="${nonce}" src="${exceptionDrillDownScriptUri}"></script>
+            <script nonce="${nonce}" src="${cpuDrillDownScriptUri}"></script>
+            <script nonce="${nonce}" src="${contentionDrillDownScriptUri}"></script>
             <script nonce="${nonce}" src="${flameGraphScriptUri}"></script>
             <script nonce="${nonce}" src="${scriptUri}"></script>
         </body>

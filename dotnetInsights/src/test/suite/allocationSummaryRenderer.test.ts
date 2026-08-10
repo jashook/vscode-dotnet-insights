@@ -150,7 +150,10 @@ describe('AllocationSummaryRenderer', () => {
 
             assert.ok(html.includes('2.00 mb'));
             assert.ok(html.includes('<span>10</span>'));
-            assert.ok(html.includes('<span>1</span>'));
+            // Distinct Types tile carries an id (allocationDistinctTypesTile-<scope>)
+            // so a row-hide toggle can rewrite it - see
+            // updateOneRankedTypesTable in snapshotGcStats.js.
+            assert.ok(html.includes('<span id="allocationDistinctTypesTile-all">1</span>'));
         });
 
         it('renders one row per type, labeled in mb, with % of sampled bytes', () => {
@@ -171,8 +174,11 @@ describe('AllocationSummaryRenderer', () => {
             // updating every time a new data-* attribute is added.
             const dataRowMatches = html.match(/<tr class="typeRow"[^>]*>/g) || [];
             assert.strictEqual(dataRowMatches.length, 2);
-            assert.ok(html.includes('<td>System.Byte[]</td><td>3.00</td><td>75.00</td><td class="ticksOnlyColumn">30</td>'));
-            assert.ok(html.includes('<td>System.String</td><td>1.00</td><td>25.00</td><td class="ticksOnlyColumn">10</td>'));
+            // <td>...rowHideBtn...</td> now precedes the Type Name cell -
+            // matched loosely (like the <tr> above) rather than pinning the
+            // button's own markup here too.
+            assert.ok(/<td class="rowHideColumn"><button class="rowHideBtn"[^<]*<\/button><\/td><td>System\.Byte\[\]<\/td><td>3\.00<\/td><td>75\.00<\/td><td class="ticksOnlyColumn">30<\/td>/.test(html));
+            assert.ok(/<td class="rowHideColumn"><button class="rowHideBtn"[^<]*<\/button><\/td><td>System\.String<\/td><td>1\.00<\/td><td>25\.00<\/td><td class="ticksOnlyColumn">10<\/td>/.test(html));
         });
 
         // The allocation-rate line chart (raw ticks, no per-type/kind

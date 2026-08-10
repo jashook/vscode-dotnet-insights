@@ -20,6 +20,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 using DotnetInsights.NetTrace.Gc;
+using DotnetInsights.NetTrace.Progress;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -66,7 +67,7 @@ public static class ExceptionEventProjector
     // shape as GcEventProjector.Project/AllocationEventProjector.Project -
     // same reasoning applies (callers pass NettraceHeader's own
     // SyncTimeQPC/SyncTimeUtc).
-    public static List<ExceptionEvent> Project(List<EventRecord> events, int pointerSize, long qpcFrequency, DateTime referenceUtc, long referenceQpc)
+    public static List<ExceptionEvent> Project(List<EventRecord> events, int pointerSize, long qpcFrequency, DateTime referenceUtc, long referenceQpc, Action<double> onProgress = null)
     {
         List<ExceptionEvent> result = new List<ExceptionEvent>();
 
@@ -79,6 +80,11 @@ public static class ExceptionEventProjector
         Span<EventRecord> eventsSpan = CollectionsMarshal.AsSpan(events);
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
+            if (onProgress != null && (eventIndex & ProgressReporter.IndexProgressMask) == 0)
+            {
+                onProgress((double)eventIndex / eventsSpan.Length);
+            }
+
             ref readonly EventRecord record = ref eventsSpan[eventIndex];
 
             if (record.ProviderName != ClrProviderName)

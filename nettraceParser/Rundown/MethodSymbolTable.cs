@@ -44,6 +44,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 using DotnetInsights.NetTrace.Gc;
+using DotnetInsights.NetTrace.Progress;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -171,7 +172,7 @@ public class MethodSymbolTable
         this.pointerSize = pointerSize;
     }
 
-    public static MethodSymbolTable Build(List<EventRecord> events, int pointerSize, long qpcFrequency, long referenceQpc)
+    public static MethodSymbolTable Build(List<EventRecord> events, int pointerSize, long qpcFrequency, long referenceQpc, Action<double> onProgress = null)
     {
         List<MethodRange> ranges = new List<MethodRange>();
         List<string> namesById = new List<string>();
@@ -198,6 +199,11 @@ public class MethodSymbolTable
         Span<EventRecord> eventsSpan = CollectionsMarshal.AsSpan(events);
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
+            if (onProgress != null && (eventIndex & ProgressReporter.IndexProgressMask) == 0)
+            {
+                onProgress((double)eventIndex / eventsSpan.Length);
+            }
+
             ref readonly EventRecord record = ref eventsSpan[eventIndex];
 
             bool isRundownStart = record.ProviderName == ClrRundownProviderName && record.EventId == ClrRundownEventIds.MethodDCStartVerbose;

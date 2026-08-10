@@ -1,0 +1,115 @@
+/* Styles the .nettrace loading placeholder (NettraceLoadingRenderer.ts) -
+   its own small stylesheet, not appended to the much larger snapshot.css,
+   since this document never loads that file at all (see
+   NettraceLoadingRenderer.ts's own header comment on why this is a
+   completely separate webview document). Themed via VS Code CSS custom
+   properties with literal fallbacks, matching snapshot.css's own
+   .loadHeapSnapshotBtn convention. */
+
+body {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    margin: 0;
+}
+
+.nettraceLoadingRoot {
+    width: min(480px, 80vw);
+}
+
+.nettraceLoadingFileName {
+    font-size: 0.95em;
+    font-weight: 600;
+    margin-bottom: 1em;
+    overflow: hidden;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* A "pie chart" loading ring - a conic-gradient wedge on
+   .nettraceLoadingPieRing growing clockwise to fill the circle as percent
+   approaches 100 (the gradient itself is set inline from JS - see
+   nettraceLoadingView.js's own setPieFill - since its exact stop position
+   is the one real data value driving this whole element). .nettraceLoadingPieWrap
+   is the shared positioning context for two SIBLING elements - the ring and
+   the center text - not a parent/child pair, specifically so the ring's own
+   indeterminate spin animation below doesn't rotate the percent text along
+   with it (see NettraceLoadingRenderer.ts's own comment on why: a CSS
+   transform on an element rotates its whole rendered subtree, including
+   absolutely-positioned descendants). */
+.nettraceLoadingPieWrap {
+    height: 140px;
+    margin: 0 auto 1em;
+    position: relative;
+    width: 140px;
+}
+
+.nettraceLoadingPieRing {
+    background: conic-gradient(var(--vscode-progressBar-background, #0e70c0) 0%, var(--vscode-editorWidget-background, #3c3c3c) 0);
+    border-radius: 50%;
+    height: 100%;
+    transition: background 0.15s ease-out;
+    width: 100%;
+}
+
+/* Shown until the first real 'nettraceProgress' message arrives (see
+   nettraceLoadingView.js's own comment on why this state exists at all -
+   a stale, pre-this-feature nettraceParser binary never sends one) - a
+   fixed wedge spinning continuously, giving visual motion without
+   claiming a real, known percentage. transition (above) is deliberately
+   NOT active while this class's own animation drives rotation - the two
+   would otherwise fight over the same element's rendered state on every
+   frame. */
+.nettraceLoadingPieIndeterminate {
+    animation: nettraceLoadingPieSpin 1.1s linear infinite;
+    background: conic-gradient(var(--vscode-progressBar-background, #0e70c0) 22%, var(--vscode-editorWidget-background, #3c3c3c) 0);
+    transition: none;
+}
+
+@keyframes nettraceLoadingPieSpin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* The donut hole - sized so the ring itself reads as ~14px thick regardless
+   of .nettraceLoadingPieWrap's own fixed 140px size. A sibling of the ring
+   (see this file's own header comment), positioned absolutely within their
+   shared .nettraceLoadingPieWrap so it sits centered on top of it without
+   inheriting its spin animation. */
+.nettraceLoadingPieInner {
+    align-items: center;
+    background: var(--vscode-editor-background, #1e1e1e);
+    border-radius: 50%;
+    bottom: 14px;
+    display: flex;
+    justify-content: center;
+    left: 14px;
+    position: absolute;
+    right: 14px;
+    top: 14px;
+}
+
+.nettraceLoadingPiePercent {
+    font-size: 28px;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+}
+
+.nettraceLoadingLabel {
+    font-size: 0.85em;
+    opacity: 0.85;
+    overflow: hidden;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.nettraceLoadingError {
+    color: var(--vscode-errorForeground, #f14c4c);
+    font-size: 0.85em;
+    margin-top: 1em;
+    text-align: center;
+    white-space: pre-wrap;
+}

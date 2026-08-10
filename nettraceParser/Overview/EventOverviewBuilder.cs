@@ -22,6 +22,8 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
+using DotnetInsights.NetTrace.Progress;
+
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -93,7 +95,7 @@ public static class EventOverviewBuilder
     // the real Dictionary (content equality/hashing), so this remains
     // correct even in the pathological case of full interleaving where the
     // cache never hits.
-    public static EventOverview Build(List<EventRecord> events)
+    public static EventOverview Build(List<EventRecord> events, Action<double> onProgress = null)
     {
         Dictionary<(string ProviderName, int EventId), EventTypeAccumulator> accumulatorsByKey = new Dictionary<(string, int), EventTypeAccumulator>();
 
@@ -111,6 +113,11 @@ public static class EventOverviewBuilder
         Span<EventRecord> eventsSpan = CollectionsMarshal.AsSpan(events);
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
+            if (onProgress != null && (eventIndex & ProgressReporter.IndexProgressMask) == 0)
+            {
+                onProgress((double)eventIndex / eventsSpan.Length);
+            }
+
             ref readonly EventRecord record = ref eventsSpan[eventIndex];
 
             EventTypeAccumulator accumulator;

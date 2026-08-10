@@ -110,7 +110,13 @@ export function renderGcDetailTable(gcs: any[]): string {
             severityClass = ` class="notSomewhatInterestingGc"`;
         }
 
-        rows += `<tr${severityClass} data-elapsed-msec="${tdElapsedMsec}"><td>${tdId}</td><td class="gcDateTimeCell" data-raw="${tdDateTimeRaw}"></td><td>${tdGen}</td><td>${tdType}</td><td>${tdPauseTime}</td><td>${tdReason}</td><td>${tdGen0Size}</td><td>${tdGen1Size}</td><td>${tdGen2Size}</td><td>${tdLohSize}</td><td>${tdPohSize}</td><td>${tdTotalHeapSize}</td><td>${tdGen0MinSize}</td><td>${tdTotalPromotedSize0}</td><td>${tdTotalPromotedSize1}</td><td>${tdTotalPromotedSize2}</td></tr>`;
+        // data-gc-index (the row's own position in gcs, matching the
+        // client-side `gcs` array parsed from hiddenData) lets a row-hide
+        // toggle (snapshotGcStats.js's rebuildGcSummaryTiles) filter gcs
+        // down to only visible entries before re-running the ported
+        // GcStatsCalculations.ts math. rowHideBtn gets its own cell like
+        // every other hide-enabled table on this page.
+        rows += `<tr${severityClass} data-elapsed-msec="${tdElapsedMsec}" data-gc-index="${index}"><td class="rowHideColumn"><button class="rowHideBtn" type="button" title="Hide this row">&#10005;</button></td><td>${tdId}</td><td class="gcDateTimeCell" data-raw="${tdDateTimeRaw}"></td><td>${tdGen}</td><td>${tdType}</td><td>${tdPauseTime}</td><td>${tdReason}</td><td>${tdGen0Size}</td><td>${tdGen1Size}</td><td>${tdGen2Size}</td><td>${tdLohSize}</td><td>${tdPohSize}</td><td>${tdTotalHeapSize}</td><td>${tdGen0MinSize}</td><td>${tdTotalPromotedSize0}</td><td>${tdTotalPromotedSize1}</td><td>${tdTotalPromotedSize2}</td></tr>`;
     }
 
     // data-sort marks how snapshotGcStats.js's click-to-sort handler should
@@ -141,13 +147,29 @@ export function renderGcDetailTable(gcs: any[]): string {
         ["Promoted Gen2 (mb)", "number"],
     ];
 
+    const header = renderSortableTableHeader(columns);
+    const headerWithHideColumn = header.replace('<tr class="tableHeader">', '<tr class="tableHeader"><th class="rowHideColumn"></th>');
+
+    // Hidden until at least one row is hidden - same allocationZoomStatus
+    // idiom as every other hide-status bar on this page.
+    const hideStatusHtml = `
+        <div class="allocationZoomStatus" id="gcDetailHideStatus" style="display:none">
+            <span class="allocationZoomStatusLabel" id="gcDetailHideStatusLabel"></span>
+            <button class="resetZoomButton" id="gcDetailShowAllBtn">Show all</button>
+        </div>`;
+
+    return `${hideStatusHtml}<div class="detailTable"><table id="gcDetailTable">${headerWithHideColumn}${rows}</table></div>`;
+}
+
+// Shared header builder for every sortable detail table on this page
+// (GC event table, CPU hot-methods table, etc.) - each column entry is
+// [label, sortType] where sortType is "number", "date", or "text" (see
+// sortDetailTableByColumn in snapshotGcStats.js).
+export function renderSortableTableHeader(columns: ReadonlyArray<[string, string]>): string {
     var headerCells = "";
     for (var columnIndex = 0; columnIndex < columns.length; ++columnIndex) {
         const [label, sortType] = columns[columnIndex];
         headerCells += `<th data-sort="${sortType}"><span class="thLabel">${label}</span><span class="sortIndicator"></span></th>`;
     }
-
-    const header = `<tr class="tableHeader">${headerCells}</tr>`;
-
-    return `<div class="detailTable"><table>${header}${rows}</table></div>`;
+    return `<tr class="tableHeader">${headerCells}</tr>`;
 }

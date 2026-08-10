@@ -29,6 +29,8 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
+using DotnetInsights.NetTrace.Progress;
+
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -67,7 +69,7 @@ public static class SampleProfileEventProjector
     // - a sample carries no pointer-sized payload fields to decode, and
     // every consumer of SampleEvent only needs capture-relative time, not an
     // absolute DateTime.
-    public static List<SampleEvent> Project(List<EventRecord> events, long qpcFrequency, long referenceQpc)
+    public static List<SampleEvent> Project(List<EventRecord> events, long qpcFrequency, long referenceQpc, Action<double> onProgress = null)
     {
         List<SampleEvent> result = new List<SampleEvent>();
 
@@ -79,6 +81,11 @@ public static class SampleProfileEventProjector
         Span<EventRecord> eventsSpan = CollectionsMarshal.AsSpan(events);
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
+            if (onProgress != null && (eventIndex & ProgressReporter.IndexProgressMask) == 0)
+            {
+                onProgress((double)eventIndex / eventsSpan.Length);
+            }
+
             ref readonly EventRecord record = ref eventsSpan[eventIndex];
 
             if (record.ProviderName != SampleProfilerProviderName)

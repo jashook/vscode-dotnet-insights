@@ -25,16 +25,46 @@ namespace DotnetInsights.NetTrace.Gc {
 ////////////////////////////////////////////////////////////////////////////////
 
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 
+using DotnetInsights.NetTrace.Contention;
 using DotnetInsights.NetTrace.Cpu;
 using DotnetInsights.NetTrace.Exceptions;
 using DotnetInsights.NetTrace.Overview;
+using DotnetInsights.NetTrace.Progress;
 using DotnetInsights.NetTrace.Rundown;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
+
+// Per-sub-writer breakdown of jsonExport's own total time - returned from
+// WriteToFile so Program.cs's own "Timing: ..." diagnostic line (the one
+// place this codebase already reports phase timing - see that file's own
+// comment) can report it, rather than this class printing its own
+// competing diagnostic output. Exists specifically so
+// Progress/ProgressPlan.cs's own jsonExport sub-writer weight constants
+// can be recalibrated against a real capture with a single CLI run (read
+// this line) instead of re-adding throwaway Stopwatch instrumentation
+// each time - see that file's own header comment.
+public readonly struct JsonExportTiming
+{
+    public readonly long AllocationMs;
+    public readonly long ExceptionMs;
+    public readonly long CpuMs;
+    public readonly long ContentionMs;
+    public readonly long GcMs;
+
+    public JsonExportTiming(long allocationMs, long exceptionMs, long cpuMs, long contentionMs, long gcMs)
+    {
+        this.AllocationMs = allocationMs;
+        this.ExceptionMs = exceptionMs;
+        this.CpuMs = cpuMs;
+        this.ContentionMs = contentionMs;
+        this.GcMs = gcMs;
+    }
+}
 
 public static class GcJsonExporter
 {
@@ -48,8 +78,33 @@ public static class GcJsonExporter
     // becoming its own write() syscall.
     private const int OutputFileStreamBufferSize = 1024 * 1024;
 
-    public static void WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath)
+    public static JsonExportTiming WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath)
     {
+        // Permanent (not throwaway) per-sub-writer timing - see
+        // JsonExportTiming's own comment on why.
+        Stopwatch subStopwatch = Stopwatch.StartNew();
+        long allocationMs;
+        long exceptionMs;
+        long cpuMs;
+        long contentionMs;
+        long gcMs;
+
+        // Splits the jsonExport phase's own global percent range (see
+        // Progress/ProgressPlan.cs's own header comment on why this is the
+        // one place a per-item weight estimate compares genuinely
+        // comparable things - 5 writers in the SAME phase of the SAME run)
+        // across its 5 sub-writers, using THIS run's real counts. A no-op
+        // to compute even when progress reporting is disabled entirely
+        // (ProgressReporter.BeginPhase/CompletePhase below are themselves
+        // no-ops in that case - see that class's own `enabled` gate) - so
+        // this method takes no onProgress parameter of its own and instead
+        // calls ProgressReporter directly, unlike NettraceFile.Read/the
+        // projectors/the two instrumented sub-writers below (which are
+        // each a single continuous pass, not a multi-phase orchestrator
+        // dispatching to differently-labeled sub-phases the way this
+        // method is).
+        ExportSubWriterRanges subWriterRanges = ProgressPlan.PlanJsonExportSubWriters(gcEvents.Count, allocationEvents.Count, exceptionEvents.Count, sampleEvents.Count, contentionEvents.Count);
+
         using (FileStream fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, OutputFileStreamBufferSize))
         using (Utf8JsonWriter writer = new Utf8JsonWriter(fileStream))
         {
@@ -63,19 +118,34 @@ public static class GcJsonExporter
             // parameter) to decide whether the nettrace-only "Heap Contents" view
             // has anything to show. See AllocationJsonExporter.cs.
             writer.WritePropertyName("allocationSummary");
-            AllocationSummaryBuilder.Write(writer, allocationEvents, symbolTable, ticksBinaryPath);
+            ProgressReporter.BeginPhase("Exporting allocation summary", subWriterRanges.Allocation.Start, subWriterRanges.Allocation.End);
+            subStopwatch.Restart();
+            AllocationSummaryBuilder.Write(writer, allocationEvents, symbolTable, ticksBinaryPath, ProgressReporter.ReportFraction);
+            allocationMs = subStopwatch.ElapsedMilliseconds;
+            ProgressReporter.CompletePhase();
 
             // "exceptionSummary" is only meaningful for nettrace input, same
             // as allocationSummary above - the .gcinfo/XML path never sets
-            // this key either. See ExceptionJsonExporter.cs.
+            // this key either. See ExceptionJsonExporter.cs. No internal
+            // fine-grained tracking (unlike allocation/cpu below) - bounded
+            // by real exception counts (tens of thousands, not millions, on
+            // every real capture measured so far), so a start/complete snap
+            // is visually indistinguishable from tracking it internally.
             writer.WritePropertyName("exceptionSummary");
+            ProgressReporter.BeginPhase("Exporting exception summary", subWriterRanges.Exception.Start, subWriterRanges.Exception.End);
+            subStopwatch.Restart();
             ExceptionJsonExporter.Write(writer, exceptionEvents, symbolTable);
+            exceptionMs = subStopwatch.ElapsedMilliseconds;
+            ProgressReporter.CompletePhase();
 
             // "eventOverview" is also nettrace-only (same reasoning), but
             // unlike allocationSummary/exceptionSummary above it's always
             // meaningful whenever it's present at all - every nettrace
             // capture has *some* events, even one with zero GCs/allocations/
-            // exceptions. See Overview/EventOverviewBuilder.cs.
+            // exceptions. See Overview/EventOverviewBuilder.cs. No dedicated
+            // progress phase - bounded by distinct event TYPE count (dozens,
+            // not per-event), negligible next to any of the 5 real
+            // sub-writer phases either side of it.
             writer.WritePropertyName("eventOverview");
             writer.WriteStartObject();
             writer.WriteNumber("totalEventCount", eventOverview.TotalEventCount);
@@ -98,13 +168,35 @@ public static class GcJsonExporter
             // allocationSummary/exceptionSummary above) - the .gcinfo/XML
             // path never sets this key either. See Cpu/CpuProfileJsonExporter.cs.
             writer.WritePropertyName("cpuProfile");
-            CpuProfileJsonExporter.Write(writer, sampleEvents, symbolTable);
+            ProgressReporter.BeginPhase("Exporting CPU profile", subWriterRanges.Cpu.Start, subWriterRanges.Cpu.End);
+            subStopwatch.Restart();
+            CpuProfileJsonExporter.Write(writer, sampleEvents, symbolTable, ProgressReporter.ReportFraction);
+            cpuMs = subStopwatch.ElapsedMilliseconds;
+            ProgressReporter.CompletePhase();
+
+            // "contentionSummary" is also nettrace-only (same reasoning) -
+            // the .gcinfo/XML path never sets this key. See
+            // Contention/ContentionJsonExporter.cs. No internal tracking,
+            // same reasoning as exceptionSummary above.
+            writer.WritePropertyName("contentionSummary");
+            ProgressReporter.BeginPhase("Exporting contention summary", subWriterRanges.Contention.Start, subWriterRanges.Contention.End);
+            subStopwatch.Restart();
+            ContentionJsonExporter.Write(writer, contentionEvents, symbolTable);
+            contentionMs = subStopwatch.ElapsedMilliseconds;
+            ProgressReporter.CompletePhase();
 
             writer.WritePropertyName("gcData");
             writer.WriteStartArray();
+            ProgressReporter.BeginPhase("Exporting GC data", subWriterRanges.Gc.Start, subWriterRanges.Gc.End);
+            subStopwatch.Restart();
 
             for (int gcIndex = 0; gcIndex < gcEvents.Count; ++gcIndex)
             {
+                if ((gcIndex & ProgressReporter.IndexProgressMask) == 0)
+                {
+                    ProgressReporter.ReportFraction(gcIndex / (double)gcEvents.Count);
+                }
+
                 GcEvent gcEvent = gcEvents[gcIndex];
                 string reasonName = gcEvent.Reason.ToString();
 
@@ -223,10 +315,14 @@ public static class GcJsonExporter
                 writer.Flush();
             }
 
+            gcMs = subStopwatch.ElapsedMilliseconds;
+            ProgressReporter.CompletePhase();
             writer.WriteEndArray();
 
             writer.WriteEndObject();
         }
+
+        return new JsonExportTiming(allocationMs, exceptionMs, cpuMs, contentionMs, gcMs);
     }
 }
 

@@ -13,6 +13,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text.Json.Nodes;
 
+using DotnetInsights.NetTrace.Contention;
 using DotnetInsights.NetTrace.Cpu;
 using DotnetInsights.NetTrace.Exceptions;
 using DotnetInsights.NetTrace.Gc;
@@ -54,7 +55,7 @@ public class GcJsonExporterTests
 
         try
         {
-            GcJsonExporter.WriteToFile(outputPath, gcEvents, new List<AllocationEvent>(), new List<ExceptionEvent>(), new EventOverview(0, new List<EventTypeCount>()), new List<SampleEvent>(), MethodSymbolTable.Build(new List<EventRecord>(), 8, 0, 0), processName: "test-process", ticksBinaryPath);
+            GcJsonExporter.WriteToFile(outputPath, gcEvents, new List<AllocationEvent>(), new List<ExceptionEvent>(), new EventOverview(0, new List<EventTypeCount>()), new List<SampleEvent>(), new List<ContentionEvent>(), MethodSymbolTable.Build(new List<EventRecord>(), 8, 0, 0), processName: "test-process", ticksBinaryPath);
             string json = File.ReadAllText(outputPath);
             return (JsonObject)JsonNode.Parse(json);
         }
