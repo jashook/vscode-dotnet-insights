@@ -2345,7 +2345,23 @@ var allocationDatasets = {};
     // AllocationSummaryRenderer.ts's markup is injected above (the buttons
     // don't exist in the DOM before that).
     function switchHeapContentsTab(targetTab) {
-        var buttons = document.getElementsByClassName("heapContentsTabButton");
+        // Scoped to #view-heapContents, NOT queried globally. The
+        // heapContentsTabButton/heapContentsTabPanel classes are shared for
+        // styling by the Profile and Contention views' own tab bars (see
+        // switchProfileTab/switchContentionTab, which have always scoped
+        // their own queries), so a global query here reached into those
+        // views and deactivated their panels - after which the
+        // 'heapContents-tab-<null>' lookup below threw, leaving whichever
+        // view the user was actually in blank. It presented as "the table
+        // sometimes isn't populated", intermittent because it depended on
+        // which view got wired first and therefore whose click listener ran
+        // last.
+        var heapContentsView = document.getElementById('view-heapContents');
+        if (!heapContentsView) {
+            return;
+        }
+
+        var buttons = heapContentsView.getElementsByClassName("heapContentsTabButton");
         for (var buttonIndex = 0; buttonIndex < buttons.length; ++buttonIndex) {
             buttons[buttonIndex].classList.remove('active');
             if (buttons[buttonIndex].getAttribute('data-heaptab') === targetTab) {
@@ -2353,11 +2369,17 @@ var allocationDatasets = {};
             }
         }
 
-        var panels = document.getElementsByClassName("heapContentsTabPanel");
+        var panels = heapContentsView.getElementsByClassName("heapContentsTabPanel");
         for (var panelIndex = 0; panelIndex < panels.length; ++panelIndex) {
             panels[panelIndex].classList.remove('active');
         }
-        document.getElementById('heapContents-tab-' + targetTab).classList.add('active');
+
+        var targetPanel = document.getElementById('heapContents-tab-' + targetTab);
+        if (!targetPanel) {
+            return;
+        }
+
+        targetPanel.classList.add('active');
 
         var backButton = document.getElementById('backToChartsButton');
         if (backButton) {
@@ -2588,7 +2610,11 @@ var allocationDatasets = {};
     }
 
     function wireHeapContentsInnerTabs() {
-        var heapContentsTabButtons = document.getElementsByClassName("heapContentsTabButton");
+        // Scoped for the same reason switchHeapContentsTab is - an unscoped
+        // query bound this handler to the Profile and Contention views' tab
+        // buttons too, so clicking those ran the heap-contents switcher with
+        // a null target.
+        var heapContentsTabButtons = document.querySelectorAll('#view-heapContents .heapContentsTabButton');
         for (var tabButtonIndex = 0; tabButtonIndex < heapContentsTabButtons.length; ++tabButtonIndex) {
             heapContentsTabButtons[tabButtonIndex].addEventListener('click', function (event) {
                 switchHeapContentsTab(event.currentTarget.getAttribute('data-heaptab'));
@@ -4467,6 +4493,24 @@ var allocationDatasets = {};
             });
         }
 
+        var lockTableContainer = document.getElementById('lockTableContainer');
+        if (lockTableContainer) {
+            // Delegated on the container, which is stable - the table inside
+            // it is re-rendered on every sort, filter and selection change.
+            lockTableContainer.addEventListener('click', function (event) {
+                var header = event.target.closest('[data-lock-sort]');
+                if (header) {
+                    setLockTimelineSortColumn(header.getAttribute('data-lock-sort'));
+                    return;
+                }
+
+                var row = event.target.closest('[data-lock-row-index]');
+                if (row) {
+                    selectLockTimelineLock(parseInt(row.getAttribute('data-lock-row-index'), 10));
+                }
+            });
+        }
+
         var longestWaitSelect = document.getElementById('lockLongestWaitSelect');
         if (longestWaitSelect) {
             longestWaitSelect.addEventListener('change', function (event) {
@@ -4515,10 +4559,10 @@ var allocationDatasets = {};
             });
         }
 
-        var threadPoolBtn = document.getElementById('threadFilterPoolBtn');
-        if (threadPoolBtn) {
-            threadPoolBtn.addEventListener('click', function () {
-                setLockTimelineThreadSelectionMode('pool');
+        var threadWorkerBtn = document.getElementById('threadFilterWorkerBtn');
+        if (threadWorkerBtn) {
+            threadWorkerBtn.addEventListener('click', function () {
+                setLockTimelineThreadSelectionMode('worker');
             });
         }
 

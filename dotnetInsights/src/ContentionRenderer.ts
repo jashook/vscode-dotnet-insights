@@ -156,7 +156,7 @@ function renderLockTimelinePanel(lockTimeline: any): string {
                     <option value="wait" selected>Total wait</option>
                     <option value="contentions">Contentions</option>
                     <option value="threads">Contending threads</option>
-                    <option value="poolthreads">Pool threads blocked</option>
+                    <option value="workerthreads">Worker threads blocked</option>
                     <option value="maxwait">Longest single wait</option>
                 </select>
             </label>
@@ -193,13 +193,16 @@ function renderLockTimelinePanel(lockTimeline: any): string {
                         <span class="lockFilterButtons">
                             <button id="threadFilterAllBtn" class="resetZoomButton">All</button>
                             <button id="threadFilterNoneBtn" class="resetZoomButton">None</button>
-                            <button id="threadFilterPoolBtn" class="resetZoomButton" title="Select only managed thread-pool workers">Pool</button>
+                            <button id="threadFilterWorkerBtn" class="resetZoomButton" title="Select only .NET worker threads">Worker</button>
                         </span>
                     </div>
                     <input id="threadFilterSearch" class="threadFilterSearch" type="text" placeholder="Find thread id…">
                     <div id="threadFilterList" class="lockFilterList"></div>
                 </div>
             </div>
+        </div>
+        <div class="lockTableSection">
+            <div id="lockTableContainer" class="detailTable lockTable"></div>
         </div>
         <div id="lockStackPanel" class="lockStackPanel" style="display:none">
             <div class="lockStackHeader">

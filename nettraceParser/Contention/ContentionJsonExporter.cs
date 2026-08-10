@@ -112,7 +112,7 @@ public static class ContentionJsonExporter
     // conservative - an unrecognized pool entry point undercounts (a real
     // pool wait looks like a non-pool one) rather than misreporting a
     // dedicated thread as a pool thread.
-    private static readonly string[] ThreadPoolFrameMarkers = new string[]
+    private static readonly string[] WorkerThreadFrameMarkers = new string[]
     {
         "System.Threading.PortableThreadPool",
         "System.Threading.ThreadPoolWorkQueue",
@@ -171,12 +171,12 @@ public static class ContentionJsonExporter
         public HashSet<long> WaiterThreadIds = new HashSet<long>();
         public HashSet<long> OwnerThreadIds = new HashSet<long>();
         // Waiters whose own stack shows them to be managed thread-pool
-        // workers (see IsThreadPoolStack). This is the number that separates
+        // workers (see IsWorkerThreadStack). This is the number that separates
         // "two background threads ping-ponging, which nobody cares about"
         // from "this lock is starving the pool" - the same contention count
         // means very different things in those two cases.
-        public HashSet<long> PoolWaiterThreadIds = new HashSet<long>();
-        public int PoolContentionCount;
+        public HashSet<long> WorkerWaiterThreadIds = new HashSet<long>();
+        public int WorkerContentionCount;
         public List<OwnershipSegment> Segments = new List<OwnershipSegment>();
         // Distinct stacks contended on this lock, keyed by stack array
         // reference (same ReferenceEqualityComparer discipline the site
@@ -500,7 +500,7 @@ public static class ContentionJsonExporter
     private static void WriteLockTimeline(Utf8JsonWriter writer, Span<ContentionEvent> eventsSpan, double minRelativeMSec, double maxRelativeMSec, MethodSymbolTable symbolTable, Dictionary<long[], int[]> frameIdCache, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         Dictionary<long, LockStats> statsByLockId = new Dictionary<long, LockStats>();
-        Dictionary<long[], bool> poolStackCache = new Dictionary<long[], bool>(ReferenceEqualityComparer.Instance);
+        Dictionary<long[], bool> workerStackCache = new Dictionary<long[], bool>(ReferenceEqualityComparer.Instance);
 
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
@@ -541,10 +541,10 @@ public static class ContentionJsonExporter
                 stats.OwnerThreadIds.Add(contentionEvent.OwnerThreadId);
             }
 
-            if (IsThreadPoolStack(contentionEvent.Stack, contentionEvent.RelativeMSec, symbolTable, poolStackCache))
+            if (IsWorkerThreadStack(contentionEvent.Stack, contentionEvent.RelativeMSec, symbolTable, workerStackCache))
             {
-                stats.PoolWaiterThreadIds.Add(contentionEvent.ThreadId);
-                ++stats.PoolContentionCount;
+                stats.WorkerWaiterThreadIds.Add(contentionEvent.ThreadId);
+                ++stats.WorkerContentionCount;
             }
 
             stats.Segments.Add(new OwnershipSegment(contentionEvent.RelativeMSec, contentionEvent.RelativeMSec + contentionEvent.DurationMSec, contentionEvent.DurationMSec, contentionEvent.OwnerThreadId, contentionEvent.ThreadId));
@@ -639,13 +639,13 @@ public static class ContentionJsonExporter
         // across all locks - lets the view mark which thread ids in its
         // filter list are pool workers (and offer "pool threads only")
         // without re-deriving it per lock in the webview.
-        HashSet<long> allPoolThreadIds = new HashSet<long>();
+        HashSet<long> allWorkerThreadIds = new HashSet<long>();
 
         foreach (KeyValuePair<long, LockStats> entry in statsByLockId)
         {
-            foreach (long poolThreadId in entry.Value.PoolWaiterThreadIds)
+            foreach (long workerThreadId in entry.Value.WorkerWaiterThreadIds)
             {
-                allPoolThreadIds.Add(poolThreadId);
+                allWorkerThreadIds.Add(workerThreadId);
             }
         }
 
@@ -655,12 +655,12 @@ public static class ContentionJsonExporter
         writer.WriteNumber("totalDistinctLockCount", statsByLockId.Count);
         writer.WriteNumber("outlierThresholdMSec", outlierThresholdMSec);
         WriteLongestWaits(writer, statsByLockId);
-        writer.WritePropertyName("poolThreadIds");
+        writer.WritePropertyName("workerThreadIds");
         writer.WriteStartArray();
 
-        foreach (long poolThreadId in allPoolThreadIds)
+        foreach (long workerThreadId in allWorkerThreadIds)
         {
-            writer.WriteNumberValue(poolThreadId);
+            writer.WriteNumberValue(workerThreadId);
         }
 
         writer.WriteEndArray();
@@ -683,8 +683,8 @@ public static class ContentionJsonExporter
             writer.WriteNumber("maxWaitMSec", stats.MaxWaitMSec);
             writer.WriteNumber("waiterThreadCount", stats.WaiterThreadIds.Count);
             writer.WriteNumber("ownerThreadCount", stats.OwnerThreadIds.Count);
-            writer.WriteNumber("poolWaiterThreadCount", stats.PoolWaiterThreadIds.Count);
-            writer.WriteNumber("poolContentionCount", stats.PoolContentionCount);
+            writer.WriteNumber("workerWaiterThreadCount", stats.WorkerWaiterThreadIds.Count);
+            writer.WriteNumber("workerContentionCount", stats.WorkerContentionCount);
             // Index into the shared methodNames pool, or -1 when this lock
             // has no stack to name it after. The renderer shows this as the
             // lock's primary label and keeps lockId as the secondary
@@ -922,7 +922,7 @@ public static class ContentionJsonExporter
     // (stacks are interned at parse time - see EventBlock.cs) because a real
     // capture has ~10k waits over only ~4k distinct stacks, and this walks
     // every frame of one.
-    private static bool IsThreadPoolStack(long[] stack, double relativeMSec, MethodSymbolTable symbolTable, Dictionary<long[], bool> poolStackCache)
+    private static bool IsWorkerThreadStack(long[] stack, double relativeMSec, MethodSymbolTable symbolTable, Dictionary<long[], bool> workerStackCache)
     {
         if (stack.Length == 0)
         {
@@ -931,7 +931,7 @@ public static class ContentionJsonExporter
 
         bool isPoolStack;
 
-        if (poolStackCache.TryGetValue(stack, out isPoolStack))
+        if (workerStackCache.TryGetValue(stack, out isPoolStack))
         {
             return isPoolStack;
         }
@@ -947,9 +947,9 @@ public static class ContentionJsonExporter
                 continue;
             }
 
-            for (int markerIndex = 0; markerIndex < ThreadPoolFrameMarkers.Length; ++markerIndex)
+            for (int markerIndex = 0; markerIndex < WorkerThreadFrameMarkers.Length; ++markerIndex)
             {
-                if (frameName.StartsWith(ThreadPoolFrameMarkers[markerIndex], StringComparison.Ordinal))
+                if (frameName.StartsWith(WorkerThreadFrameMarkers[markerIndex], StringComparison.Ordinal))
                 {
                     isPoolStack = true;
                     break;
@@ -957,7 +957,7 @@ public static class ContentionJsonExporter
             }
         }
 
-        poolStackCache[stack] = isPoolStack;
+        workerStackCache[stack] = isPoolStack;
         return isPoolStack;
     }
 

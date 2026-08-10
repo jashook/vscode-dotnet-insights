@@ -246,8 +246,8 @@
             return lockEntry['waiterThreadCount'] || 0;
         }
 
-        if (state.rankMetric === 'poolthreads') {
-            return lockEntry['poolWaiterThreadCount'] || 0;
+        if (state.rankMetric === 'workerthreads') {
+            return lockEntry['workerWaiterThreadCount'] || 0;
         }
 
         if (state.rankMetric === 'maxwait') {
@@ -267,9 +267,9 @@
             return waiters.toLocaleString() + (waiters === 1 ? ' thread' : ' threads');
         }
 
-        if (state.rankMetric === 'poolthreads') {
-            var poolWaiters = lockEntry['poolWaiterThreadCount'] || 0;
-            return poolWaiters.toLocaleString() + (poolWaiters === 1 ? ' pool thread' : ' pool threads');
+        if (state.rankMetric === 'workerthreads') {
+            var workerWaiters = lockEntry['workerWaiterThreadCount'] || 0;
+            return workerWaiters.toLocaleString() + (workerWaiters === 1 ? ' worker thread' : ' worker threads');
         }
 
         if (state.rankMetric === 'maxwait') {
@@ -290,7 +290,23 @@
         }
 
         order.sort(function (leftIndex, rightIndex) {
+            if (state.rankMetric === 'name') {
+                var leftName = lockDisplayName(state.locks[leftIndex]);
+                var rightName = lockDisplayName(state.locks[rightIndex]);
+                var nameComparison = leftName.localeCompare(rightName);
+
+                if (nameComparison !== 0) {
+                    return state.rankAscending ? nameComparison : -nameComparison;
+                }
+
+                return state.locks[rightIndex]['totalWaitMSec'] - state.locks[leftIndex]['totalWaitMSec'];
+            }
+
             var difference = metricValue(state.locks[rightIndex]) - metricValue(state.locks[leftIndex]);
+            if (state.rankAscending) {
+                difference = -difference;
+            }
+
             if (difference !== 0) {
                 return difference;
             }
@@ -615,7 +631,7 @@
             '<div>Blocked for: <b>' + formatMSec(durationMSec) + '</b></div>' +
             '<div class="lockTooltipTotals">Lock total: ' +
             (hit.lockEntry['waiterThreadCount'] || 0) + ' threads (' +
-            (hit.lockEntry['poolWaiterThreadCount'] || 0) + ' pool) · ' +
+            (hit.lockEntry['workerWaiterThreadCount'] || 0) + ' worker) · ' +
             hit.lockEntry['contentionCount'].toLocaleString() + ' contentions · ' +
             hit.lockEntry['totalWaitMSec'].toFixed(1) + ' ms</div>';
 
@@ -687,7 +703,7 @@
                 // requiring a switch to notice.
                 '<span class="lockFilterSubLine"><b>' + metricLabel(lockEntry) + '</b> · ' +
                 (lockEntry['waiterThreadCount'] || 0) + ' thr · ' +
-                (lockEntry['poolWaiterThreadCount'] || 0) + ' pool · ' +
+                (lockEntry['workerWaiterThreadCount'] || 0) + ' wkr · ' +
                 lockEntry['contentionCount'].toLocaleString() + '× · ' +
                 lockEntry['totalWaitMSec'].toFixed(1) + ' ms</span>' +
                 '<span class="lockFilterSubLine">' + lockEntry['lockId'] + '</span>' +
@@ -746,7 +762,7 @@
 
         var threads = [];
         involvementByThread.forEach(function (count, threadId) {
-            threads.push({ threadId: threadId, count: count, isPool: state.poolThreadIds.has(threadId) });
+            threads.push({ threadId: threadId, count: count, isWorker: state.workerThreadIds.has(threadId) });
         });
         threads.sort(function (left, right) { return right.count - left.count; });
 
@@ -776,13 +792,13 @@
 
             ++shownCount;
             var checked = (state.threadFilterAll || state.selectedThreadIds.has(thread.threadId)) ? ' checked' : '';
-            var poolBadge = thread.isPool ? '<span class="threadPoolBadge" title="Managed thread-pool worker">pool</span>' : '';
+            var workerBadge = thread.isWorker ? '<span class="workerThreadBadge" title=".NET worker thread">worker</span>' : '';
 
             html += '<label class="lockFilterItem threadFilterItem">' +
                 '<span class="lockFilterTopLine">' +
                 '<input type="checkbox" class="threadFilterCheckbox" data-thread-id="' + thread.threadId + '"' + checked + '>' +
                 '<span class="threadFilterId">' + thread.threadId + '</span>' +
-                poolBadge +
+                workerBadge +
                 '<span class="lockFilterStat">' + thread.count.toLocaleString() + '</span>' +
                 '</span>' +
                 '</label>';
@@ -802,6 +818,93 @@
     function syncThreadFilterAllFlag() {
         state.threadFilterAll = state.selectedThreadIds.size === state.threads.length;
     }
+
+    // ---- ranked locks table ----
+
+    // Columns are declared once and drive both the header and the body, so
+    // a column can't drift out of sync with the value under it. `metric` is
+    // the rankMetric a header click selects - the table sort IS the ranking,
+    // shared with the chart and the Rank-by control, rather than a second
+    // independent ordering that could disagree with the tracks above it.
+    var LOCK_TABLE_COLUMNS = [
+        { metric: 'name', label: 'Lock', align: 'left' },
+        { metric: null, label: 'Lock Id', align: 'left' },
+        { metric: 'wait', label: 'Total Wait', align: 'right' },
+        { metric: 'contentions', label: 'Contentions', align: 'right' },
+        { metric: 'threads', label: 'Threads', align: 'right' },
+        { metric: 'workerthreads', label: 'Worker Thr', align: 'right' },
+        { metric: 'maxwait', label: 'Worst Wait', align: 'right' }
+    ];
+
+    function renderLockTable() {
+        var container = document.getElementById('lockTableContainer');
+        if (!container) {
+            return;
+        }
+
+        var limit = state.topLockCount === null ? state.order.length : Math.min(state.topLockCount, state.order.length);
+
+        var headerHtml = '<tr class="tableHeader">';
+        for (var columnIndex = 0; columnIndex < LOCK_TABLE_COLUMNS.length; ++columnIndex) {
+            var column = LOCK_TABLE_COLUMNS[columnIndex];
+            var isActive = column.metric !== null && column.metric === state.rankMetric;
+            var indicator = isActive ? (state.rankAscending ? ' ▲' : ' ▼') : '';
+            var sortAttr = column.metric === null ? '' : ' data-lock-sort="' + column.metric + '"';
+            var classAttr = column.metric === null ? '' : ' class="lockTableSortable"';
+
+            headerHtml += '<th' + sortAttr + classAttr + ' style="text-align:' + column.align + '">' +
+                column.label + '<span class="sortIndicator">' + indicator + '</span></th>';
+        }
+        headerHtml += '</tr>';
+
+        var rowsHtml = '';
+        for (var position = 0; position < limit; ++position) {
+            var index = state.order[position];
+            var lockEntry = state.locks[index];
+            var fullName = lockDisplayName(lockEntry);
+            var dimmed = lockHasMatchingSegment(lockEntry) ? '' : ' lockTableRowDimmed';
+            var selected = state.selectedLockIndex === index ? ' lockTableRowSelected' : '';
+
+            rowsHtml += '<tr class="lockTableRow' + dimmed + selected + '" data-lock-row-index="' + index + '" title="' + escapeAttribute(fullName) + '">' +
+                '<td style="text-align:left">' + escapeHtml(shortMethodName(fullName)) + '</td>' +
+                '<td style="text-align:left" class="lockTableId">' + lockEntry['lockId'] + '</td>' +
+                '<td style="text-align:right">' + lockEntry['totalWaitMSec'].toFixed(2) + '</td>' +
+                '<td style="text-align:right">' + lockEntry['contentionCount'].toLocaleString() + '</td>' +
+                '<td style="text-align:right">' + (lockEntry['waiterThreadCount'] || 0).toLocaleString() + '</td>' +
+                '<td style="text-align:right">' + (lockEntry['workerWaiterThreadCount'] || 0).toLocaleString() + '</td>' +
+                '<td style="text-align:right">' + formatMSec(lockEntry['maxWaitMSec'] || 0) + '</td>' +
+                '</tr>';
+        }
+
+        container.innerHTML = '<table id="lockRankedTable">' + headerHtml + rowsHtml + '</table>';
+    }
+
+    // A header click sets the ranking (and its direction), which re-orders
+    // the tracks, the sidebar and this table together.
+    window.setLockTimelineSortColumn = function (metric) {
+        if (state === null) {
+            return;
+        }
+
+        if (state.rankMetric === metric) {
+            state.rankAscending = !state.rankAscending;
+        } else {
+            state.rankMetric = metric;
+            // Names read naturally A-Z; every numeric column is a "worst
+            // first" question.
+            state.rankAscending = (metric === 'name');
+        }
+
+        var rankSelect = document.getElementById('lockRankMetricSelect');
+        if (rankSelect && metric !== 'name') {
+            rankSelect.value = metric;
+        }
+
+        computeOrder();
+        renderLockFilterList();
+        renderLockTable();
+        draw();
+    };
 
     // ---- outlier / longest-wait surfacing ----
 
@@ -930,6 +1033,7 @@
         state.selectedLockIndex = lockIndex;
         renderStackPanelForLock(lockIndex);
         renderLockFilterList();
+        renderLockTable();
         draw();
 
         var panel = document.getElementById('lockStackPanel');
@@ -964,8 +1068,9 @@
                 visibleByIndex: visible,
                 order: [],
                 rankMetric: 'wait',
+                rankAscending: false,
                 topLockCount: 40,
-                poolThreadIds: new Set(lockTimelineJson['poolThreadIds'] || []),
+                workerThreadIds: new Set(lockTimelineJson['workerThreadIds'] || []),
                 outlierThresholdMSec: lockTimelineJson['outlierThresholdMSec'] || 0,
                 longestWaits: lockTimelineJson['longestWaits'] || [],
                 threads: [],
@@ -1011,6 +1116,7 @@
             renderLongestWaitOptions();
             renderOutlierNote();
             renderLockFilterList();
+            renderLockTable();
         }
 
         draw();
@@ -1031,8 +1137,10 @@
         }
 
         state.rankMetric = metric;
+        state.rankAscending = false;
         computeOrder();
         renderLockFilterList();
+        renderLockTable();
         draw();
     };
 
@@ -1043,6 +1151,7 @@
 
         state.topLockCount = topCountOrNull;
         renderLockFilterList();
+        renderLockTable();
         draw();
     };
 
@@ -1074,7 +1183,7 @@
         for (var threadIndex = 0; threadIndex < state.threads.length; ++threadIndex) {
             var thread = state.threads[threadIndex];
 
-            if (mode === 'all' || (mode === 'pool' && thread.isPool)) {
+            if (mode === 'all' || (mode === 'worker' && thread.isWorker)) {
                 state.selectedThreadIds.add(thread.threadId);
             }
         }
@@ -1115,6 +1224,7 @@
         }
 
         renderLockFilterList();
+        renderLockTable();
         draw();
     };
 

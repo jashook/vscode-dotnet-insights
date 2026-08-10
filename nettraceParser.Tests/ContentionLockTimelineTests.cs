@@ -445,7 +445,7 @@ public class ContentionLockTimelineTests
     }
 
     [Fact]
-    public void Write_PoolWaiterCountOnlyCountsThreadsBlockedInsideThreadPoolWork()
+    public void Write_WorkerWaiterCountOnlyCountsThreadsBlockedInsideWorkerThreadWork()
     {
         // The distinction the Lock Timeline's "pool threads blocked" ranking
         // exists for: a lock blocking pool workers serializes every queued
@@ -465,12 +465,12 @@ public class ContentionLockTimelineTests
         JsonElement lockEntry = document.RootElement.GetProperty("lockTimeline").GetProperty("locks")[0];
 
         Assert.Equal(3, lockEntry.GetProperty("waiterThreadCount").GetInt32());
-        Assert.Equal(2, lockEntry.GetProperty("poolWaiterThreadCount").GetInt32());
-        Assert.Equal(2, lockEntry.GetProperty("poolContentionCount").GetInt32());
+        Assert.Equal(2, lockEntry.GetProperty("workerWaiterThreadCount").GetInt32());
+        Assert.Equal(2, lockEntry.GetProperty("workerContentionCount").GetInt32());
     }
 
     [Fact]
-    public void Write_LockContendedOnlyByDedicatedThreadsReportsNoPoolWaiters()
+    public void Write_LockContendedOnlyByDedicatedThreadsReportsNoWorkerWaiters()
     {
         // The "two background threads contend all the time and I don't
         // care" case - it must be distinguishable at a glance from a lock
@@ -485,8 +485,8 @@ public class ContentionLockTimelineTests
         JsonElement lockEntry = document.RootElement.GetProperty("lockTimeline").GetProperty("locks")[0];
 
         Assert.Equal(2, lockEntry.GetProperty("waiterThreadCount").GetInt32());
-        Assert.Equal(0, lockEntry.GetProperty("poolWaiterThreadCount").GetInt32());
-        Assert.Equal(0, lockEntry.GetProperty("poolContentionCount").GetInt32());
+        Assert.Equal(0, lockEntry.GetProperty("workerWaiterThreadCount").GetInt32());
+        Assert.Equal(0, lockEntry.GetProperty("workerContentionCount").GetInt32());
     }
 
     [Fact]
