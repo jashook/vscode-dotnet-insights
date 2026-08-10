@@ -3,7 +3,11 @@ import * as vscode from 'vscode';
 
 import { renderAllocationSummaryTable } from "./AllocationSummaryRenderer";
 import { adaptivelyBucketTicks } from "./AllocationTicksBucketer";
+import { renderContentionView } from "./ContentionRenderer";
+import { renderCpuProfileView } from "./CpuProfileRenderer";
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
+import { renderEventOverviewTable } from "./EventOverviewRenderer";
+import { renderExceptionSummaryTable } from "./ExceptionSummaryRenderer";
 import { formatHumanDateTime, renderGcDetailTable } from "./GcDetailTableRenderer";
 import { computeAllocationAmountStats, computePauseTimeStats } from "./GcStatsCalculations";
 
@@ -22,7 +26,7 @@ import { computeAllocationAmountStats, computePauseTimeStats } from "./GcStatsCa
 // matters for shipped upgrades, where media/ changes but the URI otherwise
 // wouldn't - the same stale-cache trap DependencySetup.ts's version-marker
 // files already guard against for downloaded helper binaries.
-function mediaWebviewUri(webview: vscode.Webview, extensionUri: vscode.Uri, fileName: string): vscode.Uri {
+export function mediaWebviewUri(webview: vscode.Webview, extensionUri: vscode.Uri, fileName: string): vscode.Uri {
     const fileUri = vscode.Uri.joinPath(extensionUri, 'media', fileName);
     const webviewUri = webview.asWebviewUri(fileUri);
 
@@ -101,14 +105,26 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
     const detailTableHtml = renderGcDetailTable(gcs);
 
-    // "Heap Contents" (allocation-tick-based type ranking) is nettrace-only:
-    // .gcinfo output never sets allocationSummary at all (see
-    // GcJsonExporter.cs), and even for nettrace input a very short capture
-    // can legitimately have zero allocation ticks - both cases mean nothing
-    // to show, so the nav button/panel are omitted entirely rather than
-    // shown empty.
+    // Format-level (not per-file) gate: Overview/Heap Contents/Exceptions
+    // are architecturally unavailable for .gcinfo/XML input (that path
+    // never decodes anything beyond GC records - see GcJsonExporter.cs) -
+    // those three nav buttons stay fully ABSENT for gcinfo, same as today,
+    // not shown-disabled. GC itself is the only view gcinfo ever has, so it
+    // stays unconditionally enabled and default-active there too,
+    // unchanged. For nettrace input, all four buttons are always rendered;
+    // GC/Heap Contents/Exceptions are individually `disabled` (not omitted)
+    // when this particular capture has no events of that type - see
+    // hasGc/hasHeapContents/hasExceptions below.
+    const isNettrace = sourceFormat === "nettrace";
+
+    // "Heap Contents" (allocation-tick-based type ranking): even for
+    // nettrace input a very short capture can legitimately have zero
+    // allocation ticks - hasHeapContents (format AND data) still gates
+    // whether the (potentially large) ranked-table/drill-down HTML and
+    // JSON below are worth building at all; the button itself is always
+    // rendered for nettrace regardless, just disabled when this is false.
     const allocationSummary = gcData["allocationSummary"];
-    const hasHeapContents = sourceFormat === "nettrace" && allocationSummary !== null && allocationSummary !== undefined && allocationSummary["topTypes"] !== null && allocationSummary["topTypes"] !== undefined && allocationSummary["topTypes"].length > 0;
+    const hasHeapContents = isNettrace && allocationSummary !== null && allocationSummary !== undefined && allocationSummary["topTypes"] !== null && allocationSummary["topTypes"] !== undefined && allocationSummary["topTypes"].length > 0;
     const allocationSummaryHtml = hasHeapContents ? renderAllocationSummaryTable(allocationSummary) : "";
 
     // Ticks are bucketed (only when the raw count is large enough to
@@ -123,6 +139,53 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
         ? { ...allocationSummary, ticks: adaptivelyBucketTicks(allocationSummary["ticks"]) }
         : allocationSummary;
     const allocationSummaryJson = escapeJsonForInlineScript(hasHeapContents ? JSON.stringify(allocationSummaryForWebview) : "null");
+
+    // "Exceptions" (CLR ExceptionThrown_V1-based type ranking) - same
+    // reasoning as "Heap Contents" above (see ExceptionJsonExporter.cs).
+    const exceptionSummary = gcData["exceptionSummary"];
+    const hasExceptions = isNettrace && exceptionSummary !== null && exceptionSummary !== undefined && exceptionSummary["topTypes"] !== null && exceptionSummary["topTypes"] !== undefined && exceptionSummary["topTypes"].length > 0;
+    const exceptionSummaryHtml = hasExceptions ? renderExceptionSummaryTable(exceptionSummary) : "";
+    const exceptionSummaryJson = escapeJsonForInlineScript(hasExceptions ? JSON.stringify(exceptionSummary) : "null");
+
+    // GC tab: enabled only when this particular capture actually has GC
+    // events - a capture containing only exceptions (or, in principle,
+    // only allocation ticks with no completed GC) is real and now must
+    // render its GC tab as visibly present-but-disabled rather than an
+    // empty/broken chart view. gcinfo format's GC tab ignores this
+    // entirely (see isNettrace comment above) - always enabled there.
+    const hasGc = gcs.length > 0;
+
+    // "Overview" (total event count + a breakdown by every distinct event
+    // type actually present, not just GC/allocation/exception) is
+    // nettrace-only, same format-level reasoning as Heap Contents/
+    // Exceptions - .gcinfo/XML input never sets eventOverview at all (see
+    // GcJsonExporter.cs). Unlike those two, eventOverview is always
+    // meaningful whenever it's present (every capture has *some* events),
+    // so there's no data-emptiness check here - only the format gate.
+    const eventOverview = gcData["eventOverview"];
+    const hasOverview = isNettrace && eventOverview !== null && eventOverview !== undefined;
+    const eventOverviewHtml = hasOverview ? renderEventOverviewTable(eventOverview) : "";
+
+    // "Profile" (CPU sample-based flame graph + hot methods table) - same
+    // format-level/data-emptiness gating as Heap Contents/Exceptions above
+    // (see Cpu/CpuProfileJsonExporter.cs). cpuProfileJson carries the raw
+    // flameTree/methodNames data media/flameGraph.js needs to build the
+    // flame graph entirely client-side (see CpuProfileRenderer.ts's own
+    // header comment) - hotMethods is included too so the table can be
+    // resorted without a round trip, but flameGraph.js is the only reader
+    // that actually needs flameTree.
+    const cpuProfile = gcData["cpuProfile"];
+    const hasCpuProfile = isNettrace && cpuProfile !== null && cpuProfile !== undefined && cpuProfile["totalSampleCount"] !== null && cpuProfile["totalSampleCount"] !== undefined && cpuProfile["totalSampleCount"] > 0;
+    const cpuProfileHtml = hasCpuProfile ? renderCpuProfileView(cpuProfile) : "";
+    const cpuProfileJson = escapeJsonForInlineScript(hasCpuProfile ? JSON.stringify(cpuProfile) : "null");
+
+    // "Contention" (CLR Contention/Start + Stop event pairs) - same
+    // format-level/data-emptiness gating as Heap Contents/Exceptions above
+    // (see Contention/ContentionJsonExporter.cs).
+    const contentionSummary = gcData["contentionSummary"];
+    const hasContention = isNettrace && contentionSummary !== null && contentionSummary !== undefined && contentionSummary["totalContentionCount"] !== null && contentionSummary["totalContentionCount"] !== undefined && contentionSummary["totalContentionCount"] > 0;
+    const contentionHtml = hasContention ? renderContentionView(contentionSummary) : "";
+    const contentionSummaryJson = escapeJsonForInlineScript(hasContention ? JSON.stringify(contentionSummary) : "null");
 
     var totalNumbers = computePauseTimeStats(gcs);
 
@@ -294,6 +357,10 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const chartZoomScriptUri = mediaWebviewUri(webview, extensionUri, 'chartZoomHelper.js');
     const allocationScriptUri = mediaWebviewUri(webview, extensionUri, 'allocationStats.js');
     const drillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'drillDownStats.js');
+    const exceptionDrillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'exceptionDrillDownStats.js');
+    const cpuDrillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'cpuDrillDownStats.js');
+    const contentionDrillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'contentionDrillDownStats.js');
+    const flameGraphScriptUri = mediaWebviewUri(webview, extensionUri, 'flameGraph.js');
 
     const chartjs = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'chart.js', 'dist', 'Chart.min.js'));
 
@@ -394,19 +461,36 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <script type="application/json" id="gcCountsByGen">${gcCountsByGen}</script>
             <script type="application/json" id="totalTimeInEachGcJson">${totalTimeInEachGcJson}</script>
             <script type="application/json" id="allocationSummaryJson">${allocationSummaryJson}</script>
+            <script type="application/json" id="exceptionSummaryJson">${exceptionSummaryJson}</script>
+            <script type="application/json" id="cpuProfileJson">${cpuProfileJson}</script>
+            <script type="application/json" id="contentionSummaryJson">${contentionSummaryJson}</script>
 
-            <!-- High-level view switcher (GC / Heap Contents / eventually
-                 Profile) - browser-tab style, sitting above the file name so
-                 it doesn't consume horizontal width from the content below
-                 the way a left-nav sidebar would. -->
+            <!-- High-level view switcher (Overview / Profile / GC / Heap
+                 Contents / Exceptions) - browser-tab style, sitting above
+                 the file name so it doesn't consume horizontal width from
+                 the content below the way a left-nav sidebar would. For
+                 nettrace input, Overview is always the default active tab
+                 (even when GC has data) and every other tab stays visible-
+                 but-disabled when this particular capture has none of that
+                 event type, rather than disappearing - lets a user see at
+                 a glance what kinds of events this capture does/doesn't
+                 have. gcinfo format only ever has the one GC tab,
+                 unconditionally enabled and default-active, exactly as
+                 before. -->
             <div class="viewTabBar">
-                <button class="viewNavButton active" data-view="gc">GC</button>
-                ${hasHeapContents ? `<button class="viewNavButton" data-view="heapContents">Heap Contents</button>` : ``}
+                ${isNettrace ? `<button class="viewNavButton active" data-view="overview">Overview</button>` : ``}
+                ${isNettrace ? `<button class="viewNavButton" data-view="profile"${hasCpuProfile ? `` : ` disabled title="No CPU samples in this capture"`}>Profile</button>` : ``}
+                <button class="viewNavButton${isNettrace ? `` : ` active`}" data-view="gc"${isNettrace && !hasGc ? ` disabled title="No GC events in this capture"` : ``}>GC</button>
+                ${isNettrace ? `<button class="viewNavButton" data-view="heapContents"${hasHeapContents ? `` : ` disabled title="No allocation events in this capture"`}>Heap Contents</button>` : ``}
+                ${isNettrace ? `<button class="viewNavButton" data-view="exceptions"${hasExceptions ? `` : ` disabled title="No exception events in this capture"`}>Exceptions</button>` : ``}
+                ${isNettrace ? `<button class="viewNavButton" data-view="contention"${hasContention ? `` : ` disabled title="No contention events in this capture"`}>Contention</button>` : ``}
             </div>
 
             <h2 class="divider">${gcData["processName"]}</h2>
 
-            <div id="view-gc" class="viewPanel active">
+            ${isNettrace ? `<div id="view-overview" class="viewPanel active">${eventOverviewHtml}</div>` : ``}
+
+            <div id="view-gc" class="viewPanel${isNettrace ? `` : ` active`}">
 
             <input type="file" id="heapSnapshotInput" accept=".json" style="display:none">
 
@@ -435,7 +519,16 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
             <div id="timeSummary">Allocation Amount by Generation</div>
 
-            <div class="summaryGcDiv">
+            <!-- id lets rebuildGcSummaryTiles (snapshotGcStats.js) find and
+                 fully rebuild this block's innerHTML after a GC Detailed
+                 table row is hidden, mirroring the exact template below with
+                 recomputed numbers (a JS port of GcStatsCalculations.ts's
+                 computeAllocationAmountStats, same "preserved as-is"
+                 lexicographic-sort median quirk that file documents) - same
+                 "recompute -> rebuild whole block" discipline
+                 updateOneRankedTypesTable already uses for the Allocation
+                 ranked-types table. -->
+            <div class="summaryGcDiv" id="allocationAmountSummaryGcDiv">
                 <div class="total">
                     <div>Total</div>
                     <div>Total<span>${allocTotal} ${totalTotalValue}</span></div>
@@ -480,7 +573,10 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
             <div id="timeSummary">Time Spent by Generation</div>
 
-            <div class="summaryGcDiv time">
+            <!-- Same rebuild-in-place convention as
+                 allocationAmountSummaryGcDiv above, driven by a JS port of
+                 computePauseTimeStats instead. -->
+            <div class="summaryGcDiv time" id="timeSpentSummaryGcDiv">
                 <div class="total">
                     <div>Total</div>
                     <div>Count<span>${timeinsideEachGc.length}</span></div>
@@ -584,10 +680,31 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <!-- Same lazy-inject pattern as detailTableHtml above - constructed
                  only on the "Heap Contents" nav button's first click. -->
             <span style="display:none" id="allocationSummaryHtml"><!--${allocationSummaryHtml}--></span>` : ``}
+            ${hasExceptions ? `<div id="view-exceptions" class="viewPanel"></div>
+            <!-- Same lazy-inject pattern as allocationSummaryHtml above -
+                 constructed only on the "Exceptions" nav button's first
+                 click. -->
+            <span style="display:none" id="exceptionSummaryHtml"><!--${exceptionSummaryHtml}--></span>` : ``}
+            ${hasContention ? `<div id="view-contention" class="viewPanel"></div>
+            <!-- Same lazy-inject pattern as exceptionSummaryHtml above -
+                 constructed only on the "Contention" nav button's first
+                 click. -->
+            <span style="display:none" id="contentionHtml"><!--${contentionHtml}--></span>` : ``}
+            ${hasCpuProfile ? `<div id="view-profile" class="viewPanel"></div>
+            <!-- Same lazy-inject pattern as allocationSummaryHtml above -
+                 constructed only on the "Profile" nav button's first click.
+                 The flame graph itself still isn't built at that point -
+                 it needs cpuProfileJson (see media/flameGraph.js), not just
+                 this HTML - see snapshotGcStats.js's view switcher. -->
+            <span style="display:none" id="cpuProfileHtml"><!--${cpuProfileHtml}--></span>` : ``}
 
             <script nonce="${nonce}" src="${chartZoomScriptUri}"></script>
             <script nonce="${nonce}" src="${allocationScriptUri}"></script>
             <script nonce="${nonce}" src="${drillDownScriptUri}"></script>
+            <script nonce="${nonce}" src="${exceptionDrillDownScriptUri}"></script>
+            <script nonce="${nonce}" src="${cpuDrillDownScriptUri}"></script>
+            <script nonce="${nonce}" src="${contentionDrillDownScriptUri}"></script>
+            <script nonce="${nonce}" src="${flameGraphScriptUri}"></script>
             <script nonce="${nonce}" src="${scriptUri}"></script>
         </body>
     </html>`;

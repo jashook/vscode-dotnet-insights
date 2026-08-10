@@ -27,6 +27,8 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
+using DotnetInsights.NetTrace.Progress;
+
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -94,7 +96,10 @@ public static class GcEventProjector
     // size, so this stays generous.
     private const int MaxPendingHeapHistoryGcs = 1000;
 
-    public static List<GcEvent> Project(List<EventRecord> events, int pointerSize, long qpcFrequency, DateTime referenceUtc, long referenceQpc)
+    // onProgress: this phase's own 0.0-1.0 completion fraction - null (the
+    // default) for every caller except Program.cs's --json mode. See
+    // NettraceFile.Read's own comment on this same convention.
+    public static List<GcEvent> Project(List<EventRecord> events, int pointerSize, long qpcFrequency, DateTime referenceUtc, long referenceQpc, Action<double> onProgress = null)
     {
         Dictionary<int, GcEvent> gcsById = new Dictionary<int, GcEvent>();
         Dictionary<int, long> startTimeStampById = new Dictionary<int, long>();
@@ -136,6 +141,11 @@ public static class GcEventProjector
         Span<EventRecord> eventsSpan = CollectionsMarshal.AsSpan(events);
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
+            if (onProgress != null && (eventIndex & ProgressReporter.IndexProgressMask) == 0)
+            {
+                onProgress((double)eventIndex / eventsSpan.Length);
+            }
+
             ref readonly EventRecord record = ref eventsSpan[eventIndex];
 
             if (record.ProviderName != ClrProviderName)

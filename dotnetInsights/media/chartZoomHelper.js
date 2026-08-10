@@ -78,6 +78,122 @@ function createZoomSelectionPlugin(dragStateHolder) {
     };
 }
 
+// Chart.js 2.x plugin (same registration shape as createZoomSelectionPlugin
+// above - see that function's own comment on why state lives in a shared
+// holder object rather than a closure) that draws a vertical crosshair line
+// following the mouse across the chart area, with an optional small value
+// label - lets a reader line up a point on the chart against its exact
+// x-axis value without having to rely on Chart.js's own point-proximity
+// tooltip, which only fires near an actual data point, not anywhere along
+// the line.
+function createCrosshairPlugin(crosshairStateHolder) {
+    return {
+        afterDraw: function (chartInstance) {
+            var crosshairState = crosshairStateHolder.current;
+            if (!crosshairState) {
+                return;
+            }
+
+            var ctx = chartInstance.ctx;
+            var area = chartInstance.chartArea;
+            var pixelX = crosshairState.pixelX;
+
+            ctx.save();
+            ctx.strokeStyle = "rgba(72, 83, 136, 0.6)";
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 3]);
+            ctx.beginPath();
+            ctx.moveTo(pixelX, area.top);
+            ctx.lineTo(pixelX, area.bottom);
+            ctx.stroke();
+
+            if (crosshairState.label) {
+                // Drawn INSIDE the top of the chart area, not above it -
+                // Chart.js doesn't reserve extra margin above chartArea.top
+                // for this plugin's own use, so a label placed above it risks
+                // getting clipped by the canvas's own bounds.
+                ctx.setLineDash([]);
+                ctx.font = "11px sans-serif";
+                var textWidth = ctx.measureText(crosshairState.label).width;
+                var labelLeft = Math.min(Math.max(pixelX - (textWidth / 2), area.left), area.right - textWidth);
+
+                ctx.fillStyle = "rgba(72, 83, 136, 0.85)";
+                ctx.fillRect(labelLeft - 4, area.top + 2, textWidth + 8, 16);
+                ctx.fillStyle = "white";
+                ctx.textBaseline = "middle";
+                ctx.fillText(crosshairState.label, labelLeft, area.top + 10);
+            }
+
+            ctx.restore();
+        }
+    };
+}
+
+// Attaches crosshair-follow behavior to one Chart.js instance's canvas -
+// mirrors attachDragToZoom's own redraw-scheduling shape, but tracks plain
+// hover (mousemove/mouseleave on the canvas itself) rather than a drag, so
+// it doesn't need window-level listeners the way a drag that can leave the
+// canvas bounds mid-gesture does.
+//   chart/canvasElement    - same as attachDragToZoom.
+//   crosshairStateHolder   - same holder object passed to
+//                            createCrosshairPlugin for this chart.
+//   pixelToMSecFn(chart, pixelX) - same contract as attachDragToZoom's own
+//                            parameter of the same name.
+//   formatLabelFn(msec)    - optional; formats the hovered value into the
+//                            small label text drawn next to the line. Omit
+//                            (or pass a falsy value) to draw just the line.
+//
+// Returns { detach() } - same reasoning as attachDragToZoom's own.
+function attachCrosshair(chart, canvasElement, crosshairStateHolder, pixelToMSecFn, formatLabelFn) {
+    var redrawScheduled = false;
+
+    function scheduleRedraw() {
+        if (redrawScheduled) {
+            return;
+        }
+        redrawScheduled = true;
+        window.requestAnimationFrame(function () {
+            redrawScheduled = false;
+            chart.draw();
+        });
+    }
+
+    function clearCrosshair() {
+        if (crosshairStateHolder.current) {
+            crosshairStateHolder.current = null;
+            scheduleRedraw();
+        }
+    }
+
+    function onMouseMove(event) {
+        var rect = canvasElement.getBoundingClientRect();
+        var area = chart.chartArea;
+        var pixelX = event.clientX - rect.left;
+        var pixelY = event.clientY - rect.top;
+
+        if (!area || pixelX < area.left || pixelX > area.right || pixelY < area.top || pixelY > area.bottom) {
+            clearCrosshair();
+            return;
+        }
+
+        crosshairStateHolder.current = {
+            pixelX: pixelX,
+            label: formatLabelFn ? formatLabelFn(pixelToMSecFn(chart, pixelX)) : null
+        };
+        scheduleRedraw();
+    }
+
+    canvasElement.addEventListener("mousemove", onMouseMove);
+    canvasElement.addEventListener("mouseleave", clearCrosshair);
+
+    return {
+        detach: function () {
+            canvasElement.removeEventListener("mousemove", onMouseMove);
+            canvasElement.removeEventListener("mouseleave", clearCrosshair);
+        }
+    };
+}
+
 // Attaches drag-to-select zoom behavior to one Chart.js instance's canvas.
 //   chart            - the Chart.js instance already bound to canvasElement.
 //   canvasElement    - that same chart's <canvas>.

@@ -43,6 +43,10 @@ export function computeAllocationAmountStats(gcs: any[], generationToUse?: numbe
         allocationsBetweenGc.push(newAllocAmount);
     }
 
+    if (allocationsBetweenGc.length == 0) {
+        return [[], [0, 0, 0, 0, 0]];
+    }
+
     let maxAllocationAmountBetweenGcs = 0;
     let lowestAllocationAmountBetweenGcs = allocationsBetweenGc[0];
 

@@ -20,7 +20,12 @@ using System.Diagnostics;
 using System.IO;
 
 using DotnetInsights.NetTrace;
+using DotnetInsights.NetTrace.Contention;
+using DotnetInsights.NetTrace.Cpu;
+using DotnetInsights.NetTrace.Exceptions;
 using DotnetInsights.NetTrace.Gc;
+using DotnetInsights.NetTrace.Overview;
+using DotnetInsights.NetTrace.Progress;
 using DotnetInsights.NetTrace.Rundown;
 
 if (args.Length < 1)
@@ -34,7 +39,53 @@ string filePath = args[0];
 Stopwatch totalStopwatch = Stopwatch.StartNew();
 Stopwatch phaseStopwatch = Stopwatch.StartNew();
 
-NettraceFile file = NettraceFile.Read(filePath);
+// --json parsing is hoisted here (was previously read only after the read
+// phase completed) specifically so progress reporting - see
+// Progress/ProgressReporter.cs - can be gated on "are we in --json mode"
+// from the very first byte read. Nothing below this point behaves any
+// differently for the plain CLI/--dump-fields path than it did before -
+// isJsonMode being false means ProgressReporter.Enable() is simply never
+// called, and every ProgressReporter method is a no-op until it is (see
+// that class's own header comment) - so this whole feature is provably
+// invisible to that path, not just "happens not to matter" by omission.
+int jsonArgIndex = Array.IndexOf(args, "--json");
+bool isJsonMode = jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length;
+string jsonOutputPath = isJsonMode ? args[jsonArgIndex + 1] : null;
+// Sits next to jsonOutputPath by a fixed naming convention rather than
+// being embedded as a path in the JSON itself - the caller (the VS Code
+// extension, see DotnetInsightsNettraceEditor.ts) already knows
+// jsonOutputPath and can derive this the same way, so nothing needs to
+// round-trip a filesystem path through the JSON payload.
+string ticksBinaryPath = isJsonMode ? Path.ChangeExtension(jsonOutputPath, ".ticks.bin") : null;
+
+if (isJsonMode)
+{
+    ProgressReporter.Enable();
+}
+
+ProgressRange readRange = ProgressPlan.PlanRead();
+ProgressReporter.BeginPhase("Reading trace file", readRange.Start, readRange.End);
+// Pre-touches Console.Error's own lazy init before the no-GC region just
+// below - see Warmup's own comment for why this specific ordering matters.
+ProgressReporter.Warmup();
+
+// Suppress GC for the read phase only - see ReadPhaseGcSuppression.cs for
+// the full measured rationale (that phase allocates ~2.6x the file size and
+// retains essentially all of it, so its collections reclaim almost nothing
+// while still paying full mark/promote cost). Declines on its own for small
+// inputs or when the machine can't back a full-read budget, so this is safe
+// to call unconditionally.
+long noGcBudgetBytes = ReadPhaseGcSuppression.ComputeBudgetBytes(new FileInfo(filePath).Length, GC.GetGCMemoryInfo().TotalAvailableMemoryBytes);
+bool suppressedGcForRead = ReadPhaseGcSuppression.TryStart(noGcBudgetBytes);
+
+NettraceFile file = NettraceFile.Read(filePath, ProgressReporter.ReportFraction);
+
+if (suppressedGcForRead)
+{
+    ReadPhaseGcSuppression.End();
+}
+
+ProgressReporter.CompletePhase();
 
 long readMs = phaseStopwatch.ElapsedMilliseconds;
 phaseStopwatch.Restart();
@@ -46,36 +97,64 @@ phaseStopwatch.Restart();
 // inflated every event's QPC by ~2x, not an unreliable SyncTimeQPC field).
 long referenceQpc = file.Header.SyncTimeQPC;
 
-int jsonArgIndex = Array.IndexOf(args, "--json");
-if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
+if (isJsonMode)
 {
-    string jsonOutputPath = args[jsonArgIndex + 1];
-    // Sits next to jsonOutputPath by a fixed naming convention rather than
-    // being embedded as a path in the JSON itself - the caller (the VS Code
-    // extension, see DotnetInsightsNettraceEditor.ts) already knows
-    // jsonOutputPath and can derive this the same way, so nothing needs to
-    // round-trip a filesystem path through the JSON payload.
-    string ticksBinaryPath = Path.ChangeExtension(jsonOutputPath, ".ticks.bin");
+    // Computed now (not before Read) since it needs file.Events.Count,
+    // known only once the read phase actually finishes - see
+    // Progress/ProgressPlan.cs's own "stage 1" comment.
+    ProgressRange[] projectorRanges = ProgressPlan.PlanProjectorPhases();
 
-    List<GcEvent> gcEventsForJson = GcEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);
+    ProgressReporter.BeginPhase("Projecting GC events", projectorRanges[0].Start, projectorRanges[0].End);
+    List<GcEvent> gcEventsForJson = GcEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc, ProgressReporter.ReportFraction);
+    ProgressReporter.CompletePhase();
     long gcProjectMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 
-    List<AllocationEvent> allocationEventsForJson = AllocationEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);
+    ProgressReporter.BeginPhase("Projecting allocation events", projectorRanges[1].Start, projectorRanges[1].End);
+    List<AllocationEvent> allocationEventsForJson = AllocationEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc, ProgressReporter.ReportFraction);
+    ProgressReporter.CompletePhase();
     long allocationProjectMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 
-    MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, referenceQpc);
+    ProgressReporter.BeginPhase("Projecting exception events", projectorRanges[2].Start, projectorRanges[2].End);
+    List<ExceptionEvent> exceptionEventsForJson = ExceptionEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc, ProgressReporter.ReportFraction);
+    ProgressReporter.CompletePhase();
+    long exceptionProjectMs = phaseStopwatch.ElapsedMilliseconds;
+    phaseStopwatch.Restart();
+
+    ProgressReporter.BeginPhase("Building event overview", projectorRanges[3].Start, projectorRanges[3].End);
+    EventOverview eventOverviewForJson = EventOverviewBuilder.Build(file.Events, ProgressReporter.ReportFraction);
+    ProgressReporter.CompletePhase();
+    long eventOverviewMs = phaseStopwatch.ElapsedMilliseconds;
+    phaseStopwatch.Restart();
+
+    ProgressReporter.BeginPhase("Building method symbol table", projectorRanges[4].Start, projectorRanges[4].End);
+    MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, referenceQpc, ProgressReporter.ReportFraction);
+    ProgressReporter.CompletePhase();
     long symbolTableMs = phaseStopwatch.ElapsedMilliseconds;
+    phaseStopwatch.Restart();
+
+    ProgressReporter.BeginPhase("Projecting CPU samples", projectorRanges[5].Start, projectorRanges[5].End);
+    List<SampleEvent> sampleEventsForJson = SampleProfileEventProjector.Project(file.Events, file.Header.QPCFrequency, referenceQpc, ProgressReporter.ReportFraction);
+    ProgressReporter.CompletePhase();
+    long sampleProjectMs = phaseStopwatch.ElapsedMilliseconds;
+    phaseStopwatch.Restart();
+
+    ProgressReporter.BeginPhase("Projecting contention events", projectorRanges[6].Start, projectorRanges[6].End);
+    List<ContentionEvent> contentionEventsForJson = ContentionEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc, ProgressReporter.ReportFraction);
+    ProgressReporter.CompletePhase();
+    long contentionProjectMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 
     int totalEventCount = file.Events.Count;
 
     // Nothing past this point ever reads file/file.Events again -
-    // GcEventProjector.Project, AllocationEventProjector.Project, and
-    // MethodSymbolTable.Build above all just iterate it and hand back
-    // brand-new derived structures; none of them stash a reference to the
-    // list itself. But `file` is still a GC root for the rest of this
+    // GcEventProjector.Project, AllocationEventProjector.Project,
+    // ExceptionEventProjector.Project, EventOverviewBuilder.Build,
+    // MethodSymbolTable.Build, SampleProfileEventProjector.Project, and
+    // ContentionEventProjector.Project above all just iterate it and hand
+    // back brand-new derived structures; none of them stash a reference to
+    // the list itself. But `file` is still a GC root for the rest of this
     // method's stack frame regardless, so without dropping it here, every
     // gen2 GC during the jsonExport call below still has to trace
     // file.Events's full backing array - a real 5-minute capture holds
@@ -90,16 +169,44 @@ if (jsonArgIndex >= 0 && jsonArgIndex + 1 < args.Length)
 
     string processName = Path.GetFileNameWithoutExtension(filePath);
 
-    GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, symbolTable, processName, ticksBinaryPath);
+    // jsonExport's own progress reporting (5 sub-writer phases) is driven
+    // entirely from inside GcJsonExporter.WriteToFile itself - see that
+    // method's own comment for why it calls ProgressReporter directly
+    // rather than taking an onProgress parameter like every phase above.
+    JsonExportTiming jsonExportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, symbolTable, processName, ticksBinaryPath);
     long jsonExportMs = phaseStopwatch.ElapsedMilliseconds;
 
     long totalMs = totalStopwatch.ElapsedMilliseconds;
 
+    // GC.GetTotalPauseDuration() is this PROCESS's own real, cumulative
+    // stop-the-world pause time (a real .NET API, not sampled/estimated) -
+    // reported alongside the phase breakdown specifically so "why did this
+    // run take longer" can be answered directly (was more of it spent
+    // paused in GC?) without needing a separate dotnet-trace attach, which
+    // has its own confound: attach latency (the trace only starts once the
+    // diagnostic pipe handshake completes, arbitrarily late relative to
+    // process start) can silently miss whichever GCs happen earliest in a
+    // given run, making cross-run GC-time comparisons via two independent
+    // traces unreliable in a way this in-process counter isn't.
+    //
+    // jsonExport's own (alloc=..,exc=..,cpu=..,cont=..,gc=..) breakdown is
+    // permanent, not throwaway, instrumentation - added specifically so
+    // Progress/ProgressPlan.cs's own jsonExport sub-writer weight constants
+    // can be recalibrated against a real capture with a single CLI run
+    // (read this line) rather than needing scaffolding re-added each time -
+    // see that file's own header comment.
     Console.Error.WriteLine(
         $"Timing: read={readMs}ms ({totalEventCount} events) " +
         $"gcProject={gcProjectMs}ms ({gcEventsForJson.Count} GCs) " +
         $"allocationProject={allocationProjectMs}ms ({allocationEventsForJson.Count} ticks) " +
-        $"symbolTable={symbolTableMs}ms jsonExport={jsonExportMs}ms total={totalMs}ms");
+        $"exceptionProject={exceptionProjectMs}ms ({exceptionEventsForJson.Count} exceptions) " +
+        $"eventOverview={eventOverviewMs}ms ({eventOverviewForJson.EventTypes.Count} distinct event types) " +
+        $"symbolTable={symbolTableMs}ms " +
+        $"sampleProject={sampleProjectMs}ms ({sampleEventsForJson.Count} samples) " +
+        $"contentionProject={contentionProjectMs}ms ({contentionEventsForJson.Count} contentions) " +
+        $"jsonExport={jsonExportMs}ms(alloc={jsonExportTiming.AllocationMs}ms,exc={jsonExportTiming.ExceptionMs}ms,cpu={jsonExportTiming.CpuMs}ms,cont={jsonExportTiming.ContentionMs}ms,gc={jsonExportTiming.GcMs}ms) " +
+        $"total={totalMs}ms " +
+        $"gcPause={GC.GetTotalPauseDuration().TotalMilliseconds:F1}ms gcCounts=[{GC.CollectionCount(0)},{GC.CollectionCount(1)},{GC.CollectionCount(2)}]");
 
     return;
 }
@@ -194,6 +301,32 @@ if (Environment.GetEnvironmentVariable("NETTRACE_DEBUG") != null)
     foreach (KeyValuePair<int, int> kv in eventIdCounts)
     {
         Console.WriteLine($"  EventId={kv.Key} count={kv.Value} version={eventIdVersion[kv.Key]} payloadLen={eventIdPayloadLen[kv.Key]}");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("== Microsoft-DotNETCore-SampleProfiler EventId histogram (debug) ==");
+
+    Dictionary<int, int> sampleEventIdCounts = new Dictionary<int, int>();
+    Dictionary<int, int> sampleEventIdVersion = new Dictionary<int, int>();
+    Dictionary<int, int> sampleEventIdPayloadLen = new Dictionary<int, int>();
+    Dictionary<int, int> sampleEventIdStackLen = new Dictionary<int, int>();
+    foreach (EventRecord record in file.Events)
+    {
+        if (record.ProviderName != "Microsoft-DotNETCore-SampleProfiler")
+        {
+            continue;
+        }
+
+        sampleEventIdCounts.TryGetValue(record.EventId, out int sampleCount);
+        sampleEventIdCounts[record.EventId] = sampleCount + 1;
+        sampleEventIdVersion[record.EventId] = record.Version;
+        sampleEventIdPayloadLen[record.EventId] = record.PayloadLength;
+        sampleEventIdStackLen[record.EventId] = record.Stack.Length;
+    }
+
+    foreach (KeyValuePair<int, int> kv in sampleEventIdCounts)
+    {
+        Console.WriteLine($"  EventId={kv.Key} count={kv.Value} version={sampleEventIdVersion[kv.Key]} payloadLen={sampleEventIdPayloadLen[kv.Key]} stackLen(lastSeen)={sampleEventIdStackLen[kv.Key]}");
     }
 }
 

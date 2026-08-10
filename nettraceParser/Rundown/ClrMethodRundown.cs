@@ -64,28 +64,66 @@ public class ClrMethodRecord
     public long MethodSize;
     public string DisplayName;
 
-    // Fixed fields (pointer-aware via PayloadReader.HostOffset, same
-    // technique Gc/ClrGcPerHeapHistory.cs's ClrGcHeap.Decode already uses):
-    // MethodID (pointer), ModuleID (pointer), MethodStartAddress (pointer),
-    // MethodSize (Int32), MethodToken (Int32), MethodFlags (Int32), then
-    // three null-terminated UTF-16 strings: Namespace, MethodName, Signature.
-    // Same payload shape for MethodLoadVerbose/MethodUnloadVerbose (regular
-    // CLR provider) as MethodDCStartVerbose (Rundown provider) - confirmed
-    // against microsoft/perfview's ClrTraceEventParser.cs: both are the
-    // MethodLoadUnloadVerboseTraceData class, just registered under
-    // different EventIDs/providers.
-    public static ClrMethodRecord Decode(PayloadReader reader)
+    // Every field's byte offset (pointer-aware via PayloadReader.HostOffset,
+    // same technique Gc/ClrGcPerHeapHistory.cs's ClrGcHeap.Decode already
+    // uses): MethodID (pointer), ModuleID (pointer), MethodStartAddress
+    // (pointer), MethodSize (Int32), MethodToken (Int32), MethodFlags
+    // (Int32), then three null-terminated UTF-16 strings: Namespace,
+    // MethodName, Signature. Same payload shape for MethodLoadVerbose/
+    // MethodUnloadVerbose (regular CLR provider) as MethodDCStartVerbose
+    // (Rundown provider) - confirmed against microsoft/perfview's
+    // ClrTraceEventParser.cs: both are the MethodLoadUnloadVerboseTraceData
+    // class, just registered under different EventIDs/providers.
+    //
+    // Byte offset immediately after the three fixed pointer/Int32 fields
+    // (MethodID/ModuleID/MethodStartAddress/MethodSize/MethodToken/
+    // MethodFlags) - where the first of the three trailing strings starts.
+    // Shared by DecodeHeader/DecodeDisplayName/Decode so the "is this
+    // payload even long enough" bounds check stays in exactly one place
+    // rather than three independently-maintained copies.
+    private static int StringsStart(PayloadReader reader)
     {
-        int stringsStart = reader.HostOffset(24, 3);
-        if (reader.Length < stringsStart)
+        return reader.HostOffset(24, 3);
+    }
+
+    // Cheap half: MethodID/MethodStartAddress/MethodSize only, no string
+    // decode at all - see MethodSymbolTable.cs's own comment on why this
+    // matters (a real capture's method-rundown volume is dominated by
+    // methods a resolved stack frame never actually looks up, so eagerly
+    // paying for the string half of every single one is pure waste for the
+    // overwhelming majority). Same bounds check as the full Decode below
+    // (requires the whole record, strings included, to be present) so
+    // "which records are considered valid at all" stays identical between
+    // the header-only and full decode paths - a truncated record that
+    // would have failed Decode entirely still fails here, rather than
+    // silently admitting a range with well-formed header fields but
+    // unreadable string data.
+    public static bool DecodeHeader(PayloadReader reader, out long methodId, out long methodStartAddress, out long methodSize)
+    {
+        if (reader.Length < StringsStart(reader))
         {
-            return null;
+            methodId = 0;
+            methodStartAddress = 0;
+            methodSize = 0;
+            return false;
         }
 
-        ClrMethodRecord method = new ClrMethodRecord();
-        method.MethodID = reader.GetAddressAt(reader.HostOffset(0, 0));
-        method.MethodStartAddress = reader.GetAddressAt(reader.HostOffset(8, 2));
-        method.MethodSize = reader.GetInt32At(reader.HostOffset(12, 3));
+        methodId = reader.GetAddressAt(reader.HostOffset(0, 0));
+        methodStartAddress = reader.GetAddressAt(reader.HostOffset(8, 2));
+        methodSize = reader.GetInt32At(reader.HostOffset(12, 3));
+        return true;
+    }
+
+    // Expensive half: the two-string decode+join DecodeHeader deliberately
+    // skips. Callers must already know reader's payload is long enough (a
+    // successful prior DecodeHeader call against the SAME payload already
+    // proved this, since both share the identical StringsStart bounds
+    // check) - MethodSymbolTable.cs only ever calls this lazily, against a
+    // (PayloadBuffer, PayloadOffset, PayloadLength) triple it only stored
+    // in the first place because DecodeHeader already succeeded for it.
+    public static string DecodeDisplayName(PayloadReader reader)
+    {
+        int stringsStart = StringsStart(reader);
 
         string methodNamespace = reader.GetUnicodeStringAt(stringsStart);
         int methodNameOffset = reader.SkipUnicodeString(stringsStart);
@@ -96,7 +134,29 @@ public class ClrMethodRecord
         // sufficient to disambiguate real BCL/user methods in the drill
         // down table, and skipping it avoids reading past a truncated
         // payload for no benefit.
-        method.DisplayName = string.IsNullOrEmpty(methodNamespace) ? methodName : $"{methodNamespace}.{methodName}";
+        return string.IsNullOrEmpty(methodNamespace) ? methodName : $"{methodNamespace}.{methodName}";
+    }
+
+    // Full decode (header + DisplayName together) - kept for callers that
+    // want the whole record in one call (tests, and any one-off decode not
+    // on MethodSymbolTable's hot Build/Resolve path, which uses
+    // DecodeHeader/DecodeDisplayName separately instead - see their own
+    // comments for why).
+    public static ClrMethodRecord Decode(PayloadReader reader)
+    {
+        long methodId;
+        long methodStartAddress;
+        long methodSize;
+        if (!DecodeHeader(reader, out methodId, out methodStartAddress, out methodSize))
+        {
+            return null;
+        }
+
+        ClrMethodRecord method = new ClrMethodRecord();
+        method.MethodID = methodId;
+        method.MethodStartAddress = methodStartAddress;
+        method.MethodSize = methodSize;
+        method.DisplayName = DecodeDisplayName(reader);
 
         return method;
     }

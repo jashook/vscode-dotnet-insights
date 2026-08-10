@@ -136,13 +136,18 @@ function renderTypeBreakdownPanel(summary: any, scope: string, isActive: boolean
     const distinctTypeCount = summary["distinctTypeCount"];
     const totalTickCount = summary["totalTickCount"];
 
+    // Total/Distinct Types tile ids let a row-hide toggle
+    // (updateOneRankedTypesTable in snapshotGcStats.js) rewrite these two
+    // numbers after hiding a type - Ticks is left unchanged (a tick count
+    // isn't a "share of the total" figure the way bytes/distinct-type-count
+    // are, so hiding a type shouldn't change it).
     const summaryTilesHtml = `
         <div class="summaryGcDiv">
             <div class="total">
                 <div>Sampled Allocations${scope === "loh" ? " (LOH only)" : ""}</div>
-                <div>Total<span>${formatMb(totalSampledBytes / mb)} mb</span></div>
+                <div>Total<span id="allocationTotalTile-${scope}">${formatMb(totalSampledBytes / mb)} mb</span></div>
                 <div>Ticks<span>${totalTickCount}</span></div>
-                <div>Distinct Types<span>${distinctTypeCount}</span></div>
+                <div>Distinct Types<span id="allocationDistinctTypesTile-${scope}">${distinctTypeCount}</span></div>
             </div>
         </div>`;
 
@@ -177,10 +182,17 @@ function renderTypeBreakdownPanel(summary: any, scope: string, isActive: boolean
         // there's no accurate zoomed-range figure to show there; hiding
         // avoids showing stale whole-capture numbers next to a freshly
         // zoomed Bytes/% figure in the same row.
-        rows += `<tr class="typeRow" data-type-index="${index}" data-scope="${scope}"><td>${tdTypeName}</td><td>${tdTotalBytes}</td><td>${tdPercent}</td><td class="ticksOnlyColumn">${tdTickCount}</td><td class="ticksOnlyColumn">${tdSmallCount}</td><td class="ticksOnlyColumn">${tdLargeCount}</td><td class="ticksOnlyColumn">${tdPinnedCount}</td></tr>`;
+        // rowHideBtn is its own dedicated first cell rather than reusing
+        // the Type Name cell - this whole row is a click-navigate target
+        // (onTypeDrillDownClick, wired on .typeRow), so a hide button
+        // sharing that cell would fire both a hide AND a drill-down
+        // navigation on the same click. snapshotGcStats.js's delegated
+        // click handler checks .rowHideBtn (with stopPropagation) before
+        // its .typeRow fallthrough.
+        rows += `<tr class="typeRow" data-type-index="${index}" data-scope="${scope}"><td class="rowHideColumn"><button class="rowHideBtn" type="button" title="Hide this row">&#10005;</button></td><td>${tdTypeName}</td><td>${tdTotalBytes}</td><td>${tdPercent}</td><td class="ticksOnlyColumn">${tdTickCount}</td><td class="ticksOnlyColumn">${tdSmallCount}</td><td class="ticksOnlyColumn">${tdLargeCount}</td><td class="ticksOnlyColumn">${tdPinnedCount}</td></tr>`;
     }
 
-    const header = `<tr class="tableHeader"><th>Type Name</th><th>Total Bytes (mb)</th><th>% of Sampled</th><th class="ticksOnlyColumn">Tick Count</th><th class="ticksOnlyColumn">Small</th><th class="ticksOnlyColumn">Large</th><th class="ticksOnlyColumn">Pinned</th></tr>`;
+    const header = `<tr class="tableHeader"><th class="rowHideColumn"></th><th>Type Name</th><th>Total Bytes (mb)</th><th>% of Sampled</th><th class="ticksOnlyColumn">Tick Count</th><th class="ticksOnlyColumn">Small</th><th class="ticksOnlyColumn">Large</th><th class="ticksOnlyColumn">Pinned</th></tr>`;
 
     // id lets snapshotGcStats.js's updateRankedTypesTables find and rebuild
     // this table's rows on every zoom change, regardless of whether the
@@ -193,13 +205,22 @@ function renderTypeBreakdownPanel(summary: any, scope: string, isActive: boolean
     // first-column values (GC numbers) and shouldn't get that treatment.
     const tableHtml = `<div class="detailTable allocationTypeTable"><table id="allocationTypeTable-${scope}">${header}${rows}</table></div>`;
 
+    // Hidden until at least one row in this scope's table is hidden - same
+    // allocationZoomStatus idiom as every other hide-status bar on this
+    // page, scoped per "all"/"loh" the same way the table/tiles above are.
+    const hideStatusHtml = `
+        <div class="allocationZoomStatus" id="allocationTypeHideStatus-${scope}" style="display:none">
+            <span class="allocationZoomStatusLabel" id="allocationTypeHideStatusLabel-${scope}"></span>
+            <button class="resetZoomButton" data-alloc-showall-scope="${scope}">Show all</button>
+        </div>`;
+
     // snapshotGcStats.js finds this canvas by its scoped id and renders into
     // it - both the "all" and "loh" charts are created once, up front (not
     // lazily on toggle), so switching the All Types/LOH Only buttons is a
     // pure CSS show/hide with no chart destroy/recreate involved.
     const chartHtml = `<div class="gcStats"><canvas id="allocationTypeTimelineChart-${scope}"></canvas></div>`;
 
-    const innerHtml = `${summaryTilesHtml}${chartHtml}${tableHtml}`;
+    const innerHtml = `${summaryTilesHtml}${chartHtml}${hideStatusHtml}${tableHtml}`;
 
     if (!includeToggleWrapper) {
         return innerHtml;

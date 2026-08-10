@@ -122,6 +122,123 @@ only if these stop matching observed behavior:
   (`gcEvent.Timestamp.ToLocalTime().ToString("o")`), not UTC — the extension
   renders it directly, so getting this wrong shows the wrong wall-clock time
   to the user, not just a wrong offset string.
+- **GC is suppressed for the read phase only** (`ReadPhaseGcSuppression.cs`,
+  via `GC.TryStartNoGCRegion`). `NettraceFile.Read` allocates ~2.6x the
+  input file's size and retains essentially all of it (`StackBlock`'s
+  decoded `long[]` stacks live on `EventRecord.Stack` for the process's
+  life), so the generational GC's "most objects die young" assumption is
+  simply false there: measured collections reclaimed **0.6–2.0 KB each**
+  while still paying full mark/promote cost, and ~100% gen0 survival filled
+  gen1 at gen0's own rate, escalating into repeated full gen2 collections.
+  On a real 737MB/4.29M-event capture this took the run from 2745–3656ms to
+  a stable 2543–2558ms, GC pause 167–419ms → 0.0ms, collections [4,3,3] →
+  [1,1,1], **and peak RSS 2.31GB → 1.82GB** (no promotion copying), with
+  byte-identical JSON output. It also removed a large run-to-run bimodality
+  where the baseline randomly alternated ~2750ms/~3650ms depending on
+  whether the GC escalated to 3 full collections or 1.
+  **Undersizing the budget is worse than not doing this at all** — a
+  region exhausted mid-read forces an induced collection and exits, which
+  measured 3743ms/[5,4,4] against a 3561ms/[4,3,3] baseline. Hence
+  `ComputeBudgetBytes` returns 0 (declining entirely) rather than ever
+  requesting a budget it isn't confident covers the whole read.
+  `DOTNET_GCgen0size` was also measured as an alternative (best case
+  −520ms at 32MB) but is strictly worse: it's a deployment-time env var the
+  extension would have to set when spawning the process, and larger values
+  *slowed* `jsonExport` by ~400ms even while speeding up `read`.
+- The `--json` timing line reports `gcPause=`/`gcCounts=[gen0,gen1,gen2]`
+  (from `GC.GetTotalPauseDuration()`/`GC.CollectionCount`) precisely so
+  "why was this run slower" is answerable without a `dotnet-trace` attach —
+  which has its own confound here, since attach latency can silently miss
+  whichever GCs fire earliest, making cross-run comparisons from two
+  independent traces unreliable in a way this in-process counter isn't.
+
+### `.nettrace` parsing progress bar (`nettraceParser/Progress/`)
+
+`--json` mode (only — the plain CLI/`--dump-fields` path is byte-for-byte
+untouched, verified via a diff against an isolated `git worktree` at the
+pre-change commit) writes `PROGRESS <percent> <phase label>` lines to
+stderr — the same channel the final `Timing: ...` line already uses — so
+`DotnetInsightsNettraceEditor.ts` can drive a live progress bar while
+parsing is still in flight. `Progress/ProgressReporter.cs` owns emission
+(integer-percent-changed gate, then a ~100ms throttle, then a monotonic
+clamp, in that order — the percent gate alone bounds a huge capture's read
+phase to ≤101 short writes against the `GC.TryStartNoGCRegion` budget
+`ReadPhaseGcSuppression` sizes above, which is why `Warmup()` pre-touches
+`Console.Error`'s own lazy encoder init *before* `TryStart`, not inside the
+no-GC region). `Progress/ProgressPlan.cs` computes each phase's `[start,
+end)` slice of the overall bar in three stages, each computed only once its
+own inputs are known (file size before `Read`; `file.Events.Count` right
+after; real `gcCount`/`allocationCount`/`exceptionCount`/`sampleCount`/
+`contentionCount` right before `GcJsonExporter.WriteToFile`) — this makes
+monotonicity structural (each stage only ever subdivides a range the
+previous stage hasn't consumed yet) rather than enforced after the fact.
+
+**Why not one global weight formula**: verified wrong on a real
+1.57GB/29.6M-event capture — the read phase (bytes-driven) was only ~27-33%
+of wall-clock time despite being ~98% of the raw byte count against the
+~30M "items" (events/GCs/ticks/exceptions/samples) the rest of the pipeline
+touches. Byte count and item count are not interchangeable costs, so
+`ProgressPlan.cs`'s weight constants are measured PROPORTIONS of real
+wall-clock time (not raw unit sums), calibrated against **two**
+differently-shaped real captures specifically because one alone
+overfits — confirmed by the two captures' own numbers disagreeing wildly on
+some splits (e.g. the 7 projector phases' own relative weights: `gcProject`
+was 46% of that combined total on a CPU-sample-heavy capture but only 10%
+on a GC/allocation-heavy one; `eventOverview` the reverse, 8% vs 46%).
+`ReadShareOfTotal` and `ProjectorsShareOfRemainder` agree far better between
+the two captures (within a few points) since they're each dominated by
+whichever few phases are large in a given capture rather than depending on
+*which specific* phase that is. jsonExport's own 5 sub-writer weights are
+the one place a per-item estimate compares genuinely comparable
+things — 5 writers in the same phase of the same run — so `GcJsonExporter.
+WriteToFile` computes that split dynamically from THIS run's own real
+counts rather than a fixed constant.
+
+Only `Cpu/CpuProfileJsonExporter.cs` and `Gc/AllocationJsonExporter.cs`
+(`AllocationSummaryBuilder.Write`) get internal fine-grained progress
+tracking within jsonExport — the other three sub-writers (exceptions,
+contention, the `gcData` array) are small enough on every capture measured
+so far (all under ~1% of total time) that a start/complete snap is visually
+indistinguishable from tracking them internally. Every per-event loop's
+progress check is gated by `(index & ProgressReporter.IndexProgressMask) ==
+0` (a power-of-two mask, not `% N`) specifically because a delegate call on
+every iteration of a 26M-sample loop is exactly the kind of per-iteration
+cost this codebase's own perf work (see `CachedStackFrames` above) has
+repeatedly found and removed.
+
+The extension host owns the true 100% deliberately — the C# process never
+reports it. Real work remains after it exits (reading the JSON + ticks
+binary back, `renderGcSnapshotWebview`'s own HTML build, the
+`webview.html` assignment itself), so `NettraceProgress.ts` maps the child
+process's own 0–100 down to `[0, 80)` and reserves `[80, 90)`/`[90,
+97)`/`[97, 100]` for those three host-side stages — each preceded by a
+`postMessage` and an `await new Promise(resolve => setImmediate(resolve))`
+yield, since those steps are synchronous and block the extension host's own
+event loop, so a message posted right before one wouldn't actually reach
+the webview until it finished. `DotnetInsightsNettraceEditor.ts`'s
+`resolveCustomEditor` now assigns `webviewPanel.webview.html` **twice**: a
+lightweight loading placeholder (`NettraceLoadingRenderer.ts`,
+`media/nettraceLoadingView.js`) synchronously, immediately — before
+`nettraceParser` is even spawned, so there's a live document able to
+receive `postMessage` at all — then the real rendered content once parsing
+finishes, fully replacing the first document (not an in-place patch:
+`media/snapshotGcStats.js` calls `acquireVsCodeApi()` itself, which throws
+if called twice in the same document). The loading view starts
+**indeterminate** and only switches to a real percentage on the first
+`nettraceProgress` message, specifically so a stale, already-downloaded
+`nettraceParser` binary that predates this feature (see the stale-cache
+trap below — this shipped with `latestNettraceParserVersionNumber` bumped
+to `"1.6.8"` for exactly this reason) shows motion instead of a bar frozen
+at 0% forever. A `nettraceLoadingReady` handshake message (webview → host)
+covers the fact that a `postMessage` sent before the loading document has
+finished loading and run its own script is silently dropped, with no
+VS Code-side buffering — the host replays its own last known progress once
+it receives that signal.
+
+Recalibrating `ProgressPlan.cs`'s weight constants against a third
+differently-shaped capture is a single CLI run, not scaffolding that needs
+re-adding: the final `Timing: ...` line's `jsonExport=` field permanently
+breaks down as `jsonExport=Xms(alloc=..,exc=..,cpu=..,cont=..,gc=..)`.
 
 Packaging: `nettraceParser/pack.py` (Python — a bash version was explicitly
 rejected in favor of this). Publishes self-contained, non-single-file builds
