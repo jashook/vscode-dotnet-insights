@@ -70,7 +70,21 @@ function formatCpuPercentOfTotal(rowSamples, grandTotalSamples) {
 // One fewer column than drillDownStats.js's CALLER_TREE_COLGROUP (no
 // separate bytes/ticks column - "samples" is the one metric here, already
 // its own column) - same shape as EXCEPTION_CALLER_TREE_COLGROUP.
-const CPU_CALLER_TREE_COLGROUP = `<colgroup><col><col class="bytesColumn"><col class="percentColumn"><col class="percentColumn"></colgroup>`;
+//
+// Leading spacer <col> (width matches .rowHideColumn's own 1.6em in
+// snapshot.css) plus a matching empty leading <td> on every row below
+// (renderCpuTreeRow) - this tree is inlined directly into the ranked CPU
+// Methods table's own row (unlike the Exceptions/Heap Contents drill-down
+// trees, which are a separate, un-hide-columned table entirely), and that
+// outer table gained its own leading rowHideColumn ✕ column. Without a
+// matching offset here, this table's own table-layout:fixed columns (sized
+// independently of the outer table) render Samples/%/% flush against the
+// LEFT edge of the row exactly as before that outer column existed - which
+// visually reads as "opening the stack breaks alignment on the parent" set
+// of numeric columns above it, even though nothing here is actually
+// broken - it's two independently-sized column systems that used to
+// happen to line up and now don't, one <td> short of doing so again.
+const CPU_CALLER_TREE_COLGROUP = `<colgroup><col style="width: 1.6em"><col><col class="bytesColumn"><col class="percentColumn"><col class="percentColumn"></colgroup>`;
 
 var cpuCallerRowIdCounter = 0;
 
@@ -103,6 +117,9 @@ function renderCpuTreeRow(rowId, roleLabelHtml, frameHtml, indentAttr, node, per
         : ``;
 
     var rowHtml = `<tr class="${roleLabelHtml.rowClass} ${branchClass}"${hasChildren ? ` data-cpu-expandable="true" data-cpu-target="${rowId}"` : ``}>` +
+        // Empty leading <td> - pairs with CPU_CALLER_TREE_COLGROUP's own
+        // leading spacer <col> (see that constant's own comment).
+        `<td></td>` +
         `<td${indentAttr}>${toggleHtml}${roleLabelHtml.html}${frameHtml}${pathCountSuffix}</td>` +
         `<td>${node["totalSamples"].toLocaleString()}</td>` +
         `<td>${formatCpuPercentOfMethod(node["totalSamples"], percentDenominatorSamples)}</td>` +
@@ -115,7 +132,7 @@ function renderCpuTreeRow(rowId, roleLabelHtml, frameHtml, indentAttr, node, per
 
     pendingCpuLazySubtrees.set(rowId, { node: node, depth: 0, grandTotalSamples: grandTotalSamples, branchClass: branchClass, methodTotalSamples: methodTotalSamples });
 
-    return rowHtml + `<tr id="${rowId}" class="callPathsDetail" data-cpu-lazy="true"><td colspan="4" class="callerTreeCell"></td></tr>`;
+    return rowHtml + `<tr id="${rowId}" class="callPathsDetail" data-cpu-lazy="true"><td colspan="5" class="callerTreeCell"></td></tr>`;
 }
 
 const CPU_CALLED_BY_ROLE = { rowClass: "callerRow", html: `` };
@@ -130,7 +147,16 @@ const CPU_CALLER_INDENT_MAX_EM = 17;
 function renderCpuCallerRow(node, depth, percentDenominatorSamples, grandTotalSamples, branchClass, methodTotalSamples) {
     var children = node["children"] || [];
     var rowId = children.length > 0 ? `cpuDrillDownCaller${++cpuCallerRowIdCounter}` : null;
-    var uncappedIndentEm = (depth + 1) * CPU_CALLER_INDENT_EM_PER_LEVEL;
+    // depth, not depth+1 - the immediate caller (depth 0) starts flush with
+    // the tree's own left edge (no indent), with each further level below
+    // it stepping in by one CPU_CALLER_INDENT_EM_PER_LEVEL. Used to add a
+    // baseline +1 level unconditionally, which read as an extra, unindented
+    // tab stop between the hot method's own row and its first caller once
+    // this tree's own leading columns were already lined up with the outer
+    // ranked table's (see CPU_CALLER_TREE_COLGROUP's own comment on that
+    // alignment fix) - two effects that used to partially cancel out now
+    // stacked instead.
+    var uncappedIndentEm = depth * CPU_CALLER_INDENT_EM_PER_LEVEL;
     var indentEm = uncappedIndentEm < CPU_CALLER_INDENT_MAX_EM ? uncappedIndentEm : CPU_CALLER_INDENT_MAX_EM;
     var frameHtml = formatCpuFrameHtml(currentCpuMethodNames[node["frame"]]);
 
@@ -197,36 +223,18 @@ function buildInlineCpuMethodCallerTree(entry, methodNames, grandTotalSamples) {
 
     var children = entry["children"] || [];
     var totalSamples = entry["totalSamples"];
-    var distinctStacks = entry["distinctStackCount"];
 
-    // Expand All/Collapse All controls, scoped to just THIS method's own
-    // caller tree (not a page-wide action) - clicking one walks up to the
-    // enclosing .callPathsDetail row (this method's own detail row) and
-    // expands/collapses everything within it, same as
-    // setAllCpuDrillDownRowsExpanded already does for the (structurally
-    // identical) exceptions/heap-contents drill-down trees - see
-    // snapshotGcStats.js's wireProfileInnerTabs for the click handling.
-    // Omitted entirely when there's nothing to expand (children.length===0
-    // below).
-    var expandControlsHtml = children.length > 0
-        ? `<div class="inlineCallerExpandControls">` +
-            `<button class="drillDownExpandControlButton cpuMethodExpandAllBtn" type="button">Expand All</button>` +
-            `<button class="drillDownExpandControlButton cpuMethodCollapseAllBtn" type="button">Collapse All</button>` +
-            `</div>`
-        : ``;
-
-    // A <div> sibling BEFORE the <table>, not a row inside it - matches
-    // where every other view (exceptions/heap-contents' own
-    // .drillDownHeader/.drillDownExpandControls, outside their own
-    // <table class="drillDownTable">) puts its own summary/controls, rather
-    // than treating them as part of the tabular data.
-    var summaryHtml = `<div class="inlineCallerSummary">` +
-        `<span>${totalSamples.toLocaleString()} samples · ${distinctStacks.toLocaleString()} distinct call stacks</span>` +
-        expandControlsHtml +
-        `</div>`;
-
+    // No summary line (sample/call-stack counts) and no per-method Expand
+    // All/Collapse All here - the row that was just clicked already shows
+    // its own Self/Total sample counts in the ranked table above, and the
+    // master Expand All/Collapse All pair above that table already does a
+    // full-depth expand/collapse of every method's own caller tree when
+    // clicked (see that function's own call to
+    // setAllCpuDrillDownRowsExpanded) - both made this caller tree's own
+    // copies pure duplication, just visual clutter every time a row was
+    // expanded.
     if (children.length === 0) {
-        return summaryHtml;
+        return '<p style="padding:8px;margin:0">No caller data available for this method.</p>';
     }
 
     var isBranch = children.length > 1;
@@ -238,6 +246,6 @@ function buildInlineCpuMethodCallerTree(entry, methodNames, grandTotalSamples) {
         childRowsHtml += renderCpuCallerRow(children[childIndex], 0, totalSamples, grandTotalSamples, branchClass, totalSamples);
     }
 
-    return `${summaryHtml}<table class="callerTreeInner">${CPU_CALLER_TREE_COLGROUP}${childRowsHtml}</table>`;
+    return `<table class="callerTreeInner">${CPU_CALLER_TREE_COLGROUP}${childRowsHtml}</table>`;
 }
 

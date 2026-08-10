@@ -1758,8 +1758,16 @@ var allocationDatasets = {};
                     var ascending = (currentSortColumnIndex === columnIndex) ? !currentSortAscending : true;
                     sortDetailTableByColumn(table, columnIndex, headerCell.getAttribute('data-sort'), ascending);
 
+                    // The row-hide column's own blank <th> (skipped above,
+                    // never gets a click listener of its own) has no
+                    // .sortIndicator span at all - guard against it here too,
+                    // since this loop walks every header cell unconditionally
+                    // regardless of which one was actually clicked.
                     for (var clearIndex = 0; clearIndex < headerCells.length; ++clearIndex) {
-                        headerCells[clearIndex].getElementsByClassName('sortIndicator')[0].textContent = '';
+                        var indicatorToClear = headerCells[clearIndex].getElementsByClassName('sortIndicator')[0];
+                        if (indicatorToClear) {
+                            indicatorToClear.textContent = '';
+                        }
                     }
                     headerCell.getElementsByClassName('sortIndicator')[0].textContent = ascending ? ' ▲' : ' ▼';
 
@@ -2289,7 +2297,8 @@ var allocationDatasets = {};
 
                 document.getElementById('view-exceptions').innerHTML = exceptionSummaryHtml;
 
-                wireExceptionsInnerTabs();
+                wireExceptionsPanel();
+                setupDetailTableSortHandlers(document.getElementById('view-exceptions'));
                 exceptionSummaryInjected = true;
             } else if (targetView === 'contention' && !contentionInjected) {
                 var contentionHolder = document.getElementById("contentionHtml");
@@ -2732,47 +2741,12 @@ var allocationDatasets = {};
         }
     }
 
-    // "Types"/"Drill Down" inner tabs within the Exceptions view - mirrors
-    // switchHeapContentsTab above exactly, keyed on its own
-    // exceptionsTabButton-equivalent (still the shared heapContentsTabButton/
-    // heapContentsTabPanel CSS classes - see ExceptionSummaryRenderer.ts,
-    // which reuses that styling rather than duplicating it) but its own
-    // data-exceptiontab/id="exceptions-tab-*" so it never collides with the
-    // Heap Contents view's identically-shaped tab bar.
-    function switchExceptionsTab(targetTab) {
-        var buttons = document.querySelectorAll('#view-exceptions .heapContentsTabButton');
-        for (var buttonIndex = 0; buttonIndex < buttons.length; ++buttonIndex) {
-            buttons[buttonIndex].classList.remove('active');
-            if (buttons[buttonIndex].getAttribute('data-exceptiontab') === targetTab) {
-                buttons[buttonIndex].classList.add('active');
-            }
-        }
-
-        var panels = document.querySelectorAll('#view-exceptions .heapContentsTabPanel');
-        for (var panelIndex = 0; panelIndex < panels.length; ++panelIndex) {
-            panels[panelIndex].classList.remove('active');
-        }
-        document.getElementById('exceptions-tab-' + targetTab).classList.add('active');
-
-        var backButton = document.getElementById('backToExceptionTypesButton');
-        if (backButton) {
-            backButton.style.display = (targetTab === 'drilldown') ? 'inline-block' : 'none';
-        }
-    }
-
-    // Unlike goBackToChartsView, there's no chart/scroll target to restore -
-    // the Types panel is just the ranked table, already at the top.
-    function goBackToExceptionTypesView() {
-        switchExceptionsTab('types');
-    }
-
     // "Flame Graph"/"Methods" inner tabs within the Profile view - two tabs
     // only now (no separate Drill Down tab; caller trees expand inline within
-    // the Methods table). Mirrors switchExceptionsTab's own shape but keyed
-    // on data-profiletab/id="profile-tab-*" so it never collides with either
-    // of the other two tab bars. Builds the CPU timeline chart lazily the
-    // first time the Methods tab is activated (same as the flame graph for
-    // the Flame Graph tab).
+    // the Methods table), keyed on data-profiletab/id="profile-tab-*" so it
+    // never collides with the Heap Contents view's own tab bar. Builds the
+    // CPU timeline chart lazily the first time the Methods tab is activated
+    // (same as the flame graph for the Flame Graph tab).
     var cpuTimelineBuilt = false;
 
     function switchProfileTab(targetTab) {
@@ -2810,9 +2784,7 @@ var allocationDatasets = {};
         detailRow.removeAttribute('data-cpu-lazy');
     }
 
-    // Mirrors setAllExceptionDrillDownRowsExpanded, against the data-cpu-*
-    // attribute names - see that function's own comment for why this is an
-    // explicit worklist rather than a container-wide re-scan per row.
+    // An explicit worklist rather than a container-wide re-scan per row.
     // container is typically one method's own .callPathsDetail row (see
     // buildInlineCpuMethodCallerTree's Expand All/Collapse All buttons,
     // wired up in wireProfileInnerTabs) - scoped to just that method's own
@@ -2986,12 +2958,15 @@ var allocationDatasets = {};
         followCpuDrillDownLinearRun(detailRow);
     }
 
-    // Mirrors buildDrillDownRowIfLazy, against exceptionDrillDownStats.js's
-    // buildLazyExceptionDrillDownSubtree and the data-exception-lazy
+    // Mirrors buildCpuDrillDownRowIfLazy, against exceptionDrillDownStats.js's
+    // buildLazyExceptionDrillDownSubtree and the data-exception-caller-lazy
     // attribute (see that file's header comment on why this is a parallel
-    // implementation rather than a shared one).
+    // implementation rather than a shared one). Covers both throw-site rows
+    // and caller rows uniformly - both use the same data-exception-caller-*
+    // attributes (see renderExceptionTreeRow's own comment), distinct from
+    // the OUTER ranked table's own data-exception-expandable (type-level).
     function buildExceptionDrillDownRowIfLazy(detailRow) {
-        if (!detailRow || detailRow.getAttribute('data-exception-lazy') !== 'true') {
+        if (!detailRow || detailRow.getAttribute('data-exception-caller-lazy') !== 'true') {
             return;
         }
 
@@ -2999,17 +2974,26 @@ var allocationDatasets = {};
         if (builtHtml !== null) {
             detailRow.querySelector('.callerTreeCell').innerHTML = builtHtml;
         }
-        detailRow.removeAttribute('data-exception-lazy');
+        detailRow.removeAttribute('data-exception-caller-lazy');
     }
 
-    // Mirrors expandDrillDownRowFollowingLinearRun - see that function's own
-    // comment for the full rationale (follow a non-branching chain down to
-    // the first real fork or the end, in one click).
-    function expandExceptionDrillDownRowFollowingLinearRun(toggleRow, detailRow) {
-        buildExceptionDrillDownRowIfLazy(detailRow);
-        toggleRow.classList.add('expanded');
-        detailRow.classList.add('expanded');
-
+    // Follows a non-branching (single-child) chain of rows starting from an
+    // ALREADY-EXPANDED detailRow, auto-expanding (and lazily building) each
+    // one in turn until it hits a real branch (2+ children) or runs out of
+    // children - mirrors followCpuDrillDownLinearRun, but counts BOTH
+    // .leafMethodRow and .callerRow children (not just .callerRow) since
+    // Exceptions' tree has a role CPU's doesn't: a type's own direct
+    // children are throw sites (leafMethodRow), and only a throw site's OWN
+    // children are callers (callerRow) - counting only callerRow here would
+    // make a type with exactly one throw site look like 0 children (an
+    // immediate, incorrect stop) instead of the single non-branching child
+    // it actually has. Shared by both a type row's own first expansion
+    // (buildAndExpandExceptionTypeRow) and any interior throw-site/caller
+    // click (expandExceptionDrillDownRowFollowingLinearRun below) - a real
+    // branch at ANY level (multiple throw sites, or multiple callers)
+    // naturally stops the descent via the childRows.length !== 1 check,
+    // with no need to special-case which level that branch occurred at.
+    function followExceptionDrillDownLinearRun(detailRow) {
         var currentDetailRow = detailRow;
         for (;;) {
             var innerTable = currentDetailRow.querySelector('table.callerTreeInner');
@@ -3019,8 +3003,9 @@ var allocationDatasets = {};
 
             var childRows = [];
             for (var rowIndex = 0; rowIndex < innerTable.rows.length; ++rowIndex) {
-                if (innerTable.rows[rowIndex].classList.contains('callerRow')) {
-                    childRows.push(innerTable.rows[rowIndex]);
+                var candidateRow = innerTable.rows[rowIndex];
+                if (candidateRow.classList.contains('leafMethodRow') || candidateRow.classList.contains('callerRow')) {
+                    childRows.push(candidateRow);
                 }
             }
 
@@ -3029,11 +3014,11 @@ var allocationDatasets = {};
             }
 
             var onlyChildRow = childRows[0];
-            if (onlyChildRow.getAttribute('data-exception-expandable') !== 'true') {
+            if (onlyChildRow.getAttribute('data-exception-caller-expandable') !== 'true') {
                 return;
             }
 
-            var onlyChildDetailRow = document.getElementById(onlyChildRow.getAttribute('data-exception-target'));
+            var onlyChildDetailRow = document.getElementById(onlyChildRow.getAttribute('data-exception-caller-target'));
             if (!onlyChildDetailRow) {
                 return;
             }
@@ -3045,83 +3030,60 @@ var allocationDatasets = {};
         }
     }
 
-    // Mirrors setAllDrillDownRowsExpanded, against the data-exception-*
-    // attribute names - see that function's own comment for why this is an
-    // explicit worklist rather than a container-wide re-scan per row.
-    function setAllExceptionDrillDownRowsExpanded(container, expanded) {
-        if (expanded) {
-            var lazyQueue = [];
-
-            if (container.classList && container.classList.contains('callPathsDetail')) {
-                lazyQueue.push(container);
-            }
-
-            var initialLazyRows = container.querySelectorAll('.callPathsDetail[data-exception-lazy="true"]');
-            for (var initialIndex = 0; initialIndex < initialLazyRows.length; ++initialIndex) {
-                lazyQueue.push(initialLazyRows[initialIndex]);
-            }
-
-            while (lazyQueue.length > 0) {
-                var lazyRow = lazyQueue.pop();
-                buildExceptionDrillDownRowIfLazy(lazyRow);
-
-                var newlyLazyRows = lazyRow.querySelectorAll('.callPathsDetail[data-exception-lazy="true"]');
-                for (var newIndex = 0; newIndex < newlyLazyRows.length; ++newIndex) {
-                    lazyQueue.push(newlyLazyRows[newIndex]);
-                }
-            }
-        }
-
-        var toggleRows = container.querySelectorAll('[data-exception-expandable="true"]');
-        for (var rowIndex = 0; rowIndex < toggleRows.length; ++rowIndex) {
-            var toggleRow = toggleRows[rowIndex];
-            var detailRow = document.getElementById(toggleRow.getAttribute('data-exception-target'));
-
-            if (expanded) {
-                toggleRow.classList.add('expanded');
-                if (detailRow) {
-                    detailRow.classList.add('expanded');
-                }
-            } else {
-                toggleRow.classList.remove('expanded');
-                if (detailRow) {
-                    detailRow.classList.remove('expanded');
-                }
-            }
-        }
+    // Mirrors expandCpuDrillDownRowFollowingLinearRun - see
+    // followExceptionDrillDownLinearRun's own comment for the full
+    // rationale (follow a non-branching chain down to the first real fork
+    // or the end, in one click). Used for interior throw-site/caller-row
+    // clicks - see buildAndExpandExceptionTypeRow's own comment for why the
+    // top-level type row's first expansion calls that shared descent
+    // directly instead of this wrapper.
+    function expandExceptionDrillDownRowFollowingLinearRun(toggleRow, detailRow) {
+        buildExceptionDrillDownRowIfLazy(detailRow);
+        toggleRow.classList.add('expanded');
+        detailRow.classList.add('expanded');
+        followExceptionDrillDownLinearRun(detailRow);
     }
 
-    // Mirrors showDrillDownTab - injects the rendered table, reveals the
-    // tab button (hidden until there's actually something to show), and
-    // switches to it.
-    function showExceptionDrillDownTab(drillDownHtml) {
-        document.getElementById('exceptions-tab-drilldown').innerHTML = drillDownHtml;
-
-        var exceptionDrillDownTabButton = document.getElementById('exceptionDrillDownTabButton');
-        if (exceptionDrillDownTabButton) {
-            exceptionDrillDownTabButton.style.display = 'inline-block';
+    // Lazily builds (via buildInlineExceptionTypeCallerTree, on first
+    // expansion only - see detailRow's own data-exception-type-lazy
+    // attribute) and marks expanded a top-level exception type row + its
+    // paired .callPathsDetail row - mirrors buildAndExpandCpuMethodRow,
+    // including the auto-descend afterward (followExceptionDrillDownLinearRun,
+    // CPU's own equivalent being followCpuDrillDownLinearRun) - a type with
+    // exactly one throw site, which itself has exactly one caller, and so
+    // on, now descends all the way to the first real branch or the end in
+    // one click, the same as every other level already did. A type with
+    // multiple throw sites stops right there (a real branch), same as
+    // multiple callers already did one level down - no special-casing
+    // needed for "how many throw sites" vs "how many callers", since
+    // followExceptionDrillDownLinearRun's own single childRows.length !== 1
+    // check already covers both uniformly.
+    function buildAndExpandExceptionTypeRow(typeRow, detailRow) {
+        var lazyIndex = detailRow.getAttribute('data-exception-type-lazy');
+        if (lazyIndex !== null) {
+            var typeIndex = parseInt(lazyIndex, 10);
+            var typeDrillDown = exceptionSummaryJson["typeDrillDown"];
+            var entry = typeDrillDown ? typeDrillDown[typeIndex] : null;
+            var callerHtml = buildInlineExceptionTypeCallerTree(
+                entry,
+                exceptionSummaryJson["methodNames"],
+                exceptionSummaryJson["totalExceptionCount"]);
+            detailRow.querySelector('.callerTreeCell').innerHTML = callerHtml;
+            detailRow.removeAttribute('data-exception-type-lazy');
         }
 
-        switchExceptionsTab('drilldown');
-    }
-
-    // Called from the click delegation in wireExceptionsInnerTabs below when
-    // a row in the ranked exception-types table is clicked. Scoped to that
-    // type across the whole capture (ExceptionJsonExporter.cs's
-    // typeDrillDown - a parallel array to topTypes), mirroring
-    // onTypeDrillDownClick - simpler than that function since there's no
-    // per-chart-cell entry point or All/LOH scope to resolve here.
-    function onExceptionTypeDrillDownClick(typeIndex) {
-        var typeDrillDown = exceptionSummaryJson["typeDrillDown"];
-        var typeEntry = typeDrillDown ? typeDrillDown[typeIndex] : null;
-        var typeName = exceptionSummaryJson["topTypes"][typeIndex]["TypeName"];
-
-        showExceptionDrillDownTab(renderExceptionDrillDownTable(typeEntry, typeName, exceptionSummaryJson["methodNames"], exceptionSummaryJson["totalExceptionCount"]));
+        typeRow.classList.add('expanded');
+        detailRow.classList.add('expanded');
+        followExceptionDrillDownLinearRun(detailRow);
     }
 
     // Manually-hidden Exceptions ranked-type rows (data-exception-type-index).
+    // onChange rebuilds the table's own %/tiles AND re-renders the timeline
+    // chart (if present), so a hide/show-all cascades into the chart the
+    // same way a hidden CPU method already does.
     var exceptionTypeHider = createRowHideController('exceptionTypesHideStatus', 'exceptionTypesHideStatusLabel', function () {
         rebuildExceptionTypesTable();
+        renderExceptionTimeline(exceptionTimelineZoomRange);
     });
 
     // Rewrites the Exceptions table's % of Total cells (and, unlike the
@@ -3164,6 +3126,22 @@ var allocationDatasets = {};
             var isHidden = exceptionTypeHider.isHidden(typeIndex);
             row.style.display = isHidden ? 'none' : '';
 
+            // Hide the paired callPathsDetail row too, same as
+            // filterCpuMethodsTableToZoomRange does for CPU - otherwise an
+            // already-expanded type's own caller tree would keep showing
+            // with no visible row above it. Clearing the inline style
+            // (empty string, not left unset) when visible hands control
+            // back to the .expanded CSS rule instead of permanently
+            // overriding it - see that function's own comment for why this
+            // matters for a later re-expand click to still work.
+            var pairedDetailId = row.getAttribute('data-exception-target');
+            if (pairedDetailId) {
+                var pairedDetailRow = document.getElementById(pairedDetailId);
+                if (pairedDetailRow) {
+                    pairedDetailRow.style.display = isHidden ? 'none' : '';
+                }
+            }
+
             var percentOfTotal = adjustedTotalCount > 0 ? (topTypes[typeIndex]["Count"] * 100.0) / adjustedTotalCount : 0;
 
             // cells[0] is the rowHideBtn column, cells[1] is Exception Type -
@@ -3184,6 +3162,161 @@ var allocationDatasets = {};
         if (distinctTypesTile) {
             distinctTypesTile.textContent = String(visibleTypeCount);
         }
+    }
+
+    // Exceptions timeline chart state - scoped here so renderExceptionTimeline/
+    // performGoBackAction can share it. No table-visibility filter analog to
+    // filterCpuMethodsTableToZoomRange exists for Exceptions - dragging a
+    // zoom here only affects the chart's own x-axis range and the hide-aware
+    // exclusion math below, not which ranked rows are shown.
+    var exceptionTimelineZoomRange = null;
+    var exceptionTimelineChartHandle = null;
+
+    function updateExceptionTimelineZoomStatusUi(zoomRange) {
+        var statusEl = document.getElementById('exceptionTimelineZoomStatus');
+
+        var hintEl = document.getElementById('exceptionTimelineZoomHint');
+        if (hintEl) {
+            hintEl.style.display = zoomRange ? 'none' : '';
+        }
+
+        if (!statusEl) {
+            return;
+        }
+
+        if (!zoomRange) {
+            statusEl.style.display = 'none';
+            return;
+        }
+
+        statusEl.style.display = 'block';
+        var labelEl = document.getElementById('exceptionTimelineZoomLabel');
+        if (labelEl) {
+            labelEl.textContent = `Zoom: ${formatElapsedMs(zoomRange.startMSec)} – ${formatElapsedMs(zoomRange.endMSec)}`;
+        }
+    }
+
+    // Rebuilds the exception-throw-density chart for the current zoom range -
+    // mirrors renderCpuTimeline exactly (linear x-axis on real RelativeMSec
+    // values, non-zero-based y-axis so real throw bursts read as visible
+    // peaks rather than being flattened against a 0-based scale, crosshair +
+    // drag-to-zoom via the same chartZoomHelper.js infrastructure). The
+    // exclusion loop only checks exceptionTypeHider (no automatic "known
+    // noise" heuristic exists for exceptions the way isKnownCpuIdleWaitLeafMethodName
+    // does for CPU wait methods - every exclusion here is user-driven).
+    function renderExceptionTimeline(zoomRange) {
+        var timeline = exceptionSummaryJson ? exceptionSummaryJson["timeline"] : null;
+        var canvasElement = document.getElementById("exceptionTimeline");
+        if (!timeline || !canvasElement) {
+            return;
+        }
+
+        if (exceptionTimelineChartHandle) {
+            exceptionTimelineChartHandle.zoomHandle.detach();
+            exceptionTimelineChartHandle.crosshairHandle.detach();
+            exceptionTimelineChartHandle.chart.destroy();
+            exceptionTimelineChartHandle = null;
+        }
+
+        var countByBucket = timeline["countByBucket"];
+        var bucketDurationMSec = timeline["bucketDurationMSec"];
+        var minRelativeMSec = timeline["minRelativeMSec"];
+        var bucketCount = timeline["bucketCount"];
+
+        // typeSelfByBucket carries a per-bucket throw-count breakdown for
+        // every RANKED exception type (see ExceptionJsonExporter.cs's own
+        // timeline-writing code) - every ranked type hidden via
+        // exceptionTypeHider has its own per-bucket contribution summed into
+        // excludedBucketTotals, then subtracted from the chart's own total
+        // per bucket below, purely client-side - same arithmetic as
+        // renderCpuTimeline's own excludedBucketTotals.
+        var excludedBucketTotals = null;
+        var excludedTypeCount = 0;
+        var typeSelfByBucket = timeline["typeSelfByBucket"];
+        if (typeSelfByBucket) {
+            for (var excludeSearchIndex = 0; excludeSearchIndex < typeSelfByBucket.length; ++excludeSearchIndex) {
+                if (!exceptionTypeHider.isHidden(excludeSearchIndex)) {
+                    continue;
+                }
+
+                ++excludedTypeCount;
+                var candidateBuckets = typeSelfByBucket[excludeSearchIndex];
+                if (!excludedBucketTotals) {
+                    excludedBucketTotals = candidateBuckets.slice();
+                    continue;
+                }
+
+                for (var accumulateBucketIndex = 0; accumulateBucketIndex < candidateBuckets.length; ++accumulateBucketIndex) {
+                    excludedBucketTotals[accumulateBucketIndex] += candidateBuckets[accumulateBucketIndex];
+                }
+            }
+        }
+
+        var points = [];
+        for (var bucketIndex = 0; bucketIndex < bucketCount; ++bucketIndex) {
+            var bucketTotal = countByBucket[bucketIndex];
+            if (excludedBucketTotals) {
+                bucketTotal -= excludedBucketTotals[bucketIndex];
+            }
+
+            points.push({
+                x: minRelativeMSec + bucketIndex * bucketDurationMSec,
+                y: bucketTotal
+            });
+        }
+
+        var xAxisTicks = { callback: formatElapsedMs };
+        if (zoomRange) {
+            xAxisTicks.min = zoomRange.startMSec;
+            xAxisTicks.max = zoomRange.endMSec;
+        }
+
+        var dragStateHolder = { current: null };
+        var crosshairStateHolder = { current: null };
+
+        var chart = new Chart(canvasElement.getContext('2d'), {
+            type: 'line',
+            data: {
+                datasets: [{
+                    label: excludedBucketTotals ? ('Exceptions (excl. ' + excludedTypeCount + ' hidden type' + (excludedTypeCount === 1 ? '' : 's') + ')') : 'Exceptions',
+                    data: points,
+                    backgroundColor: 'rgba(180, 80, 80, 0.2)',
+                    borderColor: 'rgba(180, 80, 80, 1)',
+                    borderWidth: 1,
+                    lineTension: 0,
+                    pointRadius: 2,
+                    pointHoverRadius: 4
+                }]
+            },
+            // Top-level plugins array, not options.plugins - see
+            // renderCpuTimeline's own comment on why (a real, previously-hit
+            // bug for this exact mistake).
+            plugins: [createCrosshairPlugin(crosshairStateHolder), createZoomSelectionPlugin(dragStateHolder)],
+            options: {
+                animation: { duration: 0 },
+                maintainAspectRatio: false,
+                scales: {
+                    xAxes: [{ type: 'linear', ticks: xAxisTicks }],
+                    // NOT beginAtZero - same "show real spikes, not a
+                    // flat-looking line squashed against a 0-based axis"
+                    // reasoning as renderCpuTimeline's own y-axis.
+                    yAxes: [{
+                        scaleLabel: { display: true, labelString: 'Exceptions (not zero-based - see chart)' }
+                    }]
+                }
+            }
+        });
+
+        var zoomHandle = attachDragToZoom(chart, canvasElement, dragStateHolder, pixelToMSecLinear, function (startMSec, endMSec) {
+            exceptionTimelineZoomRange = { startMSec: startMSec, endMSec: endMSec };
+            renderExceptionTimeline(exceptionTimelineZoomRange);
+            updateExceptionTimelineZoomStatusUi(exceptionTimelineZoomRange);
+        });
+
+        var crosshairHandle = attachCrosshair(chart, canvasElement, crosshairStateHolder, pixelToMSecLinear, formatElapsedMs);
+
+        exceptionTimelineChartHandle = { chart: chart, zoomHandle: zoomHandle, crosshairHandle: crosshairHandle };
+        updateExceptionTimelineZoomStatusUi(zoomRange);
     }
 
     // CPU timeline chart state - scoped here so renderCpuTimeline /
@@ -3770,32 +3903,14 @@ var allocationDatasets = {};
                     return;
                 }
 
-                // Expand All/Collapse All, scoped to just the one method
-                // whose caller tree the button lives inside (its nearest
-                // .callPathsDetail ancestor) - see
-                // buildInlineCpuMethodCallerTree's own comment. Checked
-                // first since these buttons sit inside an already-expanded
-                // method's tree, ahead of the two row-toggle checks below.
-                if (event.target.closest('.cpuMethodExpandAllBtn')) {
-                    var expandScopeRow = event.target.closest('.callPathsDetail');
-                    if (expandScopeRow) {
-                        setAllCpuDrillDownRowsExpanded(expandScopeRow, true);
-                    }
-                    return;
-                }
-
-                if (event.target.closest('.cpuMethodCollapseAllBtn')) {
-                    var collapseScopeRow = event.target.closest('.callPathsDetail');
-                    if (collapseScopeRow) {
-                        setAllCpuDrillDownRowsExpanded(collapseScopeRow, false);
-                    }
-                    return;
-                }
-
                 // Master Expand All/Collapse All - every method row at once
                 // (see CpuProfileRenderer.ts's methodsExpandControlsHtml,
-                // between the timeline chart and the table). Checked
-                // alongside the per-method buttons above, before the
+                // between the timeline chart and the table). No per-method
+                // pair anymore (buildInlineCpuMethodCallerTree used to emit
+                // one inside each opened row's own tree, redundant with
+                // this master pair - see that function's own comment on
+                // why it was removed), so this is the only Expand
+                // All/Collapse All entry point left, checked before the
                 // row-toggle checks below.
                 if (event.target.closest('.cpuMethodsExpandAllBtn')) {
                     expandAllCpuMethodRows(true);
@@ -3864,92 +3979,95 @@ var allocationDatasets = {};
         }
     }
 
-    function wireExceptionsInnerTabs() {
-        var exceptionsTabButtons = document.querySelectorAll('#view-exceptions .heapContentsTabButton');
-        for (var tabButtonIndex = 0; tabButtonIndex < exceptionsTabButtons.length; ++tabButtonIndex) {
-            exceptionsTabButtons[tabButtonIndex].addEventListener('click', function (event) {
-                switchExceptionsTab(event.currentTarget.getAttribute('data-exceptiontab'));
+    // Wires the unified Exceptions panel - no tabs/back button anymore (see
+    // ExceptionSummaryRenderer.ts's own header comment), so this now mirrors
+    // wireProfileInnerTabs'/wireContentionTab's click-delegation shape
+    // directly: row-hide cell first, then top-level type-row expand, then
+    // interior caller-node expand. One delegated listener on the whole
+    // #view-exceptions container handles all three, since (like the CPU
+    // Methods table) rows are injected once and never wholesale replaced -
+    // only individual .callerTreeCell contents change on lazy-build.
+    function wireExceptionsPanel() {
+        if (exceptionSummaryJson) {
+            initExceptionDrillDownMethodNames(exceptionSummaryJson["methodNames"]);
+        }
+
+        var resetZoomBtn = document.getElementById('exceptionTimelineResetZoomBtn');
+        if (resetZoomBtn) {
+            resetZoomBtn.addEventListener('click', function () {
+                exceptionTimelineZoomRange = null;
+                renderExceptionTimeline(null);
+                updateExceptionTimelineZoomStatusUi(null);
             });
         }
 
-        var backToExceptionTypesButton = document.getElementById('backToExceptionTypesButton');
-        if (backToExceptionTypesButton) {
-            backToExceptionTypesButton.addEventListener('click', goBackToExceptionTypesView);
+        var exceptionsPanel = document.getElementById('view-exceptions');
+        if (!exceptionsPanel) {
+            return;
         }
 
-        // Ranked exception-types table rows (ExceptionSummaryRenderer.ts) -
-        // injected once (not rebuilt per click like the drill-down panel
-        // itself), so a direct listener on its shared container is fine
-        // here rather than needing delegation on something more stable.
-        var typesPanel = document.getElementById('exceptions-tab-types');
-        if (typesPanel) {
-            typesPanel.addEventListener('click', function (event) {
-                if (event.target.closest('#exceptionTypesShowAllBtn')) {
-                    exceptionTypeHider.reset();
+        exceptionsPanel.addEventListener('click', function (event) {
+            if (event.target.closest('#exceptionTypesShowAllBtn')) {
+                exceptionTypeHider.reset();
+                return;
+            }
+
+            // Row-hide cell - checked first, ahead of every other check
+            // below, so a click anywhere in it never also toggles that
+            // row's own expand state. Whole cell is the click target, not
+            // just the ✕ glyph itself.
+            var hideCell = event.target.closest('.rowHideColumn');
+            if (hideCell) {
+                var hideRow = hideCell.closest('[data-exception-type-index]');
+                if (hideRow) {
+                    exceptionTypeHider.toggle(parseInt(hideRow.getAttribute('data-exception-type-index'), 10));
+                }
+                return;
+            }
+
+            // Top-level exception type row expand/collapse.
+            var typeRow = event.target.closest('[data-exception-expandable="true"]');
+            if (typeRow) {
+                var typeDetailRow = document.getElementById(typeRow.getAttribute('data-exception-target'));
+                if (!typeDetailRow) {
                     return;
                 }
 
-                // Row-hide cell - checked before .exceptionTypeRow below so
-                // a click anywhere in it never also fires that row's
-                // drill-down navigation (the whole row is otherwise one big
-                // click target - see onExceptionTypeDrillDownClick). Whole
-                // cell is the click target, not just the ✕ glyph itself.
-                var hideCell = event.target.closest('.rowHideColumn');
-                if (hideCell) {
-                    var hideRow = hideCell.closest('.exceptionTypeRow');
-                    if (hideRow) {
-                        exceptionTypeHider.toggle(parseInt(hideRow.getAttribute('data-exception-type-index'), 10));
-                    }
+                if (typeRow.classList.contains('expanded')) {
+                    typeRow.classList.remove('expanded');
+                    typeDetailRow.classList.remove('expanded');
                     return;
                 }
 
-                var typeRow = event.target.closest('.exceptionTypeRow');
-                if (!typeRow) {
-                    return;
-                }
+                buildAndExpandExceptionTypeRow(typeRow, typeDetailRow);
+                return;
+            }
 
-                onExceptionTypeDrillDownClick(parseInt(typeRow.getAttribute('data-exception-type-index'), 10));
-            });
-        }
+            // Interior throw-site/caller node expand/collapse (within an
+            // already-expanded type's inline tree) - see
+            // renderExceptionTreeRow's own comment on why both roles share
+            // this one attribute name.
+            var callerRow = event.target.closest('[data-exception-caller-expandable="true"]');
+            if (!callerRow) {
+                return;
+            }
 
-        // Event delegation, attached once to the panel itself rather than
-        // per-row - exceptionDrillDownStats.js's renderExceptionDrillDownTable
-        // rebuilds this panel's entire innerHTML on every ranked-table-row
-        // click, which would otherwise silently drop any listeners attached
-        // directly to its rows. Mirrors the Heap Contents drill-down panel's
-        // own delegation, against the data-exception-* attribute names and
-        // exceptionDrillDown*Btn classes.
-        var exceptionDrillDownPanel = document.getElementById('exceptions-tab-drilldown');
-        if (exceptionDrillDownPanel) {
-            exceptionDrillDownPanel.addEventListener('click', function (event) {
-                if (event.target.closest('.exceptionDrillDownExpandAllBtn')) {
-                    setAllExceptionDrillDownRowsExpanded(exceptionDrillDownPanel, true);
-                    return;
-                }
+            var callerDetailRow = document.getElementById(callerRow.getAttribute('data-exception-caller-target'));
+            if (!callerDetailRow) {
+                return;
+            }
 
-                if (event.target.closest('.exceptionDrillDownCollapseAllBtn')) {
-                    setAllExceptionDrillDownRowsExpanded(exceptionDrillDownPanel, false);
-                    return;
-                }
+            if (callerRow.classList.contains('expanded')) {
+                callerRow.classList.remove('expanded');
+                callerDetailRow.classList.remove('expanded');
+                return;
+            }
 
-                var leafRow = event.target.closest('[data-exception-expandable="true"]');
-                if (!leafRow) {
-                    return;
-                }
+            expandExceptionDrillDownRowFollowingLinearRun(callerRow, callerDetailRow);
+        });
 
-                var detailRow = document.getElementById(leafRow.getAttribute('data-exception-target'));
-                if (!detailRow) {
-                    return;
-                }
-
-                if (leafRow.classList.contains('expanded')) {
-                    leafRow.classList.remove('expanded');
-                    detailRow.classList.remove('expanded');
-                    return;
-                }
-
-                expandExceptionDrillDownRowFollowingLinearRun(leafRow, detailRow);
-            });
+        if (exceptionSummaryJson && exceptionSummaryJson["timeline"]) {
+            renderExceptionTimeline(null);
         }
     }
 
@@ -4359,12 +4477,6 @@ var allocationDatasets = {};
             return true;
         }
 
-        var exceptionDrillDownPanel = document.getElementById('exceptions-tab-drilldown');
-        if (exceptionDrillDownPanel && exceptionDrillDownPanel.classList.contains('active')) {
-            goBackToExceptionTypesView();
-            return true;
-        }
-
         var cpuMethodsPanel = document.getElementById('profile-tab-hotmethods');
         if (cpuMethodsPanel && cpuMethodsPanel.classList.contains('active') && cpuTimelineZoomRange) {
             cpuTimelineZoomRange = null;
@@ -4380,6 +4492,14 @@ var allocationDatasets = {};
             filterContentionSitesToZoomRange(null);
             updateContentionTimelineZoomStatusUi(null);
             renderContentionTimeline(null);
+            return true;
+        }
+
+        var exceptionsPanel = document.getElementById('view-exceptions');
+        if (exceptionsPanel && exceptionsPanel.classList.contains('active') && exceptionTimelineZoomRange) {
+            exceptionTimelineZoomRange = null;
+            renderExceptionTimeline(null);
+            updateExceptionTimelineZoomStatusUi(null);
             return true;
         }
 

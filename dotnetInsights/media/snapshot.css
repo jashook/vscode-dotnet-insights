@@ -1389,6 +1389,47 @@ td.rowHideColumn:hover
     background-color: lightblue;
 }
 
+/* Expandable type rows in the unified Exceptions table - same 3-rule shape
+   as .cpuHotMethodRow[data-cpu-method-expandable] above (rotate-on-expand
+   comes for free from the generic .leafMethodRow.expanded/.callerRow.expanded
+   rule further up this file, which isn't keyed to any specific data-*
+   attribute name). */
+.exceptionTypeRow[data-exception-expandable]
+{
+    cursor: pointer;
+}
+
+.exceptionTypeRow[data-exception-expandable]:hover
+{
+    background-color: lightblue;
+}
+
+.exceptionTypeRow.expanded .leafMethodToggle
+{
+    transform: rotate(90deg);
+}
+
+/* Interior throw-site/caller rows within an expanded type's inline tree -
+   exceptionDrillDownStats.js's renderExceptionTreeRow uses its own
+   data-exception-caller-expandable attribute (distinct from the outer
+   type row's data-exception-expandable, and from drillDownStats.js's own
+   unprefixed data-expandable="true" the Heap Contents drill-down tree
+   uses), so it needs its own selector here - same reasoning as
+   .callerRow[data-cpu-expandable] above. Covers both roles at this level
+   (leafMethodRow for throw sites, callerRow for their own callers), since
+   both use this same attribute name (see that function's own comment). */
+.leafMethodRow[data-exception-caller-expandable],
+.callerRow[data-exception-caller-expandable]
+{
+    cursor: pointer;
+}
+
+.leafMethodRow[data-exception-caller-expandable]:hover,
+.callerRow[data-exception-caller-expandable]:hover
+{
+    background-color: lightblue;
+}
+
 /* CPU sample-density timeline chart above the Methods table */
 .cpuTimelineSection
 {
@@ -1422,36 +1463,6 @@ td.rowHideColumn:hover
     right: 8px;
     top: 8px;
     z-index: 1;
-}
-
-/* Summary bar above each inline caller tree's own <table class="callerTreeInner">
-   (a <div> sibling BEFORE it, not a row inside it - see
-   buildInlineCpuMethodCallerTree's own comment on why: matches where every
-   other drill-down view puts its own summary/controls, outside its table,
-   not treated as part of the tabular data). */
-.inlineCallerSummary
-{
-    align-items: center;
-    color: rgba(72, 83, 136, 0.8);
-    display: flex;
-    font-size: 0.85em;
-    justify-content: space-between;
-    padding: 4px 8px;
-}
-
-/* Expand All/Collapse All controls for one method's own inline caller tree -
-   reuses .drillDownExpandControlButton's existing look (see that rule) but
-   needs its own wrapper rather than .drillDownExpandControls directly:
-   that one assumes it's a block-level element below a summary paragraph
-   (margin-top, left-indented) - here the controls sit INLINE, at the right
-   edge of the same .inlineCallerSummary bar (see
-   buildInlineCpuMethodCallerTree), not stacked below it. */
-.inlineCallerExpandControls .drillDownExpandControlButton
-{
-    font-size: 0.8em;
-    margin-right: 0;
-    margin-left: 0.5em;
-    padding: 0.3em 0.8em;
 }
 
 /* Expandable site rows in the Contention ranked-sites table */

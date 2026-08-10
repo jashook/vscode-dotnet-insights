@@ -1,5 +1,5 @@
-// Renders the "Exceptions" view's ranked-type table + summary tiles against
-// the gcData["exceptionSummary"] shape produced by
+// Renders the "Exceptions" view's summary tiles, optional timeline chart, and
+// ranked-type table against the gcData["exceptionSummary"] shape produced by
 // nettraceParser/Exceptions/ExceptionJsonExporter.cs - a full accounting of
 // every CLR ExceptionThrown_V1 event in the capture (not sampled, unlike
 // allocationSummary's AllocationTick-based sampling), ranked by throw count
@@ -8,11 +8,27 @@
 // nettrace-only: gcData["exceptionSummary"] is absent for .gcinfo/XML input
 // (see GcJsonExporter.cs) - callers should only invoke this when both
 // sourceFormat === "nettrace" and exceptionSummary.topTypes is non-empty
-// (see GcSnapshotRenderer.ts). Structurally mirrors
-// AllocationSummaryRenderer.ts's Charts/Drill Down inner-tab pattern, minus
-// the type-timeline chart and the All/LOH toggle - a per-type folded
-// throw-site stack tree is the whole point here, not a second view to
-// switch between.
+// (see GcSnapshotRenderer.ts).
+//
+// No tab bar/Drill Down tab anymore - this used to be a "Types" tab whose
+// rows navigated to a separate "Drill Down" tab (mirroring
+// AllocationSummaryRenderer.ts's Charts/Drill Down pattern). Unified into one
+// table instead, matching ContentionRenderer.ts's own shape exactly: each
+// ranked row expands inline to show its caller tree, lazily populated by
+// buildInlineExceptionTypeCallerTree (exceptionDrillDownStats.js) when first
+// expanded - there's no second alternate view here to justify a tab bar, the
+// same reasoning Contention's own view already follows.
+
+import { renderSortableTableHeader } from './GcDetailTableRenderer';
+
+function escapeHtml(value: string): string {
+    return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+}
+
 export function renderExceptionSummaryTable(exceptionSummary: any): string {
     const topTypes = exceptionSummary["topTypes"];
 
@@ -22,6 +38,7 @@ export function renderExceptionSummaryTable(exceptionSummary: any): string {
 
     const totalExceptionCount = exceptionSummary["totalExceptionCount"];
     const distinctTypeCount = exceptionSummary["distinctTypeCount"];
+    const hasTimeline = !!(exceptionSummary["timeline"]);
 
     // Total/Distinct Types tile ids let rebuildExceptionTypesTable
     // (snapshotGcStats.js) rewrite them after a row is hidden.
@@ -34,28 +51,21 @@ export function renderExceptionSummaryTable(exceptionSummary: any): string {
             </div>
         </div>`;
 
-    var rows = "";
-    for (var index = 0; index < topTypes.length; ++index) {
-        const typeStats = topTypes[index];
-
-        const tdTypeName = typeStats["TypeName"];
-        const tdCount = typeStats["Count"];
-        const tdPercent = Number(typeStats["PercentOfTotal"]).toFixed(2);
-        const tdSampleMessage = typeStats["SampleMessage"] || "";
-
-        // Clickable - see snapshotGcStats.js's onExceptionTypeDrillDownClick.
-        // Every row is drillable: exceptionSummary["typeDrillDown"] is a
-        // parallel array to topTypes, one entry per row here, and every
-        // type in topTypes has at least one throw by construction, so its
-        // typeDrillDown entry always has at least the "<no stack captured>"
-        // placeholder even in the worst case. rowHideBtn is its own cell
-        // (not sharing the Type Name cell) since the whole row is already a
-        // click-navigate target - see snapshotGcStats.js's click delegation,
-        // which checks .rowHideBtn before its .exceptionTypeRow fallthrough.
-        rows += `<tr class="typeRow exceptionTypeRow" data-exception-type-index="${index}"><td class="rowHideColumn"><button class="rowHideBtn" type="button" title="Hide this row">&#10005;</button></td><td>${tdTypeName}</td><td>${tdCount}</td><td>${tdPercent}</td><td>${escapeHtml(tdSampleMessage)}</td></tr>`;
-    }
-
-    const header = `<tr class="tableHeader"><th class="rowHideColumn"></th><th>Exception Type</th><th>Count</th><th>% of Total</th><th>Sample Message</th></tr>`;
+    // Same .cpuTimelineSection/.cpuTimelineContainer shape CPU Methods/
+    // Contention already use verbatim (both classes are fully generic, no
+    // new CSS needed) - gated on exceptionSummary.timeline being non-null,
+    // same hasTimeline convention Contention's own view uses.
+    const timelineHtml = hasTimeline ? `
+        <div class="cpuTimelineSection">
+            <div class="allocationZoomStatus" id="exceptionTimelineZoomStatus" style="display:none">
+                <span class="allocationZoomStatusLabel" id="exceptionTimelineZoomLabel"></span>
+                <button class="resetZoomButton" id="exceptionTimelineResetZoomBtn">Reset Zoom (Backspace)</button>
+            </div>
+            <div class="cpuTimelineContainer">
+                <span class="chartZoomHint" id="exceptionTimelineZoomHint">Drag to zoom</span>
+                <canvas id="exceptionTimeline"></canvas>
+            </div>
+        </div>` : ``;
 
     // Hidden until at least one row is hidden - same allocationZoomStatus
     // idiom as every other hide-status bar on this page.
@@ -65,29 +75,61 @@ export function renderExceptionSummaryTable(exceptionSummary: any): string {
             <button class="resetZoomButton" id="exceptionTypesShowAllBtn">Show all</button>
         </div>`;
 
-    // id lets a future zoom/filter feature find and rebuild this table's
-    // rows the same way allocationTypeTable does today - not used yet
-    // (exceptions have no time-bucketed chart to zoom against), kept for
-    // consistency with that table's own convention.
-    const tableHtml = `<div class="detailTable allocationTypeTable"><table id="exceptionTypeTable">${header}${rows}</table></div>`;
+    const tableHtml = renderExceptionTypesTable(exceptionSummary);
 
-    const exceptionsTabBar = `
-        <div class="heapContentsTabBar">
-            <button class="heapContentsTabButton active" data-exceptiontab="types">Types</button>
-            <button class="heapContentsTabButton" id="exceptionDrillDownTabButton" data-exceptiontab="drilldown" style="display:none">Drill Down</button>
-            <button class="backToChartsButton" id="backToExceptionTypesButton" style="display:none">&larr; Back to Types (Backspace)</button>
-        </div>`;
-
-    const typesPanelHtml = `<div id="exceptions-tab-types" class="heapContentsTabPanel active">${summaryTilesHtml}${hideStatusHtml}${tableHtml}</div>`;
-    const drillDownPanelHtml = `<div id="exceptions-tab-drilldown" class="heapContentsTabPanel"></div>`;
-
-    return `${exceptionsTabBar}${typesPanelHtml}${drillDownPanelHtml}`;
+    return `${summaryTilesHtml}${timelineHtml}${hideStatusHtml}${tableHtml}`;
 }
 
-function escapeHtml(value: string): string {
-    return value
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
+// Ranked types table: each row shows the exception type, throw count, %
+// of total, and a sample message. Each row is expandable inline to show the
+// full caller tree, lazily populated by buildInlineExceptionTypeCallerTree
+// (exceptionDrillDownStats.js) - same shape as CpuProfileRenderer.ts's
+// renderHotMethodsTable/ContentionRenderer.ts's renderTopSitesTable.
+function renderExceptionTypesTable(exceptionSummary: any): string {
+    const topTypes = exceptionSummary["topTypes"];
+
+    if (!topTypes || topTypes.length === 0) {
+        return `<div class="detailTable"><p>No ranked types to display.</p></div>`;
+    }
+
+    var rows = "";
+    for (var index = 0; index < topTypes.length; ++index) {
+        const typeStats = topTypes[index];
+
+        const tdTypeName = typeStats["TypeName"];
+        const tdCount = typeStats["Count"];
+        const tdPercent = Number(typeStats["PercentOfTotal"]).toFixed(2);
+        const tdSampleMessage = typeStats["SampleMessage"] || "";
+
+        // Every row is drillable: exceptionSummary["typeDrillDown"] is a
+        // parallel array to topTypes, one entry per row here, and every type
+        // in topTypes has at least one throw by construction, so its
+        // typeDrillDown entry always has at least the "<no stack captured>"
+        // placeholder even in the worst case.
+        rows += `<tr class="typeRow exceptionTypeRow" ` +
+            `data-exception-type-index="${index}" ` +
+            `data-exception-expandable="true" ` +
+            `data-exception-target="exceptionTypeDetail${index}">` +
+            `<td class="rowHideColumn"><button class="rowHideBtn" type="button" title="Hide this row">&#10005;</button></td>` +
+            `<td><span class="leafMethodToggle">&#9656;</span>${escapeHtml(tdTypeName)}</td>` +
+            `<td>${tdCount}</td>` +
+            `<td>${tdPercent}</td>` +
+            `<td>${escapeHtml(tdSampleMessage)}</td>` +
+            `</tr>` +
+            `<tr id="exceptionTypeDetail${index}" class="callPathsDetail" data-exception-type-lazy="${index}">` +
+            `<td colspan="5" class="callerTreeCell"></td>` +
+            `</tr>`;
+    }
+
+    const columns: ReadonlyArray<[string, string]> = [
+        ["Exception Type", "text"],
+        ["Count", "number"],
+        ["% of Total", "number"],
+        ["Sample Message", "text"],
+    ];
+
+    const header = renderSortableTableHeader(columns);
+    const headerWithHideColumn = header.replace('<tr class="tableHeader">', '<tr class="tableHeader"><th class="rowHideColumn"></th>');
+
+    return `<div class="detailTable cpuHotMethodsTable"><table id="exceptionTypeTable">${headerWithHideColumn}${rows}</table></div>`;
 }

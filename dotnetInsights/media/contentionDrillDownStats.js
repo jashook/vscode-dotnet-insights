@@ -55,7 +55,17 @@ function formatContentionPercentOfTotal(rowWaitMSec, grandTotalWaitMSec) {
     return `${percentage.toFixed(2)}%`;
 }
 
-const CONTENTION_CALLER_TREE_COLGROUP = `<colgroup><col><col class="bytesColumn"><col class="percentColumn"><col class="percentColumn"></colgroup>`;
+// Leading spacer <col> (width matches .rowHideColumn's own 1.6em in
+// snapshot.css) plus a matching empty leading <td> on every row below
+// (renderContentionTreeRow) - this tree is inlined directly into the
+// ranked Contention Top Sites table's own row,
+// which gained its own leading rowHideColumn ✕ column; without a matching
+// offset here this table's own independently-sized table-layout:fixed
+// columns render flush against the row's left edge as if that outer
+// column didn't exist, visibly misaligning under the outer table's own
+// numeric headers - see cpuDrillDownStats.js's CPU_CALLER_TREE_COLGROUP,
+// which needed the identical fix for the identical reason.
+const CONTENTION_CALLER_TREE_COLGROUP = `<colgroup><col style="width: 1.6em"><col><col class="bytesColumn"><col class="percentColumn"><col class="percentColumn"></colgroup>`;
 
 var contentionCallerRowIdCounter = 0;
 
@@ -80,6 +90,9 @@ function renderContentionTreeRow(rowId, roleLabelHtml, frameHtml, indentAttr, no
     var totalWaitMSec = node["totalWaitMSec"];
 
     var rowHtml = `<tr class="${roleLabelHtml.rowClass} ${branchClass}"${hasChildren ? ` data-contention-expandable="true" data-contention-target="${rowId}"` : ``}>` +
+        // Empty leading <td> - pairs with CONTENTION_CALLER_TREE_COLGROUP's
+        // own leading spacer <col> (see that constant's own comment).
+        `<td></td>` +
         `<td${indentAttr}>${toggleHtml}${roleLabelHtml.html}${frameHtml}${pathCountSuffix}</td>` +
         `<td>${totalWaitMSec.toFixed(3)}</td>` +
         `<td>${formatContentionPercentOfSite(totalWaitMSec, percentDenominatorWaitMSec)}</td>` +
@@ -92,7 +105,7 @@ function renderContentionTreeRow(rowId, roleLabelHtml, frameHtml, indentAttr, no
 
     pendingContentionLazySubtrees.set(rowId, { node: node, depth: 0, grandTotalWaitMSec: grandTotalWaitMSec, branchClass: branchClass, siteTotalWaitMSec: siteTotalWaitMSec });
 
-    return rowHtml + `<tr id="${rowId}" class="callPathsDetail" data-contention-lazy-inner="true"><td colspan="4" class="callerTreeCell"></td></tr>`;
+    return rowHtml + `<tr id="${rowId}" class="callPathsDetail" data-contention-lazy-inner="true"><td colspan="5" class="callerTreeCell"></td></tr>`;
 }
 
 const CONTENTION_CALLED_BY_ROLE = { rowClass: "callerRow", html: `` };
@@ -103,7 +116,13 @@ const CONTENTION_CALLER_INDENT_MAX_EM = 17;
 function renderContentionCallerRow(node, depth, percentDenominatorWaitMSec, grandTotalWaitMSec, branchClass, siteTotalWaitMSec) {
     var children = node["children"] || [];
     var rowId = children.length > 0 ? `contentionDrillDownCaller${++contentionCallerRowIdCounter}` : null;
-    var uncappedIndentEm = (depth + 1) * CONTENTION_CALLER_INDENT_EM_PER_LEVEL;
+    // depth, not depth+1 - see cpuDrillDownStats.js's renderCpuCallerRow,
+    // which needed the identical fix for the identical reason (this tree's
+    // own leading columns now line up with the outer ranked table's own -
+    // see CONTENTION_CALLER_TREE_COLGROUP's own comment - so the old
+    // unconditional +1 level of indent on top of that reads as one extra,
+    // unindented tab stop between the site's own row and its first caller).
+    var uncappedIndentEm = depth * CONTENTION_CALLER_INDENT_EM_PER_LEVEL;
     var indentEm = uncappedIndentEm < CONTENTION_CALLER_INDENT_MAX_EM ? uncappedIndentEm : CONTENTION_CALLER_INDENT_MAX_EM;
     var frameHtml = formatContentionFrameHtml(currentContentionMethodNames[node["frame"]]);
 
@@ -159,15 +178,14 @@ function buildInlineContentionSiteCallerTree(entry, methodNames, grandTotalWaitM
 
     var children = entry["children"] || [];
     var totalWaitMSec = entry["totalWaitMSec"];
-    var contentionCount = entry["contentionCount"];
-    var distinctStacks = entry["distinctStackCount"];
-
-    var summaryRow = `<tr class="inlineCallerSummaryRow"><td colspan="4" class="inlineCallerSummary">` +
-        `${totalWaitMSec.toFixed(3)} ms total wait · ${contentionCount.toLocaleString()} contentions · ${distinctStacks.toLocaleString()} distinct call stacks` +
-        `</td></tr>`;
-
+    // No summary line (total wait/contention count/distinct-stack count)
+    // here anymore - matches cpuDrillDownStats.js's/exceptionDrillDownStats.js's
+    // own cleanup (see buildInlineCpuMethodCallerTree's own comment): the
+    // row that was just clicked already shows its own Total Wait/Count/% of
+    // Wait in the ranked table above it, so this was pure duplication every
+    // time a site was expanded.
     if (children.length === 0) {
-        return `<table class="callerTreeInner">${CONTENTION_CALLER_TREE_COLGROUP}${summaryRow}</table>`;
+        return '<p style="padding:8px;margin:0">No caller data available for this site.</p>';
     }
 
     var isBranch = children.length > 1;
@@ -179,5 +197,5 @@ function buildInlineContentionSiteCallerTree(entry, methodNames, grandTotalWaitM
         childRowsHtml += renderContentionCallerRow(children[childIndex], 0, totalWaitMSec, grandTotalWaitMSec, branchClass, totalWaitMSec);
     }
 
-    return `<table class="callerTreeInner">${CONTENTION_CALLER_TREE_COLGROUP}${summaryRow}${childRowsHtml}</table>`;
+    return `<table class="callerTreeInner">${CONTENTION_CALLER_TREE_COLGROUP}${childRowsHtml}</table>`;
 }

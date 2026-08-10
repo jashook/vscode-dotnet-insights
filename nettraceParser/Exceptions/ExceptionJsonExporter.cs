@@ -45,6 +45,12 @@ public static class ExceptionJsonExporter
     private const int TopTypesLimit = 50;
     private const int DrillDownTreeChildrenLimit = 12;
 
+    // Same cap as CpuProfileJsonExporter.WriteTimeline/ContentionJsonExporter's
+    // own timeline - bounds a huge capture's timeline to a fixed number of
+    // buckets while still giving small captures one bucket per exception
+    // rather than mostly-empty ones.
+    private const int MaxTimelineBuckets = 100;
+
     // Per-type total nodes written to typeDrillDown, across the whole
     // recursive tree - bounds output size for a pathological single type
     // with a huge, highly-branching set of distinct throw-site stacks
@@ -112,6 +118,8 @@ public static class ExceptionJsonExporter
             writer.WritePropertyName("typeDrillDown");
             writer.WriteStartArray();
             writer.WriteEndArray();
+            writer.WritePropertyName("timeline");
+            writer.WriteNullValue();
             writer.WritePropertyName("methodNames");
             writer.WriteStartArray();
             writer.WriteEndArray();
@@ -120,6 +128,12 @@ public static class ExceptionJsonExporter
         }
 
         Span<ExceptionEvent> eventsSpan = CollectionsMarshal.AsSpan(exceptionEvents);
+
+        // Same pass also tracks the overall time range for timeline
+        // bucketing (mirrors ContentionJsonExporter.Write's own pass-1) -
+        // no separate scan needed since this one already visits every event.
+        double minRelativeMSec = double.MaxValue;
+        double maxRelativeMSec = double.MinValue;
 
         Dictionary<string, TypeExceptionStats> statsByType = new Dictionary<string, TypeExceptionStats>();
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
@@ -137,6 +151,16 @@ public static class ExceptionJsonExporter
             }
 
             ++stats.Count;
+
+            if (exceptionEvent.RelativeMSec < minRelativeMSec)
+            {
+                minRelativeMSec = exceptionEvent.RelativeMSec;
+            }
+
+            if (exceptionEvent.RelativeMSec > maxRelativeMSec)
+            {
+                maxRelativeMSec = exceptionEvent.RelativeMSec;
+            }
         }
 
         List<TypeExceptionStats> sortedStats = new List<TypeExceptionStats>(statsByType.Values);
@@ -166,20 +190,62 @@ public static class ExceptionJsonExporter
         }
         writer.WriteEndArray();
 
+        // Timeline parameters, computed before pass 2 (mirrors
+        // ContentionJsonExporter.Write's own ordering) - null when there's no
+        // meaningful time range (a single instant, or all exceptions at the
+        // same RelativeMSec).
+        double totalDurationMSec = maxRelativeMSec - minRelativeMSec;
+        bool hasTimeline = totalDurationMSec > 0;
+        int bucketCount = 0;
+        double bucketDurationMSec = 0;
+        int[] countByBucket = null;
+        int[][] typeSelfByBucket = null;
+
+        if (hasTimeline)
+        {
+            bucketCount = exceptionEvents.Count < MaxTimelineBuckets ? exceptionEvents.Count : MaxTimelineBuckets;
+            bucketDurationMSec = totalDurationMSec / bucketCount;
+            countByBucket = new int[bucketCount];
+
+            typeSelfByBucket = new int[topTypesCount][];
+            for (int typeIndex = 0; typeIndex < topTypesCount; ++typeIndex)
+            {
+                typeSelfByBucket[typeIndex] = new int[bucketCount];
+            }
+        }
+
         // Group every event's raw Stack by (typeIndex, stack array
         // reference) - mirrors AllocationJsonExporter.cs's
         // BuildDrillDownAggregates, just without the (typeIndex, bucketIndex)
-        // cell dimension this feature doesn't have.
+        // cell dimension this feature doesn't have. Also fills the timeline
+        // buckets above, since this pass already visits every event.
         Dictionary<long[], ExceptionStackAggregate>[] stacksByType = new Dictionary<long[], ExceptionStackAggregate>[topTypesCount];
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
             ref readonly ExceptionEvent exceptionEvent = ref eventsSpan[eventIndex];
             string typeName = string.IsNullOrEmpty(exceptionEvent.ExceptionType) ? "<unknown>" : exceptionEvent.ExceptionType;
 
+            int bucketIndex = -1;
+            if (hasTimeline)
+            {
+                bucketIndex = (int)((exceptionEvent.RelativeMSec - minRelativeMSec) / bucketDurationMSec);
+                if (bucketIndex >= bucketCount)
+                {
+                    bucketIndex = bucketCount - 1;
+                }
+
+                ++countByBucket[bucketIndex];
+            }
+
             int typeIndex;
             if (!typeIndexByName.TryGetValue(typeName, out typeIndex))
             {
                 continue;
+            }
+
+            if (hasTimeline)
+            {
+                ++typeSelfByBucket[typeIndex][bucketIndex];
             }
 
             Dictionary<long[], ExceptionStackAggregate> typeStacks = stacksByType[typeIndex];
@@ -249,6 +315,51 @@ public static class ExceptionJsonExporter
             writer.WriteEndObject();
         }
         writer.WriteEndArray();
+
+        // Timeline: null if there's no meaningful time range, otherwise the
+        // per-bucket throw-count breakdown for the chart - countByBucket is
+        // every exception (mirrors CpuProfileJsonExporter's samplesByBucket),
+        // typeSelfByBucket is the per-ranked-type breakdown (mirrors that
+        // file's methodSelfByBucket) that lets hiding a type in the ranked
+        // table also subtract its own contribution from the chart, the same
+        // way a hidden CPU method already does.
+        writer.WritePropertyName("timeline");
+
+        if (!hasTimeline)
+        {
+            writer.WriteNullValue();
+        }
+        else
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("minRelativeMSec", minRelativeMSec);
+            writer.WriteNumber("totalDurationMSec", totalDurationMSec);
+            writer.WriteNumber("bucketDurationMSec", bucketDurationMSec);
+            writer.WriteNumber("bucketCount", bucketCount);
+
+            writer.WritePropertyName("countByBucket");
+            writer.WriteStartArray();
+            for (int bucketIndex = 0; bucketIndex < bucketCount; ++bucketIndex)
+            {
+                writer.WriteNumberValue(countByBucket[bucketIndex]);
+            }
+            writer.WriteEndArray();
+
+            writer.WritePropertyName("typeSelfByBucket");
+            writer.WriteStartArray();
+            for (int typeIndex = 0; typeIndex < topTypesCount; ++typeIndex)
+            {
+                writer.WriteStartArray();
+                for (int bucketIndex = 0; bucketIndex < bucketCount; ++bucketIndex)
+                {
+                    writer.WriteNumberValue(typeSelfByBucket[typeIndex][bucketIndex]);
+                }
+                writer.WriteEndArray();
+            }
+            writer.WriteEndArray();
+
+            writer.WriteEndObject();
+        }
 
         // Written last since it's only fully populated once every type's
         // tree has been walked - JSON object key order carries no meaning

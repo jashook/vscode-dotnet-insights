@@ -1,18 +1,24 @@
-// Script run within the webview itself - renders the Exceptions view's
-// "Drill Down" tab against gcData["exceptionSummary"]["typeDrillDown"]
-// (nettraceParser/Exceptions/ExceptionJsonExporter.cs's WriteCallerTreeChildren
-// output), reached by clicking a row in the exceptions ranked-types table -
-// see snapshotGcStats.js's onExceptionTypeDrillDownClick.
+// Script run within the webview itself - builds inline caller-tree expansions
+// for the Exceptions view's unified ranked-types table (each exception type
+// row expands to show its throw sites and their own callers, replacing the
+// former separate "Drill Down" tab). Entry point for callers:
+// buildInlineExceptionTypeCallerTree (called from snapshotGcStats.js's
+// exceptions panel wiring when a type row is first expanded) and
+// buildLazyExceptionDrillDownSubtree (called lazily for each interior caller
+// node as it's expanded deeper into the tree).
 //
-// Deliberate near-total mirror of drillDownStats.js's lazy-expand caller-
-// tree renderer (see that file's own extensive header comment for the full
-// rationale: folded-tree-not-representative-stack, flame-graph-style %,
-// build-exactly-one-level-per-click) - kept as a parallel file with its own
-// names rather than sharing drillDownStats.js's globals (both files are
-// loaded as plain <script> tags into the same webview global scope, and
-// ExceptionJsonExporter.cs's node shape uses "count" as its one metric with
-// no separate bytes/ticks split AllocationJsonExporter.cs's shape has), not
-// because the underlying tree algorithm differs in any way.
+// Deliberate near-total mirror of cpuDrillDownStats.js's lazy-expand caller-
+// tree renderer (see that file's own header comment, and drillDownStats.js's
+// before it, for the full rationale) - kept as its own parallel file with its
+// own names rather than sharing globals, not because the underlying tree
+// algorithm differs in any way. One real shape difference from
+// cpuDrillDownStats.js: exceptionSummary["typeDrillDown"][typeIndex] is a
+// container whose "children" are multiple distinct THROW SITES for that
+// type (each its own top-level row, EXCEPTION_THROW_SITE_ROLE), and each
+// throw site's OWN children are its callers (EXCEPTION_CALLED_BY_ROLE) -
+// unlike CPU's hotMethodDrillDown[methodIndex], which only ever has one root
+// (the hot method itself, already shown as the outer table row) with no
+// separate "throw site" level in between.
 function escapeHtmlForExceptionDrillDown(value) {
     return String(value)
         .replace(/&/g, "&amp;")
@@ -39,7 +45,7 @@ function formatExceptionFrameHtml(rawFrameName) {
 
 // "% of Site" - this row's share of the THROW SITE (top-level leaf node) it
 // sits under, held constant for its entire chain, same flame-graph-style
-// reasoning as drillDownStats.js's formatPercentOfSelf.
+// reasoning as cpuDrillDownStats.js's formatCpuPercentOfMethod.
 function formatExceptionPercentOfSelf(rowCount, siteTotalCount) {
     if (!(siteTotalCount > 0)) {
         return "";
@@ -50,8 +56,8 @@ function formatExceptionPercentOfSelf(rowCount, siteTotalCount) {
 }
 
 // "% of Total" - fixed denominator (the whole capture's totalExceptionCount)
-// at every row and every depth, same as drillDownStats.js's
-// formatPercentOfTotal.
+// at every row and every depth, same as cpuDrillDownStats.js's
+// formatCpuPercentOfTotal.
 function formatExceptionPercentOfTotal(rowCount, grandTotalCount) {
     if (!(grandTotalCount > 0)) {
         return "";
@@ -63,27 +69,35 @@ function formatExceptionPercentOfTotal(rowCount, grandTotalCount) {
 
 // One fewer column than drillDownStats.js's CALLER_TREE_COLGROUP (no
 // separate ticks column - "count" is the one metric here, already its own
-// column).
-const EXCEPTION_CALLER_TREE_COLGROUP = `<colgroup><col><col class="bytesColumn"><col class="percentColumn"><col class="percentColumn"></colgroup>`;
+// column) - same shape as CPU_CALLER_TREE_COLGROUP.
+//
+// Leading spacer <col> (width matches .rowHideColumn's own 1.6em in
+// snapshot.css) plus a matching empty leading <td> on every row below
+// (renderExceptionTreeRow) - this tree is now inlined directly into the
+// ranked Exceptions table's own row (previously a standalone, un-hide-
+// columned table on a separate Drill Down tab), and that outer table has
+// its own leading rowHideColumn ✕ column - see CPU_CALLER_TREE_COLGROUP's
+// own comment for the alignment bug this avoids.
+const EXCEPTION_CALLER_TREE_COLGROUP = `<colgroup><col style="width: 1.6em"><col><col class="bytesColumn"><col class="percentColumn"><col class="percentColumn"></colgroup>`;
 
 var exceptionCallerRowIdCounter = 0;
 
 // rowId -> { node, depth, grandTotalCount, branchClass, siteTotalCount } -
-// same role as drillDownStats.js's pendingLazySubtrees, scoped separately
-// so an exceptions drill-down click never collides with a Heap Contents
-// drill-down click (even though only one panel is ever visible at a time,
-// keeping these independent avoids coupling the two files' internal state).
+// same role as cpuDrillDownStats.js's pendingCpuLazySubtrees, scoped
+// separately so an Exceptions drill-down click never collides with a
+// Profile or Heap Contents drill-down click.
 var pendingExceptionLazySubtrees = new Map();
 
-// exceptionSummary["methodNames"] for whichever renderExceptionDrillDownTable
-// call is currently active - a node's "frame" field is an integer index
-// into it, same convention as drillDownStats.js's currentMethodNames.
+// exceptionSummary["methodNames"] for the currently active session - a
+// node's "frame" field is an integer index into it, same convention as
+// cpuDrillDownStats.js's currentCpuMethodNames. Set once per view via
+// initExceptionDrillDownMethodNames.
 var currentExceptionMethodNames = null;
 
 // Renders exactly one tree node as its own row - never recurses into its
 // own children (see buildLazyExceptionDrillDownSubtree for that, deferred
-// until the row is actually expanded). Mirrors drillDownStats.js's
-// renderTreeRow, minus the bytes/ticks split (just "count").
+// until the row is actually expanded). Mirrors cpuDrillDownStats.js's
+// renderCpuTreeRow, against "count" instead of "totalSamples".
 function renderExceptionTreeRow(rowId, roleLabelHtml, frameHtml, indentAttr, node, percentDenominatorCount, grandTotalCount, branchClass, siteTotalCount) {
     var children = node["children"] || [];
     var hasChildren = children.length > 0;
@@ -96,7 +110,10 @@ function renderExceptionTreeRow(rowId, roleLabelHtml, frameHtml, indentAttr, nod
         ? ` <span class="pathCount">(${node["distinctStackCount"].toLocaleString()} call paths)</span>`
         : ``;
 
-    var rowHtml = `<tr class="${roleLabelHtml.rowClass} ${branchClass}"${hasChildren ? ` data-exception-expandable="true" data-exception-target="${rowId}"` : ``}>` +
+    var rowHtml = `<tr class="${roleLabelHtml.rowClass} ${branchClass}"${hasChildren ? ` data-exception-caller-expandable="true" data-exception-caller-target="${rowId}"` : ``}>` +
+        // Empty leading <td> - pairs with EXCEPTION_CALLER_TREE_COLGROUP's
+        // own leading spacer <col> (see that constant's own comment).
+        `<td></td>` +
         `<td${indentAttr}>${toggleHtml}${roleLabelHtml.html}${frameHtml}${pathCountSuffix}</td>` +
         `<td>${node["count"].toLocaleString()}</td>` +
         `<td>${formatExceptionPercentOfSelf(node["count"], percentDenominatorCount)}</td>` +
@@ -109,7 +126,7 @@ function renderExceptionTreeRow(rowId, roleLabelHtml, frameHtml, indentAttr, nod
 
     pendingExceptionLazySubtrees.set(rowId, { node: node, depth: 0, grandTotalCount: grandTotalCount, branchClass: branchClass, siteTotalCount: siteTotalCount });
 
-    return rowHtml + `<tr id="${rowId}" class="callPathsDetail" data-exception-lazy="true"><td colspan="4" class="callerTreeCell"></td></tr>`;
+    return rowHtml + `<tr id="${rowId}" class="callPathsDetail" data-exception-caller-lazy="true"><td colspan="5" class="callerTreeCell"></td></tr>`;
 }
 
 const EXCEPTION_THROW_SITE_ROLE = { rowClass: "leafMethodRow", html: `` };
@@ -120,12 +137,19 @@ const EXCEPTION_CALLED_BY_ROLE = { rowClass: "callerRow", html: `` };
 const EXCEPTION_CALLER_INDENT_EM_PER_LEVEL = 0.85;
 const EXCEPTION_CALLER_INDENT_MAX_EM = 17;
 
-// Renders one caller frame (a tree node at depth >= 1) as its own row -
-// mirrors drillDownStats.js's renderCallerRow.
+// Renders one caller frame (a tree node at depth >= 1, i.e. a caller of a
+// throw site or of another caller) as its own row - mirrors
+// cpuDrillDownStats.js's renderCpuCallerRow.
 function renderExceptionCallerRow(node, depth, percentDenominatorCount, grandTotalCount, branchClass, siteTotalCount) {
     var children = node["children"] || [];
     var rowId = children.length > 0 ? `exceptionDrillDownCaller${++exceptionCallerRowIdCounter}` : null;
-    var uncappedIndentEm = (depth + 1) * EXCEPTION_CALLER_INDENT_EM_PER_LEVEL;
+    // depth, not depth+1 - see cpuDrillDownStats.js's renderCpuCallerRow,
+    // which needed the identical fix for the identical reason (this tree's
+    // own leading columns now line up with the outer ranked table's own -
+    // see EXCEPTION_CALLER_TREE_COLGROUP's own comment - so an unconditional
+    // +1 level of indent on top of that reads as one extra, unindented tab
+    // stop between a throw site's own row and its first caller).
+    var uncappedIndentEm = depth * EXCEPTION_CALLER_INDENT_EM_PER_LEVEL;
     var indentEm = uncappedIndentEm < EXCEPTION_CALLER_INDENT_MAX_EM ? uncappedIndentEm : EXCEPTION_CALLER_INDENT_MAX_EM;
     var frameHtml = formatExceptionFrameHtml(currentExceptionMethodNames[node["frame"]]);
 
@@ -141,7 +165,7 @@ function renderExceptionCallerRow(node, depth, percentDenominatorCount, grandTot
 }
 
 // Builds exactly one level of a lazily-registered row's children - mirrors
-// drillDownStats.js's buildLazyDrillDownSubtree.
+// cpuDrillDownStats.js's buildLazyCpuDrillDownSubtree.
 function buildLazyExceptionDrillDownSubtree(rowId) {
     var pending = pendingExceptionLazySubtrees.get(rowId);
     if (!pending) {
@@ -165,42 +189,38 @@ function buildLazyExceptionDrillDownSubtree(rowId) {
     return `<table class="callerTreeInner">${EXCEPTION_CALLER_TREE_COLGROUP}${childRowsHtml}</table>`;
 }
 
-// entry: exceptionSummary["typeDrillDown"][typeIndex] - a
-// { count, distinctStackCount, totalChildCount, children } object (see this
-// file's header comment). Always "whole capture" in scope - unlike
-// AllocationJsonExporter.cs's typeDrillDown, there's no per-time-bucket cell
-// dimension here to disambiguate, since the Exceptions view has no
-// time-bucketed chart. grandTotalCount is exceptionSummary.totalExceptionCount,
-// threaded down to every row as a fixed-denominator "% of Total" column
-// alongside "% of Site" (see formatExceptionPercentOfSelf).
-function renderExceptionDrillDownTable(entry, typeName, methodNames, grandTotalCount) {
-    const typeHeading = `<h3 class="detailTableHeading drillDownTypeHeading">Type: ${escapeHtmlForExceptionDrillDown(typeName)}</h3>`;
+// Sets the method-name pool for this Exceptions view session. Called once
+// from snapshotGcStats.js when the Exceptions panel is first wired up, so
+// every subsequent buildInlineExceptionTypeCallerTree/
+// buildLazyExceptionDrillDownSubtree call uses the same shared pool without
+// having to thread it through every call site.
+function initExceptionDrillDownMethodNames(methodNames) {
+    currentExceptionMethodNames = methodNames;
+}
 
-    const leafGroups = entry && entry["children"];
-    if (!leafGroups || leafGroups.length === 0) {
-        return `<div class="drillDownHeader">${typeHeading}</div><div class="detailTable"><p>No captured stacks for this selection.</p></div>`;
-    }
-
-    exceptionCallerRowIdCounter = 0;
-    pendingExceptionLazySubtrees.clear();
+// Builds the inline caller tree for one exception type row's expansion -
+// entry is exceptionSummary["typeDrillDown"][typeIndex], already loaded from
+// the JSON. Returns the HTML of a callerTreeInner <table> to inject into the
+// .callerTreeCell <td> of the corresponding callPathsDetail row.
+//
+// entry.children are throw sites (EXCEPTION_THROW_SITE_ROLE, unindented,
+// each its own top-level row) - not callers directly, unlike
+// cpuDrillDownStats.js's buildInlineCpuMethodCallerTree, since one exception
+// type can have many distinct throw sites, each with its own caller chain.
+// No summary line (throw count/distinct-stack count) and no per-type Expand
+// All/Collapse All here, matching cpuDrillDownStats.js's own current
+// convention - the row that was just clicked already shows its own Count/%
+// of Total in the ranked table above, and the master Expand All/Collapse
+// All pair above that table already covers a full-depth expand/collapse.
+function buildInlineExceptionTypeCallerTree(entry, methodNames, grandTotalCount) {
     currentExceptionMethodNames = methodNames;
 
-    const totalCount = entry["count"];
-    const distinctStackCount = entry["distinctStackCount"];
-    const isTruncated = entry["totalChildCount"] > leafGroups.length;
+    var leafGroups = entry && entry["children"];
+    if (!leafGroups || leafGroups.length === 0) {
+        return '<p style="padding:8px;margin:0">No caller data available for this type.</p>';
+    }
 
-    const siteWord = leafGroups.length === 1 ? "throw site" : "throw sites";
-    const truncationNote = isTruncated
-        ? ` <span class="drillDownTruncationNote">(showing top ${leafGroups.length.toLocaleString()} throw sites by count - some long-tail throw sites aren't individually listed below, but are still counted in every total/percentage.)</span>`
-        : ``;
-    const summaryLine = `<p class="drillDownSummary">${totalCount.toLocaleString()} exceptions across ${leafGroups.length} ${siteWord} (${distinctStackCount.toLocaleString()} distinct call stacks).${truncationNote}</p>`;
-
-    const expandCollapseControls = `<div class="drillDownExpandControls">` +
-        `<button class="drillDownExpandControlButton exceptionDrillDownExpandAllBtn" type="button">Expand All</button>` +
-        `<button class="drillDownExpandControlButton exceptionDrillDownCollapseAllBtn" type="button">Collapse All</button>` +
-        `</div>`;
-
-    const heading = `<div class="drillDownHeader">${typeHeading}${summaryLine}${expandCollapseControls}</div>`;
+    var totalCount = entry["count"];
 
     var rows = "";
     for (var rowIndex = 0; rowIndex < leafGroups.length; ++rowIndex) {
@@ -213,7 +233,5 @@ function renderExceptionDrillDownTable(entry, typeName, methodNames, grandTotalC
         rows += renderExceptionTreeRow(rowId, EXCEPTION_THROW_SITE_ROLE, frameHtml, ``, leafNode, totalCount, grandTotalCount, "", leafNode["count"]);
     }
 
-    const header = `<tr class="tableHeader"><th>Call Stack</th><th>Count</th><th>% of Site</th><th>% of Total</th></tr>`;
-
-    return `${heading}<div class="detailTable drillDownTable"><table>${EXCEPTION_CALLER_TREE_COLGROUP}${header}${rows}</table></div>`;
+    return `<table class="callerTreeInner">${EXCEPTION_CALLER_TREE_COLGROUP}${rows}</table>`;
 }
