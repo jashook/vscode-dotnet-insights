@@ -1,0 +1,34 @@
+////////////////////////////////////////////////////////////////////////////////
+// Module: WidgetNotFoundException.cs
+//
+// Notes:
+// A custom exception type (as opposed to only throwing BCL types like
+// InvalidOperationException/ArgumentException) so nettraceParser's exception
+// drill-down feature has a non-BCL TypeName to exercise, matching what a
+// real application's own domain exceptions look like in a capture.
+////////////////////////////////////////////////////////////////////////////////
+
+namespace DotnetInsights.ExceptionLoadGenerator {
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+using System;
+
+public sealed class WidgetNotFoundException : Exception
+{
+    public WidgetNotFoundException(string message)
+        : base(message)
+    {
+    }
+
+    public WidgetNotFoundException(string message, Exception innerException)
+        : base(message, innerException)
+    {
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+} // end of namespace(DotnetInsights.ExceptionLoadGenerator)

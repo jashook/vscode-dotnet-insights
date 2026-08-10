@@ -25,6 +25,8 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
+using DotnetInsights.NetTrace.Progress;
+
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -73,7 +75,7 @@ public static class AllocationEventProjector
     // pass NettraceHeader's own SyncTimeQPC/SyncTimeUtc; see
     // GcEventProjector.Project's referenceQpc comment for why that's now
     // correct).
-    public static List<AllocationEvent> Project(List<EventRecord> events, int pointerSize, long qpcFrequency, DateTime referenceUtc, long referenceQpc)
+    public static List<AllocationEvent> Project(List<EventRecord> events, int pointerSize, long qpcFrequency, DateTime referenceUtc, long referenceQpc, Action<double> onProgress = null)
     {
         // AllocationEvent is a struct (~48 bytes) - without a capacity hint
         // this list regrows via doubling as ticks are decoded (11.9M of
@@ -103,6 +105,11 @@ public static class AllocationEventProjector
         Span<EventRecord> eventsSpan = CollectionsMarshal.AsSpan(events);
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
+            if (onProgress != null && (eventIndex & ProgressReporter.IndexProgressMask) == 0)
+            {
+                onProgress((double)eventIndex / eventsSpan.Length);
+            }
+
             ref readonly EventRecord record = ref eventsSpan[eventIndex];
 
             if (record.ProviderName != ClrProviderName)

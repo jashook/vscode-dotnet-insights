@@ -572,6 +572,21 @@
     background-color: rgba(72, 83, 136, 0.9);
 }
 
+/* A tab whose event type doesn't exist in this particular capture (e.g. the
+   GC tab when a nettrace only has exceptions, or vice versa) - visible so
+   it's clear the capture was checked for this data and came up empty,
+   rather than silently missing, but not clickable (native `disabled`, not
+   a CSS-only look - blocks keyboard activation too, not just pointer
+   clicks). Overrides .viewNavButton's own cursor/background rather than
+   relying on the browser's default disabled styling, which reads poorly
+   against this button's custom colors. */
+.viewNavButton:disabled
+{
+    background-color: rgba(174, 207, 27, 0.35);
+    color: rgba(255, 255, 255, 0.6);
+    cursor: not-allowed;
+}
+
 .viewPanel
 {
     display: none;
@@ -740,8 +755,11 @@
     background-color: rgba(0, 0, 0, 0.247);
 }
 
-.allocationTypeTable td:first-child,
-.allocationTypeTable th:first-child
+/* Type Name is column 2 now that the rowHideColumn button occupies column 1
+   (see that class below) - :nth-child(2), not :first-child, which used to
+   mean this column back when it really was first. */
+.allocationTypeTable td:nth-child(2),
+.allocationTypeTable th:nth-child(2)
 {
     text-align: left;
     white-space: normal;
@@ -1072,6 +1090,71 @@
     visibility: hidden;
 }
 
+/* Per-row "hide this row and recompute the rest" button - a dedicated first
+   column on every ranked/percent table (CPU Methods, Contention Top Sites,
+   Allocation ranked types, Exceptions, GC Detailed) rather than reusing an
+   existing cell, since two of those tables already use their first cell for
+   the leafMethodToggle expand chevron and two others make the whole row a
+   click-navigate target - a separate column is the only placement that
+   collides with neither. Muted, with no hover state of its own - the click
+   target is the whole .rowHideColumn cell, not just this glyph (see
+   snapshotGcStats.js's click delegation, which checks
+   event.target.closest('.rowHideColumn')), and the cell's own hover
+   highlight (below) is sufficient affordance on its own without also
+   recoloring the glyph. */
+.rowHideBtn
+{
+    background: none;
+    border: none;
+    color: rgba(0, 0, 0, 0.35);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 1;
+    padding: 0;
+    width: auto;
+}
+
+/* The <th>/<td> wrapping rowHideBtn - marked with its own class (not just
+   positional :first-child) precisely because :first-child positional rules
+   are exactly what broke here the first time: .cpuHotMethodsTable/
+   .allocationTypeTable both had a fixed-width, left-aligned :first-child
+   rule that used to mean "the Method/Type Name column" back when that
+   really was column 1 - inserting this button column ahead of it silently
+   repointed those rules at the wrong column instead of erroring. Narrow and
+   centered so it reads as an icon-only column, not a data column - actual
+   Method/Type Name left-alignment now targets :nth-child(2) explicitly (see
+   those tables' own rules) rather than depending on being first again.
+   cursor:pointer and a hover background span the WHOLE cell (not just the
+   glyph inside it) since a click anywhere in this cell hides the row - a
+   pointer cursor/highlight that only covered the tiny glyph would visually
+   undersell how big the real click target is. Scoped to td.rowHideColumn
+   (not the shared .rowHideColumn also applied to the header's blank <th>) -
+   the header cell isn't itself clickable, so it gets none of this. */
+.rowHideColumn
+{
+    padding: 0 2px;
+    text-align: center;
+    white-space: nowrap;
+    width: 1.6em;
+}
+
+td.rowHideColumn
+{
+    cursor: pointer;
+}
+
+td.rowHideColumn:hover
+{
+    background-color: rgba(200, 40, 40, 0.12);
+}
+
+/* Reuses allocationZoomStatus/allocationZoomStatusLabel/resetZoomButton's
+   exact look (see above) for the "Hidden rows (N) — Show all" bar that sits
+   above each table once at least one row is hidden - same visual idiom as
+   the existing zoom-status bars, just a different trigger. No new class
+   needed; callers just give the bar a new id and reuse these three classes
+   directly. */
+
 .leafMethodRow.expanded .leafMethodToggle,
 .callerRow.expanded .leafMethodToggle
 {
@@ -1227,4 +1310,331 @@
 {
     color: rgba(0, 0, 0, 0.55);
     font-size: 0.9em;
+}
+
+/* Profile view (CPU sample flame graph + Hot Methods table - see
+   CpuProfileRenderer.ts/media/flameGraph.js). The Flame Graph/Hot Methods
+   inner tab bar itself reuses .heapContentsTabBar/.heapContentsTabButton/
+   .heapContentsTabPanel directly (see switchProfileTab in
+   snapshotGcStats.js) rather than duplicating that styling - only the
+   content specific to each tab needs new rules here. */
+
+/* Method is column 2 now that the rowHideColumn button occupies column 1
+   (see that class below) - :nth-child(2), not :first-child, which used to
+   mean this column back when it really was first. */
+.cpuHotMethodsTable td:nth-child(2),
+.cpuHotMethodsTable th:nth-child(2)
+{
+    text-align: left;
+    white-space: normal;
+    width: 30em;
+    word-break: break-word;
+}
+
+/* Numeric columns (Self %/Self Samples/Total %/Total Samples at the ranked
+   level, Samples/% of Method/% of Total inside each expanded inline caller
+   tree - both share this one scope since .callerTreeInner rows nest inside
+   this same .cpuHotMethodsTable div) - mirrors .drillDownTable's own
+   equivalent rule (see that rule's own comment). Without this, every
+   numeric cell falls back to .detailTable td's default text-align:center,
+   which is what .drillDownTable overrides for the Heap Contents/Exceptions
+   drill-down tables but this table never inherited, since it's a distinct
+   class rather than reusing .drillDownTable itself (this table's own
+   fixed 30em first-column width - see the rule above - predates and isn't
+   compatible with .drillDownTable table's table-layout:fixed, which needs a
+   matching <colgroup> this table doesn't define). Excludes both column 1
+   (rowHideColumn, its own centered/narrow treatment below) and column 2
+   (Method, left-aligned above) - everything from column 3 on is numeric.*/
+.cpuHotMethodsTable th:not(:first-child):not(:nth-child(2)),
+.cpuHotMethodsTable td:not(:first-child):not(:nth-child(2))
+{
+    text-align: right;
+}
+
+.cpuHotMethodsTable th:not(:first-child):not(:nth-child(2))
+{
+    padding-right: 4px;
+}
+
+/* Expandable method rows in the unified Methods table */
+.cpuHotMethodRow[data-cpu-method-expandable]
+{
+    cursor: pointer;
+}
+
+.cpuHotMethodRow[data-cpu-method-expandable]:hover
+{
+    background-color: lightblue;
+}
+
+.cpuHotMethodRow.expanded .leafMethodToggle
+{
+    transform: rotate(90deg);
+}
+
+/* Interior caller-tree rows within an expanded method's inline caller tree -
+   cpuDrillDownStats.js's renderCpuCallerRow, which (unlike the top-level
+   .cpuHotMethodRow above) uses its own data-cpu-expandable/data-cpu-target
+   attribute pair rather than data-cpu-method-expandable, so it needs its own
+   selector here (the pre-existing .leafMethodRow[data-expandable="true"]/
+   .callerRow[data-expandable="true"] rule only matches the unprefixed
+   attribute name drillDownStats.js's own Heap Contents caller rows use). */
+.callerRow[data-cpu-expandable]
+{
+    cursor: pointer;
+}
+
+.callerRow[data-cpu-expandable]:hover
+{
+    background-color: lightblue;
+}
+
+/* Expandable type rows in the unified Exceptions table - same 3-rule shape
+   as .cpuHotMethodRow[data-cpu-method-expandable] above (rotate-on-expand
+   comes for free from the generic .leafMethodRow.expanded/.callerRow.expanded
+   rule further up this file, which isn't keyed to any specific data-*
+   attribute name). */
+.exceptionTypeRow[data-exception-expandable]
+{
+    cursor: pointer;
+}
+
+.exceptionTypeRow[data-exception-expandable]:hover
+{
+    background-color: lightblue;
+}
+
+.exceptionTypeRow.expanded .leafMethodToggle
+{
+    transform: rotate(90deg);
+}
+
+/* Interior throw-site/caller rows within an expanded type's inline tree -
+   exceptionDrillDownStats.js's renderExceptionTreeRow uses its own
+   data-exception-caller-expandable attribute (distinct from the outer
+   type row's data-exception-expandable, and from drillDownStats.js's own
+   unprefixed data-expandable="true" the Heap Contents drill-down tree
+   uses), so it needs its own selector here - same reasoning as
+   .callerRow[data-cpu-expandable] above. Covers both roles at this level
+   (leafMethodRow for throw sites, callerRow for their own callers), since
+   both use this same attribute name (see that function's own comment). */
+.leafMethodRow[data-exception-caller-expandable],
+.callerRow[data-exception-caller-expandable]
+{
+    cursor: pointer;
+}
+
+.leafMethodRow[data-exception-caller-expandable]:hover,
+.callerRow[data-exception-caller-expandable]:hover
+{
+    background-color: lightblue;
+}
+
+/* CPU sample-density timeline chart above the Methods table */
+.cpuTimelineSection
+{
+    margin: 0.5em 2% 0.5em;
+}
+
+.cpuTimelineContainer
+{
+    height: 240px;
+    position: relative;
+}
+
+/* Persistent hint that the chart above it supports drag-to-zoom (see
+   chartZoomHelper.js's attachDragToZoom, wired up in
+   snapshotGcStats.js's renderCpuTimeline) - unlike .allocationZoomStatus
+   (which only appears once a zoom is actually applied), this is visible
+   BEFORE the first interaction, since a plain line chart gives no other
+   visual cue that dragging across it does anything. Hidden once zoomed
+   (see updateCpuTimelineZoomStatusUi) so it doesn't compete with the zoom
+   status bar for the same corner of attention. pointer-events:none so it
+   never itself intercepts the drag it's describing. */
+.chartZoomHint
+{
+    background-color: rgba(0, 0, 0, 0.4);
+    border-radius: 4px;
+    color: white;
+    font-size: 11px;
+    padding: 2px 7px;
+    pointer-events: none;
+    position: absolute;
+    right: 8px;
+    top: 8px;
+    z-index: 1;
+}
+
+/* Expandable site rows in the Contention ranked-sites table */
+.contentionSiteRow[data-contention-expandable]
+{
+    cursor: pointer;
+}
+
+.contentionSiteRow[data-contention-expandable]:hover
+{
+    background-color: lightblue;
+}
+
+.contentionSiteRow.expanded .leafMethodToggle
+{
+    transform: rotate(90deg);
+}
+
+.flameGraphToolbar
+{
+    align-items: center;
+    display: flex;
+    margin: 1em 0 0.5em;
+    min-height: 2em;
+}
+
+.flameGraphBreadcrumb
+{
+    font-size: 13px;
+}
+
+.flameGraphBreadcrumbEntry
+{
+    color: rgba(72, 83, 136, 1);
+    cursor: pointer;
+}
+
+.flameGraphBreadcrumbEntry:hover
+{
+    text-decoration: underline;
+}
+
+.flameGraphBreadcrumbEntry:last-child
+{
+    color: inherit;
+    cursor: default;
+    font-weight: bold;
+    text-decoration: none;
+}
+
+.flameGraphBreadcrumbSep
+{
+    color: rgba(0, 0, 0, 0.4);
+    margin: 0 0.3em;
+}
+
+.flameGraphToolbar .resetZoomButton
+{
+    margin-right: 1em;
+}
+
+/* Height is set inline (see media/flameGraph.js's renderFlameGraphFrames) -
+   depends on the currently-zoomed subtree's own max depth, not knowable
+   here. position:relative anchors every absolutely-positioned
+   .flameGraphFrame's own top/left to this container, not the page. */
+.flameGraphContainer
+{
+    background: var(--vscode-editor-background, #ffffff);
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    border-radius: 4px;
+    cursor: crosshair;
+    overflow: hidden;
+    position: relative;
+}
+
+/* Drag-to-zoom selection rectangle (see media/flameGraph.js's
+   setupFlameGraphDragZoom) - same visual treatment as the GC timeline
+   charts' own drag-select box (chartZoomHelper.js's
+   createZoomSelectionPlugin), just a plain DOM element here instead of a
+   Chart.js canvas overlay. left/width are set inline, in pixels (a drag
+   selection tracks the raw mouse position, not the percentage-based
+   frame layout); top/bottom span the full container height so the
+   selection reads as a vertical band the same way the chart's own
+   selection rectangle does. pointer-events:none so it never intercepts
+   the mousemove/mouseup listeners driving it (those are on window/the
+   container itself, not this element). */
+.flameGraphDragOverlay
+{
+    background-color: rgba(72, 83, 136, 0.25);
+    border-left: 1px solid rgba(72, 83, 136, 0.8);
+    border-right: 1px solid rgba(72, 83, 136, 0.8);
+    bottom: 0;
+    display: none;
+    pointer-events: none;
+    position: absolute;
+    top: 0;
+    z-index: 10;
+}
+
+/* top/left/width are set inline per-frame (percentages of
+   .flameGraphContainer's own width, plus a pixel row offset - see
+   media/flameGraph.js's FLAME_ROW_HEIGHT_PX) - this only carries the fixed
+   per-frame chrome. A 1px border (not a margin/gap) keeps adjacent same-row
+   frames visually separated without perturbing the percentage-based width
+   math that positions them. */
+.flameGraphFrame
+{
+    background-color: rgba(174, 207, 27, 0.85);
+    border: 1px solid var(--vscode-editor-background, #ffffff);
+    box-sizing: border-box;
+    cursor: pointer;
+    height: 22px;
+    overflow: hidden;
+    position: absolute;
+    white-space: nowrap;
+}
+
+.flameGraphFrame:hover
+{
+    background-color: rgba(174, 207, 27, 1);
+}
+
+.flameGraphFrameUnresolved
+{
+    background-color: rgba(0, 0, 0, 0.35);
+    font-style: italic;
+}
+
+.flameGraphFrameUnresolved:hover
+{
+    background-color: rgba(0, 0, 0, 0.5);
+}
+
+.flameGraphFrameLabel
+{
+    color: rgba(0, 0, 0, 0.85);
+    display: block;
+    font-size: 12px;
+    line-height: 20px;
+    overflow: hidden;
+    padding: 0 4px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Positioned inline (left/top, following the cursor - see
+   media/flameGraph.js's showFlameGraphTooltip) rather than anchored to a
+   specific frame, since a frame's own box can be a few pixels wide at the
+   deep end of a real flame graph - far too narrow to anchor a multi-line
+   tooltip to directly. */
+.flameGraphTooltip
+{
+    background: var(--vscode-editorHoverWidget-background, #f3f3f3);
+    border: 1px solid var(--vscode-editorHoverWidget-border, rgba(0, 0, 0, 0.2));
+    border-radius: 4px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+    font-size: 12px;
+    max-width: 32em;
+    padding: 0.5em 0.75em;
+    pointer-events: none;
+    position: fixed;
+    z-index: 1000;
+}
+
+.flameGraphTooltipName
+{
+    font-weight: bold;
+    margin-bottom: 0.3em;
+    word-break: break-word;
+}
+
+.flameGraphTooltipStats
+{
+    color: rgba(0, 0, 0, 0.65);
 }

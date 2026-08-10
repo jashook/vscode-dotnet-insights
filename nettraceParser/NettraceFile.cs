@@ -19,6 +19,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 
+using DotnetInsights.NetTrace.Progress;
 using FastSerialization;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -40,7 +41,14 @@ public class NettraceFile
     public int EventBlockCount { get; private set; }
     public int SkippedBlockCount { get; private set; }
 
-    public static NettraceFile Read(string filePath)
+    // onProgress: this phase's own 0.0-1.0 completion fraction, reported
+    // from the block-read loop below - null (the default) for every
+    // caller except Program.cs's --json mode, so every other caller (the
+    // plain CLI/--dump-fields path, and every test in nettraceParser.Tests)
+    // is completely unaffected by this parameter's existence. See
+    // Progress/ProgressReporter.cs for how a fraction reported here maps
+    // into the overall progress bar.
+    public static NettraceFile Read(string filePath, Action<double> onProgress = null)
     {
         byte[] fileBytes = File.ReadAllBytes(filePath);
 
@@ -118,6 +126,17 @@ public class NettraceFile
 
                 while (deserializer.ReadObject() != null)
                 {
+                    // Deserializer.Current is already an ABSOLUTE byte offset
+                    // into fileBytes (see this method's own comment on
+                    // MemoryStreamReader's start/length convention above), so
+                    // this fraction is exact, not estimated - and free to
+                    // compute here specifically because this loop already
+                    // advances one whole top-level block at a time (there can
+                    // be anywhere from a handful to a few hundred for a real
+                    // capture), not once per event, so no separate throttle
+                    // mask is needed the way the per-event projector loops
+                    // need one.
+                    onProgress?.Invoke((long)deserializer.Current / (double)fileBytes.Length);
                 }
             }
         }

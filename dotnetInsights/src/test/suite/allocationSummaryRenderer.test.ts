@@ -93,6 +93,44 @@ function makeFakeDocument(): any {
     return { uri: vscode.Uri.file('/fake/test.gcinfo') };
 }
 
+// Builds a minimal synthetic exceptionSummary entry matching
+// ExceptionJsonExporter.cs's Write output shape.
+function makeExceptionSummary(topTypes: any[], overrides?: any): any {
+    const totalExceptionCount = topTypes.reduce((sum, entry) => sum + entry.Count, 0);
+    return Object.assign({
+        totalExceptionCount: totalExceptionCount,
+        distinctTypeCount: topTypes.length,
+        topTypes: topTypes,
+        typeDrillDown: topTypes.map(() => ({ count: 0, distinctStackCount: 0, totalChildCount: 0, children: [] })),
+        methodNames: []
+    }, overrides);
+}
+
+function makeExceptionTypeEntry(typeName: string, count: number): any {
+    return { TypeName: typeName, Count: count, PercentOfTotal: 0, SampleMessage: 'test message' };
+}
+
+// Builds a minimal synthetic cpuProfile entry matching
+// Cpu/CpuProfileJsonExporter.cs's Write output shape.
+function makeCpuProfile(totalSampleCount: number, overrides?: any): any {
+    return Object.assign({
+        totalSampleCount: totalSampleCount,
+        hotMethods: [],
+        flameTree: { frame: -1, totalSamples: 0, totalChildCount: 0, children: [] },
+        methodNames: []
+    }, overrides);
+}
+
+// Builds a minimal synthetic eventOverview entry matching
+// EventOverviewBuilder.cs's Build output shape (as written by
+// GcJsonExporter.cs).
+function makeEventOverview(eventTypes: any[]): any {
+    return {
+        totalEventCount: eventTypes.reduce((sum, entry) => sum + entry.count, 0),
+        eventTypes: eventTypes
+    };
+}
+
 describe('AllocationSummaryRenderer', () => {
     describe('renderAllocationSummaryTable', () => {
         it('shows a placeholder and no table when topTypes is empty', () => {
@@ -112,7 +150,10 @@ describe('AllocationSummaryRenderer', () => {
 
             assert.ok(html.includes('2.00 mb'));
             assert.ok(html.includes('<span>10</span>'));
-            assert.ok(html.includes('<span>1</span>'));
+            // Distinct Types tile carries an id (allocationDistinctTypesTile-<scope>)
+            // so a row-hide toggle can rewrite it - see
+            // updateOneRankedTypesTable in snapshotGcStats.js.
+            assert.ok(html.includes('<span id="allocationDistinctTypesTile-all">1</span>'));
         });
 
         it('renders one row per type, labeled in mb, with % of sampled bytes', () => {
@@ -133,8 +174,11 @@ describe('AllocationSummaryRenderer', () => {
             // updating every time a new data-* attribute is added.
             const dataRowMatches = html.match(/<tr class="typeRow"[^>]*>/g) || [];
             assert.strictEqual(dataRowMatches.length, 2);
-            assert.ok(html.includes('<td>System.Byte[]</td><td>3.00</td><td>75.00</td><td class="ticksOnlyColumn">30</td>'));
-            assert.ok(html.includes('<td>System.String</td><td>1.00</td><td>25.00</td><td class="ticksOnlyColumn">10</td>'));
+            // <td>...rowHideBtn...</td> now precedes the Type Name cell -
+            // matched loosely (like the <tr> above) rather than pinning the
+            // button's own markup here too.
+            assert.ok(/<td class="rowHideColumn"><button class="rowHideBtn"[^<]*<\/button><\/td><td>System\.Byte\[\]<\/td><td>3\.00<\/td><td>75\.00<\/td><td class="ticksOnlyColumn">30<\/td>/.test(html));
+            assert.ok(/<td class="rowHideColumn"><button class="rowHideBtn"[^<]*<\/button><\/td><td>System\.String<\/td><td>1\.00<\/td><td>25\.00<\/td><td class="ticksOnlyColumn">10<\/td>/.test(html));
         });
 
         // The allocation-rate line chart (raw ticks, no per-type/kind
@@ -441,7 +485,7 @@ describe('GcSnapshotRenderer - view switcher and sourceFormat gating', () => {
         assert.ok(!html.includes('data-view="heapContents"'));
     });
 
-    it('omits the "Heap Contents" nav button for sourceFormat "nettrace" when allocationSummary has no topTypes', () => {
+    it('shows the "Heap Contents" nav button as disabled for sourceFormat "nettrace" when allocationSummary has no topTypes', () => {
         const gcData = {
             processName: 'test.exe',
             gcData: [makeFullGc(1)],
@@ -450,10 +494,14 @@ describe('GcSnapshotRenderer - view switcher and sourceFormat gating', () => {
 
         const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'nettrace');
 
-        assert.ok(!html.includes('data-view="heapContents"'));
+        // Present (not omitted, unlike the gcinfo case above), but disabled -
+        // per the "visible but unclickable" symmetric design (see
+        // GcSnapshotRenderer.ts's viewTabBar comment).
+        assert.ok(html.includes('data-view="heapContents"'));
+        assert.ok(/data-view="heapContents"[^>]*\bdisabled\b/.test(html));
     });
 
-    it('shows the "Heap Contents" nav button for sourceFormat "nettrace" with a populated allocationSummary', () => {
+    it('shows the "Heap Contents" nav button enabled for sourceFormat "nettrace" with a populated allocationSummary', () => {
         const gcData = {
             processName: 'test.exe',
             gcData: [makeFullGc(1)],
@@ -463,16 +511,126 @@ describe('GcSnapshotRenderer - view switcher and sourceFormat gating', () => {
         const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'nettrace');
 
         assert.ok(html.includes('data-view="heapContents"'));
+        assert.ok(!/data-view="heapContents"[^>]*\bdisabled\b/.test(html));
         assert.ok(html.includes('id="view-heapContents"'));
         assert.ok(html.includes('id="allocationSummaryHtml"'));
     });
 
-    it('always shows the "GC" nav button as the default active view', () => {
+    it('disables the "Exceptions" nav button for sourceFormat "nettrace" when exceptionSummary has no topTypes', () => {
+        const gcData = {
+            processName: 'test.exe',
+            gcData: [makeFullGc(1)],
+            exceptionSummary: makeExceptionSummary([])
+        };
+
+        const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'nettrace');
+
+        assert.ok(html.includes('data-view="exceptions"'));
+        assert.ok(/data-view="exceptions"[^>]*\bdisabled\b/.test(html));
+    });
+
+    it('enables the "Exceptions" nav button for sourceFormat "nettrace" with a populated exceptionSummary', () => {
+        const gcData = {
+            processName: 'test.exe',
+            gcData: [makeFullGc(1)],
+            exceptionSummary: makeExceptionSummary([makeExceptionTypeEntry('System.Exception', 3)])
+        };
+
+        const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'nettrace');
+
+        assert.ok(!/data-view="exceptions"[^>]*\bdisabled\b/.test(html));
+    });
+
+    it('disables the "Profile" nav button for sourceFormat "nettrace" when cpuProfile has zero samples', () => {
+        const gcData = {
+            processName: 'test.exe',
+            gcData: [makeFullGc(1)],
+            cpuProfile: makeCpuProfile(0)
+        };
+
+        const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'nettrace');
+
+        assert.ok(html.includes('data-view="profile"'));
+        assert.ok(/data-view="profile"[^>]*\bdisabled\b/.test(html));
+    });
+
+    it('enables the "Profile" nav button for sourceFormat "nettrace" with a populated cpuProfile', () => {
+        const gcData = {
+            processName: 'test.exe',
+            gcData: [makeFullGc(1)],
+            cpuProfile: makeCpuProfile(3, { hotMethods: [{ frame: 0, selfSamples: 3, totalSamples: 3 }], methodNames: ['Program.Main'] })
+        };
+
+        const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'nettrace');
+
+        assert.ok(!/data-view="profile"[^>]*\bdisabled\b/.test(html));
+        assert.ok(html.includes('Program.Main'));
+    });
+
+    it('omits the "Profile" nav button for sourceFormat "gcinfo"', () => {
+        const gcData = { processName: 'test.exe', gcData: [makeFullGc(1)] };
+
+        const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'gcinfo');
+
+        assert.ok(!html.includes('data-view="profile"'));
+    });
+
+    it('disables the "GC" nav button for sourceFormat "nettrace" when the capture has zero GCs, and defaults to Overview', () => {
+        const gcData = {
+            processName: 'test.exe',
+            gcData: [],
+            eventOverview: makeEventOverview([{ providerName: 'Microsoft-Windows-DotNETRuntime', displayName: 'ExceptionThrown', eventId: 80, count: 5 }])
+        };
+
+        const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'nettrace');
+
+        assert.ok(/data-view="gc"[^>]*\bdisabled\b/.test(html));
+        assert.ok(html.includes('<button class="viewNavButton active" data-view="overview">Overview</button>'));
+        assert.ok(html.includes('<div id="view-overview" class="viewPanel active">'));
+        assert.ok(!html.includes('<div id="view-gc" class="viewPanel active">'));
+    });
+
+    it('enables the "GC" nav button for sourceFormat "nettrace" when the capture has GCs, but Overview still defaults active', () => {
+        const gcData = {
+            processName: 'test.exe',
+            gcData: [makeFullGc(1)],
+            eventOverview: makeEventOverview([{ providerName: 'Microsoft-Windows-DotNETRuntime', displayName: 'GCStart', eventId: 1, count: 1 }])
+        };
+
+        const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'nettrace');
+
+        assert.ok(!/data-view="gc"[^>]*\bdisabled\b/.test(html));
+        // "Always default" - even though GC has real data, Overview is
+        // still the tab the user lands on for nettrace input.
+        assert.ok(html.includes('<button class="viewNavButton active" data-view="overview">Overview</button>'));
+        assert.ok(!html.includes('<div id="view-gc" class="viewPanel active">'));
+    });
+
+    it('always shows the "GC" nav button as the default active view for sourceFormat "gcinfo", with no Overview tab at all', () => {
         const gcData = { processName: 'test.exe', gcData: [makeFullGc(1)] };
 
         const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'gcinfo');
 
         assert.ok(html.includes('<button class="viewNavButton active" data-view="gc">GC</button>'));
         assert.ok(html.includes('<div id="view-gc" class="viewPanel active">'));
+        assert.ok(!html.includes('data-view="overview"'));
+        assert.ok(!html.includes('id="view-overview"'));
+    });
+
+    it('renders the Overview tab with total event count and a per-type breakdown', () => {
+        const gcData = {
+            processName: 'test.exe',
+            gcData: [makeFullGc(1)],
+            eventOverview: makeEventOverview([
+                { providerName: 'Microsoft-Windows-DotNETRuntime', displayName: 'GCStart', eventId: 1, count: 7 },
+                { providerName: 'Microsoft-Windows-DotNETRuntime', displayName: 'EventID 999', eventId: 999, count: 3 }
+            ])
+        };
+
+        const html = renderGcSnapshotWebview(makeFakeDocument(), makeFakeWebview(), vscode.Uri.file('/fake/ext'), gcData, 'nettrace');
+
+        assert.ok(html.includes('GCStart'));
+        assert.ok(html.includes('EventID 999'));
+        assert.ok(html.includes('<span>10</span>'));
     });
 });

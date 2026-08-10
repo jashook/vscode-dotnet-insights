@@ -66,6 +66,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
+using DotnetInsights.NetTrace.Progress;
 using DotnetInsights.NetTrace.Rundown;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -201,7 +202,23 @@ public static class AllocationSummaryBuilder
     // file instead of as JSON, with only a small descriptor object left in
     // the JSON output pointing at it (by convention/caller-known path, not
     // embedded - see Program.cs).
-    public static void Write(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, MethodSymbolTable symbolTable, string ticksBinaryPath)
+    // Local split of THIS method's own onProgress fraction across its own
+    // three real full-list passes (WriteTicks, WriteTypeBreakdown for "all"
+    // events, WriteTypeBreakdown for "loh" events - FilterByAllocationKind's
+    // own scan in between is cheap enough per item, relative to
+    // WriteTypeBreakdown's grouping/stack-resolution work, to leave
+    // unattributed) - same "callee doesn't need to know about the caller's
+    // global weighting" contract as every other onProgress parameter in
+    // this codebase (see NettraceFile.Read's own comment), just applied one
+    // level deeper here since this method calls WriteTypeBreakdown twice
+    // against differently-sized inputs.
+    private const double TicksProgressFractionEnd = 0.3;
+
+    // onProgress: THIS METHOD's own 0.0-1.0 completion fraction - null (the
+    // default) for every caller except GcJsonExporter.WriteToFile's --json
+    // mode dispatch (see that method's own comment on why this file is one
+    // of only two JSON sub-writers with internal fine-grained tracking).
+    public static void Write(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, MethodSymbolTable symbolTable, string ticksBinaryPath, Action<double> onProgress = null)
     {
         // Sorted once, in place, up front - every pass below (including
         // WriteTicks, which used to make its own defensive copy+sort just
@@ -250,32 +267,52 @@ public static class AllocationSummaryBuilder
         DrillDownTreeNodePool nodePool = new DrillDownTreeNodePool();
         ChildBufferPool bufferPool = new ChildBufferPool();
 
+        // Computed here (moved ahead of WriteTicks/WriteTypeBreakdown below,
+        // rather than just before its own "loh" use as before) purely so
+        // onProgress's own local range split between the "all" and "loh"
+        // WriteTypeBreakdown calls can be weighted by their REAL relative
+        // sizes for this run, the same "use this run's own real counts"
+        // reasoning Progress/ProgressPlan.cs's own jsonExport sub-writer
+        // split uses one level up - filtering is pure/order-independent
+        // (see this list's own original comment on why it needs no sort of
+        // its own), so computing it earlier changes nothing about output.
+        List<AllocationEvent> lohEvents = FilterByAllocationKind(allocationEvents, GCAllocationKind.Large);
+
+        double allBreakdownFractionEnd;
+        if (onProgress != null)
+        {
+            double breakdownTotal = allocationEvents.Count + lohEvents.Count;
+            double allShare = breakdownTotal > 0.0 ? (allocationEvents.Count / breakdownTotal) : 1.0;
+            allBreakdownFractionEnd = TicksProgressFractionEnd + (allShare * (1.0 - TicksProgressFractionEnd));
+        }
+        else
+        {
+            allBreakdownFractionEnd = 1.0;
+        }
+
         writer.WriteStartObject();
 
         writer.WritePropertyName("ticks");
-        WriteTicks(writer, allocationEvents, ticksBinaryPath);
+        WriteTicks(writer, allocationEvents, ticksBinaryPath, ScaleProgress(onProgress, 0.0, TicksProgressFractionEnd));
 
-        WriteTypeBreakdown(writer, allocationEvents, bucketCount, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool);
+        WriteTypeBreakdown(writer, allocationEvents, bucketCount, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool, ScaleProgress(onProgress, TicksProgressFractionEnd, allBreakdownFractionEnd));
 
         // Identical breakdown (same totalSampledBytes/topTypes/typeTimeline/
         // drillDown/typeDrillDown field names and shapes as above), scoped
         // to Large-kind (LOH) ticks only - GCAllocationTick's own
         // AllocationKind field is set by the runtime at allocation time, so
         // this needs no new capture/instrumentation, just filtering
-        // AllocationEvents already decoded above. Filtering (rather than
-        // re-sorting) preserves allocationEvents' existing RelativeMSec
-        // order, so lohEvents needs no sort of its own. Nested under "loh"
-        // rather than replacing the top-level fields so the webview can
-        // reuse its existing typeTimeline/drillDown/typeDrillDown rendering
+        // AllocationEvents already decoded above. Nested under "loh" rather
+        // than replacing the top-level fields so the webview can reuse its
+        // existing typeTimeline/drillDown/typeDrillDown rendering
         // completely unchanged - a filter toggle just points it at
         // allocationSummary.loh instead of allocationSummary itself. ticks
         // (the raw per-tick scatter, which carries no type/kind - see
         // WriteTicks) isn't duplicated here; the filter only applies to the
         // type-oriented views.
-        List<AllocationEvent> lohEvents = FilterByAllocationKind(allocationEvents, GCAllocationKind.Large);
         writer.WritePropertyName("loh");
         writer.WriteStartObject();
-        WriteTypeBreakdown(writer, lohEvents, bucketCount, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool);
+        WriteTypeBreakdown(writer, lohEvents, bucketCount, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool, ScaleProgress(onProgress, allBreakdownFractionEnd, 1.0));
         writer.WriteEndObject();
 
         // Written last since it's only fully populated once every stack in
@@ -291,6 +328,24 @@ public static class AllocationSummaryBuilder
         writer.WriteEndArray();
 
         writer.WriteEndObject();
+    }
+
+    // Wraps outer (this whole Write call's own 0.0-1.0 fraction) so a
+    // callee reports ITS OWN local 0.0-1.0 without knowing it's actually
+    // one of several passes sharing a smaller slice of that range - same
+    // composition pattern used one level up between Program.cs/
+    // GcJsonExporter.WriteToFile and this class's own onProgress
+    // parameter. Returns null (not a null-op lambda) when outer itself is
+    // null, so a callee's own `onProgress != null` mask-gate check stays
+    // just as cheap as if this class had never been instrumented at all.
+    private static Action<double> ScaleProgress(Action<double> outer, double start, double end)
+    {
+        if (outer == null)
+        {
+            return null;
+        }
+
+        return (double innerFraction) => outer(start + (innerFraction * (end - start)));
     }
 
     private static List<AllocationEvent> FilterByAllocationKind(List<AllocationEvent> allocationEvents, GCAllocationKind kind)
@@ -318,7 +373,7 @@ public static class AllocationSummaryBuilder
     // events must already be sorted ascending by RelativeMSec (true both for
     // the full list, sorted once in Write, and any filtered subset of it,
     // since filtering preserves relative order).
-    private static void WriteTypeBreakdown(Utf8JsonWriter writer, List<AllocationEvent> events, int bucketCount, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner, Dictionary<long[], int[]> frameIdCache, DrillDownTreeNodePool nodePool, ChildBufferPool bufferPool)
+    private static void WriteTypeBreakdown(Utf8JsonWriter writer, List<AllocationEvent> events, int bucketCount, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner, Dictionary<long[], int[]> frameIdCache, DrillDownTreeNodePool nodePool, ChildBufferPool bufferPool, Action<double> onProgress = null)
     {
         Dictionary<string, TypeAllocStats> statsByType = new Dictionary<string, TypeAllocStats>();
         long totalSampledBytes = 0;
@@ -326,6 +381,11 @@ public static class AllocationSummaryBuilder
         Span<AllocationEvent> eventsSpan = CollectionsMarshal.AsSpan(events);
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
+            if (onProgress != null && (eventIndex & ProgressReporter.IndexProgressMask) == 0)
+            {
+                onProgress(eventIndex / (double)eventsSpan.Length);
+            }
+
             ref readonly AllocationEvent allocationEvent = ref eventsSpan[eventIndex];
             string typeName = string.IsNullOrEmpty(allocationEvent.TypeName) ? "<unknown>" : allocationEvent.TypeName;
 
@@ -1406,7 +1466,7 @@ public static class AllocationSummaryBuilder
     // not the sidecar's path, which is derived by the caller from the same
     // convention it used to name ticksBinaryPath in the first place (see
     // Program.cs) rather than round-tripped through the JSON.
-    private static void WriteTicks(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, string ticksBinaryPath)
+    private static void WriteTicks(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, string ticksBinaryPath, Action<double> onProgress = null)
     {
         byte[] buffer = new byte[TickRecordSize * TickWriteBufferRecordCapacity];
         int bufferOffset = 0;
@@ -1416,6 +1476,11 @@ public static class AllocationSummaryBuilder
             Span<AllocationEvent> allocationEventsSpan = CollectionsMarshal.AsSpan(allocationEvents);
             for (int eventIndex = 0; eventIndex < allocationEventsSpan.Length; ++eventIndex)
             {
+                if (onProgress != null && (eventIndex & ProgressReporter.IndexProgressMask) == 0)
+                {
+                    onProgress(eventIndex / (double)allocationEventsSpan.Length);
+                }
+
                 ref readonly AllocationEvent allocationEvent = ref allocationEventsSpan[eventIndex];
 
                 BinaryPrimitives.WriteInt32LittleEndian(buffer.AsSpan(bufferOffset, 4), (int)Math.Round(allocationEvent.RelativeMSec));

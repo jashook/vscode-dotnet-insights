@@ -44,24 +44,51 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 using DotnetInsights.NetTrace.Gc;
+using DotnetInsights.NetTrace.Progress;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
 public class MethodSymbolTable
 {
+    // Sentinel for MethodRange.Id meaning "DisplayName not decoded yet" -
+    // never returned to a ResolveId caller (EnsureResolved always replaces
+    // it with a real id, >= 0, before any Id is read back out) - purely an
+    // internal "have we paid the decode cost for this range yet" flag.
+    private const int UnassignedRangeId = -1;
+
     private class MethodRange
     {
         public long StartAddress;
         public long EndAddress;
-        public string DisplayName;
         public double LoadRelativeMSec;
         public double UnloadRelativeMSec;
-        // Assigned once, sequentially, at Build time (insertion order - NOT
-        // this range's position in sortedRanges, which gets reordered by
-        // StartAddress) - see ResolveId/NameForId's own comment for why
-        // this exists.
-        public int Id;
+
+        // DisplayName is deliberately NOT decoded at Build time - see
+        // EnsureResolved's own comment for the measured reason (a real
+        // capture's method-rundown volume is dominated, often by well over
+        // an order of magnitude, by methods no resolved stack frame ever
+        // actually looks up). This is the raw payload slice DecodeHeader
+        // already proved is long enough to decode (ClrMethodRundown.cs's
+        // DecodeHeader/DecodeDisplayName share one bounds check for exactly
+        // this reason) - PayloadBuffer is the whole capture's shared byte[]
+        // (see EventRecord.cs), so holding this reference costs nothing
+        // beyond what already existed; it does NOT re-root the 4.29M+
+        // EventRecord structs Program.cs's `file = null` is specifically
+        // written to let go of (see that file's own comment) - only the
+        // (already free-to-trace, per that same comment) raw byte[] buffer
+        // itself survives a little longer, for the small subset of ranges
+        // whose payload offset/length actually got stored here.
+        public byte[] PayloadBuffer;
+        public int PayloadOffset;
+        public int PayloadLength;
+
+        // UnassignedRangeId until EnsureResolved decodes this range's
+        // DisplayName for the first time (lazily, on first real match from
+        // ResolveId) and interns it - see EnsureResolved. Once assigned,
+        // stable for this table's lifetime, same guarantee ResolveId's own
+        // doc comment already makes.
+        public int Id = UnassignedRangeId;
     }
 
     private const string ClrProviderName = "Microsoft-Windows-DotNETRuntime";
@@ -93,44 +120,62 @@ public class MethodSymbolTable
     private readonly Dictionary<long, MethodRange> lastMatchedRangeByAddress = new Dictionary<long, MethodRange>();
 
     // namesById[range.Id] == range.DisplayName, in the same insertion order
-    // Ids were assigned in at Build time - see ResolveId/NameForId's own
-    // comment for why callers building a large data structure keyed by
-    // "which method is this" (rather than needing the name itself
-    // immediately) should prefer ResolveId over Resolve.
+    // ids were assigned - NOT at Build time anymore (see EnsureResolved),
+    // but this list is still append-only and a range's own Id, once
+    // assigned, is a permanently valid index into it regardless of how
+    // much longer the list keeps growing afterward. See ResolveId/
+    // NameForId's own comment for why callers building a large data
+    // structure keyed by "which method is this" (rather than needing the
+    // name itself immediately) should prefer ResolveId over Resolve.
     private readonly List<string> namesById;
+
+    // Content-keyed, not per-range - two distinct MethodRanges (e.g. two
+    // tiered-JIT code versions of the same source method) can share the
+    // exact same DisplayName, and callers keying a data structure by
+    // ResolveId's own id (see AllocationJsonExporter.cs's BuildCallerTree)
+    // expect that case to merge into one entry, the same as it always
+    // would have via the resolved string's own content equality (Resolve's
+    // original, string-keyed behavior). Populated lazily now (see
+    // EnsureResolved), not eagerly at Build time - the merging guarantee
+    // is unaffected either way, since it only depends on every DisplayName
+    // being looked up against the same shared dictionary before a new id
+    // is minted, regardless of when that lookup happens.
+    private readonly Dictionary<string, int> idByDisplayName = new Dictionary<string, int>();
+
+    // pointerSize is fixed for a whole capture (see NettraceHeader) -
+    // stored once here rather than per-range, since EnsureResolved needs it
+    // to reconstruct a PayloadReader over a range's saved payload slice.
+    private readonly int pointerSize;
+
+    // Fixed, large base for ids handed out via the unresolved-address path
+    // below - deliberately NOT "namesById.Count" (a moving target now that
+    // real ids are minted lazily, interleaved in time with unresolved-id
+    // lookups, instead of all being assigned upfront before any Resolve
+    // call). A real capture will never have anywhere near a billion
+    // distinct method ranges, so this can never collide with a real id.
+    private const int UnresolvedIdBase = 1_000_000_000;
 
     // Ids for addresses that never matched any real range (or matched one
     // whose validity window didn't cover the call - see ResolveId's
-    // fallback path) - assigned lazily, on first sight, offset past every
-    // real range's Id (namesById.Count, fixed at construction) so the two
-    // id spaces never collide. Also incidentally caches the "<unresolved
-    // 0x...>" string's own formatting cost, previously redone on every
-    // single call for the same never-resolved address.
+    // fallback path) - assigned lazily, on first sight. Also incidentally
+    // caches the "<unresolved 0x...>" string's own formatting cost,
+    // previously redone on every single call for the same never-resolved
+    // address.
     private readonly Dictionary<long, int> unresolvedIdByAddress = new Dictionary<long, int>();
     private readonly List<string> unresolvedNames = new List<string>();
 
-    private MethodSymbolTable(List<MethodRange> sortedRanges, long maxRangeSize, List<string> namesById)
+    private MethodSymbolTable(List<MethodRange> sortedRanges, long maxRangeSize, List<string> namesById, int pointerSize)
     {
         this.sortedRanges = sortedRanges;
         this.maxRangeSize = maxRangeSize;
         this.namesById = namesById;
+        this.pointerSize = pointerSize;
     }
 
-    public static MethodSymbolTable Build(List<EventRecord> events, int pointerSize, long qpcFrequency, long referenceQpc)
+    public static MethodSymbolTable Build(List<EventRecord> events, int pointerSize, long qpcFrequency, long referenceQpc, Action<double> onProgress = null)
     {
         List<MethodRange> ranges = new List<MethodRange>();
         List<string> namesById = new List<string>();
-        // Content-keyed, not per-range - two distinct MethodRanges (e.g.
-        // two tiered-JIT code versions of the same source method) can
-        // share the exact same DisplayName, and callers keying a data
-        // structure by ResolveId's own id (see AllocationJsonExporter.cs's
-        // BuildCallerTree) expect that case to merge into one entry, the
-        // same as it always would have via the resolved string's own
-        // content equality (Resolve's original, string-keyed behavior).
-        // Interning here, once per distinct range at Build time, keeps
-        // that merging guarantee while still handing hot-path callers a
-        // cheap int id instead of a string to key by.
-        Dictionary<string, int> idByDisplayName = new Dictionary<string, int>();
 
         // MethodID -> ranges awaiting a matching MethodUnloadVerbose,
         // oldest-load-first. A MethodID (like an address) can be reused
@@ -154,6 +199,11 @@ public class MethodSymbolTable
         Span<EventRecord> eventsSpan = CollectionsMarshal.AsSpan(events);
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
+            if (onProgress != null && (eventIndex & ProgressReporter.IndexProgressMask) == 0)
+            {
+                onProgress((double)eventIndex / eventsSpan.Length);
+            }
+
             ref readonly EventRecord record = ref eventsSpan[eventIndex];
 
             bool isRundownStart = record.ProviderName == ClrRundownProviderName && record.EventId == ClrRundownEventIds.MethodDCStartVerbose;
@@ -167,16 +217,26 @@ public class MethodSymbolTable
 
             PayloadReader reader = new PayloadReader(record.PayloadBuffer, record.PayloadOffset, record.PayloadLength, pointerSize);
 
+            // Header-only decode for every branch below (MethodID/
+            // MethodStartAddress/MethodSize, no string reads) - see
+            // ClrMethodRundown.cs's own comment on DecodeHeader for why:
+            // isUnload only ever needed MethodID in the first place (its
+            // MethodStartAddress/MethodSize/DisplayName were always
+            // discarded), and isRundownStart/isLoad now defer their own
+            // DisplayName decode to EnsureResolved below instead of paying
+            // for it here unconditionally.
+            long decodedMethodId;
+            long decodedMethodStartAddress;
+            long decodedMethodSize;
+            if (!ClrMethodRecord.DecodeHeader(reader, out decodedMethodId, out decodedMethodStartAddress, out decodedMethodSize))
+            {
+                continue;
+            }
+
             if (isUnload)
             {
-                ClrMethodRecord unloadedMethod = ClrMethodRecord.Decode(reader);
-                if (unloadedMethod == null)
-                {
-                    continue;
-                }
-
                 Queue<MethodRange> pending;
-                if (pendingByMethodId.TryGetValue(unloadedMethod.MethodID, out pending) && pending.Count > 0)
+                if (pendingByMethodId.TryGetValue(decodedMethodId, out pending) && pending.Count > 0)
                 {
                     MethodRange closedRange = pending.Dequeue();
                     closedRange.UnloadRelativeMSec = ComputeRelativeMSec(in record, qpcFrequency, referenceQpc);
@@ -185,36 +245,35 @@ public class MethodSymbolTable
                 continue;
             }
 
-            ClrMethodRecord method = ClrMethodRecord.Decode(reader);
-            if (method == null || method.MethodSize <= 0)
+            if (decodedMethodSize <= 0)
             {
                 continue;
             }
 
             MethodRange range = new MethodRange();
-            range.StartAddress = method.MethodStartAddress;
-            range.EndAddress = method.MethodStartAddress + method.MethodSize;
-            range.DisplayName = method.DisplayName;
+            range.StartAddress = decodedMethodStartAddress;
+            range.EndAddress = decodedMethodStartAddress + decodedMethodSize;
+            range.PayloadBuffer = record.PayloadBuffer;
+            range.PayloadOffset = record.PayloadOffset;
+            range.PayloadLength = record.PayloadLength;
             // isRundownStart: real load time within this capture is unknown
             // (the method may well have been loaded before tracing even
             // began) - 0 conservatively treats it as valid for the entire
             // capture rather than guessing a too-late lower bound.
             range.LoadRelativeMSec = isLoad ? ComputeRelativeMSec(in record, qpcFrequency, referenceQpc) : 0;
             range.UnloadRelativeMSec = double.MaxValue;
-            // Content-interned, not insertion order - see idByDisplayName's
-            // own comment: two ranges with the same DisplayName must share
-            // one id so they merge for callers keying by ResolveId, the
-            // same as they always would have via Resolve's own string
-            // content equality.
-            int displayNameId;
-            if (!idByDisplayName.TryGetValue(range.DisplayName, out displayNameId))
-            {
-                displayNameId = namesById.Count;
-                namesById.Add(range.DisplayName);
-                idByDisplayName[range.DisplayName] = displayNameId;
-            }
-
-            range.Id = displayNameId;
+            // range.Id stays UnassignedRangeId (its own field initializer) -
+            // DisplayName decode + content-interning now happens lazily,
+            // the first time this range is actually matched - see
+            // EnsureResolved. Measured against a real 736MB/4.29M-event
+            // capture (dotnet-trace, dotnet-sampled-thread-time profile):
+            // this capture's rundown alone carried 101,795
+            // MethodDCStartVerbose records, but only ~1,700 distinct
+            // methods ever showed up across every resolved allocation/
+            // exception stack frame in the whole export - eagerly decoding
+            // (two UTF-16 string reads + a concat) for all 101,795
+            // regardless was over 50x more decode work than the capture
+            // actually needed.
             ranges.Add(range);
 
             long rangeSize = range.EndAddress - range.StartAddress;
@@ -226,10 +285,10 @@ public class MethodSymbolTable
             if (isLoad)
             {
                 Queue<MethodRange> pending;
-                if (!pendingByMethodId.TryGetValue(method.MethodID, out pending))
+                if (!pendingByMethodId.TryGetValue(decodedMethodId, out pending))
                 {
                     pending = new Queue<MethodRange>();
-                    pendingByMethodId[method.MethodID] = pending;
+                    pendingByMethodId[decodedMethodId] = pending;
                 }
 
                 pending.Enqueue(range);
@@ -238,7 +297,7 @@ public class MethodSymbolTable
 
         ranges.Sort(CompareByStartAddress);
 
-        return new MethodSymbolTable(ranges, maxRangeSize, namesById);
+        return new MethodSymbolTable(ranges, maxRangeSize, namesById, pointerSize);
     }
 
     private static double ComputeRelativeMSec(in EventRecord record, long qpcFrequency, long referenceQpc)
@@ -293,6 +352,12 @@ public class MethodSymbolTable
         if (this.lastMatchedRangeByAddress.TryGetValue(instructionPointer, out lastMatched)
             && relativeMSec >= lastMatched.LoadRelativeMSec && relativeMSec < lastMatched.UnloadRelativeMSec)
         {
+            // Already resolved by definition (only a range that already
+            // passed through the validated-match branch below ever gets
+            // cached here), but EnsureResolved is a cheap no-op once
+            // resolved - calling it unconditionally avoids relying on that
+            // invariant staying true forever as this method evolves.
+            this.EnsureResolved(lastMatched);
             return lastMatched.Id;
         }
 
@@ -345,6 +410,7 @@ public class MethodSymbolTable
 
             if (relativeMSec >= candidate.LoadRelativeMSec && relativeMSec < candidate.UnloadRelativeMSec)
             {
+                this.EnsureResolved(candidate);
                 this.lastMatchedRangeByAddress[instructionPointer] = candidate;
                 return candidate.Id;
             }
@@ -367,13 +433,14 @@ public class MethodSymbolTable
 
         if (fallbackRange != null)
         {
+            this.EnsureResolved(fallbackRange);
             return fallbackRange.Id;
         }
 
         int unresolvedId;
         if (!this.unresolvedIdByAddress.TryGetValue(instructionPointer, out unresolvedId))
         {
-            unresolvedId = this.namesById.Count + this.unresolvedNames.Count;
+            unresolvedId = UnresolvedIdBase + this.unresolvedNames.Count;
             this.unresolvedNames.Add($"<unresolved 0x{instructionPointer:X}>");
             this.unresolvedIdByAddress[instructionPointer] = unresolvedId;
         }
@@ -381,16 +448,53 @@ public class MethodSymbolTable
         return unresolvedId;
     }
 
+    // Decodes and content-interns range's DisplayName the first time it's
+    // actually matched by a real ResolveId call - see MethodRange's own
+    // comment on why this is deferred instead of happening eagerly at
+    // Build time. A no-op once range.Id is already assigned (every call
+    // site below calls this unconditionally rather than checking first,
+    // since the check IS this method's own first line).
+    private void EnsureResolved(MethodRange range)
+    {
+        if (range.Id != UnassignedRangeId)
+        {
+            return;
+        }
+
+        PayloadReader reader = new PayloadReader(range.PayloadBuffer, range.PayloadOffset, range.PayloadLength, this.pointerSize);
+        string displayName = ClrMethodRecord.DecodeDisplayName(reader);
+
+        // Same content-interning idByDisplayName's own comment describes -
+        // just performed lazily, on first match, instead of eagerly for
+        // every range at Build time.
+        int displayNameId;
+        if (!this.idByDisplayName.TryGetValue(displayName, out displayNameId))
+        {
+            displayNameId = this.namesById.Count;
+            this.namesById.Add(displayName);
+            this.idByDisplayName[displayName] = displayNameId;
+        }
+
+        range.Id = displayNameId;
+    }
+
     // See ResolveId's own comment - id must have come from this same
     // MethodSymbolTable instance's own ResolveId.
     public string NameForId(int id)
     {
-        if (id < this.namesById.Count)
+        // Branch on UnresolvedIdBase, not namesById.Count - see that
+        // constant's own comment for why: namesById.Count is no longer
+        // fixed once ids are minted lazily (EnsureResolved), so a
+        // since-grown count would compute the wrong index into
+        // unresolvedNames for an id minted back when the count was
+        // smaller. UnresolvedIdBase is a fixed boundary a real id can
+        // never reach, so this stays correct regardless of interleaving.
+        if (id >= UnresolvedIdBase)
         {
-            return this.namesById[id];
+            return this.unresolvedNames[id - UnresolvedIdBase];
         }
 
-        return this.unresolvedNames[id - this.namesById.Count];
+        return this.namesById[id];
     }
 
     private static int CompareByStartAddress(MethodRange left, MethodRange right)
