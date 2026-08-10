@@ -307,16 +307,20 @@ export async function activate(context: vscode.ExtensionContext) {
     const lastestVersionNumber = "0.8.3";
     const latestListenerVersionNumber = "1.6.2";
     const latestRoslynVersionNumber = "1.6.2";
-    // Bumped for the .nettrace parsing progress-bar feature (see
-    // DotnetInsightsNettraceEditor.ts/NettraceProgress.ts) - a real version
-    // bump, not just a re-upload, is required here: an already-downloaded
-    // pre-this-feature binary never emits any "PROGRESS ..." line at all,
-    // and per CLAUDE.md's "stale-cache trap" a same-tag re-upload alone
-    // would leave every machine that already cached the old binary using
-    // it forever. The loading view's own indeterminate fallback (see
-    // media/nettraceLoadingView.js) keeps that case from looking broken in
-    // the meantime, but a version bump is still what actually fixes it.
-    const latestNettraceParserVersionNumber = "1.6.8";
+    // Bumped for the CPU/Contention/Exceptions view rework - unified inline
+    // drill-down tables with manual + IO-bound row hiding (cascading into
+    // per-table tiles and timeline charts), a new Exceptions timeline chart
+    // (exceptionSummary.timeline is new JSON this binary didn't used to
+    // emit at all), a real fix for a signature-mismatch bug that silently
+    // broke the Contention chart and, via the same uncaught exception,
+    // Contention row-click reliability, and an auto-descend fix for the
+    // Exceptions caller tree. Per CLAUDE.md's "stale-cache trap", an
+    // already-downloaded pre-this-work binary doesn't just look
+    // incomplete - the Exceptions view's timeline chart section wouldn't
+    // render at all (its own HTML is gated on exceptionSummary.timeline
+    // being present), so a real version bump is required here, not a
+    // same-tag re-upload.
+    const latestNettraceParserVersionNumber = "1.6.9";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;
