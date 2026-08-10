@@ -83,7 +83,99 @@ export function renderContentionView(contentionSummary: any): string {
 
     const sitesTableHtml = renderTopSitesTable(contentionSummary);
 
-    return `${summaryTilesHtml}${timelineHtml}${sitesHideStatusHtml}${sitesTableHtml}`;
+    // Two tabs, mirroring the Profile view's own Flame Graph/Methods bar
+    // (same heapContentsTabBar/heapContentsTabPanel classes, so the existing
+    // tab CSS and switching idiom apply unchanged). The Lock Timeline tab is
+    // omitted entirely - not rendered empty - when the capture carries no
+    // lock identity at all, which is the case for any pre-.NET-9 runtime
+    // emitting V1 ContentionStart payloads (see ClrContentionStart.Decode).
+    const lockTimeline = contentionSummary["lockTimeline"];
+    const hasLockTimeline = !!(lockTimeline && lockTimeline["locks"] && lockTimeline["locks"].length > 0);
+
+    const sitesPanelInner = `${summaryTilesHtml}${timelineHtml}${sitesHideStatusHtml}${sitesTableHtml}`;
+
+    if (!hasLockTimeline) {
+        return sitesPanelInner;
+    }
+
+    const tabBarHtml = `
+        <div class="heapContentsTabBar">
+            <button class="heapContentsTabButton active" data-contentiontab="sites">Sites</button>
+            <button class="heapContentsTabButton" data-contentiontab="locktimeline">Lock Timeline</button>
+        </div>`;
+
+    const sitesPanelHtml = `<div id="contention-tab-sites" class="heapContentsTabPanel active">${sitesPanelInner}</div>`;
+    const lockTimelinePanelHtml = `<div id="contention-tab-locktimeline" class="heapContentsTabPanel">${renderLockTimelinePanel(lockTimeline)}</div>`;
+
+    return `${tabBarHtml}${sitesPanelHtml}${lockTimelinePanelHtml}`;
+}
+
+// Lock Timeline tab: a Gantt-style track per lock (y) against capture time
+// (x), each bar an observed ownership window colored by the owning thread.
+//
+// The canvas itself is drawn entirely by media/lockTimeline.js rather than
+// Chart.js - this codebase is pinned to Chart.js 2.x (see CLAUDE.md), which
+// has no floating/range bar type at all (arbitrary [start,end] bars only
+// arrived in Chart.js 3), and a hand-drawn canvas also handles the ~9k
+// segments a real capture produces far faster than a chart library's own
+// per-element model would.
+//
+// The explanatory note is deliberately part of the UI, not a comment: these
+// bars are inferred from contention events, which the CLR only emits when a
+// lock is actually contended, so a gap means "nobody was blocked here", NOT
+// "the lock was free". Without saying so the view reads as a complete
+// ownership history, which it cannot be.
+function renderLockTimelinePanel(lockTimeline: any): string {
+    const locks = lockTimeline["locks"];
+    const totalDistinctLockCount = lockTimeline["totalDistinctLockCount"];
+
+    const showingNote = locks.length < totalDistinctLockCount
+        ? `Showing the ${locks.length} locks with the most total wait time, of ${totalDistinctLockCount.toLocaleString()} contended locks in this capture.`
+        : `Showing all ${locks.length} contended ${locks.length === 1 ? "lock" : "locks"} in this capture.`;
+
+    var lockFilterRows = "";
+    for (var index = 0; index < locks.length; ++index) {
+        const lockEntry = locks[index];
+        const lockId = escapeHtmlForContention(lockEntry["lockId"]);
+        const waitMSec = lockEntry["totalWaitMSec"];
+        const contentionCount = lockEntry["contentionCount"];
+
+        lockFilterRows += `<label class="lockFilterItem"><input type="checkbox" class="lockFilterCheckbox" data-lock-index="${index}" checked>` +
+            `<span class="lockFilterSwatch" data-lock-swatch="${index}"></span>` +
+            `<span class="lockFilterId">${lockId}</span>` +
+            `<span class="lockFilterStat">${waitMSec.toFixed(1)} ms · ${contentionCount.toLocaleString()}</span>` +
+            `</label>`;
+    }
+
+    return `
+        <div class="lockTimelineNote">
+            ${showingNote}
+            Each bar is a window where a thread held a lock while another thread was blocked on it.
+            Because the runtime only reports contended locks, a gap means no thread was blocked - not that the lock was free.
+        </div>
+        <div class="lockTimelineToolbar">
+            <button id="lockTimelineResetZoomBtn" class="resetZoomButton" style="display:none">Reset Zoom</button>
+            <span id="lockTimelineZoomLabel" class="lockTimelineZoomLabel"></span>
+            <span class="lockTimelineHint">Drag horizontally to zoom · double-click to reset</span>
+        </div>
+        <div class="lockTimelineLayout">
+            <div class="lockTimelineChartArea">
+                <div id="lockTimelineContainer" class="lockTimelineContainer">
+                    <canvas id="lockTimelineCanvas"></canvas>
+                </div>
+                <div id="lockTimelineTooltip" class="lockTimelineTooltip" style="display:none"></div>
+            </div>
+            <div class="lockFilterPanel">
+                <div class="lockFilterHeader">
+                    <span>Locks</span>
+                    <span class="lockFilterButtons">
+                        <button id="lockFilterAllBtn" class="resetZoomButton">All</button>
+                        <button id="lockFilterNoneBtn" class="resetZoomButton">None</button>
+                    </span>
+                </div>
+                <div id="lockFilterList" class="lockFilterList">${lockFilterRows}</div>
+            </div>
+        </div>`;
 }
 
 // Ranked sites table: each row shows the contention site (leaf frame),

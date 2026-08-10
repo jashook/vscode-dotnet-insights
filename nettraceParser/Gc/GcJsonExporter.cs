@@ -78,7 +78,7 @@ public static class GcJsonExporter
     // becoming its own write() syscall.
     private const int OutputFileStreamBufferSize = 1024 * 1024;
 
-    public static JsonExportTiming WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath)
+    public static JsonExportTiming WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath, double captureDurationMSec)
     {
         // Permanent (not throwaway) per-sub-writer timing - see
         // JsonExportTiming's own comment on why.
@@ -162,6 +162,25 @@ public static class GcJsonExporter
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();
+            writer.WriteEndObject();
+
+            // "timeBreakdown" is also nettrace-only (same reasoning) - the
+            // .gcinfo/XML path never sets this key either. See
+            // Overview/TimeBreakdownBuilder.cs for the exact-vs-estimated
+            // split between its four percentages. No dedicated progress
+            // phase - a single pass over already-in-memory lists, negligible
+            // next to any real sub-writer phase either side of it.
+            TimeBreakdown timeBreakdown = TimeBreakdownBuilder.Build(gcEvents, contentionEvents, sampleEvents, symbolTable, captureDurationMSec);
+
+            writer.WritePropertyName("timeBreakdown");
+            writer.WriteStartObject();
+            writer.WriteBoolean("hasCaptureDuration", timeBreakdown.HasCaptureDuration);
+            writer.WriteNumber("captureDurationMSec", timeBreakdown.CaptureDurationMSec);
+            writer.WriteNumber("gcPercent", timeBreakdown.GcPercent);
+            writer.WriteNumber("contentionPercent", timeBreakdown.ContentionPercent);
+            writer.WriteBoolean("hasCpuSampleBreakdown", timeBreakdown.HasCpuSampleBreakdown);
+            writer.WriteNumber("idlePercent", timeBreakdown.IdlePercent);
+            writer.WriteNumber("cpuBoundPercent", timeBreakdown.CpuBoundPercent);
             writer.WriteEndObject();
 
             // "cpuProfile" is also nettrace-only (same reasoning as

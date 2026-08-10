@@ -18,6 +18,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 
 using DotnetInsights.NetTrace;
 using DotnetInsights.NetTrace.Contention;
@@ -148,6 +149,41 @@ if (isJsonMode)
 
     int totalEventCount = file.Events.Count;
 
+    // Whole-capture wall-clock span, on the same referenceQpc/RelativeMSec
+    // axis every projector above already uses - the one thing only the raw
+    // event list (not any projector's own narrower min/max) can answer,
+    // since a capture can easily have long GC/contention/CPU-sample-free
+    // stretches at the start or end that would otherwise understate it.
+    // Computed here, not inside a new projector of its own, since this is
+    // the last point file.Events is available (see the `file = null;` below)
+    // and a single min/max scan is cheap next to the six passes already
+    // done above.
+    double captureDurationMSec = 0;
+
+    if (totalEventCount > 0)
+    {
+        long minTimeStampQpc = long.MaxValue;
+        long maxTimeStampQpc = long.MinValue;
+
+        Span<EventRecord> eventsSpanForDuration = CollectionsMarshal.AsSpan(file.Events);
+        for (int eventIndex = 0; eventIndex < eventsSpanForDuration.Length; ++eventIndex)
+        {
+            long timeStampQpc = eventsSpanForDuration[eventIndex].TimeStampRelativeQPC;
+
+            if (timeStampQpc < minTimeStampQpc)
+            {
+                minTimeStampQpc = timeStampQpc;
+            }
+
+            if (timeStampQpc > maxTimeStampQpc)
+            {
+                maxTimeStampQpc = timeStampQpc;
+            }
+        }
+
+        captureDurationMSec = (maxTimeStampQpc - minTimeStampQpc) * 1000.0 / file.Header.QPCFrequency;
+    }
+
     // Nothing past this point ever reads file/file.Events again -
     // GcEventProjector.Project, AllocationEventProjector.Project,
     // ExceptionEventProjector.Project, EventOverviewBuilder.Build,
@@ -173,7 +209,7 @@ if (isJsonMode)
     // entirely from inside GcJsonExporter.WriteToFile itself - see that
     // method's own comment for why it calls ProgressReporter directly
     // rather than taking an onProgress parameter like every phase above.
-    JsonExportTiming jsonExportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, symbolTable, processName, ticksBinaryPath);
+    JsonExportTiming jsonExportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, symbolTable, processName, ticksBinaryPath, captureDurationMSec);
     long jsonExportMs = phaseStopwatch.ElapsedMilliseconds;
 
     long totalMs = totalStopwatch.ElapsedMilliseconds;

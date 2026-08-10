@@ -4326,12 +4326,159 @@ var allocationDatasets = {};
         filterContentionSitesToZoomRange(contentionTimelineZoomRange);
     }
 
+    // Mirrors buildCpuDrillDownRowIfLazy against contentionDrillDownStats.js's
+    // buildLazyContentionDrillDownSubtree and the data-contention-lazy-inner
+    // attribute.
+    function buildContentionDrillDownRowIfLazy(detailRow) {
+        if (detailRow.getAttribute('data-contention-lazy-inner') !== 'true') {
+            return;
+        }
+
+        var subtreeHtml = buildLazyContentionDrillDownSubtree(detailRow.id);
+        if (subtreeHtml) {
+            detailRow.querySelector('.callerTreeCell').innerHTML = subtreeHtml;
+            detailRow.removeAttribute('data-contention-lazy-inner');
+        }
+    }
+
+    // Mirrors followCpuDrillDownLinearRun/followExceptionDrillDownLinearRun -
+    // see those for the full rationale (follow a chain of single-child rows
+    // down to the first real branch or the end, in one click, so a long
+    // non-branching call chain doesn't need one click per frame). Contention
+    // was the only drill-down tab that never had this, so expanding a site
+    // stopped at its single immediate caller.
+    function followContentionDrillDownLinearRun(detailRow) {
+        var currentDetailRow = detailRow;
+        for (;;) {
+            var innerTable = currentDetailRow.querySelector('table.callerTreeInner');
+            if (!innerTable) {
+                return;
+            }
+
+            var childRows = [];
+            for (var rowIndex = 0; rowIndex < innerTable.rows.length; ++rowIndex) {
+                if (innerTable.rows[rowIndex].classList.contains('callerRow')) {
+                    childRows.push(innerTable.rows[rowIndex]);
+                }
+            }
+
+            if (childRows.length !== 1) {
+                return;
+            }
+
+            var onlyChildRow = childRows[0];
+            if (onlyChildRow.getAttribute('data-contention-expandable') !== 'true') {
+                return;
+            }
+
+            var onlyChildDetailRow = document.getElementById(onlyChildRow.getAttribute('data-contention-target'));
+            if (!onlyChildDetailRow) {
+                return;
+            }
+
+            buildContentionDrillDownRowIfLazy(onlyChildDetailRow);
+            onlyChildRow.classList.add('expanded');
+            onlyChildDetailRow.classList.add('expanded');
+            currentDetailRow = onlyChildDetailRow;
+        }
+    }
+
+    // Mirrors switchProfileTab. The Lock Timeline canvas is drawn on first
+    // reveal, never at injection time: a canvas inside a display:none panel
+    // has zero layout width, so sizing it there produces a 0-wide backing
+    // store and an invisible chart.
+    function switchContentionTab(targetTab) {
+        var buttons = document.querySelectorAll('#view-contention .heapContentsTabButton');
+        for (var buttonIndex = 0; buttonIndex < buttons.length; ++buttonIndex) {
+            buttons[buttonIndex].classList.remove('active');
+            if (buttons[buttonIndex].getAttribute('data-contentiontab') === targetTab) {
+                buttons[buttonIndex].classList.add('active');
+            }
+        }
+
+        var panels = document.querySelectorAll('#view-contention .heapContentsTabPanel');
+        for (var panelIndex = 0; panelIndex < panels.length; ++panelIndex) {
+            panels[panelIndex].classList.remove('active');
+        }
+
+        var targetPanel = document.getElementById('contention-tab-' + targetTab);
+        if (targetPanel) {
+            targetPanel.classList.add('active');
+        }
+
+        if (targetTab === 'locktimeline' && contentionSummaryJson && contentionSummaryJson["lockTimeline"]) {
+            // renderLockTimeline is idempotent (it re-draws against its own
+            // retained state on every call), so this also covers a redraw
+            // after the panel was hidden and re-shown at a different size.
+            renderLockTimeline(contentionSummaryJson["lockTimeline"]);
+        }
+    }
+
+    function wireLockTimelinePanel() {
+        var lockTimeline = contentionSummaryJson ? contentionSummaryJson["lockTimeline"] : null;
+        if (!lockTimeline) {
+            return;
+        }
+
+        var filterList = document.getElementById('lockFilterList');
+        if (filterList) {
+            // Delegated, not one listener per checkbox - a capture can rank
+            // up to 40 locks and this keeps it to a single handler.
+            filterList.addEventListener('change', function (event) {
+                var checkbox = event.target.closest('.lockFilterCheckbox');
+                if (!checkbox) {
+                    return;
+                }
+
+                setLockTimelineLockVisible(parseInt(checkbox.getAttribute('data-lock-index'), 10), checkbox.checked);
+            });
+        }
+
+        var allBtn = document.getElementById('lockFilterAllBtn');
+        if (allBtn) {
+            allBtn.addEventListener('click', function () {
+                setAllLockFilterCheckboxes(true);
+            });
+        }
+
+        var noneBtn = document.getElementById('lockFilterNoneBtn');
+        if (noneBtn) {
+            noneBtn.addEventListener('click', function () {
+                setAllLockFilterCheckboxes(false);
+            });
+        }
+
+        var resetZoomBtn = document.getElementById('lockTimelineResetZoomBtn');
+        if (resetZoomBtn) {
+            resetZoomBtn.addEventListener('click', function () {
+                resetLockTimelineZoom();
+            });
+        }
+    }
+
+    function setAllLockFilterCheckboxes(isChecked) {
+        var checkboxes = document.getElementsByClassName('lockFilterCheckbox');
+        for (var checkboxIndex = 0; checkboxIndex < checkboxes.length; ++checkboxIndex) {
+            checkboxes[checkboxIndex].checked = isChecked;
+            setLockTimelineLockVisible(parseInt(checkboxes[checkboxIndex].getAttribute('data-lock-index'), 10), isChecked);
+        }
+    }
+
     function wireContentionTab() {
         if (!contentionSummaryJson) {
             return;
         }
 
         initContentionDrillDownMethodNames(contentionSummaryJson["methodNames"]);
+
+        var contentionTabButtons = document.querySelectorAll('#view-contention .heapContentsTabButton');
+        for (var tabButtonIndex = 0; tabButtonIndex < contentionTabButtons.length; ++tabButtonIndex) {
+            contentionTabButtons[tabButtonIndex].addEventListener('click', function (event) {
+                switchContentionTab(event.currentTarget.getAttribute('data-contentiontab'));
+            });
+        }
+
+        wireLockTimelinePanel();
 
         var resetZoomBtn = document.getElementById('contentionTimelineResetZoomBtn');
         if (resetZoomBtn) {
@@ -4390,16 +4537,10 @@ var allocationDatasets = {};
                     return;
                 }
 
-                if (innerDetailRow.getAttribute('data-contention-lazy-inner') === 'true') {
-                    var subtreeHtml = buildLazyContentionDrillDownSubtree(callerRow.getAttribute('data-contention-target'));
-                    if (subtreeHtml) {
-                        innerDetailRow.querySelector('.callerTreeCell').innerHTML = subtreeHtml;
-                        innerDetailRow.removeAttribute('data-contention-lazy-inner');
-                    }
-                }
-
+                buildContentionDrillDownRowIfLazy(innerDetailRow);
                 callerRow.classList.add('expanded');
                 innerDetailRow.classList.add('expanded');
+                followContentionDrillDownLinearRun(innerDetailRow);
                 return;
             }
 
@@ -4433,6 +4574,7 @@ var allocationDatasets = {};
 
             siteRow.classList.add('expanded');
             detailRow.classList.add('expanded');
+            followContentionDrillDownLinearRun(detailRow);
 
             // Rotate toggle arrow.
             var toggle = siteRow.querySelector('.leafMethodToggle');
@@ -4484,6 +4626,17 @@ var allocationDatasets = {};
             filterCpuMethodsTableToZoomRange(null);
             updateCpuTimelineZoomStatusUi(null);
             return true;
+        }
+
+        // Contention view's Lock Timeline tab - checked BEFORE the Sites
+        // branch below, and gated on its own panel being the active tab, so
+        // a zoom left behind on the Sites timeline can't swallow a swipe
+        // aimed at the lock chart. lockTimelineSwipeZoomOut steps back one
+        // level (see media/lockTimeline.js) and reports whether it did
+        // anything, same contract as flameGraphSwipeZoomOut below.
+        var lockTimelinePanel = document.getElementById('contention-tab-locktimeline');
+        if (lockTimelinePanel && lockTimelinePanel.classList.contains('active')) {
+            return lockTimelineSwipeZoomOut();
         }
 
         var contentionPanel = document.getElementById('view-contention');
@@ -4541,6 +4694,13 @@ var allocationDatasets = {};
             return true;
         }
 
+        // Lock Timeline's redo counterpart - same panel-active gate as its
+        // own branch in performGoBackAction.
+        var lockTimelinePanel = document.getElementById('contention-tab-locktimeline');
+        if (lockTimelinePanel && lockTimelinePanel.classList.contains('active')) {
+            return lockTimelineSwipeZoomForward();
+        }
+
         if (sharedZoomRange || !zoomRangeForForward) {
             return false;
         }
@@ -4590,6 +4750,20 @@ var allocationDatasets = {};
     var SWIPE_GESTURE_IDLE_RESET_MS = 400;
     var swipeAccumulatedDeltaX = 0;
     var swipeGestureResetTimer = null;
+    // Latched for the REST of the current burst once this gesture has fired
+    // its one action. Without this, a single physical swipe fires several
+    // times: the accumulator was merely reset to 0 after firing and kept
+    // accumulating the same burst, and a macOS trackpad swipe keeps emitting
+    // wheel events (momentum included) for hundreds of milliseconds - easily
+    // several more multiples of SWIPE_THRESHOLD_PX. On any view whose back
+    // action is a single-level toggle that was invisible, but against the
+    // flame graph's own multi-level undo stack (see flameGraph.js's
+    // flameGraphBackStack) it popped several levels per swipe and looked
+    // like "zoom out jumps straight to fully zoomed out" instead of
+    // "step back one zoom". The latch clears only after a real quiet gap
+    // (SWIPE_GESTURE_IDLE_RESET_MS), which is what actually separates one
+    // physical gesture from the next.
+    var swipeGestureLatched = false;
 
     document.addEventListener('wheel', function (event) {
         if (event.ctrlKey || Math.abs(event.deltaX) <= Math.abs(event.deltaY)) {
@@ -4600,18 +4774,27 @@ var allocationDatasets = {};
         clearTimeout(swipeGestureResetTimer);
         swipeGestureResetTimer = setTimeout(function () {
             swipeAccumulatedDeltaX = 0;
+            swipeGestureLatched = false;
         }, SWIPE_GESTURE_IDLE_RESET_MS);
+
+        // Still inside the burst that already fired - swallow the remainder
+        // (including momentum) rather than letting it re-trigger.
+        if (swipeGestureLatched) {
+            return;
+        }
 
         swipeAccumulatedDeltaX += event.deltaX;
 
         if (swipeAccumulatedDeltaX <= -SWIPE_THRESHOLD_PX) {
             swipeAccumulatedDeltaX = 0;
+            swipeGestureLatched = true;
 
             if (performGoBackAction()) {
                 event.preventDefault();
             }
         } else if (swipeAccumulatedDeltaX >= SWIPE_THRESHOLD_PX) {
             swipeAccumulatedDeltaX = 0;
+            swipeGestureLatched = true;
 
             if (performGoForwardAction()) {
                 event.preventDefault();

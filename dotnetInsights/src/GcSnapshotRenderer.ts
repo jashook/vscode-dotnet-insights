@@ -164,7 +164,8 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     // so there's no data-emptiness check here - only the format gate.
     const eventOverview = gcData["eventOverview"];
     const hasOverview = isNettrace && eventOverview !== null && eventOverview !== undefined;
-    const eventOverviewHtml = hasOverview ? renderEventOverviewTable(eventOverview) : "";
+    const timeBreakdown = gcData["timeBreakdown"];
+    const eventOverviewHtml = hasOverview ? renderEventOverviewTable(eventOverview, timeBreakdown) : "";
 
     // "Profile" (CPU sample-based flame graph + hot methods table) - same
     // format-level/data-emptiness gating as Heap Contents/Exceptions above
@@ -361,6 +362,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const cpuDrillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'cpuDrillDownStats.js');
     const contentionDrillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'contentionDrillDownStats.js');
     const flameGraphScriptUri = mediaWebviewUri(webview, extensionUri, 'flameGraph.js');
+    const lockTimelineScriptUri = mediaWebviewUri(webview, extensionUri, 'lockTimeline.js');
 
     const chartjs = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'chart.js', 'dist', 'Chart.min.js'));
 
@@ -705,6 +707,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <script nonce="${nonce}" src="${cpuDrillDownScriptUri}"></script>
             <script nonce="${nonce}" src="${contentionDrillDownScriptUri}"></script>
             <script nonce="${nonce}" src="${flameGraphScriptUri}"></script>
+            <script nonce="${nonce}" src="${lockTimelineScriptUri}"></script>
             <script nonce="${nonce}" src="${scriptUri}"></script>
         </body>
     </html>`;

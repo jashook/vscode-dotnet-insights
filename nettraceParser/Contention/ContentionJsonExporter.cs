@@ -54,12 +54,58 @@ public static class ContentionJsonExporter
 
     private const int MaxTimelineBuckets = 100;
 
+    // Lock Timeline view: how many distinct locks get their own row, ranked
+    // by total contended wait time. Mirrors TopSitesLimit's own "a ranked
+    // list past this stops being scannable" reasoning, kept lower because
+    // each row here is a full-width timeline track rather than a table row -
+    // a real capture had 1447 distinct locks but its top 4 accounted for
+    // ~79% of all contention, so the long tail is overwhelmingly noise.
+    private const int TopLocksLimit = 40;
+
+    // Hard cap on emitted ownership segments across all ranked locks. A
+    // segment is one contended wait (~40 bytes of JSON), so this bounds the
+    // block at roughly 1MB even on a pathological capture. Segments are
+    // taken longest-wait-first within each lock so a truncated capture keeps
+    // the intervals that actually matter visually.
+    private const int MaxOwnershipSegments = 20000;
+
     private sealed class SiteStats
     {
         public int LeafFrameId;
         public string LeafFrameName;
         public int ContentionCount;
         public double TotalWaitMSec;
+    }
+
+    // One contended-wait window on a lock. A readonly struct held in a
+    // List<T> (rather than indices back into the caller's Span) because a
+    // Span is a ref struct and so can't be captured by the sort comparison
+    // below - copying these four values per event is the cheaper tradeoff
+    // against re-deriving them.
+    private readonly struct OwnershipSegment
+    {
+        public readonly double StartMSec;
+        public readonly double EndMSec;
+        public readonly double DurationMSec;
+        public readonly long OwnerThreadId;
+        public readonly long WaiterThreadId;
+
+        public OwnershipSegment(double startMSec, double endMSec, double durationMSec, long ownerThreadId, long waiterThreadId)
+        {
+            this.StartMSec = startMSec;
+            this.EndMSec = endMSec;
+            this.DurationMSec = durationMSec;
+            this.OwnerThreadId = ownerThreadId;
+            this.WaiterThreadId = waiterThreadId;
+        }
+    }
+
+    private sealed class LockStats
+    {
+        public long LockId;
+        public int ContentionCount;
+        public double TotalWaitMSec;
+        public List<OwnershipSegment> Segments = new List<OwnershipSegment>();
     }
 
     private sealed class ContentionStackAggregate
@@ -99,6 +145,8 @@ public static class ContentionJsonExporter
             writer.WriteStartArray();
             writer.WriteEndArray();
             writer.WritePropertyName("timeline");
+            writer.WriteNullValue();
+            writer.WritePropertyName("lockTimeline");
             writer.WriteNullValue();
             writer.WritePropertyName("methodNames");
             writer.WriteStartArray();
@@ -345,6 +393,8 @@ public static class ContentionJsonExporter
             writer.WriteEndObject();
         }
 
+        WriteLockTimeline(writer, eventsSpan, minRelativeMSec, maxRelativeMSec);
+
         writer.WritePropertyName("methodNames");
         writer.WriteStartArray();
 
@@ -355,6 +405,135 @@ public static class ContentionJsonExporter
 
         writer.WriteEndArray();
 
+        writer.WriteEndObject();
+    }
+
+    // Writes the "lockTimeline" block backing the Contention view's Lock
+    // Timeline tab: one track per ranked lock, each holding the ownership
+    // segments observed for it.
+    //
+    // What a segment actually means, and why it isn't a full ownership
+    // timeline: the CLR only emits contention events when a lock is
+    // CONTENDED, so a lock held with no one waiting produces no events at
+    // all. Each segment here is therefore one contended wait - [start, end]
+    // is the window during which `waiterThreadId` was BLOCKED, and
+    // `ownerThreadId` is whoever held the lock at the moment that wait
+    // began. Rendering it as an ownership bar for ownerThreadId is the
+    // correct reading (that thread demonstrably held the lock across that
+    // window, which is why the waiter was stuck), but the gaps between
+    // segments are NOT proof the lock was free - only that nobody was
+    // blocked on it. The view labels this rather than implying completeness.
+    //
+    // ownerThreadId is 0 whenever the runtime couldn't attribute an owner
+    // (~12% of waits on a real capture) and is emitted as 0 for the renderer
+    // to show as "unknown" - deliberately not dropped, since a wait with an
+    // unknown owner is still a real wait on that lock.
+    private static void WriteLockTimeline(Utf8JsonWriter writer, Span<ContentionEvent> eventsSpan, double minRelativeMSec, double maxRelativeMSec)
+    {
+        Dictionary<long, LockStats> statsByLockId = new Dictionary<long, LockStats>();
+
+        for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
+        {
+            ref readonly ContentionEvent contentionEvent = ref eventsSpan[eventIndex];
+
+            // A V1 ContentionStart payload carries no lock identity at all
+            // (see ClrContentionStart.Decode) - such an event can't be
+            // placed on any lock's track, so it's skipped here rather than
+            // being folded into a bogus shared "lock 0" row.
+            if (contentionEvent.LockId == 0)
+            {
+                continue;
+            }
+
+            LockStats stats;
+
+            if (!statsByLockId.TryGetValue(contentionEvent.LockId, out stats))
+            {
+                stats = new LockStats();
+                stats.LockId = contentionEvent.LockId;
+                statsByLockId[contentionEvent.LockId] = stats;
+            }
+
+            ++stats.ContentionCount;
+            stats.TotalWaitMSec += contentionEvent.DurationMSec;
+            stats.Segments.Add(new OwnershipSegment(contentionEvent.RelativeMSec, contentionEvent.RelativeMSec + contentionEvent.DurationMSec, contentionEvent.DurationMSec, contentionEvent.OwnerThreadId, contentionEvent.ThreadId));
+        }
+
+        writer.WritePropertyName("lockTimeline");
+
+        if (statsByLockId.Count == 0)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+
+        List<LockStats> sortedLocks = new List<LockStats>(statsByLockId.Values);
+        sortedLocks.Sort((LockStats left, LockStats right) => right.TotalWaitMSec.CompareTo(left.TotalWaitMSec));
+
+        int rankedLockCount = sortedLocks.Count < TopLocksLimit ? sortedLocks.Count : TopLocksLimit;
+
+        // Budget is shared across every ranked lock, spent in rank order, so
+        // the busiest locks keep full detail rather than every lock losing
+        // the same fraction.
+        int remainingSegmentBudget = MaxOwnershipSegments;
+
+        writer.WriteStartObject();
+        writer.WriteNumber("minRelativeMSec", minRelativeMSec);
+        writer.WriteNumber("maxRelativeMSec", maxRelativeMSec);
+        writer.WriteNumber("totalDistinctLockCount", statsByLockId.Count);
+        writer.WritePropertyName("locks");
+        writer.WriteStartArray();
+
+        for (int lockIndex = 0; lockIndex < rankedLockCount; ++lockIndex)
+        {
+            LockStats stats = sortedLocks[lockIndex];
+
+            writer.WriteStartObject();
+            // Hex string, not a JSON number: a lock id is a 64-bit pointer
+            // value, which loses precision past 2^53 once JSON.parse turns
+            // it into a JS double. It's an opaque identity here (grouping
+            // key and display label), never arithmetic, so a string is both
+            // safe and directly renderable.
+            writer.WriteString("lockId", "0x" + stats.LockId.ToString("X"));
+            writer.WriteNumber("contentionCount", stats.ContentionCount);
+            writer.WriteNumber("totalWaitMSec", stats.TotalWaitMSec);
+
+            List<OwnershipSegment> segments = stats.Segments;
+
+            // Longest waits first, so a lock truncated by the shared budget
+            // keeps its visually significant bars rather than an arbitrary
+            // time-ordered prefix.
+            segments.Sort((OwnershipSegment left, OwnershipSegment right) => right.DurationMSec.CompareTo(left.DurationMSec));
+
+            int segmentCount = segments.Count < remainingSegmentBudget ? segments.Count : remainingSegmentBudget;
+            remainingSegmentBudget -= segmentCount;
+
+            writer.WriteNumber("totalSegmentCount", segments.Count);
+            writer.WritePropertyName("segments");
+            writer.WriteStartArray();
+
+            for (int segmentIndex = 0; segmentIndex < segmentCount; ++segmentIndex)
+            {
+                OwnershipSegment segment = segments[segmentIndex];
+
+                writer.WriteStartObject();
+                writer.WriteNumber("startMSec", segment.StartMSec);
+                writer.WriteNumber("endMSec", segment.EndMSec);
+                writer.WriteNumber("ownerThreadId", segment.OwnerThreadId);
+                writer.WriteNumber("waiterThreadId", segment.WaiterThreadId);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+
+            // Flushing once per lock bounds Utf8JsonWriter's own internal
+            // buffer to roughly one lock's segments - same reasoning as
+            // GcJsonExporter.WriteToFile's own per-GC flush.
+            writer.Flush();
+        }
+
+        writer.WriteEndArray();
         writer.WriteEndObject();
     }
 
