@@ -96,6 +96,27 @@ public static class ContentionJsonExporter
         "System.Threading.ObjectHeader."
     };
 
+    // Frames that identify a stack as running on a managed thread-pool
+    // worker. Used to tell "this lock blocks pool threads" (which starves
+    // every queued work item behind it) from "two dedicated background
+    // threads contend with each other" (which costs those two threads and
+    // nobody else) - the raw contention count cannot distinguish them.
+    //
+    // Matched anywhere in the stack, not just at the root: a pool worker's
+    // stack always passes through the dispatch loop on its way to user
+    // code, and the frames above it vary per work item. Deliberately
+    // conservative - an unrecognized pool entry point undercounts (a real
+    // pool wait looks like a non-pool one) rather than misreporting a
+    // dedicated thread as a pool thread.
+    private static readonly string[] ThreadPoolFrameMarkers = new string[]
+    {
+        "System.Threading.PortableThreadPool",
+        "System.Threading.ThreadPoolWorkQueue",
+        "System.Threading.ThreadPool.",
+        "System.Threading._ThreadPoolWaitCallback",
+        "System.Threading.TimerQueue"
+    };
+
     private sealed class SiteStats
     {
         public int LeafFrameId;
@@ -132,6 +153,23 @@ public static class ContentionJsonExporter
         public long LockId;
         public int ContentionCount;
         public double TotalWaitMSec;
+        // Distinct participants, tracked separately because they answer
+        // different questions and routinely disagree: a lock contended
+        // thousands of times by TWO threads is a ping-pong between them,
+        // while the same count spread across a hundred threads is a
+        // serialization bottleneck for the whole pool. Owners are tracked
+        // apart from waiters for the same reason - many waiters behind a
+        // single persistent owner is a different shape of problem than
+        // everyone fighting everyone.
+        public HashSet<long> WaiterThreadIds = new HashSet<long>();
+        public HashSet<long> OwnerThreadIds = new HashSet<long>();
+        // Waiters whose own stack shows them to be managed thread-pool
+        // workers (see IsThreadPoolStack). This is the number that separates
+        // "two background threads ping-ponging, which nobody cares about"
+        // from "this lock is starving the pool" - the same contention count
+        // means very different things in those two cases.
+        public HashSet<long> PoolWaiterThreadIds = new HashSet<long>();
+        public int PoolContentionCount;
         public List<OwnershipSegment> Segments = new List<OwnershipSegment>();
         // Distinct stacks contended on this lock, keyed by stack array
         // reference (same ReferenceEqualityComparer discipline the site
@@ -455,6 +493,7 @@ public static class ContentionJsonExporter
     private static void WriteLockTimeline(Utf8JsonWriter writer, Span<ContentionEvent> eventsSpan, double minRelativeMSec, double maxRelativeMSec, MethodSymbolTable symbolTable, Dictionary<long[], int[]> frameIdCache, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         Dictionary<long, LockStats> statsByLockId = new Dictionary<long, LockStats>();
+        Dictionary<long[], bool> poolStackCache = new Dictionary<long[], bool>(ReferenceEqualityComparer.Instance);
 
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
@@ -480,6 +519,22 @@ public static class ContentionJsonExporter
 
             ++stats.ContentionCount;
             stats.TotalWaitMSec += contentionEvent.DurationMSec;
+            stats.WaiterThreadIds.Add(contentionEvent.ThreadId);
+
+            // Owner 0 means the runtime couldn't attribute one - counting it
+            // would report a phantom extra owner on every lock that has any
+            // unattributed wait (~12% of waits on a real capture).
+            if (contentionEvent.OwnerThreadId != 0)
+            {
+                stats.OwnerThreadIds.Add(contentionEvent.OwnerThreadId);
+            }
+
+            if (IsThreadPoolStack(contentionEvent.Stack, contentionEvent.RelativeMSec, symbolTable, poolStackCache))
+            {
+                stats.PoolWaiterThreadIds.Add(contentionEvent.ThreadId);
+                ++stats.PoolContentionCount;
+            }
+
             stats.Segments.Add(new OwnershipSegment(contentionEvent.RelativeMSec, contentionEvent.RelativeMSec + contentionEvent.DurationMSec, contentionEvent.DurationMSec, contentionEvent.OwnerThreadId, contentionEvent.ThreadId));
 
             // Fold this wait's own stack into the lock's distinct-stack set,
@@ -552,6 +607,10 @@ public static class ContentionJsonExporter
             writer.WriteString("lockId", "0x" + stats.LockId.ToString("X"));
             writer.WriteNumber("contentionCount", stats.ContentionCount);
             writer.WriteNumber("totalWaitMSec", stats.TotalWaitMSec);
+            writer.WriteNumber("waiterThreadCount", stats.WaiterThreadIds.Count);
+            writer.WriteNumber("ownerThreadCount", stats.OwnerThreadIds.Count);
+            writer.WriteNumber("poolWaiterThreadCount", stats.PoolWaiterThreadIds.Count);
+            writer.WriteNumber("poolContentionCount", stats.PoolContentionCount);
             // Index into the shared methodNames pool, or -1 when this lock
             // has no stack to name it after. The renderer shows this as the
             // lock's primary label and keeps lockId as the secondary
@@ -737,6 +796,50 @@ public static class ContentionJsonExporter
         }
 
         return -1;
+    }
+
+    // Whether this wait happened on a managed thread-pool worker, decided
+    // from the waiting thread's own stack. Cached by stack array reference
+    // (stacks are interned at parse time - see EventBlock.cs) because a real
+    // capture has ~10k waits over only ~4k distinct stacks, and this walks
+    // every frame of one.
+    private static bool IsThreadPoolStack(long[] stack, double relativeMSec, MethodSymbolTable symbolTable, Dictionary<long[], bool> poolStackCache)
+    {
+        if (stack.Length == 0)
+        {
+            return false;
+        }
+
+        bool isPoolStack;
+
+        if (poolStackCache.TryGetValue(stack, out isPoolStack))
+        {
+            return isPoolStack;
+        }
+
+        isPoolStack = false;
+
+        for (int frameIndex = 0; frameIndex < stack.Length && !isPoolStack; ++frameIndex)
+        {
+            string frameName = symbolTable.NameForId(symbolTable.ResolveId(stack[frameIndex], relativeMSec));
+
+            if (string.IsNullOrEmpty(frameName))
+            {
+                continue;
+            }
+
+            for (int markerIndex = 0; markerIndex < ThreadPoolFrameMarkers.Length; ++markerIndex)
+            {
+                if (frameName.StartsWith(ThreadPoolFrameMarkers[markerIndex], StringComparison.Ordinal))
+                {
+                    isPoolStack = true;
+                    break;
+                }
+            }
+        }
+
+        poolStackCache[stack] = isPoolStack;
+        return isPoolStack;
     }
 
     private static bool IsLockAcquisitionFrame(string frameName)

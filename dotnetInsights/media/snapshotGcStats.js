@@ -4452,6 +4452,13 @@ var allocationDatasets = {};
             });
         }
 
+        var rankMetricSelect = document.getElementById('lockRankMetricSelect');
+        if (rankMetricSelect) {
+            rankMetricSelect.addEventListener('change', function (event) {
+                setLockTimelineRankMetric(event.currentTarget.value);
+            });
+        }
+
         var topNSelect = document.getElementById('lockTopNSelect');
         if (topNSelect) {
             topNSelect.addEventListener('change', function (event) {

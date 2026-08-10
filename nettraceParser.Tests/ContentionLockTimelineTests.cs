@@ -96,6 +96,8 @@ public class ContentionLockTimelineTests
             MakeRundownEvent(methodId: 2, startAddress: 0x2000, size: 0x100, name: "System.Threading.Monitor.Enter"),
             MakeRundownEvent(methodId: 3, startAddress: 0x3000, size: 0x100, name: "MyApp.DoRealWork"),
             MakeRundownEvent(methodId: 4, startAddress: 0x4000, size: 0x100, name: "MyApp.SlowPath"),
+            MakeRundownEvent(methodId: 5, startAddress: 0x5000, size: 0x100, name: "System.Threading.ThreadPoolWorkQueue.Dispatch"),
+            MakeRundownEvent(methodId: 6, startAddress: 0x6000, size: 0x100, name: "MyApp.DedicatedBackgroundLoop"),
         };
 
         return MethodSymbolTable.Build(events, pointerSize: PointerSize, qpcFrequency: 0, referenceQpc: 0);
@@ -400,6 +402,91 @@ public class ContentionLockTimelineTests
 
         string resolvedName = root.GetProperty("methodNames")[lockEntry.GetProperty("nameFrame").GetInt32()].GetString();
         Assert.Equal("MyApp.SlowPath", resolvedName);
+    }
+
+    [Fact]
+    public void Write_WaiterThreadCountCountsDistinctThreadsNotEvents()
+    {
+        // The ping-pong case: a lock hammered by only two threads. Ranking
+        // by contention count makes this look like a top offender; ranking
+        // by contending threads correctly shows it involves two threads and
+        // starves nothing else.
+        List<ContentionEvent> events = new List<ContentionEvent>();
+        for (int waitIndex = 0; waitIndex < 50; ++waitIndex)
+        {
+            long waiter = (waitIndex % 2 == 0) ? 100 : 101;
+            events.Add(new ContentionEvent(waitIndex, 1.0, ClrContentionFlags.Managed, waiter, new long[] { 0x1000, 0x3000 }, 0xAA, 0, ownerThreadId: 200));
+        }
+
+        JsonDocument document = WriteAndParseWith(events, MakeNamedSymbolTable());
+        JsonElement lockEntry = document.RootElement.GetProperty("lockTimeline").GetProperty("locks")[0];
+
+        Assert.Equal(50, lockEntry.GetProperty("contentionCount").GetInt32());
+        Assert.Equal(2, lockEntry.GetProperty("waiterThreadCount").GetInt32());
+        Assert.Equal(1, lockEntry.GetProperty("ownerThreadCount").GetInt32());
+    }
+
+    [Fact]
+    public void Write_UnknownOwnerDoesNotCountAsAnOwnerThread()
+    {
+        // Owner 0 means "the runtime couldn't attribute one". Counting it
+        // would report a phantom extra owner on every lock that has any
+        // unattributed wait.
+        List<ContentionEvent> events = new List<ContentionEvent>
+        {
+            new ContentionEvent(10.0, 1.0, ClrContentionFlags.Managed, 100, new long[] { 0x1000, 0x3000 }, 0xAA, 0, ownerThreadId: 0),
+            new ContentionEvent(20.0, 1.0, ClrContentionFlags.Managed, 101, new long[] { 0x1000, 0x3000 }, 0xAA, 0, ownerThreadId: 200),
+        };
+
+        JsonDocument document = WriteAndParseWith(events, MakeNamedSymbolTable());
+        JsonElement lockEntry = document.RootElement.GetProperty("lockTimeline").GetProperty("locks")[0];
+
+        Assert.Equal(1, lockEntry.GetProperty("ownerThreadCount").GetInt32());
+    }
+
+    [Fact]
+    public void Write_PoolWaiterCountOnlyCountsThreadsBlockedInsideThreadPoolWork()
+    {
+        // The distinction the Lock Timeline's "pool threads blocked" ranking
+        // exists for: a lock blocking pool workers serializes every queued
+        // work item behind it, while one blocking a dedicated background
+        // thread costs only that thread. Both look identical by contention
+        // count.
+        List<ContentionEvent> events = new List<ContentionEvent>
+        {
+            // Two pool workers (stack passes through the dispatch loop).
+            new ContentionEvent(10.0, 1.0, ClrContentionFlags.Managed, 100, new long[] { 0x1000, 0x3000, 0x5000 }, 0xAA, 0, 1),
+            new ContentionEvent(20.0, 1.0, ClrContentionFlags.Managed, 101, new long[] { 0x1000, 0x3000, 0x5000 }, 0xAA, 0, 1),
+            // One dedicated background thread on the same lock.
+            new ContentionEvent(30.0, 1.0, ClrContentionFlags.Managed, 102, new long[] { 0x1000, 0x3000, 0x6000 }, 0xAA, 0, 1),
+        };
+
+        JsonDocument document = WriteAndParseWith(events, MakeNamedSymbolTable());
+        JsonElement lockEntry = document.RootElement.GetProperty("lockTimeline").GetProperty("locks")[0];
+
+        Assert.Equal(3, lockEntry.GetProperty("waiterThreadCount").GetInt32());
+        Assert.Equal(2, lockEntry.GetProperty("poolWaiterThreadCount").GetInt32());
+        Assert.Equal(2, lockEntry.GetProperty("poolContentionCount").GetInt32());
+    }
+
+    [Fact]
+    public void Write_LockContendedOnlyByDedicatedThreadsReportsNoPoolWaiters()
+    {
+        // The "two background threads contend all the time and I don't
+        // care" case - it must be distinguishable at a glance from a lock
+        // starving the pool.
+        List<ContentionEvent> events = new List<ContentionEvent>
+        {
+            new ContentionEvent(10.0, 5.0, ClrContentionFlags.Managed, 100, new long[] { 0x1000, 0x3000, 0x6000 }, 0xAA, 0, 101),
+            new ContentionEvent(20.0, 5.0, ClrContentionFlags.Managed, 101, new long[] { 0x1000, 0x3000, 0x6000 }, 0xAA, 0, 100),
+        };
+
+        JsonDocument document = WriteAndParseWith(events, MakeNamedSymbolTable());
+        JsonElement lockEntry = document.RootElement.GetProperty("lockTimeline").GetProperty("locks")[0];
+
+        Assert.Equal(2, lockEntry.GetProperty("waiterThreadCount").GetInt32());
+        Assert.Equal(0, lockEntry.GetProperty("poolWaiterThreadCount").GetInt32());
+        Assert.Equal(0, lockEntry.GetProperty("poolContentionCount").GetInt32());
     }
 
     [Fact]

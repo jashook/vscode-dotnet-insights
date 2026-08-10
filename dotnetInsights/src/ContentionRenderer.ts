@@ -150,6 +150,14 @@ function renderLockTimelinePanel(lockTimeline: any): string {
                     <option value="all">All (${totalDistinctLockCount.toLocaleString()})</option>
                 </select>
             </label>
+            <label class="lockTimelineControl">Rank by
+                <select id="lockRankMetricSelect">
+                    <option value="wait" selected>Total wait</option>
+                    <option value="contentions">Contentions</option>
+                    <option value="threads">Contending threads</option>
+                    <option value="poolthreads">Pool threads blocked</option>
+                </select>
+            </label>
             <label class="lockTimelineControl">Thread
                 <select id="lockThreadFilterSelect">
                     <option value="all">All threads</option>

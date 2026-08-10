@@ -212,15 +212,82 @@
         return false;
     }
 
-    // The locks that actually get a track right now: within the Top-N slice,
-    // not unchecked in the sidebar, and (when a thread filter is active)
-    // holding at least one matching segment. Locks are already sorted by
-    // total wait descending server-side, so "top N" is just a prefix.
+    // How much a lock "counts" under the currently selected ranking. These
+    // are genuinely different questions, not cosmetic re-sorts: a lock hit
+    // thousands of times by two threads is a ping-pong between them, while
+    // the same count spread across the thread pool serializes every queued
+    // work item behind it. On the reference capture 1412 of 1447 locks have
+    // at most two contending threads and account for 55ms in total - noise
+    // that dominates a count-based ranking and vanishes from a
+    // thread-based one.
+    function metricValue(lockEntry) {
+        if (state.rankMetric === 'contentions') {
+            return lockEntry['contentionCount'];
+        }
+
+        if (state.rankMetric === 'threads') {
+            return lockEntry['waiterThreadCount'] || 0;
+        }
+
+        if (state.rankMetric === 'poolthreads') {
+            return lockEntry['poolWaiterThreadCount'] || 0;
+        }
+
+        return lockEntry['totalWaitMSec'];
+    }
+
+    function metricLabel(lockEntry) {
+        if (state.rankMetric === 'contentions') {
+            return lockEntry['contentionCount'].toLocaleString() + ' contentions';
+        }
+
+        if (state.rankMetric === 'threads') {
+            var waiters = lockEntry['waiterThreadCount'] || 0;
+            return waiters.toLocaleString() + (waiters === 1 ? ' thread' : ' threads');
+        }
+
+        if (state.rankMetric === 'poolthreads') {
+            var poolWaiters = lockEntry['poolWaiterThreadCount'] || 0;
+            return poolWaiters.toLocaleString() + (poolWaiters === 1 ? ' pool thread' : ' pool threads');
+        }
+
+        return lockEntry['totalWaitMSec'].toFixed(1) + ' ms';
+    }
+
+    // Rank order as an index list rather than by re-sorting state.locks,
+    // because visibleByIndex and selectedLockIndex are keyed by a lock's
+    // ORIGINAL index - re-sorting the array in place would silently
+    // re-point every checkbox and the current selection at a different lock.
+    function computeOrder() {
+        var order = [];
+        for (var index = 0; index < state.locks.length; ++index) {
+            order.push(index);
+        }
+
+        order.sort(function (leftIndex, rightIndex) {
+            var difference = metricValue(state.locks[rightIndex]) - metricValue(state.locks[leftIndex]);
+            if (difference !== 0) {
+                return difference;
+            }
+
+            // Total wait breaks ties so a count-based ranking still puts the
+            // more expensive of two equally-contended locks first.
+            return state.locks[rightIndex]['totalWaitMSec'] - state.locks[leftIndex]['totalWaitMSec'];
+        });
+
+        state.order = order;
+    }
+
+    // The locks that actually get a track right now: within the Top-N slice
+    // of the current ranking, not unchecked in the sidebar, and (when a
+    // thread filter is active) holding at least one matching segment.
     function visibleLocks() {
         var result = [];
-        var limit = state.topLockCount === null ? state.locks.length : Math.min(state.topLockCount, state.locks.length);
+        var limit = state.topLockCount === null ? state.order.length : Math.min(state.topLockCount, state.order.length);
 
-        for (var index = 0; index < limit; ++index) {
+        for (var position = 0; position < limit; ++position) {
+            var index = state.order[position];
+
             if (!state.visibleByIndex[index]) {
                 continue;
             }
@@ -508,7 +575,12 @@
             '<div>Owner thread: <b>' + ownerText + '</b></div>' +
             '<div>Blocked thread: <b>' + segment['waiterThreadId'] + '</b></div>' +
             '<div>Held: ' + formatMSec(segment['startMSec']) + ' – ' + formatMSec(segment['endMSec']) + '</div>' +
-            '<div>Blocked for: <b>' + formatMSec(durationMSec) + '</b></div>';
+            '<div>Blocked for: <b>' + formatMSec(durationMSec) + '</b></div>' +
+            '<div class="lockTooltipTotals">Lock total: ' +
+            (hit.lockEntry['waiterThreadCount'] || 0) + ' threads (' +
+            (hit.lockEntry['poolWaiterThreadCount'] || 0) + ' pool) · ' +
+            hit.lockEntry['contentionCount'].toLocaleString() + ' contentions · ' +
+            hit.lockEntry['totalWaitMSec'].toFixed(1) + ' ms</div>';
 
         tooltip.style.display = 'block';
 
@@ -555,10 +627,11 @@
             return;
         }
 
-        var limit = state.topLockCount === null ? state.locks.length : Math.min(state.topLockCount, state.locks.length);
+        var limit = state.topLockCount === null ? state.order.length : Math.min(state.topLockCount, state.order.length);
         var html = '';
 
-        for (var index = 0; index < limit; ++index) {
+        for (var position = 0; position < limit; ++position) {
+            var index = state.order[position];
             var lockEntry = state.locks[index];
             var dimmed = lockHasMatchingSegment(lockEntry) ? '' : ' lockFilterItemDimmed';
             var selected = state.selectedLockIndex === index ? ' lockFilterItemSelected' : '';
@@ -572,8 +645,15 @@
                 '<span class="lockFilterSwatch" style="background-color:' + dominantColorForLock(lockEntry) + '"></span>' +
                 '<span class="lockFilterId" data-lock-select="' + index + '">' + escapeHtml(shortMethodName(fullName)) + '</span>' +
                 '</span>' +
-                '<span class="lockFilterSubLine">' + lockEntry['lockId'] + ' · ' +
-                lockEntry['totalWaitMSec'].toFixed(1) + ' ms · ' + lockEntry['contentionCount'].toLocaleString() + '</span>' +
+                // The selected ranking metric leads; the other two follow so
+                // the difference between them stays visible rather than
+                // requiring a switch to notice.
+                '<span class="lockFilterSubLine"><b>' + metricLabel(lockEntry) + '</b> · ' +
+                (lockEntry['waiterThreadCount'] || 0) + ' thr · ' +
+                (lockEntry['poolWaiterThreadCount'] || 0) + ' pool · ' +
+                lockEntry['contentionCount'].toLocaleString() + '× · ' +
+                lockEntry['totalWaitMSec'].toFixed(1) + ' ms</span>' +
+                '<span class="lockFilterSubLine">' + lockEntry['lockId'] + '</span>' +
                 '</label>';
         }
 
@@ -717,6 +797,8 @@
                 locks: locks,
                 methodNames: methodNames || [],
                 visibleByIndex: visible,
+                order: [],
+                rankMetric: 'wait',
                 topLockCount: 40,
                 threadFilterId: null,
                 selectedLockIndex: -1,
@@ -745,6 +827,7 @@
             }
 
             attachCanvasHandlers(canvas);
+            computeOrder();
             renderThreadFilterOptions();
             renderLockFilterList();
         }
@@ -758,6 +841,17 @@
         }
 
         state.visibleByIndex[lockIndex] = isVisible;
+        draw();
+    };
+
+    window.setLockTimelineRankMetric = function (metric) {
+        if (state === null) {
+            return;
+        }
+
+        state.rankMetric = metric;
+        computeOrder();
+        renderLockFilterList();
         draw();
     };
 

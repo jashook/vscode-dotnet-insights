@@ -1928,3 +1928,11 @@ td.rowHideColumn:hover
     opacity: 0.7;
     margin-bottom: 4px;
 }
+
+.lockTooltipTotals
+{
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.2);
+    opacity: 0.85;
+}
