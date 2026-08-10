@@ -30,7 +30,11 @@
     var LOCK_ROW_HEIGHT = 26;
     var MIN_LOCK_ROW_HEIGHT = 4;
     var LOCK_ROW_GAP = 4;
-    var LOCK_LABEL_WIDTH = 150;
+    // Wider than a hex pointer needs, because the primary label is now the
+    // method that contends the lock (see lockDisplayName) - "0x7FE4488FB0A8"
+    // identifies a lock but says nothing about it, while
+    // "SslStream.DecryptData" is why you'd look at it in the first place.
+    var LOCK_LABEL_WIDTH = 230;
     // Below this row height a lock id is unreadable anyway, so labels are
     // dropped rather than drawn as overlapping smears - the sidebar list and
     // the tooltip still identify every track.
@@ -102,6 +106,70 @@
         }
 
         return OWNER_COLORS[slot];
+    }
+
+    // The lock's own identity for display: the method that contends it
+    // (resolved server-side - see ContentionJsonExporter's
+    // ResolveLockNameFrameIndex), falling back to the raw pointer when the
+    // capture has no stack to name it after. Note several distinct locks can
+    // legitimately share a name - the same method locking different
+    // instances - which is why lockId is still shown alongside it
+    // everywhere, never replaced by it.
+    function lockDisplayName(lockEntry) {
+        var nameFrame = lockEntry['nameFrame'];
+        if (nameFrame === undefined || nameFrame < 0 || !state.methodNames[nameFrame]) {
+            return lockEntry['lockId'];
+        }
+
+        return state.methodNames[nameFrame];
+    }
+
+    // Method names come from the trace's own rundown data, so they can carry
+    // generic syntax (`List`1[System.__Canon]`) whose angle brackets would
+    // otherwise be parsed as markup when interpolated into innerHTML.
+    function escapeHtml(value) {
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
+    }
+
+    function escapeAttribute(value) {
+        return escapeHtml(value).replace(/"/g, '&quot;');
+    }
+
+    // "System.Net.Security.SslStream.DecryptData" -> "SslStream.DecryptData".
+    // The namespace is the least distinguishing part of the name and eats
+    // the whole label gutter; Type.Method is what actually tells two locks
+    // apart at a glance. The full name is still in the tooltip and the
+    // sidebar's title attribute.
+    function shortMethodName(fullName) {
+        var lastDot = fullName.lastIndexOf('.');
+        if (lastDot <= 0) {
+            return fullName;
+        }
+
+        var typeDot = fullName.lastIndexOf('.', lastDot - 1);
+        if (typeDot < 0) {
+            return fullName;
+        }
+
+        return fullName.slice(typeDot + 1);
+    }
+
+    // Canvas has no text-overflow, so a label longer than the gutter has to
+    // be measured and clipped by hand or it paints straight over the plot.
+    function ellipsizeToWidth(ctx, text, maxWidth) {
+        if (ctx.measureText(text).width <= maxWidth) {
+            return text;
+        }
+
+        var truncated = text;
+        while (truncated.length > 1 && ctx.measureText(truncated + '…').width > maxWidth) {
+            truncated = truncated.slice(0, -1);
+        }
+
+        return truncated + '…';
     }
 
     function formatMSec(valueMSec) {
@@ -281,7 +349,7 @@
                     ctx.font = 'bold 11px ' + (bodyStyle.fontFamily || 'sans-serif');
                 }
 
-                ctx.fillText(lockEntry['lockId'], 4, rowTop + rowHeight / 2);
+                ctx.fillText(ellipsizeToWidth(ctx, shortMethodName(lockDisplayName(lockEntry)), LOCK_LABEL_WIDTH - 8), 4, rowTop + rowHeight / 2);
 
                 if (isSelected) {
                     ctx.font = '11px ' + (bodyStyle.fontFamily || 'sans-serif');
@@ -435,7 +503,8 @@
         var durationMSec = segment['endMSec'] - segment['startMSec'];
 
         tooltip.innerHTML =
-            '<div class="lockTooltipTitle">' + hit.lockEntry['lockId'] + '</div>' +
+            '<div class="lockTooltipTitle">' + escapeHtml(lockDisplayName(hit.lockEntry)) + '</div>' +
+            '<div class="lockTooltipSubtitle">' + hit.lockEntry['lockId'] + '</div>' +
             '<div>Owner thread: <b>' + ownerText + '</b></div>' +
             '<div>Blocked thread: <b>' + segment['waiterThreadId'] + '</b></div>' +
             '<div>Held: ' + formatMSec(segment['startMSec']) + ' – ' + formatMSec(segment['endMSec']) + '</div>' +
@@ -495,11 +564,16 @@
             var selected = state.selectedLockIndex === index ? ' lockFilterItemSelected' : '';
             var checked = state.visibleByIndex[index] ? ' checked' : '';
 
-            html += '<label class="lockFilterItem' + dimmed + selected + '" data-lock-row="' + index + '">' +
+            var fullName = lockDisplayName(lockEntry);
+
+            html += '<label class="lockFilterItem' + dimmed + selected + '" data-lock-row="' + index + '" title="' + escapeAttribute(fullName) + '\n' + lockEntry['lockId'] + '">' +
+                '<span class="lockFilterTopLine">' +
                 '<input type="checkbox" class="lockFilterCheckbox" data-lock-index="' + index + '"' + checked + '>' +
                 '<span class="lockFilterSwatch" style="background-color:' + dominantColorForLock(lockEntry) + '"></span>' +
-                '<span class="lockFilterId" data-lock-select="' + index + '">' + lockEntry['lockId'] + '</span>' +
-                '<span class="lockFilterStat">' + lockEntry['totalWaitMSec'].toFixed(1) + ' ms · ' + lockEntry['contentionCount'].toLocaleString() + '</span>' +
+                '<span class="lockFilterId" data-lock-select="' + index + '">' + escapeHtml(shortMethodName(fullName)) + '</span>' +
+                '</span>' +
+                '<span class="lockFilterSubLine">' + lockEntry['lockId'] + ' · ' +
+                lockEntry['totalWaitMSec'].toFixed(1) + ' ms · ' + lockEntry['contentionCount'].toLocaleString() + '</span>' +
                 '</label>';
         }
 
@@ -591,8 +665,9 @@
         var lockEntry = state.locks[lockIndex];
         var drillDown = lockEntry['drillDown'];
 
-        title.textContent = 'Contended stacks for ' + lockEntry['lockId'] +
-            ' — ' + lockEntry['totalWaitMSec'].toFixed(1) + ' ms across ' +
+        title.textContent = lockDisplayName(lockEntry) +
+            '  (' + lockEntry['lockId'] + ')  —  ' +
+            lockEntry['totalWaitMSec'].toFixed(1) + ' ms across ' +
             lockEntry['contentionCount'].toLocaleString() + ' contentions';
 
         if (!drillDown) {

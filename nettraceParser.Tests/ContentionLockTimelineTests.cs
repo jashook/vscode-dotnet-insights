@@ -50,13 +50,55 @@ public class ContentionLockTimelineTests
 
     private static JsonDocument WriteAndParse(List<ContentionEvent> contentionEvents)
     {
+        return WriteAndParseWith(contentionEvents, MakeSymbolTable());
+    }
+
+    private static JsonDocument WriteAndParseWith(List<ContentionEvent> contentionEvents, MethodSymbolTable symbolTable)
+    {
         using System.IO.MemoryStream stream = new System.IO.MemoryStream();
         using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
         {
-            ContentionJsonExporter.Write(writer, contentionEvents, MakeSymbolTable());
+            ContentionJsonExporter.Write(writer, contentionEvents, symbolTable);
         }
 
         return JsonDocument.Parse(stream.ToArray());
+    }
+
+    private static byte[] MakeMethodDCStartVerbosePayload(long methodId, long moduleId, long methodStartAddress, int methodSize, string methodName)
+    {
+        return new PayloadBuilder()
+            .WriteAddress(methodId, 8)
+            .WriteAddress(moduleId, 8)
+            .WriteAddress(methodStartAddress, 8)
+            .WriteInt32(methodSize)
+            .WriteInt32(0x06000001)
+            .WriteInt32(0)
+            .WriteUnicodeString("")
+            .WriteUnicodeString(methodName)
+            .WriteUnicodeString("sig")
+            .ToArray();
+    }
+
+    private static EventRecord MakeRundownEvent(long methodId, long startAddress, int size, string name)
+    {
+        byte[] payload = MakeMethodDCStartVerbosePayload(methodId, moduleId: 2, startAddress, size, name);
+
+        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stack: Array.Empty<long>(), fields: null, payload, payloadOffset: 0, payload.Length);
+    }
+
+    // 0x1000/0x2000 resolve to lock-acquisition primitives (which lock
+    // naming must skip), 0x3000/0x4000 to real application frames.
+    private static MethodSymbolTable MakeNamedSymbolTable()
+    {
+        List<EventRecord> events = new List<EventRecord>
+        {
+            MakeRundownEvent(methodId: 1, startAddress: 0x1000, size: 0x100, name: "System.Threading.Monitor.Enter_Slowpath"),
+            MakeRundownEvent(methodId: 2, startAddress: 0x2000, size: 0x100, name: "System.Threading.Monitor.Enter"),
+            MakeRundownEvent(methodId: 3, startAddress: 0x3000, size: 0x100, name: "MyApp.DoRealWork"),
+            MakeRundownEvent(methodId: 4, startAddress: 0x4000, size: 0x100, name: "MyApp.SlowPath"),
+        };
+
+        return MethodSymbolTable.Build(events, pointerSize: PointerSize, qpcFrequency: 0, referenceQpc: 0);
     }
 
     [Fact]
@@ -288,6 +330,76 @@ public class ContentionLockTimelineTests
         Assert.Equal(15.0, drillDown.GetProperty("totalWaitMSec").GetDouble(), 3);
         Assert.Equal(2, drillDown.GetProperty("distinctStackCount").GetInt32());
         Assert.True(drillDown.GetProperty("children").GetArrayLength() > 0);
+    }
+
+    [Fact]
+    public void Write_LockIsNamedAfterFirstNonLockPrimitiveFrame()
+    {
+        // Every contention stack bottoms out in the same generic
+        // Monitor.Enter_Slowpath, so naming a lock by its LEAF frame would
+        // label every lock in the capture identically. The name must come
+        // from the first frame BELOW the lock primitives - that's what
+        // distinguishes one lock from another.
+        MethodSymbolTable symbolTable = MakeNamedSymbolTable();
+
+        List<ContentionEvent> events = new List<ContentionEvent>
+        {
+            new ContentionEvent(10.0, 5.0, ClrContentionFlags.Managed, 2, new long[] { 0x1000, 0x2000, 0x3000 }, 0xAA, 0, 1),
+        };
+
+        JsonDocument document = WriteAndParseWith(events, symbolTable);
+        JsonElement root = document.RootElement;
+        JsonElement lockEntry = root.GetProperty("lockTimeline").GetProperty("locks")[0];
+
+        int nameFrame = lockEntry.GetProperty("nameFrame").GetInt32();
+        Assert.True(nameFrame >= 0);
+
+        string resolvedName = root.GetProperty("methodNames")[nameFrame].GetString();
+        Assert.Equal("MyApp.DoRealWork", resolvedName);
+    }
+
+    [Fact]
+    public void Write_LockWhoseStackIsAllLockPrimitives_HasNoNameFrame()
+    {
+        // Nothing in the stack identifies the lock, so the renderer falls
+        // back to the raw pointer rather than labelling it with a primitive
+        // that says nothing.
+        MethodSymbolTable symbolTable = MakeNamedSymbolTable();
+
+        List<ContentionEvent> events = new List<ContentionEvent>
+        {
+            new ContentionEvent(10.0, 5.0, ClrContentionFlags.Managed, 2, new long[] { 0x1000, 0x2000 }, 0xAA, 0, 1),
+        };
+
+        JsonDocument document = WriteAndParseWith(events, symbolTable);
+        JsonElement lockEntry = document.RootElement.GetProperty("lockTimeline").GetProperty("locks")[0];
+
+        Assert.Equal(-1, lockEntry.GetProperty("nameFrame").GetInt32());
+    }
+
+    [Fact]
+    public void Write_LockNameComesFromItsHeaviestStackNotItsFirstSeenOne()
+    {
+        // Two different call paths contend the same lock; the name should
+        // describe where the TIME went, matching how locks themselves are
+        // ranked, not whichever stack happened to arrive first.
+        MethodSymbolTable symbolTable = MakeNamedSymbolTable();
+
+        long[] lightStack = new long[] { 0x1000, 0x3000 };
+        long[] heavyStack = new long[] { 0x1000, 0x4000 };
+
+        List<ContentionEvent> events = new List<ContentionEvent>
+        {
+            new ContentionEvent(10.0, 1.0, ClrContentionFlags.Managed, 2, lightStack, 0xAA, 0, 1),
+            new ContentionEvent(20.0, 90.0, ClrContentionFlags.Managed, 3, heavyStack, 0xAA, 0, 1),
+        };
+
+        JsonDocument document = WriteAndParseWith(events, symbolTable);
+        JsonElement root = document.RootElement;
+        JsonElement lockEntry = root.GetProperty("lockTimeline").GetProperty("locks")[0];
+
+        string resolvedName = root.GetProperty("methodNames")[lockEntry.GetProperty("nameFrame").GetInt32()].GetString();
+        Assert.Equal("MyApp.SlowPath", resolvedName);
     }
 
     [Fact]

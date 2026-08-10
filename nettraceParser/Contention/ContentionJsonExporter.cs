@@ -79,6 +79,23 @@ public static class ContentionJsonExporter
     private const int MaxLockDrillDownNodes = 40000;
     private const int LockDrillDownNodeBudgetPerLock = 300;
 
+    // Frames to skip when naming a lock after the code that contends it.
+    // Every contention stack bottoms out in the same generic runtime
+    // lock-acquisition frame (Monitor.Enter_Slowpath on every single lock in
+    // the reference capture), so the LEAF is useless as an identity - naming
+    // locks by it would label all 1447 of them identically. The first frame
+    // BELOW those primitives is the one that actually distinguishes a lock
+    // ("SslStream.DecryptData" vs "MemoryCache.TryGetValue"), which is what
+    // makes a hex pointer legible without clicking into it.
+    private static readonly string[] LockAcquisitionFramePrefixes = new string[]
+    {
+        "System.Threading.Monitor.",
+        "System.Threading.Lock.",
+        "System.Threading.LockHolder.",
+        "System.Threading.SpinLock.",
+        "System.Threading.ObjectHeader."
+    };
+
     private sealed class SiteStats
     {
         public int LeafFrameId;
@@ -533,6 +550,13 @@ public static class ContentionJsonExporter
             writer.WriteString("lockId", "0x" + stats.LockId.ToString("X"));
             writer.WriteNumber("contentionCount", stats.ContentionCount);
             writer.WriteNumber("totalWaitMSec", stats.TotalWaitMSec);
+            // Index into the shared methodNames pool, or -1 when this lock
+            // has no stack to name it after. The renderer shows this as the
+            // lock's primary label and keeps lockId as the secondary
+            // identifier - two distinct locks can legitimately share a name
+            // (the same method locking different instances), so the hex
+            // pointer stays the real identity.
+            writer.WriteNumber("nameFrame", ResolveLockNameFrameIndex(stats, symbolTable, frameIdCache, methodNames, methodNameIndexByName));
 
             List<OwnershipSegment> segments = stats.Segments;
 
@@ -604,6 +628,86 @@ public static class ContentionJsonExporter
 
         writer.WriteEndArray();
         writer.WriteEndObject();
+    }
+
+    // Names a lock after the code that contends it: takes the lock's
+    // heaviest stack (by wait time, matching how locks themselves are
+    // ranked) and walks it leaf-first past the generic runtime
+    // lock-acquisition frames, returning the first frame that actually
+    // identifies the caller. Returns -1 when the lock has no stacks at all,
+    // or when every frame in its dominant stack is a lock primitive - in
+    // both cases the renderer falls back to showing the raw pointer.
+    private static int ResolveLockNameFrameIndex(LockStats stats, MethodSymbolTable symbolTable, Dictionary<long[], int[]> frameIdCache, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    {
+        ContentionStackAggregate dominantStack = null;
+
+        foreach (KeyValuePair<long[], ContentionStackAggregate> entry in stats.StacksByReference)
+        {
+            if (dominantStack == null || entry.Value.TotalWaitMSec > dominantStack.TotalWaitMSec)
+            {
+                dominantStack = entry.Value;
+            }
+        }
+
+        if (dominantStack == null || dominantStack.Stack.Length == 0)
+        {
+            return -1;
+        }
+
+        int[] frameIds;
+
+        if (!frameIdCache.TryGetValue(dominantStack.Stack, out frameIds))
+        {
+            frameIds = new int[dominantStack.Stack.Length];
+
+            for (int frameIndex = 0; frameIndex < dominantStack.Stack.Length; ++frameIndex)
+            {
+                frameIds[frameIndex] = symbolTable.ResolveId(dominantStack.Stack[frameIndex], dominantStack.FirstSeenRelativeMSec);
+            }
+
+            frameIdCache[dominantStack.Stack] = frameIds;
+        }
+
+        for (int frameIndex = 0; frameIndex < frameIds.Length; ++frameIndex)
+        {
+            string frameName = symbolTable.NameForId(frameIds[frameIndex]);
+
+            if (string.IsNullOrEmpty(frameName) || IsLockAcquisitionFrame(frameName))
+            {
+                continue;
+            }
+
+            return InternMethodName(frameName, methodNames, methodNameIndexByName);
+        }
+
+        return -1;
+    }
+
+    private static bool IsLockAcquisitionFrame(string frameName)
+    {
+        for (int prefixIndex = 0; prefixIndex < LockAcquisitionFramePrefixes.Length; ++prefixIndex)
+        {
+            if (frameName.StartsWith(LockAcquisitionFramePrefixes[prefixIndex], StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static int InternMethodName(string frameName, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    {
+        int frameNameIndex;
+
+        if (!methodNameIndexByName.TryGetValue(frameName, out frameNameIndex))
+        {
+            frameNameIndex = methodNames.Count;
+            methodNames.Add(frameName);
+            methodNameIndexByName[frameName] = frameNameIndex;
+        }
+
+        return frameNameIndex;
     }
 
     // Builds the folded caller-stack tree for one contention site, accumulating
@@ -697,15 +801,7 @@ public static class ContentionJsonExporter
                 --budget.Remaining;
 
                 string frameName = frameId == NoStackFrameId ? NoStackLeafName : symbolTable.NameForId(frameId);
-
-                int frameNameIndex;
-
-                if (!methodNameIndexByName.TryGetValue(frameName, out frameNameIndex))
-                {
-                    frameNameIndex = methodNames.Count;
-                    methodNames.Add(frameName);
-                    methodNameIndexByName[frameName] = frameNameIndex;
-                }
+                int frameNameIndex = InternMethodName(frameName, methodNames, methodNameIndexByName);
 
                 writer.WriteStartObject();
                 writer.WriteNumber("frame", frameNameIndex);
