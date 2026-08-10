@@ -490,6 +490,73 @@ public class ContentionLockTimelineTests
     }
 
     [Fact]
+    public void Write_MaxWaitMSecIsTheWorstSingleWaitNotTheTotal()
+    {
+        // A lock can be unremarkable in aggregate and still hold the one
+        // stall worth investigating - that's the whole reason this is
+        // tracked separately from totalWaitMSec.
+        List<ContentionEvent> events = new List<ContentionEvent>
+        {
+            MakeEvent(10.0, 0.5, 0xAA, ownerThreadId: 1, waiterThreadId: 2),
+            MakeEvent(20.0, 9.0, 0xAA, ownerThreadId: 1, waiterThreadId: 3),
+            MakeEvent(30.0, 0.5, 0xAA, ownerThreadId: 1, waiterThreadId: 4),
+        };
+
+        JsonDocument document = WriteAndParse(events);
+        JsonElement lockEntry = document.RootElement.GetProperty("lockTimeline").GetProperty("locks")[0];
+
+        Assert.Equal(10.0, lockEntry.GetProperty("totalWaitMSec").GetDouble(), 3);
+        Assert.Equal(9.0, lockEntry.GetProperty("maxWaitMSec").GetDouble(), 3);
+    }
+
+    [Fact]
+    public void Write_LongestWaitsAreRankedAcrossAllLocksNotWithinOne()
+    {
+        // The point of this list is "when did something stall", which is a
+        // question about individual waits across the whole capture - a lock
+        // with a small total can own the worst single wait in it.
+        List<ContentionEvent> events = new List<ContentionEvent>
+        {
+            // Lock 0xAA: big total, small individual waits.
+            MakeEvent(10.0, 1.0, 0xAA, ownerThreadId: 1, waiterThreadId: 2),
+            MakeEvent(20.0, 1.0, 0xAA, ownerThreadId: 1, waiterThreadId: 3),
+            MakeEvent(30.0, 1.0, 0xAA, ownerThreadId: 1, waiterThreadId: 4),
+            // Lock 0xBB: small total, one big stall.
+            MakeEvent(40.0, 7.0, 0xBB, ownerThreadId: 5, waiterThreadId: 6),
+        };
+
+        JsonDocument document = WriteAndParse(events);
+        JsonElement longestWaits = document.RootElement.GetProperty("lockTimeline").GetProperty("longestWaits");
+
+        Assert.Equal(4, longestWaits.GetArrayLength());
+        Assert.Equal("0xBB", longestWaits[0].GetProperty("lockId").GetString());
+        Assert.Equal(7.0, longestWaits[0].GetProperty("durationMSec").GetDouble(), 3);
+        Assert.Equal(40.0, longestWaits[0].GetProperty("startMSec").GetDouble(), 3);
+        Assert.Equal(47.0, longestWaits[0].GetProperty("endMSec").GetDouble(), 3);
+        Assert.Equal(6, longestWaits[0].GetProperty("waiterThreadId").GetInt64());
+    }
+
+    [Fact]
+    public void Write_OutlierThresholdIsTheNinetyNinthPercentileOfWaits()
+    {
+        // 100 waits: ninety-nine of 1ms and one of 100ms. The p99 index
+        // lands on the last element, so the threshold isolates exactly the
+        // pathological tail rather than flagging the ordinary waits.
+        List<ContentionEvent> events = new List<ContentionEvent>();
+        for (int waitIndex = 0; waitIndex < 99; ++waitIndex)
+        {
+            events.Add(MakeEvent(waitIndex, 1.0, 0xAA, ownerThreadId: 1, waiterThreadId: 2));
+        }
+
+        events.Add(MakeEvent(200.0, 100.0, 0xAA, ownerThreadId: 1, waiterThreadId: 3));
+
+        JsonDocument document = WriteAndParse(events);
+        double threshold = document.RootElement.GetProperty("lockTimeline").GetProperty("outlierThresholdMSec").GetDouble();
+
+        Assert.Equal(100.0, threshold, 3);
+    }
+
+    [Fact]
     public void Write_LockWithNoStacksHasNullDrillDownNotAnEmptyTree()
     {
         // Every wait on this lock was captured without a stack - an empty

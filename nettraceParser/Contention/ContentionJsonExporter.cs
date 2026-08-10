@@ -79,6 +79,10 @@ public static class ContentionJsonExporter
     private const int MaxLockDrillDownNodes = 40000;
     private const int LockDrillDownNodeBudgetPerLock = 300;
 
+    // How many individual worst-case waits to surface. Small on purpose -
+    // this is a "jump straight to the stalls" list, not a data dump.
+    private const int LongestWaitsLimit = 25;
+
     // Frames to skip when naming a lock after the code that contends it.
     // Every contention stack bottoms out in the same generic runtime
     // lock-acquisition frame (Monitor.Enter_Slowpath on every single lock in
@@ -153,6 +157,9 @@ public static class ContentionJsonExporter
         public long LockId;
         public int ContentionCount;
         public double TotalWaitMSec;
+        // The single worst wait on this lock - a lock can be unremarkable in
+        // aggregate and still hold the one stall worth investigating.
+        public double MaxWaitMSec;
         // Distinct participants, tracked separately because they answer
         // different questions and routinely disagree: a lock contended
         // thousands of times by TWO threads is a ping-pong between them,
@@ -521,6 +528,11 @@ public static class ContentionJsonExporter
             stats.TotalWaitMSec += contentionEvent.DurationMSec;
             stats.WaiterThreadIds.Add(contentionEvent.ThreadId);
 
+            if (contentionEvent.DurationMSec > stats.MaxWaitMSec)
+            {
+                stats.MaxWaitMSec = contentionEvent.DurationMSec;
+            }
+
             // Owner 0 means the runtime couldn't attribute one - counting it
             // would report a phantom extra owner on every lock that has any
             // unattributed wait (~12% of waits on a real capture).
@@ -574,6 +586,42 @@ public static class ContentionJsonExporter
             return;
         }
 
+        // A contention capture's wait durations are extremely long-tailed,
+        // which is exactly what makes the outliers invisible on a timeline:
+        // measured on the reference capture the median wait is 0.015ms
+        // against a 5.66ms maximum (374x), so across a 5-minute x-axis EVERY
+        // bar - typical or pathological - is sub-pixel and gets drawn at the
+        // same minimum width. Yet the top 1% of waits account for 34% of all
+        // time spent blocked. Exporting the p99 threshold lets the renderer
+        // mark exactly that tail, and lets the UI state the real cutoff
+        // instead of an arbitrary "long wait" number.
+        List<double> allWaitDurations = new List<double>();
+
+        foreach (KeyValuePair<long, LockStats> durationEntry in statsByLockId)
+        {
+            List<OwnershipSegment> lockSegments = durationEntry.Value.Segments;
+            for (int segmentIndex = 0; segmentIndex < lockSegments.Count; ++segmentIndex)
+            {
+                allWaitDurations.Add(lockSegments[segmentIndex].DurationMSec);
+            }
+        }
+
+        allWaitDurations.Sort();
+
+        double outlierThresholdMSec = 0;
+
+        if (allWaitDurations.Count > 0)
+        {
+            int thresholdIndex = (int)(allWaitDurations.Count * 0.99);
+
+            if (thresholdIndex >= allWaitDurations.Count)
+            {
+                thresholdIndex = allWaitDurations.Count - 1;
+            }
+
+            outlierThresholdMSec = allWaitDurations[thresholdIndex];
+        }
+
         List<LockStats> sortedLocks = new List<LockStats>(statsByLockId.Values);
         sortedLocks.Sort((LockStats left, LockStats right) => right.TotalWaitMSec.CompareTo(left.TotalWaitMSec));
 
@@ -605,6 +653,8 @@ public static class ContentionJsonExporter
         writer.WriteNumber("minRelativeMSec", minRelativeMSec);
         writer.WriteNumber("maxRelativeMSec", maxRelativeMSec);
         writer.WriteNumber("totalDistinctLockCount", statsByLockId.Count);
+        writer.WriteNumber("outlierThresholdMSec", outlierThresholdMSec);
+        WriteLongestWaits(writer, statsByLockId);
         writer.WritePropertyName("poolThreadIds");
         writer.WriteStartArray();
 
@@ -630,6 +680,7 @@ public static class ContentionJsonExporter
             writer.WriteString("lockId", "0x" + stats.LockId.ToString("X"));
             writer.WriteNumber("contentionCount", stats.ContentionCount);
             writer.WriteNumber("totalWaitMSec", stats.TotalWaitMSec);
+            writer.WriteNumber("maxWaitMSec", stats.MaxWaitMSec);
             writer.WriteNumber("waiterThreadCount", stats.WaiterThreadIds.Count);
             writer.WriteNumber("ownerThreadCount", stats.OwnerThreadIds.Count);
             writer.WriteNumber("poolWaiterThreadCount", stats.PoolWaiterThreadIds.Count);
@@ -712,6 +763,51 @@ public static class ContentionJsonExporter
 
         writer.WriteEndArray();
         writer.WriteEndObject();
+    }
+
+    // The single worst individual waits in the capture, across every lock.
+    // A ranked list of LOCKS answers "which lock costs the most in
+    // aggregate"; this answers the different question "when did something
+    // actually stall", which aggregation hides - a lock whose total is
+    // unremarkable can still contain the one 5ms stop-the-world wait that a
+    // latency investigation is looking for. Emitted with absolute times so
+    // the view can jump the viewport straight to each one.
+    private static void WriteLongestWaits(Utf8JsonWriter writer, Dictionary<long, LockStats> statsByLockId)
+    {
+        List<KeyValuePair<long, OwnershipSegment>> allSegments = new List<KeyValuePair<long, OwnershipSegment>>();
+
+        foreach (KeyValuePair<long, LockStats> entry in statsByLockId)
+        {
+            List<OwnershipSegment> lockSegments = entry.Value.Segments;
+            for (int segmentIndex = 0; segmentIndex < lockSegments.Count; ++segmentIndex)
+            {
+                allSegments.Add(new KeyValuePair<long, OwnershipSegment>(entry.Key, lockSegments[segmentIndex]));
+            }
+        }
+
+        allSegments.Sort((KeyValuePair<long, OwnershipSegment> left, KeyValuePair<long, OwnershipSegment> right) => right.Value.DurationMSec.CompareTo(left.Value.DurationMSec));
+
+        int longestCount = allSegments.Count < LongestWaitsLimit ? allSegments.Count : LongestWaitsLimit;
+
+        writer.WritePropertyName("longestWaits");
+        writer.WriteStartArray();
+
+        for (int waitIndex = 0; waitIndex < longestCount; ++waitIndex)
+        {
+            long lockId = allSegments[waitIndex].Key;
+            OwnershipSegment segment = allSegments[waitIndex].Value;
+
+            writer.WriteStartObject();
+            writer.WriteString("lockId", "0x" + lockId.ToString("X"));
+            writer.WriteNumber("startMSec", segment.StartMSec);
+            writer.WriteNumber("endMSec", segment.EndMSec);
+            writer.WriteNumber("durationMSec", segment.DurationMSec);
+            writer.WriteNumber("ownerThreadId", segment.OwnerThreadId);
+            writer.WriteNumber("waiterThreadId", segment.WaiterThreadId);
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
     }
 
     // Resolves the frame a contention should be ATTRIBUTED to, and where in

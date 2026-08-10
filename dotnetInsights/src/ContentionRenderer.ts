@@ -138,6 +138,7 @@ function renderLockTimelinePanel(lockTimeline: any): string {
             Each bar is a window where a thread held a lock while another thread was blocked on it.
             Because the runtime only reports contended locks, a gap means no thread was blocked - not that the lock was free.
             This capture had ${totalDistinctLockCount.toLocaleString()} contended ${totalDistinctLockCount === 1 ? "lock" : "locks"}; locks are ranked by total wait time.
+            <span id="lockOutlierNote" class="lockOutlierNote"></span>
         </div>
         <div class="lockTimelineToolbar">
             <label class="lockTimelineControl">Show
@@ -156,6 +157,12 @@ function renderLockTimelinePanel(lockTimeline: any): string {
                     <option value="contentions">Contentions</option>
                     <option value="threads">Contending threads</option>
                     <option value="poolthreads">Pool threads blocked</option>
+                    <option value="maxwait">Longest single wait</option>
+                </select>
+            </label>
+            <label class="lockTimelineControl">Stalls
+                <select id="lockLongestWaitSelect">
+                    <option value="">Jump to longest…</option>
                 </select>
             </label>
             <button id="lockTimelineResetZoomBtn" class="resetZoomButton" style="display:none">Reset Zoom</button>

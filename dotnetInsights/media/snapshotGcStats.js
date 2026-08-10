@@ -4467,6 +4467,18 @@ var allocationDatasets = {};
             });
         }
 
+        var longestWaitSelect = document.getElementById('lockLongestWaitSelect');
+        if (longestWaitSelect) {
+            longestWaitSelect.addEventListener('change', function (event) {
+                var rawValue = event.currentTarget.value;
+                if (rawValue === '') {
+                    return;
+                }
+
+                jumpToLockTimelineLongestWait(parseInt(rawValue, 10));
+            });
+        }
+
         var threadFilterList = document.getElementById('threadFilterList');
         if (threadFilterList) {
             // Delegated - the list is rebuilt on every selection change and

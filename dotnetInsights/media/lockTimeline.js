@@ -54,6 +54,16 @@
 
     var MIN_BAR_WIDTH_PX = 2;
 
+    // Outlier waits get a wider floor and a high-contrast outline. Without
+    // this they are literally indistinguishable from ordinary ones: wait
+    // durations are so long-tailed (median 0.015ms against a 5.66ms max on
+    // the reference capture, 374x) that across a multi-minute x-axis every
+    // bar - typical or pathological - is sub-pixel and lands on
+    // MIN_BAR_WIDTH_PX. The tail is not a rounding detail either: the top 1%
+    // of waits accounted for 34% of all time spent blocked there.
+    var OUTLIER_MIN_BAR_WIDTH_PX = 5;
+    var OUTLIER_STROKE_COLOR = '#e02020';
+
     var OWNER_COLORS = [
         '#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f',
         '#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac',
@@ -240,6 +250,10 @@
             return lockEntry['poolWaiterThreadCount'] || 0;
         }
 
+        if (state.rankMetric === 'maxwait') {
+            return lockEntry['maxWaitMSec'] || 0;
+        }
+
         return lockEntry['totalWaitMSec'];
     }
 
@@ -256,6 +270,10 @@
         if (state.rankMetric === 'poolthreads') {
             var poolWaiters = lockEntry['poolWaiterThreadCount'] || 0;
             return poolWaiters.toLocaleString() + (poolWaiters === 1 ? ' pool thread' : ' pool threads');
+        }
+
+        if (state.rankMetric === 'maxwait') {
+            return 'worst ' + formatMSec(lockEntry['maxWaitMSec'] || 0);
         }
 
         return lockEntry['totalWaitMSec'].toFixed(1) + ' ms';
@@ -452,12 +470,15 @@
                     continue;
                 }
 
+                var isOutlier = state.outlierThresholdMSec > 0 && (segmentEnd - segmentStart) >= state.outlierThresholdMSec;
+
                 var barLeft = plotLeft + ((segmentStart - viewStart) / viewSpan) * plotWidth;
                 var barRight = plotLeft + ((segmentEnd - viewStart) / viewSpan) * plotWidth;
                 var barWidth = barRight - barLeft;
+                var minBarWidth = isOutlier ? OUTLIER_MIN_BAR_WIDTH_PX : MIN_BAR_WIDTH_PX;
 
-                if (barWidth < MIN_BAR_WIDTH_PX) {
-                    barWidth = MIN_BAR_WIDTH_PX;
+                if (barWidth < minBarWidth) {
+                    barWidth = minBarWidth;
                 }
 
                 if (barLeft < plotLeft) {
@@ -476,7 +497,16 @@
                 ctx.fillStyle = colorForOwner(segment['ownerThreadId'], state.ownerColorSlots);
                 ctx.fillRect(barLeft, barTop, barWidth, barHeight);
 
-                rowBoxes.push({ left: barLeft, width: barWidth, segment: segment });
+                // Outline rather than a replacement fill, so an outlier
+                // still shows which thread owned it - the owner is usually
+                // the first thing you want to know about a stall.
+                if (isOutlier && barHeight >= 4) {
+                    ctx.strokeStyle = OUTLIER_STROKE_COLOR;
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(barLeft + 0.5, barTop + 0.5, barWidth - 1, barHeight - 1);
+                }
+
+                rowBoxes.push({ left: barLeft, width: barWidth, segment: segment, isOutlier: isOutlier });
             }
 
             state.rowHitBoxes.push({ top: rowTop, height: rowHeight, boxes: rowBoxes, lockEntry: lockEntry, originalIndex: row.originalIndex });
@@ -773,6 +803,95 @@
         state.threadFilterAll = state.selectedThreadIds.size === state.threads.length;
     }
 
+    // ---- outlier / longest-wait surfacing ----
+
+    function renderOutlierNote() {
+        var note = document.getElementById('lockOutlierNote');
+        if (!note || state.outlierThresholdMSec <= 0) {
+            return;
+        }
+
+        note.innerHTML = ' Waits at or above <b>' + formatMSec(state.outlierThresholdMSec) +
+            '</b> (the slowest 1%) are outlined in red — at this time scale they are otherwise ' +
+            'indistinguishable from ordinary sub-millisecond waits.';
+    }
+
+    function renderLongestWaitOptions() {
+        var select = document.getElementById('lockLongestWaitSelect');
+        if (!select) {
+            return;
+        }
+
+        var lockIndexById = new Map();
+        for (var lockIndex = 0; lockIndex < state.locks.length; ++lockIndex) {
+            lockIndexById.set(state.locks[lockIndex]['lockId'], lockIndex);
+        }
+
+        state.longestWaitTargets = [];
+        var html = '<option value="">Jump to longest…</option>';
+
+        for (var waitIndex = 0; waitIndex < state.longestWaits.length; ++waitIndex) {
+            var wait = state.longestWaits[waitIndex];
+            var targetLockIndex = lockIndexById.get(wait['lockId']);
+
+            if (targetLockIndex === undefined) {
+                continue;
+            }
+
+            state.longestWaitTargets.push({ wait: wait, lockIndex: targetLockIndex });
+
+            var label = formatMSec(wait['durationMSec']) + ' @ ' + formatMSec(wait['startMSec']) +
+                ' — ' + shortMethodName(lockDisplayName(state.locks[targetLockIndex]));
+
+            html += '<option value="' + (state.longestWaitTargets.length - 1) + '">' + escapeHtml(label) + '</option>';
+        }
+
+        select.innerHTML = html;
+    }
+
+    // Zooms the viewport onto one specific wait and reveals its lock. The
+    // reveal matters as much as the zoom: the target can easily be outside
+    // the current Top-N slice or unchecked in the sidebar, in which case
+    // jumping to the right instant would show an empty chart. Top-N is
+    // widened (and its control synced) rather than silently leaving the user
+    // somewhere with nothing drawn.
+    function jumpToLongestWait(targetIndex) {
+        var target = state.longestWaitTargets[targetIndex];
+        if (!target) {
+            return;
+        }
+
+        state.visibleByIndex[target.lockIndex] = true;
+
+        var rankPosition = state.order.indexOf(target.lockIndex);
+        if (rankPosition >= 0 && state.topLockCount !== null && rankPosition >= state.topLockCount) {
+            state.topLockCount = rankPosition + 1;
+
+            var topSelect = document.getElementById('lockTopNSelect');
+            if (topSelect) {
+                // No option matches an arbitrary widened count, so fall back
+                // to "all" rather than leaving the control lying about what
+                // is shown.
+                topSelect.value = 'all';
+                state.topLockCount = null;
+            }
+        }
+
+        // Pad the window around the wait so it reads as an interval rather
+        // than filling the whole chart edge to edge.
+        var durationMSec = target.wait['durationMSec'];
+        var padMSec = durationMSec * 3;
+        if (padMSec < 0.5) {
+            padMSec = 0.5;
+        }
+
+        pushZoomHistory();
+        state.viewStartMSec = target.wait['startMSec'] - padMSec;
+        state.viewEndMSec = target.wait['endMSec'] + padMSec;
+
+        selectLock(target.lockIndex);
+    }
+
     // ---- per-lock stack panel ----
 
     // Renders the selected lock's folded caller tree, which the exporter
@@ -847,6 +966,8 @@
                 rankMetric: 'wait',
                 topLockCount: 40,
                 poolThreadIds: new Set(lockTimelineJson['poolThreadIds'] || []),
+                outlierThresholdMSec: lockTimelineJson['outlierThresholdMSec'] || 0,
+                longestWaits: lockTimelineJson['longestWaits'] || [],
                 threads: [],
                 selectedThreadIds: new Set(),
                 threadFilterAll: true,
@@ -887,6 +1008,8 @@
             }
 
             renderThreadFilterList();
+            renderLongestWaitOptions();
+            renderOutlierNote();
             renderLockFilterList();
         }
 
@@ -960,6 +1083,12 @@
         renderThreadFilterList();
         renderLockFilterList();
         draw();
+    };
+
+    window.jumpToLockTimelineLongestWait = function (targetIndex) {
+        if (state !== null) {
+            jumpToLongestWait(targetIndex);
+        }
     };
 
     window.refreshLockTimelineThreadList = function () {

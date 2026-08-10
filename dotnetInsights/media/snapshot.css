@@ -2007,3 +2007,8 @@ td.rowHideColumn:hover
 {
     margin-left: auto;
 }
+
+.lockOutlierNote
+{
+    display: inline;
+}
