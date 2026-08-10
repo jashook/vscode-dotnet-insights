@@ -242,8 +242,13 @@ public class ContentionLockTimelineTests
     }
 
     [Fact]
-    public void Write_TotalDistinctLockCountCountsEveryLockNotJustRankedOnes()
+    public void Write_EveryLockIsEmittedNotJustATopSlice()
     {
+        // The long tail is exported too - the UI's own Top-N control decides
+        // how many tracks to draw, and "All" has to actually be reachable
+        // (a lock contended once for seconds lives in that tail). Affordable
+        // because total segments are bounded by contention count, not lock
+        // count - see MaxOwnershipSegments' own comment.
         List<ContentionEvent> events = new List<ContentionEvent>();
         for (int lockIndex = 0; lockIndex < 60; ++lockIndex)
         {
@@ -253,10 +258,53 @@ public class ContentionLockTimelineTests
         JsonDocument document = WriteAndParse(events);
         JsonElement timeline = document.RootElement.GetProperty("lockTimeline");
 
-        // Only TopLocksLimit (40) get their own track, but the header count
-        // reports the real total so the UI can say "showing 40 of 60".
         Assert.Equal(60, timeline.GetProperty("totalDistinctLockCount").GetInt32());
-        Assert.Equal(40, timeline.GetProperty("locks").GetArrayLength());
+        Assert.Equal(60, timeline.GetProperty("locks").GetArrayLength());
+    }
+
+    [Fact]
+    public void Write_LockDrillDownFoldsContendedStacksForThatLock()
+    {
+        // Two waits on the same lock share a stack; a third uses a
+        // different one. The lock's drillDown must fold them into the same
+        // tree shape siteDrillDown emits (so the webview reuses one
+        // renderer), with counts summed at the shared frames.
+        long[] sharedStack = new long[] { 0x1000, 0x2000 };
+        long[] otherStack = new long[] { 0x1000 };
+
+        List<ContentionEvent> events = new List<ContentionEvent>
+        {
+            new ContentionEvent(10.0, 5.0, ClrContentionFlags.Managed, 2, sharedStack, 0xAA, 0, 1),
+            new ContentionEvent(20.0, 5.0, ClrContentionFlags.Managed, 3, sharedStack, 0xAA, 0, 1),
+            new ContentionEvent(30.0, 5.0, ClrContentionFlags.Managed, 4, otherStack, 0xAA, 0, 1),
+        };
+
+        JsonDocument document = WriteAndParse(events);
+        JsonElement lockEntry = document.RootElement.GetProperty("lockTimeline").GetProperty("locks")[0];
+        JsonElement drillDown = lockEntry.GetProperty("drillDown");
+
+        Assert.Equal(JsonValueKind.Object, drillDown.ValueKind);
+        Assert.Equal(3, drillDown.GetProperty("contentionCount").GetInt32());
+        Assert.Equal(15.0, drillDown.GetProperty("totalWaitMSec").GetDouble(), 3);
+        Assert.Equal(2, drillDown.GetProperty("distinctStackCount").GetInt32());
+        Assert.True(drillDown.GetProperty("children").GetArrayLength() > 0);
+    }
+
+    [Fact]
+    public void Write_LockWithNoStacksHasNullDrillDownNotAnEmptyTree()
+    {
+        // Every wait on this lock was captured without a stack - an empty
+        // tree would render as "no callers", which reads as a fact about
+        // the code rather than about the capture.
+        List<ContentionEvent> events = new List<ContentionEvent>
+        {
+            MakeEvent(10.0, 5.0, 0xAA, ownerThreadId: 1, waiterThreadId: 2),
+        };
+
+        JsonDocument document = WriteAndParse(events);
+        JsonElement lockEntry = document.RootElement.GetProperty("lockTimeline").GetProperty("locks")[0];
+
+        Assert.Equal(JsonValueKind.Null, lockEntry.GetProperty("drillDown").ValueKind);
     }
 }
 

@@ -12,7 +12,7 @@
 // codebase is pinned to Chart.js 2.x (see CLAUDE.md), which has no
 // floating/range bar type - arbitrary [start, end] bars only arrived in
 // Chart.js 3 - so a Gantt is not expressible there at all. Drawing directly
-// also keeps a real capture's ~9k segments cheap (one fillRect each, no
+// also keeps a real capture's ~10k segments cheap (one fillRect each, no
 // per-element object model) and makes drag-to-zoom a pure viewport change
 // rather than a chart teardown/rebuild.
 //
@@ -24,30 +24,32 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 (function () {
-    // Row geometry, in CSS pixels.
+    // Row geometry, in CSS pixels. LOCK_ROW_HEIGHT is the preferred height;
+    // draw() shrinks it toward MIN_LOCK_ROW_HEIGHT when many tracks are
+    // shown at once (see fitRowHeight).
     var LOCK_ROW_HEIGHT = 26;
+    var MIN_LOCK_ROW_HEIGHT = 4;
     var LOCK_ROW_GAP = 4;
     var LOCK_LABEL_WIDTH = 150;
-    // Time-axis labels live in this top band, not along the bottom: the
-    // container scrolls vertically once a capture has more locks than fit
-    // (40 tracks is ~1250px, well past the panel's max-height), so a
-    // bottom axis is off-screen exactly when the chart is most useful. The
-    // top band is what's visible on arrival.
+    // Below this row height a lock id is unreadable anyway, so labels are
+    // dropped rather than drawn as overlapping smears - the sidebar list and
+    // the tooltip still identify every track.
+    var LABEL_MIN_ROW_HEIGHT = 11;
     var CHART_PADDING_TOP = 30;
     var CHART_PADDING_BOTTOM = 8;
     var CHART_PADDING_RIGHT = 16;
 
-    // A bar narrower than this would be invisible (or vanish entirely to a
-    // sub-pixel fillRect), so every segment is drawn at least this wide -
-    // the overwhelming majority of real contention waits are sub-millisecond
-    // against a multi-minute capture, and dropping them would render an
-    // almost entirely empty chart that misrepresents the data.
+    // Browsers cap canvas dimensions (Chromium's limit is 32767px per side,
+    // and the BACKING store is cssHeight * devicePixelRatio, so a HiDPI
+    // display hits it at half the CSS height). Exceeding it silently yields
+    // a blank canvas, which is exactly the failure the "All" option would
+    // otherwise trigger - 1447 locks at full row height is ~43000px. Both
+    // the CSS height and the effective pixel ratio are clamped below.
+    var MAX_CANVAS_CSS_HEIGHT = 12000;
+    var MAX_CANVAS_BACKING_PX = 16384;
+
     var MIN_BAR_WIDTH_PX = 2;
 
-    // Distinct, high-contrast hues for owner threads. Deliberately a fixed
-    // palette indexed by a stable per-thread slot (not a hash of the thread
-    // id) so the same thread keeps its color across redraws and filter
-    // changes, and adjacent threads never collide.
     var OWNER_COLORS = [
         '#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f',
         '#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac',
@@ -63,13 +65,9 @@
     var state = null;
 
     // Undo/redo history of past [viewStartMSec, viewEndMSec] viewports,
-    // mirroring flameGraph.js's own flameGraphBackStack/ForwardStack pair
-    // and for the same reason: a user can drag-zoom repeatedly, narrowing
-    // further each time, so "back" has to mean "undo my last zoom" (one
-    // level) rather than "reset to the whole capture". The Reset button and
-    // double-click still jump all the way out, but they push history too,
-    // so a single step back after a reset returns to where the reset was
-    // triggered from.
+    // mirroring flameGraph.js's own back/forward stacks and for the same
+    // reason: a user can drag-zoom repeatedly, so "back" has to mean "undo
+    // my last zoom" (one level) rather than "reset to the whole capture".
     var lockZoomBackStack = [];
     var lockZoomForwardStack = [];
 
@@ -77,9 +75,6 @@
         return { startMSec: state.viewStartMSec, endMSec: state.viewEndMSec };
     }
 
-    // Call BEFORE applying any new viewport change. Clears the forward
-    // stack because taking a new action invalidates the old redo future -
-    // same rule flameGraph.js's pushFlameGraphHistory follows.
     function pushZoomHistory() {
         lockZoomBackStack.push(snapshotView());
         lockZoomForwardStack = [];
@@ -121,18 +116,74 @@
         return (valueMSec * 1000).toFixed(1) + ' µs';
     }
 
-    // Visible locks only - the filter checkboxes remove a lock's whole track
-    // rather than merely hiding its bars, so the remaining tracks close up
-    // and use the full canvas height.
-    function visibleLocks() {
-        var result = [];
-        for (var index = 0; index < state.locks.length; ++index) {
-            if (state.visibleByIndex[index]) {
-                result.push({ lockEntry: state.locks[index], originalIndex: index });
+    // True when this segment survives the current thread filter. The filter
+    // matches EITHER role deliberately: "focus on thread N" means both "what
+    // was N holding up" and "what was N blocked behind", and needing two
+    // separate controls to ask those would be worse than one that answers
+    // both at once (the tooltip still names each role explicitly).
+    function segmentMatchesThreadFilter(segment) {
+        if (state.threadFilterId === null) {
+            return true;
+        }
+
+        return segment['ownerThreadId'] === state.threadFilterId || segment['waiterThreadId'] === state.threadFilterId;
+    }
+
+    function lockHasMatchingSegment(lockEntry) {
+        if (state.threadFilterId === null) {
+            return true;
+        }
+
+        var segments = lockEntry['segments'];
+        for (var segmentIndex = 0; segmentIndex < segments.length; ++segmentIndex) {
+            if (segmentMatchesThreadFilter(segments[segmentIndex])) {
+                return true;
             }
         }
 
+        return false;
+    }
+
+    // The locks that actually get a track right now: within the Top-N slice,
+    // not unchecked in the sidebar, and (when a thread filter is active)
+    // holding at least one matching segment. Locks are already sorted by
+    // total wait descending server-side, so "top N" is just a prefix.
+    function visibleLocks() {
+        var result = [];
+        var limit = state.topLockCount === null ? state.locks.length : Math.min(state.topLockCount, state.locks.length);
+
+        for (var index = 0; index < limit; ++index) {
+            if (!state.visibleByIndex[index]) {
+                continue;
+            }
+
+            if (!lockHasMatchingSegment(state.locks[index])) {
+                continue;
+            }
+
+            result.push({ lockEntry: state.locks[index], originalIndex: index });
+        }
+
         return result;
+    }
+
+    // Shrinks the per-row height so every visible track fits inside the
+    // canvas size cap, rather than letting a large "Show All" selection
+    // silently blank the canvas.
+    function fitRowHeight(rowCount) {
+        if (rowCount === 0) {
+            return LOCK_ROW_HEIGHT;
+        }
+
+        var available = MAX_CANVAS_CSS_HEIGHT - CHART_PADDING_TOP - CHART_PADDING_BOTTOM;
+        var perRow = available / rowCount;
+
+        if (perRow >= LOCK_ROW_HEIGHT + LOCK_ROW_GAP) {
+            return LOCK_ROW_HEIGHT;
+        }
+
+        var fitted = Math.floor(perRow) - LOCK_ROW_GAP;
+        return fitted < MIN_LOCK_ROW_HEIGHT ? MIN_LOCK_ROW_HEIGHT : fitted;
     }
 
     function draw() {
@@ -143,17 +194,23 @@
         var canvas = state.canvas;
         var container = state.container;
         var rows = visibleLocks();
+        var rowHeight = fitRowHeight(rows.length);
+        state.rowHeight = rowHeight;
 
         var cssWidth = container.clientWidth;
-        var cssHeight = CHART_PADDING_TOP + CHART_PADDING_BOTTOM + rows.length * (LOCK_ROW_HEIGHT + LOCK_ROW_GAP);
-        if (cssHeight < CHART_PADDING_TOP + CHART_PADDING_BOTTOM + LOCK_ROW_HEIGHT) {
-            cssHeight = CHART_PADDING_TOP + CHART_PADDING_BOTTOM + LOCK_ROW_HEIGHT;
+        var cssHeight = CHART_PADDING_TOP + CHART_PADDING_BOTTOM + rows.length * (rowHeight + LOCK_ROW_GAP);
+        var minHeight = CHART_PADDING_TOP + CHART_PADDING_BOTTOM + LOCK_ROW_HEIGHT;
+        if (cssHeight < minHeight) {
+            cssHeight = minHeight;
         }
 
-        // Backing store scaled by devicePixelRatio, CSS box left in CSS
-        // pixels - without this the whole chart renders blurry on a HiDPI
-        // display, which is the default on the machines this ships to.
+        // Clamp the backing store as well as the CSS box - on a 2x display
+        // the backing store is what actually hits the browser's limit first.
         var ratio = window.devicePixelRatio || 1;
+        if (cssHeight * ratio > MAX_CANVAS_BACKING_PX) {
+            ratio = MAX_CANVAS_BACKING_PX / cssHeight;
+        }
+
         canvas.width = Math.floor(cssWidth * ratio);
         canvas.height = Math.floor(cssHeight * ratio);
         canvas.style.width = cssWidth + 'px';
@@ -183,18 +240,15 @@
         ctx.font = '11px ' + (bodyStyle.fontFamily || 'sans-serif');
         ctx.textBaseline = 'middle';
 
-        // ---- x axis gridlines + labels ----
+        // ---- x axis gridlines + labels (top band - see CHART_PADDING_TOP) ----
         var tickCount = 6;
         ctx.strokeStyle = gridColor;
         ctx.fillStyle = textColor;
         ctx.lineWidth = 1;
-        ctx.textAlign = 'center';
 
         for (var tickIndex = 0; tickIndex <= tickCount; ++tickIndex) {
             var tickFraction = tickIndex / tickCount;
             var tickX = plotLeft + tickFraction * plotWidth;
-            // +0.5 keeps a 1px line on a crisp pixel boundary instead of
-            // straddling two and rendering as a 2px blur.
             var crispX = Math.floor(tickX) + 0.5;
 
             ctx.beginPath();
@@ -202,9 +256,6 @@
             ctx.lineTo(crispX, cssHeight - CHART_PADDING_BOTTOM);
             ctx.stroke();
 
-            // Nudge the first/last labels inward so they aren't clipped by
-            // the canvas edge (centered text at fraction 0/1 would hang half
-            // its width outside the plot area).
             ctx.textAlign = tickIndex === 0 ? 'left' : (tickIndex === tickCount ? 'right' : 'center');
             ctx.fillText(formatMSec(viewStart + tickFraction * viewSpan), tickX, CHART_PADDING_TOP - 14);
         }
@@ -213,25 +264,45 @@
         state.rowHitBoxes = [];
         ctx.textAlign = 'left';
 
+        var drawLabels = rowHeight >= LABEL_MIN_ROW_HEIGHT;
+
         for (var rowIndex = 0; rowIndex < rows.length; ++rowIndex) {
             var row = rows[rowIndex];
             var lockEntry = row.lockEntry;
-            var rowTop = CHART_PADDING_TOP + rowIndex * (LOCK_ROW_HEIGHT + LOCK_ROW_GAP);
+            var rowTop = CHART_PADDING_TOP + rowIndex * (rowHeight + LOCK_ROW_GAP);
+            var isSelected = state.selectedLockIndex === row.originalIndex;
 
-            // Track background - a faint band so an empty stretch still
-            // reads as "this lock's row", not as blank page.
-            ctx.fillStyle = 'rgba(128, 128, 128, 0.10)';
-            ctx.fillRect(plotLeft, rowTop, plotWidth, LOCK_ROW_HEIGHT);
+            ctx.fillStyle = isSelected ? 'rgba(100, 150, 220, 0.28)' : 'rgba(128, 128, 128, 0.10)';
+            ctx.fillRect(plotLeft, rowTop, plotWidth, rowHeight);
 
-            ctx.fillStyle = textColor;
-            var labelText = lockEntry['lockId'];
-            ctx.fillText(labelText, 4, rowTop + LOCK_ROW_HEIGHT / 2);
+            if (drawLabels) {
+                ctx.fillStyle = textColor;
+                if (isSelected) {
+                    ctx.font = 'bold 11px ' + (bodyStyle.fontFamily || 'sans-serif');
+                }
+
+                ctx.fillText(lockEntry['lockId'], 4, rowTop + rowHeight / 2);
+
+                if (isSelected) {
+                    ctx.font = '11px ' + (bodyStyle.fontFamily || 'sans-serif');
+                }
+            }
 
             var segments = lockEntry['segments'];
             var rowBoxes = [];
+            var barTop = rowTop + (rowHeight > 8 ? 3 : 1);
+            var barHeight = rowHeight - (rowHeight > 8 ? 6 : 2);
+            if (barHeight < 1) {
+                barHeight = 1;
+            }
 
             for (var segmentIndex = 0; segmentIndex < segments.length; ++segmentIndex) {
                 var segment = segments[segmentIndex];
+
+                if (!segmentMatchesThreadFilter(segment)) {
+                    continue;
+                }
+
                 var segmentStart = segment['startMSec'];
                 var segmentEnd = segment['endMSec'];
 
@@ -247,8 +318,6 @@
                     barWidth = MIN_BAR_WIDTH_PX;
                 }
 
-                // Clamp to the plot area so a segment straddling the viewport
-                // edge doesn't paint over the lock labels.
                 if (barLeft < plotLeft) {
                     barWidth -= (plotLeft - barLeft);
                     barLeft = plotLeft;
@@ -263,12 +332,12 @@
                 }
 
                 ctx.fillStyle = colorForOwner(segment['ownerThreadId'], state.ownerColorSlots);
-                ctx.fillRect(barLeft, rowTop + 3, barWidth, LOCK_ROW_HEIGHT - 6);
+                ctx.fillRect(barLeft, barTop, barWidth, barHeight);
 
                 rowBoxes.push({ left: barLeft, width: barWidth, segment: segment });
             }
 
-            state.rowHitBoxes.push({ top: rowTop, height: LOCK_ROW_HEIGHT, boxes: rowBoxes, lockEntry: lockEntry });
+            state.rowHitBoxes.push({ top: rowTop, height: rowHeight, boxes: rowBoxes, lockEntry: lockEntry, originalIndex: row.originalIndex });
         }
 
         // ---- drag-to-zoom selection overlay ----
@@ -280,6 +349,7 @@
         }
 
         updateZoomLabel();
+        updateFilterHeaderLabel(rows.length);
     }
 
     function updateZoomLabel() {
@@ -298,14 +368,20 @@
         }
     }
 
+    function updateFilterHeaderLabel(shownCount) {
+        var header = document.getElementById('lockFilterHeaderLabel');
+        if (header) {
+            header.textContent = 'Locks (' + shownCount.toLocaleString() + ' shown)';
+        }
+    }
+
     function pixelToMSec(pixelX) {
-        var plotLeft = LOCK_LABEL_WIDTH;
         var plotWidth = state.container.clientWidth - LOCK_LABEL_WIDTH - CHART_PADDING_RIGHT;
         if (plotWidth <= 0) {
             return state.viewStartMSec;
         }
 
-        var fraction = (pixelX - plotLeft) / plotWidth;
+        var fraction = (pixelX - LOCK_LABEL_WIDTH) / plotWidth;
         if (fraction < 0) {
             fraction = 0;
         }
@@ -317,25 +393,32 @@
         return state.viewStartMSec + fraction * (state.viewEndMSec - state.viewStartMSec);
     }
 
-    function findSegmentAt(offsetX, offsetY) {
+    function findRowAt(offsetY) {
         if (!state.rowHitBoxes) {
             return null;
         }
 
         for (var rowIndex = 0; rowIndex < state.rowHitBoxes.length; ++rowIndex) {
             var row = state.rowHitBoxes[rowIndex];
-            if (offsetY < row.top || offsetY > row.top + row.height) {
-                continue;
+            if (offsetY >= row.top && offsetY <= row.top + row.height) {
+                return row;
             }
+        }
 
-            for (var boxIndex = 0; boxIndex < row.boxes.length; ++boxIndex) {
-                var box = row.boxes[boxIndex];
-                if (offsetX >= box.left && offsetX <= box.left + box.width) {
-                    return { segment: box.segment, lockEntry: row.lockEntry };
-                }
-            }
+        return null;
+    }
 
+    function findSegmentAt(offsetX, offsetY) {
+        var row = findRowAt(offsetY);
+        if (!row) {
             return null;
+        }
+
+        for (var boxIndex = 0; boxIndex < row.boxes.length; ++boxIndex) {
+            var box = row.boxes[boxIndex];
+            if (offsetX >= box.left && offsetX <= box.left + box.width) {
+                return { segment: box.segment, lockEntry: row.lockEntry };
+            }
         }
 
         return null;
@@ -364,8 +447,6 @@
         var left = clientX - containerRect.left + 12;
         var top = clientY - containerRect.top + 12;
 
-        // Keep the tooltip inside the container - near the right edge it
-        // would otherwise be clipped or force the panel to scroll.
         if (left + tooltip.offsetWidth > state.container.clientWidth) {
             left = state.container.clientWidth - tooltip.offsetWidth - 4;
         }
@@ -381,9 +462,6 @@
         }
     }
 
-    // "Zoom all the way out" - the Reset button and double-click. Goes
-    // through pushZoomHistory like every other navigation so a step back
-    // afterward returns to exactly where the reset was triggered from.
     function resetZoom() {
         if (!isZoomed()) {
             return;
@@ -395,10 +473,154 @@
         draw();
     }
 
-    // Public entry point, called by snapshotGcStats.js when the Lock
-    // Timeline tab is first shown (canvas has no layout width until its
-    // panel is visible, so this cannot run at injection time).
-    window.renderLockTimeline = function (lockTimelineJson) {
+    // ---- sidebar lock list ----
+
+    // Rebuilt whenever the Top-N slice changes, so the list always describes
+    // exactly the tracks that can be drawn. Locks the thread filter has
+    // emptied stay in the list (greyed) rather than disappearing - a lock
+    // vanishing from the list because of an unrelated control reads as data
+    // loss.
+    function renderLockFilterList() {
+        var list = document.getElementById('lockFilterList');
+        if (!list) {
+            return;
+        }
+
+        var limit = state.topLockCount === null ? state.locks.length : Math.min(state.topLockCount, state.locks.length);
+        var html = '';
+
+        for (var index = 0; index < limit; ++index) {
+            var lockEntry = state.locks[index];
+            var dimmed = lockHasMatchingSegment(lockEntry) ? '' : ' lockFilterItemDimmed';
+            var selected = state.selectedLockIndex === index ? ' lockFilterItemSelected' : '';
+            var checked = state.visibleByIndex[index] ? ' checked' : '';
+
+            html += '<label class="lockFilterItem' + dimmed + selected + '" data-lock-row="' + index + '">' +
+                '<input type="checkbox" class="lockFilterCheckbox" data-lock-index="' + index + '"' + checked + '>' +
+                '<span class="lockFilterSwatch" style="background-color:' + dominantColorForLock(lockEntry) + '"></span>' +
+                '<span class="lockFilterId" data-lock-select="' + index + '">' + lockEntry['lockId'] + '</span>' +
+                '<span class="lockFilterStat">' + lockEntry['totalWaitMSec'].toFixed(1) + ' ms · ' + lockEntry['contentionCount'].toLocaleString() + '</span>' +
+                '</label>';
+        }
+
+        list.innerHTML = html;
+    }
+
+    // A lock can have several owners, so its swatch shows the owner that
+    // holds it most often - the color its track is mostly painted with.
+    function dominantColorForLock(lockEntry) {
+        var segments = lockEntry['segments'];
+        var countByOwner = new Map();
+        var dominantOwner = 0;
+        var dominantCount = -1;
+
+        for (var segmentIndex = 0; segmentIndex < segments.length; ++segmentIndex) {
+            var owner = segments[segmentIndex]['ownerThreadId'];
+            var nextCount = (countByOwner.get(owner) || 0) + 1;
+            countByOwner.set(owner, nextCount);
+
+            if (nextCount > dominantCount) {
+                dominantCount = nextCount;
+                dominantOwner = owner;
+            }
+        }
+
+        return colorForOwner(dominantOwner, state.ownerColorSlots);
+    }
+
+    // ---- thread filter ----
+
+    function renderThreadFilterOptions() {
+        var select = document.getElementById('lockThreadFilterSelect');
+        if (!select) {
+            return;
+        }
+
+        // Counted across every lock, both roles, so the dropdown ranks
+        // threads by how involved in contention they actually are rather
+        // than by thread id.
+        var involvementByThread = new Map();
+
+        for (var lockIndex = 0; lockIndex < state.locks.length; ++lockIndex) {
+            var segments = state.locks[lockIndex]['segments'];
+            for (var segmentIndex = 0; segmentIndex < segments.length; ++segmentIndex) {
+                var segment = segments[segmentIndex];
+                var owner = segment['ownerThreadId'];
+                var waiter = segment['waiterThreadId'];
+
+                if (owner !== 0) {
+                    involvementByThread.set(owner, (involvementByThread.get(owner) || 0) + 1);
+                }
+
+                if (waiter !== 0 && waiter !== owner) {
+                    involvementByThread.set(waiter, (involvementByThread.get(waiter) || 0) + 1);
+                }
+            }
+        }
+
+        var threads = [];
+        involvementByThread.forEach(function (count, threadId) {
+            threads.push({ threadId: threadId, count: count });
+        });
+        threads.sort(function (left, right) { return right.count - left.count; });
+
+        var html = '<option value="all">All threads (' + threads.length + ')</option>';
+        for (var threadIndex = 0; threadIndex < threads.length; ++threadIndex) {
+            html += '<option value="' + threads[threadIndex].threadId + '">' +
+                threads[threadIndex].threadId + ' (' + threads[threadIndex].count.toLocaleString() + ')</option>';
+        }
+
+        select.innerHTML = html;
+    }
+
+    // ---- per-lock stack panel ----
+
+    // Renders the selected lock's folded caller tree, which the exporter
+    // emits in exactly the shape siteDrillDown uses - so this reuses
+    // contentionDrillDownStats.js's own buildInlineContentionSiteCallerTree
+    // verbatim, and the interior expand clicks are already handled by
+    // wireContentionTab's delegated listener on #view-contention.
+    function renderStackPanelForLock(lockIndex) {
+        var panel = document.getElementById('lockStackPanel');
+        var title = document.getElementById('lockStackTitle');
+        var body = document.getElementById('lockStackBody');
+        if (!panel || !title || !body) {
+            return;
+        }
+
+        var lockEntry = state.locks[lockIndex];
+        var drillDown = lockEntry['drillDown'];
+
+        title.textContent = 'Contended stacks for ' + lockEntry['lockId'] +
+            ' — ' + lockEntry['totalWaitMSec'].toFixed(1) + ' ms across ' +
+            lockEntry['contentionCount'].toLocaleString() + ' contentions';
+
+        if (!drillDown) {
+            // Null (not an empty tree) means no wait on this lock was
+            // stack-walked - a fact about the capture, not about the code.
+            body.innerHTML = '<p style="padding:8px;margin:0">No stacks were captured for this lock.</p>';
+        } else {
+            body.innerHTML = buildInlineContentionSiteCallerTree(drillDown, state.methodNames, drillDown['totalWaitMSec']);
+        }
+
+        panel.style.display = '';
+    }
+
+    function selectLock(lockIndex) {
+        state.selectedLockIndex = lockIndex;
+        renderStackPanelForLock(lockIndex);
+        renderLockFilterList();
+        draw();
+
+        var panel = document.getElementById('lockStackPanel');
+        if (panel) {
+            panel.scrollIntoView({ block: 'nearest' });
+        }
+    }
+
+    // ---- public entry points ----
+
+    window.renderLockTimeline = function (lockTimelineJson, methodNames) {
         var canvas = document.getElementById('lockTimelineCanvas');
         var container = document.getElementById('lockTimelineContainer');
         if (!canvas || !container || !lockTimelineJson) {
@@ -406,7 +628,6 @@
         }
 
         var locks = lockTimelineJson['locks'] || [];
-
         var isFirstInit = state === null || state.canvas !== canvas;
 
         if (isFirstInit) {
@@ -419,7 +640,12 @@
                 canvas: canvas,
                 container: container,
                 locks: locks,
+                methodNames: methodNames || [],
                 visibleByIndex: visible,
+                topLockCount: 40,
+                threadFilterId: null,
+                selectedLockIndex: -1,
+                rowHeight: LOCK_ROW_HEIGHT,
                 fullStartMSec: lockTimelineJson['minRelativeMSec'],
                 fullEndMSec: lockTimelineJson['maxRelativeMSec'],
                 viewStartMSec: lockTimelineJson['minRelativeMSec'],
@@ -430,15 +656,12 @@
                 dragCurrentX: null
             };
 
-            // A fresh chart starts with no history - otherwise a stack from
-            // a previously-rendered capture would let "back" jump to a
-            // viewport that has no meaning against this one's time range.
             lockZoomBackStack = [];
             lockZoomForwardStack = [];
 
-            // Assign every owner a stable color slot up front, in the order
-            // segments appear, so a thread's color never changes when locks
-            // are filtered in and out.
+            // Assign every owner a stable color slot up front, in segment
+            // order, so a thread keeps its color as locks/threads are
+            // filtered in and out.
             for (var lockIndex = 0; lockIndex < locks.length; ++lockIndex) {
                 var segments = locks[lockIndex]['segments'];
                 for (var segmentIndex = 0; segmentIndex < segments.length; ++segmentIndex) {
@@ -447,46 +670,105 @@
             }
 
             attachCanvasHandlers(canvas);
-            paintFilterSwatches();
+            renderThreadFilterOptions();
+            renderLockFilterList();
         }
 
         draw();
     };
 
-    // The filter list's swatches are colored from the same per-thread slots
-    // the bars use, but a LOCK can have several owners - so the swatch shows
-    // the lock's own most frequent owner, which is what its track is mostly
-    // painted with.
-    function paintFilterSwatches() {
-        for (var lockIndex = 0; lockIndex < state.locks.length; ++lockIndex) {
-            var swatch = document.querySelector('[data-lock-swatch="' + lockIndex + '"]');
-            if (!swatch) {
-                continue;
-            }
-
-            var segments = state.locks[lockIndex]['segments'];
-            var countByOwner = new Map();
-            var dominantOwner = 0;
-            var dominantCount = -1;
-
-            for (var segmentIndex = 0; segmentIndex < segments.length; ++segmentIndex) {
-                var owner = segments[segmentIndex]['ownerThreadId'];
-                var nextCount = (countByOwner.get(owner) || 0) + 1;
-                countByOwner.set(owner, nextCount);
-
-                if (nextCount > dominantCount) {
-                    dominantCount = nextCount;
-                    dominantOwner = owner;
-                }
-            }
-
-            swatch.style.backgroundColor = colorForOwner(dominantOwner, state.ownerColorSlots);
+    window.setLockTimelineLockVisible = function (lockIndex, isVisible) {
+        if (state === null) {
+            return;
         }
-    }
+
+        state.visibleByIndex[lockIndex] = isVisible;
+        draw();
+    };
+
+    window.setLockTimelineTopCount = function (topCountOrNull) {
+        if (state === null) {
+            return;
+        }
+
+        state.topLockCount = topCountOrNull;
+        renderLockFilterList();
+        draw();
+    };
+
+    window.setLockTimelineThreadFilter = function (threadIdOrNull) {
+        if (state === null) {
+            return;
+        }
+
+        state.threadFilterId = threadIdOrNull;
+        renderLockFilterList();
+        draw();
+    };
+
+    window.selectLockTimelineLock = function (lockIndex) {
+        if (state !== null) {
+            selectLock(lockIndex);
+        }
+    };
+
+    window.closeLockTimelineStackPanel = function () {
+        if (state === null) {
+            return;
+        }
+
+        state.selectedLockIndex = -1;
+        var panel = document.getElementById('lockStackPanel');
+        if (panel) {
+            panel.style.display = 'none';
+        }
+
+        renderLockFilterList();
+        draw();
+    };
+
+    window.resetLockTimelineZoom = function () {
+        if (state !== null) {
+            resetZoom();
+        }
+    };
+
+    // Undoes the single most recent viewport change (a drag-zoom, or a prior
+    // full reset) rather than jumping straight back to the whole capture.
+    // Called from snapshotGcStats.js's performGoBackAction, with the same
+    // "return true iff it actually did something" contract as every other
+    // branch there.
+    window.lockTimelineSwipeZoomOut = function () {
+        if (state === null || lockZoomBackStack.length === 0) {
+            return false;
+        }
+
+        lockZoomForwardStack.push(snapshotView());
+        applyView(lockZoomBackStack.pop());
+        return true;
+    };
+
+    window.lockTimelineSwipeZoomForward = function () {
+        if (state === null || lockZoomForwardStack.length === 0) {
+            return false;
+        }
+
+        lockZoomBackStack.push(snapshotView());
+        applyView(lockZoomForwardStack.pop());
+        return true;
+    };
 
     function attachCanvasHandlers(canvas) {
         canvas.addEventListener('mousedown', function (event) {
+            // Clicks in the label gutter select a lock (and open its stacks)
+            // rather than starting a zoom drag - dragging there has no
+            // meaningful x-axis interpretation anyway.
             if (event.offsetX < LOCK_LABEL_WIDTH) {
+                var row = findRowAt(event.offsetY);
+                if (row) {
+                    selectLock(row.originalIndex);
+                }
+
                 return;
             }
 
@@ -517,7 +799,7 @@
         // Zoom commits on mouseup anywhere in the document, not just on the
         // canvas - releasing outside the canvas after a drag is common and
         // would otherwise leave the selection stuck on screen forever.
-        document.addEventListener('mouseup', function (event) {
+        document.addEventListener('mouseup', function () {
             if (state === null || state.dragStartX === null) {
                 return;
             }
@@ -527,9 +809,9 @@
             state.dragStartX = null;
             state.dragCurrentX = null;
 
-            // A click (rather than a real drag) must not zoom to a zero-width
-            // window - that would blank the chart with no way back except the
-            // reset button.
+            // A click (rather than a real drag) must not zoom to a
+            // zero-width window - that would blank the chart with no way
+            // back except the reset button.
             if (dragEnd === null || Math.abs(dragEnd - dragStart) < 4) {
                 draw();
                 return;
@@ -557,47 +839,4 @@
             }
         });
     }
-
-    // Called by snapshotGcStats.js's filter wiring.
-    window.setLockTimelineLockVisible = function (lockIndex, isVisible) {
-        if (state === null) {
-            return;
-        }
-
-        state.visibleByIndex[lockIndex] = isVisible;
-        draw();
-    };
-
-    window.resetLockTimelineZoom = function () {
-        if (state !== null) {
-            resetZoom();
-        }
-    };
-
-    // Undoes the single most recent viewport change (a drag-zoom, or a
-    // prior full reset) rather than jumping straight back to the whole
-    // capture - "zoom in twice, go back once" lands on the first zoom.
-    // Called from snapshotGcStats.js's performGoBackAction (Backspace /
-    // macOS two-finger swipe-back), and follows the same "return true iff
-    // it actually did something" contract every other branch there does, so
-    // the caller only preventDefault()s a real action.
-    window.lockTimelineSwipeZoomOut = function () {
-        if (state === null || lockZoomBackStack.length === 0) {
-            return false;
-        }
-
-        lockZoomForwardStack.push(snapshotView());
-        applyView(lockZoomBackStack.pop());
-        return true;
-    };
-
-    window.lockTimelineSwipeZoomForward = function () {
-        if (state === null || lockZoomForwardStack.length === 0) {
-            return false;
-        }
-
-        lockZoomBackStack.push(snapshotView());
-        applyView(lockZoomForwardStack.pop());
-        return true;
-    };
 })();

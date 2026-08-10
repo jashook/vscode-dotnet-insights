@@ -126,37 +126,38 @@ export function renderContentionView(contentionSummary: any): string {
 // "the lock was free". Without saying so the view reads as a complete
 // ownership history, which it cannot be.
 function renderLockTimelinePanel(lockTimeline: any): string {
-    const locks = lockTimeline["locks"];
     const totalDistinctLockCount = lockTimeline["totalDistinctLockCount"];
 
-    const showingNote = locks.length < totalDistinctLockCount
-        ? `Showing the ${locks.length} locks with the most total wait time, of ${totalDistinctLockCount.toLocaleString()} contended locks in this capture.`
-        : `Showing all ${locks.length} contended ${locks.length === 1 ? "lock" : "locks"} in this capture.`;
-
-    var lockFilterRows = "";
-    for (var index = 0; index < locks.length; ++index) {
-        const lockEntry = locks[index];
-        const lockId = escapeHtmlForContention(lockEntry["lockId"]);
-        const waitMSec = lockEntry["totalWaitMSec"];
-        const contentionCount = lockEntry["contentionCount"];
-
-        lockFilterRows += `<label class="lockFilterItem"><input type="checkbox" class="lockFilterCheckbox" data-lock-index="${index}" checked>` +
-            `<span class="lockFilterSwatch" data-lock-swatch="${index}"></span>` +
-            `<span class="lockFilterId">${lockId}</span>` +
-            `<span class="lockFilterStat">${waitMSec.toFixed(1)} ms · ${contentionCount.toLocaleString()}</span>` +
-            `</label>`;
-    }
-
+    // The lock list and the thread dropdown are both populated by
+    // media/lockTimeline.js rather than server-rendered here: the lock list
+    // has to rebuild whenever the Top-N selector changes, and the thread
+    // list is derived from the segments themselves. Server-rendering either
+    // would mean emitting one markup blob and then immediately replacing it.
     return `
         <div class="lockTimelineNote">
-            ${showingNote}
             Each bar is a window where a thread held a lock while another thread was blocked on it.
             Because the runtime only reports contended locks, a gap means no thread was blocked - not that the lock was free.
+            This capture had ${totalDistinctLockCount.toLocaleString()} contended ${totalDistinctLockCount === 1 ? "lock" : "locks"}; locks are ranked by total wait time.
         </div>
         <div class="lockTimelineToolbar">
+            <label class="lockTimelineControl">Show
+                <select id="lockTopNSelect">
+                    <option value="10">Top 10</option>
+                    <option value="25">Top 25</option>
+                    <option value="40" selected>Top 40</option>
+                    <option value="100">Top 100</option>
+                    <option value="250">Top 250</option>
+                    <option value="all">All (${totalDistinctLockCount.toLocaleString()})</option>
+                </select>
+            </label>
+            <label class="lockTimelineControl">Thread
+                <select id="lockThreadFilterSelect">
+                    <option value="all">All threads</option>
+                </select>
+            </label>
             <button id="lockTimelineResetZoomBtn" class="resetZoomButton" style="display:none">Reset Zoom</button>
             <span id="lockTimelineZoomLabel" class="lockTimelineZoomLabel"></span>
-            <span class="lockTimelineHint">Drag horizontally to zoom · double-click to reset</span>
+            <span class="lockTimelineHint">Drag to zoom · double-click to reset · click a lock name for its stacks</span>
         </div>
         <div class="lockTimelineLayout">
             <div class="lockTimelineChartArea">
@@ -167,14 +168,21 @@ function renderLockTimelinePanel(lockTimeline: any): string {
             </div>
             <div class="lockFilterPanel">
                 <div class="lockFilterHeader">
-                    <span>Locks</span>
+                    <span id="lockFilterHeaderLabel">Locks</span>
                     <span class="lockFilterButtons">
                         <button id="lockFilterAllBtn" class="resetZoomButton">All</button>
                         <button id="lockFilterNoneBtn" class="resetZoomButton">None</button>
                     </span>
                 </div>
-                <div id="lockFilterList" class="lockFilterList">${lockFilterRows}</div>
+                <div id="lockFilterList" class="lockFilterList"></div>
             </div>
+        </div>
+        <div id="lockStackPanel" class="lockStackPanel" style="display:none">
+            <div class="lockStackHeader">
+                <span id="lockStackTitle"></span>
+                <button id="lockStackCloseBtn" class="resetZoomButton">Close</button>
+            </div>
+            <div id="lockStackBody" class="lockStackBody"></div>
         </div>`;
 }
 

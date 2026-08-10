@@ -4410,7 +4410,7 @@ var allocationDatasets = {};
             // renderLockTimeline is idempotent (it re-draws against its own
             // retained state on every call), so this also covers a redraw
             // after the panel was hidden and re-shown at a different size.
-            renderLockTimeline(contentionSummaryJson["lockTimeline"]);
+            renderLockTimeline(contentionSummaryJson["lockTimeline"], contentionSummaryJson["methodNames"]);
         }
     }
 
@@ -4422,8 +4422,10 @@ var allocationDatasets = {};
 
         var filterList = document.getElementById('lockFilterList');
         if (filterList) {
-            // Delegated, not one listener per checkbox - a capture can rank
-            // up to 40 locks and this keeps it to a single handler.
+            // Delegated, not one listener per row - the list is rebuilt
+            // whenever the Top-N slice changes (and can hold every lock in
+            // the capture), so per-row listeners would have to be re-bound
+            // each time and would leak on every rebuild.
             filterList.addEventListener('change', function (event) {
                 var checkbox = event.target.closest('.lockFilterCheckbox');
                 if (!checkbox) {
@@ -4431,6 +4433,45 @@ var allocationDatasets = {};
                 }
 
                 setLockTimelineLockVisible(parseInt(checkbox.getAttribute('data-lock-index'), 10), checkbox.checked);
+            });
+
+            // Clicking the lock id itself (not the checkbox) opens that
+            // lock's contended stacks.
+            filterList.addEventListener('click', function (event) {
+                var idSpan = event.target.closest('[data-lock-select]');
+                if (!idSpan) {
+                    return;
+                }
+
+                // The span lives inside a <label>, whose default behavior is
+                // to forward the click to its checkbox - which would toggle
+                // the lock's visibility as a side effect of asking to see
+                // its stacks.
+                event.preventDefault();
+                selectLockTimelineLock(parseInt(idSpan.getAttribute('data-lock-select'), 10));
+            });
+        }
+
+        var topNSelect = document.getElementById('lockTopNSelect');
+        if (topNSelect) {
+            topNSelect.addEventListener('change', function (event) {
+                var rawValue = event.currentTarget.value;
+                setLockTimelineTopCount(rawValue === 'all' ? null : parseInt(rawValue, 10));
+            });
+        }
+
+        var threadSelect = document.getElementById('lockThreadFilterSelect');
+        if (threadSelect) {
+            threadSelect.addEventListener('change', function (event) {
+                var rawValue = event.currentTarget.value;
+                setLockTimelineThreadFilter(rawValue === 'all' ? null : parseInt(rawValue, 10));
+            });
+        }
+
+        var stackCloseBtn = document.getElementById('lockStackCloseBtn');
+        if (stackCloseBtn) {
+            stackCloseBtn.addEventListener('click', function () {
+                closeLockTimelineStackPanel();
             });
         }
 
@@ -4748,21 +4789,42 @@ var allocationDatasets = {};
     // reported.
     var SWIPE_THRESHOLD_PX = 60;
     var SWIPE_GESTURE_IDLE_RESET_MS = 400;
+
+    // One physical swipe must fire exactly ONE action, and two swipes in a
+    // row must fire two - which is harder than it sounds on macOS, because a
+    // trackpad swipe doesn't end when the fingers lift. It keeps emitting
+    // wheel events as decaying momentum for the better part of a second.
+    //
+    // Two failure modes had to be closed, in opposite directions:
+    //
+    //  - Firing repeatedly within one swipe. Merely zeroing the accumulator
+    //    after firing isn't enough: the same burst keeps arriving and
+    //    re-crosses SWIPE_THRESHOLD_PX several more times. Against a
+    //    single-level toggle that's invisible, but against the flame graph's
+    //    multi-level undo stack (flameGraph.js's flameGraphBackStack) it
+    //    drained the whole stack per swipe, so "step back one zoom" behaved
+    //    like "reset entirely". Hence latching after a fire.
+    //
+    //  - Never re-arming, so only the FIRST swipe ever works. Clearing the
+    //    latch purely on an idle gap fails for exactly the case that matters
+    //    (going back several levels): the momentum tail keeps resetting the
+    //    idle timer, so a second deliberate swipe ~200ms later lands while
+    //    still latched and is swallowed. Reproduced directly against a
+    //    simulated ramp-then-decay burst.
+    //
+    // So re-arming is driven by momentum DECAY, not elapsed time: once the
+    // per-event magnitude falls to REARM_QUIET_DELTA the tail is spent and
+    // the next real swipe can fire. The idle timer stays only as a backstop.
+    // GESTURE_START_DELTA then stops that spent tail from itself
+    // accumulating into a fresh gesture - a deliberate swipe ramps well past
+    // it within a couple of events, while 1-3px momentum dust never does.
+    // The gap between the two constants is what keeps those two rules from
+    // fighting each other.
+    var SWIPE_REARM_QUIET_DELTA = 3;
+    var SWIPE_GESTURE_START_DELTA = 8;
+
     var swipeAccumulatedDeltaX = 0;
     var swipeGestureResetTimer = null;
-    // Latched for the REST of the current burst once this gesture has fired
-    // its one action. Without this, a single physical swipe fires several
-    // times: the accumulator was merely reset to 0 after firing and kept
-    // accumulating the same burst, and a macOS trackpad swipe keeps emitting
-    // wheel events (momentum included) for hundreds of milliseconds - easily
-    // several more multiples of SWIPE_THRESHOLD_PX. On any view whose back
-    // action is a single-level toggle that was invisible, but against the
-    // flame graph's own multi-level undo stack (see flameGraph.js's
-    // flameGraphBackStack) it popped several levels per swipe and looked
-    // like "zoom out jumps straight to fully zoomed out" instead of
-    // "step back one zoom". The latch clears only after a real quiet gap
-    // (SWIPE_GESTURE_IDLE_RESET_MS), which is what actually separates one
-    // physical gesture from the next.
     var swipeGestureLatched = false;
 
     document.addEventListener('wheel', function (event) {
@@ -4777,9 +4839,22 @@ var allocationDatasets = {};
             swipeGestureLatched = false;
         }, SWIPE_GESTURE_IDLE_RESET_MS);
 
-        // Still inside the burst that already fired - swallow the remainder
-        // (including momentum) rather than letting it re-trigger.
+        var magnitude = Math.abs(event.deltaX);
+
         if (swipeGestureLatched) {
+            // Momentum has decayed to nothing - this gesture is over, so
+            // re-arm for the next one without waiting out the idle timer.
+            if (magnitude <= SWIPE_REARM_QUIET_DELTA) {
+                swipeGestureLatched = false;
+                swipeAccumulatedDeltaX = 0;
+            }
+
+            return;
+        }
+
+        // Don't let a spent momentum tail accumulate into a gesture of its
+        // own - a real swipe opens well above this.
+        if (swipeAccumulatedDeltaX === 0 && magnitude < SWIPE_GESTURE_START_DELTA) {
             return;
         }
 

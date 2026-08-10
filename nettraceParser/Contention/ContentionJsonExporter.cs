@@ -54,20 +54,30 @@ public static class ContentionJsonExporter
 
     private const int MaxTimelineBuckets = 100;
 
-    // Lock Timeline view: how many distinct locks get their own row, ranked
-    // by total contended wait time. Mirrors TopSitesLimit's own "a ranked
-    // list past this stops being scannable" reasoning, kept lower because
-    // each row here is a full-width timeline track rather than a table row -
-    // a real capture had 1447 distinct locks but its top 4 accounted for
-    // ~79% of all contention, so the long tail is overwhelmingly noise.
-    private const int TopLocksLimit = 40;
+    // Lock Timeline view: EVERY contended lock is exported, sorted by total
+    // wait time descending, and the UI chooses how many tracks to actually
+    // draw (its own Top-N control, which includes "All"). Exporting the full
+    // set costs far less than it looks: a segment is one contended wait, and
+    // every wait belongs to exactly one lock, so the total segment count
+    // across all locks is bounded by the capture's own contention count
+    // (10,533 on the reference capture) rather than by the lock count. A
+    // "top 40 only" cut would have saved nothing on segments while making
+    // the long tail permanently unreachable - and the tail is exactly where
+    // a rare-but-seconds-long lock hides.
+    //
+    // Hard cap on emitted ownership segments as a safety valve for a
+    // pathological capture. Segments are taken longest-wait-first within
+    // each lock, and the budget is spent in rank order, so truncation drops
+    // the least interesting intervals of the least contended locks first.
+    private const int MaxOwnershipSegments = 60000;
 
-    // Hard cap on emitted ownership segments across all ranked locks. A
-    // segment is one contended wait (~40 bytes of JSON), so this bounds the
-    // block at roughly 1MB even on a pathological capture. Segments are
-    // taken longest-wait-first within each lock so a truncated capture keeps
-    // the intervals that actually matter visually.
-    private const int MaxOwnershipSegments = 20000;
+    // Global node budget for the per-lock caller trees, also spent in rank
+    // order. Bounded in practice by the number of DISTINCT contention stacks
+    // (3,852 on the reference capture), which folding collapses heavily -
+    // this cap only matters if a capture has an unusually wide spread of
+    // distinct stacks across many locks.
+    private const int MaxLockDrillDownNodes = 40000;
+    private const int LockDrillDownNodeBudgetPerLock = 300;
 
     private sealed class SiteStats
     {
@@ -106,6 +116,10 @@ public static class ContentionJsonExporter
         public int ContentionCount;
         public double TotalWaitMSec;
         public List<OwnershipSegment> Segments = new List<OwnershipSegment>();
+        // Distinct stacks contended on this lock, keyed by stack array
+        // reference (same ReferenceEqualityComparer discipline the site
+        // aggregation uses - see this file's own stacksByRankedSite).
+        public Dictionary<long[], ContentionStackAggregate> StacksByReference = new Dictionary<long[], ContentionStackAggregate>(ReferenceEqualityComparer.Instance);
     }
 
     private sealed class ContentionStackAggregate
@@ -393,7 +407,7 @@ public static class ContentionJsonExporter
             writer.WriteEndObject();
         }
 
-        WriteLockTimeline(writer, eventsSpan, minRelativeMSec, maxRelativeMSec);
+        WriteLockTimeline(writer, eventsSpan, minRelativeMSec, maxRelativeMSec, symbolTable, frameIdCache, methodNames, methodNameIndexByName);
 
         writer.WritePropertyName("methodNames");
         writer.WriteStartArray();
@@ -428,7 +442,7 @@ public static class ContentionJsonExporter
     // (~12% of waits on a real capture) and is emitted as 0 for the renderer
     // to show as "unknown" - deliberately not dropped, since a wait with an
     // unknown owner is still a real wait on that lock.
-    private static void WriteLockTimeline(Utf8JsonWriter writer, Span<ContentionEvent> eventsSpan, double minRelativeMSec, double maxRelativeMSec)
+    private static void WriteLockTimeline(Utf8JsonWriter writer, Span<ContentionEvent> eventsSpan, double minRelativeMSec, double maxRelativeMSec, MethodSymbolTable symbolTable, Dictionary<long[], int[]> frameIdCache, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         Dictionary<long, LockStats> statsByLockId = new Dictionary<long, LockStats>();
 
@@ -457,6 +471,25 @@ public static class ContentionJsonExporter
             ++stats.ContentionCount;
             stats.TotalWaitMSec += contentionEvent.DurationMSec;
             stats.Segments.Add(new OwnershipSegment(contentionEvent.RelativeMSec, contentionEvent.RelativeMSec + contentionEvent.DurationMSec, contentionEvent.DurationMSec, contentionEvent.OwnerThreadId, contentionEvent.ThreadId));
+
+            // Fold this wait's own stack into the lock's distinct-stack set,
+            // so the UI can answer "where in the code is this lock actually
+            // contended" for whichever lock the user clicks.
+            if (contentionEvent.Stack.Length > 0)
+            {
+                ContentionStackAggregate aggregate;
+
+                if (!stats.StacksByReference.TryGetValue(contentionEvent.Stack, out aggregate))
+                {
+                    aggregate = new ContentionStackAggregate();
+                    aggregate.Stack = contentionEvent.Stack;
+                    aggregate.FirstSeenRelativeMSec = contentionEvent.RelativeMSec;
+                    stats.StacksByReference[contentionEvent.Stack] = aggregate;
+                }
+
+                ++aggregate.ContentionCount;
+                aggregate.TotalWaitMSec += contentionEvent.DurationMSec;
+            }
         }
 
         writer.WritePropertyName("lockTimeline");
@@ -470,12 +503,15 @@ public static class ContentionJsonExporter
         List<LockStats> sortedLocks = new List<LockStats>(statsByLockId.Values);
         sortedLocks.Sort((LockStats left, LockStats right) => right.TotalWaitMSec.CompareTo(left.TotalWaitMSec));
 
-        int rankedLockCount = sortedLocks.Count < TopLocksLimit ? sortedLocks.Count : TopLocksLimit;
+        // Every lock is emitted - see MaxOwnershipSegments' own comment for
+        // why that's affordable.
+        int rankedLockCount = sortedLocks.Count;
 
-        // Budget is shared across every ranked lock, spent in rank order, so
-        // the busiest locks keep full detail rather than every lock losing
-        // the same fraction.
+        // Budgets are shared across every lock, spent in rank order, so the
+        // busiest locks keep full detail rather than every lock losing the
+        // same fraction.
         int remainingSegmentBudget = MaxOwnershipSegments;
+        int remainingDrillDownBudget = MaxLockDrillDownNodes;
 
         writer.WriteStartObject();
         writer.WriteNumber("minRelativeMSec", minRelativeMSec);
@@ -525,6 +561,39 @@ public static class ContentionJsonExporter
             }
 
             writer.WriteEndArray();
+
+            // Per-lock caller tree - the same node shape siteDrillDown
+            // emits, deliberately, so the webview reuses
+            // buildInlineContentionSiteCallerTree verbatim rather than
+            // needing a second renderer. Written as null once the shared
+            // node budget is spent, which the UI shows as "stack detail
+            // unavailable" instead of an empty (and misleading) tree.
+            writer.WritePropertyName("drillDown");
+
+            if (stats.StacksByReference.Count > 0 && remainingDrillDownBudget > 0)
+            {
+                List<ContentionStackAggregate> stackList = new List<ContentionStackAggregate>(stats.StacksByReference.Values);
+
+                ContentionTreeNode tree = BuildCallerTree(stackList, symbolTable, frameIdCache);
+
+                WriteBudget budget = new WriteBudget();
+                budget.Remaining = LockDrillDownNodeBudgetPerLock < remainingDrillDownBudget ? LockDrillDownNodeBudgetPerLock : remainingDrillDownBudget;
+                int budgetBefore = budget.Remaining;
+
+                writer.WriteStartObject();
+                writer.WriteNumber("contentionCount", stats.ContentionCount);
+                writer.WriteNumber("totalWaitMSec", stats.TotalWaitMSec);
+                writer.WriteNumber("distinctStackCount", stackList.Count);
+                WriteCallerTreeChildren(writer, tree, symbolTable, methodNames, methodNameIndexByName, budget);
+                writer.WriteEndObject();
+
+                remainingDrillDownBudget -= (budgetBefore - budget.Remaining);
+            }
+            else
+            {
+                writer.WriteNullValue();
+            }
+
             writer.WriteEndObject();
 
             // Flushing once per lock bounds Utf8JsonWriter's own internal
