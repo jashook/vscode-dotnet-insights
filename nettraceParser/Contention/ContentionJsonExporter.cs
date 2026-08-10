@@ -145,6 +145,11 @@ public static class ContentionJsonExporter
         public int ContentionCount;
         public double TotalWaitMSec;
         public double FirstSeenRelativeMSec;
+        // Where this stack's attributed site frame sits (see
+        // ResolveSiteFrame). The caller tree folds from here rather than
+        // from index 0, so it starts at the site the row names instead of
+        // replaying the lock-primitive prefix every stack shares.
+        public int SiteFrameIndex;
     }
 
     private sealed class ContentionTreeNode
@@ -188,8 +193,8 @@ public static class ContentionJsonExporter
 
         Span<ContentionEvent> eventsSpan = CollectionsMarshal.AsSpan(contentionEvents);
 
-        // Pass 1: compute per-leaf-frame stats and track the overall time range
-        // for timeline bucketing.
+        // Pass 1: compute per-site stats and track the overall time range for
+        // timeline bucketing.
         Dictionary<int, SiteStats> statsByLeafFrameId = new Dictionary<int, SiteStats>();
         double totalWaitMSec = 0;
         double minRelativeMSec = double.MaxValue;
@@ -201,17 +206,9 @@ public static class ContentionJsonExporter
 
             int leafFrameId;
             string leafFrameName;
+            int siteFrameIndex;
 
-            if (contentionEvent.Stack.Length == 0)
-            {
-                leafFrameId = NoStackFrameId;
-                leafFrameName = NoStackLeafName;
-            }
-            else
-            {
-                leafFrameId = symbolTable.ResolveId(contentionEvent.Stack[0], contentionEvent.RelativeMSec);
-                leafFrameName = symbolTable.NameForId(leafFrameId);
-            }
+            ResolveSiteFrame(contentionEvent.Stack, contentionEvent.RelativeMSec, symbolTable, out leafFrameId, out leafFrameName, out siteFrameIndex);
 
             SiteStats stats;
 
@@ -295,15 +292,10 @@ public static class ContentionJsonExporter
             ref readonly ContentionEvent contentionEvent = ref eventsSpan[eventIndex];
 
             int leafFrameId;
+            string unusedFrameName;
+            int siteFrameIndex;
 
-            if (contentionEvent.Stack.Length == 0)
-            {
-                leafFrameId = NoStackFrameId;
-            }
-            else
-            {
-                leafFrameId = symbolTable.ResolveId(contentionEvent.Stack[0], contentionEvent.RelativeMSec);
-            }
+            ResolveSiteFrame(contentionEvent.Stack, contentionEvent.RelativeMSec, symbolTable, out leafFrameId, out unusedFrameName, out siteFrameIndex);
 
             int siteIndex;
 
@@ -324,6 +316,7 @@ public static class ContentionJsonExporter
                     aggregate = new ContentionStackAggregate();
                     aggregate.Stack = contentionEvent.Stack;
                     aggregate.FirstSeenRelativeMSec = contentionEvent.RelativeMSec;
+                    aggregate.SiteFrameIndex = siteFrameIndex;
                     siteStacks[contentionEvent.Stack] = aggregate;
                 }
 
@@ -498,9 +491,18 @@ public static class ContentionJsonExporter
 
                 if (!stats.StacksByReference.TryGetValue(contentionEvent.Stack, out aggregate))
                 {
+                    int siteFrameId;
+                    string siteFrameName;
+                    int siteFrameIndex;
+                    ResolveSiteFrame(contentionEvent.Stack, contentionEvent.RelativeMSec, symbolTable, out siteFrameId, out siteFrameName, out siteFrameIndex);
+
                     aggregate = new ContentionStackAggregate();
                     aggregate.Stack = contentionEvent.Stack;
                     aggregate.FirstSeenRelativeMSec = contentionEvent.RelativeMSec;
+                    // Same skip as the sites table, so a lock's tree starts
+                    // at the method the lock is named after rather than at
+                    // the shared primitive prefix.
+                    aggregate.SiteFrameIndex = siteFrameIndex;
                     stats.StacksByReference[contentionEvent.Stack] = aggregate;
                 }
 
@@ -630,6 +632,60 @@ public static class ContentionJsonExporter
         writer.WriteEndObject();
     }
 
+    // Resolves the frame a contention should be ATTRIBUTED to, and where in
+    // the stack it sits.
+    //
+    // Not the leaf frame, which is what this originally used. Contention
+    // stacks are structurally unlike the allocation/exception stacks the
+    // rest of this codebase folds: those bottom out in the method that did
+    // the interesting thing (the allocation, the throw), whereas every
+    // contention stack bottoms out in the same generic runtime lock
+    // primitive. Attributing by leaf therefore collapsed the entire view
+    // into a handful of rows - on the reference capture, 10,126 of 10,533
+    // contentions (96%) landed on one row named
+    // "System.Threading.Monitor.Enter_Slowpath", which is true and
+    // completely useless: it says a lock was contended, not which one or
+    // where. Ranking by the first frame BELOW the primitives instead yields
+    // 54 real sites (SslStream.DecryptData, Http2Stream.TryEnsureHeaders,
+    // ...) over the same total wait, and matches how the Lock Timeline tab
+    // names its locks so the two views agree.
+    //
+    // siteFrameIndex is where that frame sits in the stack, so the caller
+    // tree can be folded from it rather than replaying the primitive
+    // prefix that every stack shares.
+    private static void ResolveSiteFrame(long[] stack, double relativeMSec, MethodSymbolTable symbolTable, out int siteFrameId, out string siteFrameName, out int siteFrameIndex)
+    {
+        if (stack.Length == 0)
+        {
+            siteFrameId = NoStackFrameId;
+            siteFrameName = NoStackLeafName;
+            siteFrameIndex = 0;
+            return;
+        }
+
+        for (int frameIndex = 0; frameIndex < stack.Length; ++frameIndex)
+        {
+            int frameId = symbolTable.ResolveId(stack[frameIndex], relativeMSec);
+            string frameName = symbolTable.NameForId(frameId);
+
+            if (string.IsNullOrEmpty(frameName) || IsLockAcquisitionFrame(frameName))
+            {
+                continue;
+            }
+
+            siteFrameId = frameId;
+            siteFrameName = frameName;
+            siteFrameIndex = frameIndex;
+            return;
+        }
+
+        // Every frame is a lock primitive - fall back to the leaf so the
+        // wait is still attributed somewhere real rather than dropped.
+        siteFrameId = symbolTable.ResolveId(stack[0], relativeMSec);
+        siteFrameName = symbolTable.NameForId(siteFrameId);
+        siteFrameIndex = 0;
+    }
+
     // Names a lock after the code that contends it: takes the lock's
     // heaviest stack (by wait time, matching how locks themselves are
     // ranked) and walks it leaf-first past the generic runtime
@@ -745,7 +801,12 @@ public static class ContentionJsonExporter
                 frameIdCache[rawStack.Stack] = frameIds;
             }
 
-            for (int frameIndex = 0; frameIndex < frameIds.Length; ++frameIndex)
+            // Starts at the stack's own site frame, not index 0 - the frames
+            // below it are the generic lock primitives every contention
+            // stack shares (see ResolveSiteFrame), so replaying them would
+            // put an identical, uninformative "Monitor.Enter_Slowpath" row
+            // at the top of every single tree before any real caller.
+            for (int frameIndex = rawStack.SiteFrameIndex; frameIndex < frameIds.Length; ++frameIndex)
             {
                 current = GetOrAddChild(current, frameIds[frameIndex]);
                 AccumulateTreeNode(current, rawStack);
