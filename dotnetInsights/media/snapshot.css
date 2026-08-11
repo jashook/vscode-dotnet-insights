@@ -2113,3 +2113,139 @@ td.rowHideColumn:hover
     margin: 4px 0;
     background-color: rgba(128, 128, 128, 0.35);
 }
+
+/* ---- Two-capture comparison view (see src/NettraceDiffRenderer.ts) ---- */
+
+.diffCaptureHeader
+{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+    margin: 12px 0;
+}
+
+.diffCaptureSide
+{
+    text-align: center;
+    min-width: 16em;
+}
+
+.diffCaptureLabel
+{
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    opacity: 0.7;
+}
+
+.diffCaptureName
+{
+    font-size: 15px;
+    font-weight: bold;
+    word-break: break-all;
+}
+
+.diffCaptureMeta
+{
+    font-size: 11px;
+    opacity: 0.8;
+}
+
+.diffCaptureArrow
+{
+    font-size: 22px;
+    opacity: 0.6;
+}
+
+.diffToolbar
+{
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 8px 0 12px 0;
+}
+
+.diffToolbarControl
+{
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.diffToolbarHint
+{
+    font-size: 11px;
+    opacity: 0.75;
+}
+
+/* A dimension one capture never recorded is not a change in behavior - it is
+   a difference in which providers were enabled. Called out loudly because
+   every row in such a tab otherwise reads as newly appeared. */
+.diffCoverageWarning
+{
+    padding: 8px 12px;
+    margin: 8px 0;
+    border-left: 3px solid #e0a020;
+    background-color: rgba(224, 160, 32, 0.12);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.diffTable table
+{
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.diffTable th[data-diff-sort]
+{
+    cursor: pointer;
+    user-select: none;
+}
+
+.diffTable th[data-diff-sort]:hover
+{
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+/* Direction of "worse" is declared per table rather than inferred from sign -
+   more allocations is a regression, more CPU samples is not inherently
+   either. */
+.deltaWorse
+{
+    color: #e05252;
+    font-weight: bold;
+}
+
+.deltaBetter
+{
+    color: #35a353;
+    font-weight: bold;
+}
+
+.deltaNeutral
+{
+    font-weight: bold;
+}
+
+.deltaNew, .deltaGone
+{
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0 4px;
+    border-radius: 6px;
+}
+
+.deltaNew
+{
+    background-color: rgba(53, 163, 83, 0.35);
+}
+
+.deltaGone
+{
+    background-color: rgba(224, 82, 82, 0.30);
+}

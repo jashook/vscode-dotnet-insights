@@ -30,6 +30,7 @@
     "onLanguage:csharp",
     "onLanguage:fsharp",
     "onCommand:dotnetInsights.startGCMonitor",
+    "onCommand:dotnetInsights.diffNettrace",
     "onCustomEditor:dotnetInsights.edit",
     "onCustomEditor:dotnetInsightsGc.edit",
     "onCustomEditor:dotnetInsightsGcSnapshot.edit",
@@ -340,9 +341,21 @@
       {
         "command": "dotnetInsights.loadEvents",
         "title": "Show details on all load events"
+      },
+      {
+        "command": "dotnetInsights.diffNettrace",
+        "title": "Compare Two .nettrace Captures",
+        "category": "dotnet-insights"
       }
     ],
     "menus": {
+      "explorer/context": [
+        {
+          "command": "dotnetInsights.diffNettrace",
+          "when": "resourceExtname == .nettrace",
+          "group": "navigation@100"
+        }
+      ],
       "editor/context": [
         {
           "command": "dotnetInsights.realtimeIL",

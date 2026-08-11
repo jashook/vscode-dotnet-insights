@@ -17,6 +17,7 @@ import { DotnetInsightsGcSnapshotEditor } from "./DotnetInsightsGcSnapshotEditor
 import { DotnetInsightsNettraceEditor } from "./DotnetInsightsNettraceEditor";
 import { DotnetInsightsRuntimeLoadEventsEditor } from "./DotnetInsightsRuntimeLoadEventsEditor";
 import { DependencySetup } from "./DependencySetup";
+import { showNettraceDiff, pickCapturesToDiff } from "./NettraceDiffPanel";
 
 import { GcListener } from "./GcListener";
 import { OnSaveIlDasm } from './onSaveIlDasm';
@@ -768,6 +769,25 @@ export async function activate(context: vscode.ExtensionContext) {
             });
         }
     });
+
+    // Compare two .nettrace captures. VS Code passes an explorer multi-select
+    // as (clickedUri, selectedUris), so right-clicking two selected captures
+    // needs no prompting; invoking from the palette falls back to two pickers
+    // (see pickCapturesToDiff).
+    context.subscriptions.push(vscode.commands.registerCommand("dotnetInsights.diffNettrace", async (contextUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
+        const captures = await pickCapturesToDiff(contextUri, selectedUris);
+
+        if (captures === null) {
+            return;
+        }
+
+        if (captures.baseline === captures.comparison) {
+            vscode.window.showWarningMessage("Select two different captures to compare.");
+            return;
+        }
+
+        await showNettraceDiff(context, insights, captures.baseline, captures.comparison);
+    }));
 
     context.subscriptions.push(DotnetInsightsTextEditorProvider.register(context, insights));
     context.subscriptions.push(DotnetInsightsGcEditor.register(context, insights, listener));

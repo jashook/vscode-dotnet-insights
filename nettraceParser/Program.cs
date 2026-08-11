@@ -23,6 +23,7 @@ using System.Runtime.InteropServices;
 using DotnetInsights.NetTrace;
 using DotnetInsights.NetTrace.Contention;
 using DotnetInsights.NetTrace.Cpu;
+using DotnetInsights.NetTrace.Diff;
 using DotnetInsights.NetTrace.Exceptions;
 using DotnetInsights.NetTrace.Gc;
 using DotnetInsights.NetTrace.Overview;
@@ -32,7 +33,165 @@ using DotnetInsights.NetTrace.Rundown;
 if (args.Length < 1)
 {
     Console.WriteLine("Usage: nettraceParser <file.nettrace> [--json <output.json>] [--dump-fields <EventName>]");
+    Console.WriteLine("       nettraceParser --diff <baseline.nettrace> <comparison.nettrace> --json <output.json>");
     return;
+}
+
+// --diff runs the whole single-capture pipeline twice and emits one compact
+// comparison payload (see Diff/CaptureDiffJsonExporter.cs for why the diff is
+// computed here rather than in the webview). Handled before anything else so
+// the single-capture path below is left exactly as it was.
+int diffArgIndex = Array.IndexOf(args, "--diff");
+
+if (diffArgIndex >= 0)
+{
+    if (diffArgIndex + 2 >= args.Length)
+    {
+        Console.Error.WriteLine("--diff requires two capture paths: --diff <baseline.nettrace> <comparison.nettrace> --json <output.json>");
+        return;
+    }
+
+    string baselinePath = args[diffArgIndex + 1];
+    string comparisonPath = args[diffArgIndex + 2];
+
+    int diffJsonArgIndex = Array.IndexOf(args, "--json");
+
+    if (diffJsonArgIndex < 0 || diffJsonArgIndex + 1 >= args.Length)
+    {
+        Console.Error.WriteLine("--diff requires --json <output.json>");
+        return;
+    }
+
+    string diffOutputPath = args[diffJsonArgIndex + 1];
+
+    ProgressReporter.Enable();
+    ProgressReporter.Warmup();
+
+    Stopwatch diffStopwatch = Stopwatch.StartNew();
+
+    // Each capture owns half the progress bar. The two are read strictly in
+    // sequence, never concurrently: a single capture already peaks around
+    // 1.8GB RSS, so holding both event graphs at once would roughly double
+    // that for no benefit. BuildProfileForDiff drops its NettraceFile before
+    // returning, so only one capture's events are ever live.
+    CaptureProfile baselineProfile = BuildProfileForDiff(baselinePath, 0.0, 50.0);
+    CaptureProfile comparisonProfile = BuildProfileForDiff(comparisonPath, 50.0, 100.0);
+
+    CaptureDiff captureDiff = CaptureDiffBuilder.Build(baselineProfile, comparisonProfile);
+    CaptureDiffJsonExporter.WriteToFile(diffOutputPath, captureDiff);
+
+    Console.Error.WriteLine(
+        $"Timing: diff={diffStopwatch.ElapsedMilliseconds}ms " +
+        $"baseline={baselineProfile.TotalEventCount} events/{baselineProfile.CaptureDurationMSec:F0}ms " +
+        $"comparison={comparisonProfile.TotalEventCount} events/{comparisonProfile.CaptureDurationMSec:F0}ms " +
+        $"rows=[events={captureDiff.EventTypes.Count},alloc={captureDiff.AllocationTypes.Count},exc={captureDiff.ExceptionTypes.Count},cpu={captureDiff.CpuMethods.Count},cont={captureDiff.ContentionSites.Count},locks={captureDiff.Locks.Count}] " +
+        $"gcPause={GC.GetTotalPauseDuration().TotalMilliseconds:F1}ms gcCounts=[{GC.CollectionCount(0)},{GC.CollectionCount(1)},{GC.CollectionCount(2)}]");
+
+    return;
+}
+
+// Runs one capture through the same projectors the --json path uses and
+// reduces it to the small named-metric profile the diff needs, reporting
+// progress inside [progressStart, progressEnd) so two captures fill one bar.
+static CaptureProfile BuildProfileForDiff(string captureFilePath, double progressStart, double progressEnd)
+{
+    double progressSpan = progressEnd - progressStart;
+
+    // Sub-ranges within this capture's own half, weighted the same way the
+    // single-capture ProgressPlan weights them: the read dominates, the
+    // projectors take most of the rest, the reduction itself is negligible.
+    double readEnd = progressStart + (progressSpan * 0.55);
+    double projectEnd = progressStart + (progressSpan * 0.97);
+
+    ProgressReporter.BeginPhase($"Reading {Path.GetFileName(captureFilePath)}", progressStart, readEnd);
+
+    long noGcBudget = ReadPhaseGcSuppression.ComputeBudgetBytes(new FileInfo(captureFilePath).Length, GC.GetGCMemoryInfo().TotalAvailableMemoryBytes);
+    bool suppressedGc = ReadPhaseGcSuppression.TryStart(noGcBudget);
+
+    NettraceFile captureFile = NettraceFile.Read(captureFilePath, ProgressReporter.ReportFraction);
+
+    if (suppressedGc)
+    {
+        ReadPhaseGcSuppression.End();
+    }
+
+    ProgressReporter.CompletePhase();
+
+    long captureReferenceQpc = captureFile.Header.SyncTimeQPC;
+    int capturePointerSize = captureFile.Header.PointerSize;
+    long captureQpcFrequency = captureFile.Header.QPCFrequency;
+    DateTime captureSyncTimeUtc = captureFile.Header.SyncTimeUtc;
+
+    ProgressReporter.BeginPhase($"Analyzing {Path.GetFileName(captureFilePath)}", readEnd, projectEnd);
+
+    List<GcEvent> diffGcEvents = GcEventProjector.Project(captureFile.Events, capturePointerSize, captureQpcFrequency, captureSyncTimeUtc, captureReferenceQpc);
+    List<AllocationEvent> diffAllocationEvents = AllocationEventProjector.Project(captureFile.Events, capturePointerSize, captureQpcFrequency, captureSyncTimeUtc, captureReferenceQpc);
+    List<ExceptionEvent> diffExceptionEvents = ExceptionEventProjector.Project(captureFile.Events, capturePointerSize, captureQpcFrequency, captureSyncTimeUtc, captureReferenceQpc);
+    EventOverview diffEventOverview = EventOverviewBuilder.Build(captureFile.Events);
+    MethodSymbolTable diffSymbolTable = MethodSymbolTable.Build(captureFile.Events, capturePointerSize, captureQpcFrequency, captureReferenceQpc);
+    List<SampleEvent> diffSampleEvents = SampleProfileEventProjector.Project(captureFile.Events, captureQpcFrequency, captureReferenceQpc);
+    List<ContentionEvent> diffContentionEvents = ContentionEventProjector.Project(captureFile.Events, capturePointerSize, captureQpcFrequency, captureSyncTimeUtc, captureReferenceQpc);
+
+    int diffTotalEventCount = captureFile.Events.Count;
+    double diffCaptureDurationMSec = ComputeCaptureDurationMSec(captureFile.Events, captureQpcFrequency);
+
+    ProgressReporter.CompletePhase();
+
+    // Dropped before the profile is built, and crucially before the NEXT
+    // capture is opened - same reasoning as the --json path's own
+    // `file = null`, but load-bearing here rather than an optimization,
+    // since otherwise both captures' event graphs would be live at once.
+    captureFile = null;
+
+    ProgressReporter.BeginPhase($"Summarizing {Path.GetFileName(captureFilePath)}", projectEnd, progressEnd);
+
+    CaptureProfile profile = CaptureProfile.Build(
+        captureFilePath,
+        Path.GetFileNameWithoutExtension(captureFilePath),
+        diffCaptureDurationMSec,
+        diffTotalEventCount,
+        diffEventOverview,
+        diffGcEvents,
+        diffAllocationEvents,
+        diffExceptionEvents,
+        diffSampleEvents,
+        diffContentionEvents,
+        diffSymbolTable);
+
+    ProgressReporter.CompletePhase();
+
+    return profile;
+}
+
+// Whole-capture wall-clock span on the same axis the projectors use - the
+// same min/max scan the --json path performs inline.
+static double ComputeCaptureDurationMSec(List<EventRecord> events, long qpcFrequency)
+{
+    if (events.Count == 0 || qpcFrequency <= 0)
+    {
+        return 0;
+    }
+
+    long minTimeStampQpc = long.MaxValue;
+    long maxTimeStampQpc = long.MinValue;
+
+    Span<EventRecord> eventsSpan = CollectionsMarshal.AsSpan(events);
+    for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
+    {
+        long timeStampQpc = eventsSpan[eventIndex].TimeStampRelativeQPC;
+
+        if (timeStampQpc < minTimeStampQpc)
+        {
+            minTimeStampQpc = timeStampQpc;
+        }
+
+        if (timeStampQpc > maxTimeStampQpc)
+        {
+            maxTimeStampQpc = timeStampQpc;
+        }
+    }
+
+    return (maxTimeStampQpc - minTimeStampQpc) * 1000.0 / qpcFrequency;
 }
 
 string filePath = args[0];
