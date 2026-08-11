@@ -161,6 +161,45 @@ function renderAdjustmentReasons(adjustmentReasons: any[]): string {
     </div>`;
 }
 
+
+// Renders a captured stack using the SAME nested caller-tree table the
+// allocation/exception/CPU/contention drill-downs use, rather than a bespoke
+// list - identical colgroup, identical .callerRow markup (leading spacer cell
+// pairing with the colgroup's own spacer <col>), identical per-depth indent.
+// A threading stack is linear and carries no counts, so the three numeric
+// columns those trees use for count/% are emitted empty: the point is that a
+// stack looks the same everywhere in this UI, not that this table invents
+// numbers it does not have.
+//
+// Mirrors contentionDrillDownStats.js's CONTENTION_CALLER_TREE_COLGROUP and
+// renderContentionTreeRow; the indent constants are drillDownStats.js's own
+// CALLER_INDENT_EM_PER_LEVEL / CALLER_INDENT_MAX_EM.
+const CALLER_TREE_COLGROUP = `<colgroup><col style="width: 1.6em"><col><col class="bytesColumn"><col class="percentColumn"><col class="percentColumn"></colgroup>`;
+const CALLER_INDENT_EM_PER_LEVEL = 0.85;
+const CALLER_INDENT_MAX_EM = 17;
+
+function renderStackAsCallerTree(frames: number[], methodNames: string[]): string {
+    if (!frames || frames.length === 0) {
+        return `<p style="padding:8px;margin:0">No stack was captured for this event.</p>`;
+    }
+
+    var frameRows = "";
+    for (var frameIndex = 0; frameIndex < frames.length; ++frameIndex) {
+        const uncappedIndentEm = frameIndex * CALLER_INDENT_EM_PER_LEVEL;
+        const indentEm = uncappedIndentEm < CALLER_INDENT_MAX_EM ? uncappedIndentEm : CALLER_INDENT_MAX_EM;
+
+        frameRows += `<tr class="callerRow">` +
+            `<td></td>` +
+            `<td style="padding-left: ${indentEm}em">` +
+            `<span class="leafMethodToggle leafMethodToggleEmpty"></span>` +
+            `${formatMethodNameHtml(methodNames[frames[frameIndex]])}</td>` +
+            `<td></td><td></td><td></td>` +
+            `</tr>`;
+    }
+
+    return `<table class="callerTreeInner">${CALLER_TREE_COLGROUP}${frameRows}</table>`;
+}
+
 // Thread and lock creations are the only threading events that keep a usable
 // stack, so each row expands to show it.
 function renderStackedEventTable(idPrefix: string, title: string, stackedEvents: any[], methodNames: string[]): string {
@@ -180,13 +219,8 @@ function renderStackedEventTable(idPrefix: string, title: string, stackedEvents:
             `<td>${stackedEvent["threadId"]}</td>` +
             `</tr>`;
 
-        var frameRows = "";
-        for (var frameIndex = 0; frameIndex < frames.length; ++frameIndex) {
-            frameRows += `<div class="threadingStackFrame">${formatMethodNameHtml(methodNames[frames[frameIndex]])}</div>`;
-        }
-
         rows += `<tr id="${idPrefix}Detail${index}" class="callPathsDetail"><td colspan="3" class="callerTreeCell">` +
-            `<div class="threadingStackList">${frameRows || '<div class="threadingStackFrame">No stack captured.</div>'}</div>` +
+            `${renderStackAsCallerTree(frames, methodNames)}` +
             `</td></tr>`;
     }
 

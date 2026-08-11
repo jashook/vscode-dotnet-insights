@@ -2353,13 +2353,3 @@ td.rowHideColumn:hover
     transform: rotate(90deg);
 }
 
-.threadingStackList
-{
-    padding: 6px 10px 6px 26px;
-}
-
-.threadingStackFrame
-{
-    font-size: 11px;
-    line-height: 1.6;
-}
