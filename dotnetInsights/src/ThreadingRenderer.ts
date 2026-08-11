@@ -174,7 +174,16 @@ function renderAdjustmentReasons(adjustmentReasons: any[]): string {
 // Mirrors contentionDrillDownStats.js's CONTENTION_CALLER_TREE_COLGROUP and
 // renderContentionTreeRow; the indent constants are drillDownStats.js's own
 // CALLER_INDENT_EM_PER_LEVEL / CALLER_INDENT_MAX_EM.
-const CALLER_TREE_COLGROUP = `<colgroup><col style="width: 1.6em"><col><col class="bytesColumn"><col class="percentColumn"><col class="percentColumn"></colgroup>`;
+// Two columns, not the drill-downs' five. Those three extra columns exist to
+// carry count/%-of-parent/%-of-total, which a linear stack does not have -
+// and .callerTreeInner is table-layout:fixed, so emitting them empty is not
+// free: measured at 1398px table width they consumed 928px (66%) and left the
+// frame column just 398px, squeezing method names into a narrow strip with
+// two-thirds of the row blank to its right. Dropping them hands that width to
+// the frames. Everything that carries the SHARED look - the .callerTreeInner
+// table, the .callerRow rows, the leading spacer cell/col, the per-depth
+// indent - is unchanged.
+const CALLER_TREE_COLGROUP = `<colgroup><col style="width: 1.6em"><col></colgroup>`;
 const CALLER_INDENT_EM_PER_LEVEL = 0.85;
 const CALLER_INDENT_MAX_EM = 17;
 
@@ -193,7 +202,6 @@ function renderStackAsCallerTree(frames: number[], methodNames: string[]): strin
             `<td style="padding-left: ${indentEm}em">` +
             `<span class="leafMethodToggle leafMethodToggleEmpty"></span>` +
             `${formatMethodNameHtml(methodNames[frames[frameIndex]])}</td>` +
-            `<td></td><td></td><td></td>` +
             `</tr>`;
     }
 

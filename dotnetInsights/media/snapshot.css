@@ -2291,8 +2291,16 @@ td.rowHideColumn:hover
    while the Threading tables have no row-hide affordance and put the name
    first. Same left-aligned wrapping name column, same right-aligned numerics,
    so the three views read as one family rather than three near-misses. */
-.threadingTable td:first-child,
-.threadingTable th:first-child
+/* Every selector here uses the child chain `> table > tbody > tr >` so it
+   applies ONLY to the outer ranked table, never to the .callerTreeInner stack
+   table nested inside an expanded row's cell. .cpuHotMethodsTable deliberately
+   does NOT scope its equivalent rules, because there the nested caller tree
+   has the same five-column shape and wants the same treatment - but the
+   threading stack table is two columns, so an unscoped rule put 30em on its
+   1.6em spacer and 7% on its frame column, inverting it (measured: spacer
+   1300px, frames 98px). */
+.threadingTable > table > tbody > tr > td:first-child,
+.threadingTable > table > tbody > tr > th:first-child
 {
     text-align: left;
     white-space: normal;
@@ -2300,27 +2308,41 @@ td.rowHideColumn:hover
     word-break: break-word;
 }
 
-.threadingTable th:not(:first-child),
-.threadingTable td:not(:first-child)
+.threadingTable > table > tbody > tr > th:not(:first-child),
+.threadingTable > table > tbody > tr > td:not(:first-child)
 {
     text-align: right;
 }
 
-.threadingTable th:not(:first-child)
+.threadingTable > table > tbody > tr > th:not(:first-child)
 {
     padding-right: 4px;
 }
 
-/* The shared ranked-table rules assume five or six columns, which between
-   them consume the row. These tables have two or three, so without a width
-   here the leftover space is handed to the numeric columns and the last one
-   drifts to the far right, an inch of blank row separating a count from the
-   method it belongs to. Pinning the numerics sends the slack to the name
-   column instead, which is the one that can use it. */
-.threadingTable th:not(:first-child),
-.threadingTable td:not(:first-child)
+/* The nested stack table needs its own left alignment now that the outer
+   rules are scoped away from it: .detailTable td defaults to center, which
+   centered every frame and hid the per-depth indent entirely (the indent is
+   padding-left, invisible when the text is centered anyway).
+   .cpuHotMethodsTable gets this for free because its unscoped nth-child(2)
+   rule reaches its nested rows too. */
+.threadingTable .callerTreeInner td
 {
-    width: 9em;
+    text-align: left;
+    white-space: normal;
+    word-break: break-word;
+}
+
+/* The shared ranked-table rules assume five or six columns, which between
+   them consume the row. These tables have two or three, so the leftover width
+   is split among the columns in proportion to their declared widths - and an
+   em width acts only as a MINIMUM here, since .detailTable table is not
+   table-layout:fixed. At 1398px that gave Time and Thread 261px each for
+   values like "119.30 s" and "39871". A small percentage caps them instead,
+   so the slack goes to the name column, which is the one that can use it. */
+.threadingTable > table > tbody > tr > th:not(:first-child),
+.threadingTable > table > tbody > tr > td:not(:first-child)
+{
+    width: 7%;
 }
 
 .threadingStallRow
