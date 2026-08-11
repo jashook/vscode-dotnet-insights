@@ -266,6 +266,30 @@ by inspecting a real `roslynHelper-osx-x64.tar.gz`). Upload with
   label entry can be an array of strings, which Chart.js 2.x renders as
   stacked lines under one tick — used to show the GC number and its time
   together on the x-axis without dropping the GC number.
+- **Ranked-table column widths** (`.cpuHotMethodsTable` — CPU Hot Methods,
+  Contention Sites, Exception Types, each with a `.callerTreeInner` tree
+  nested inside its expanded rows). One rule governs all of it: under
+  `table-layout: auto` a **percentage** width is honored exactly, while a
+  width in `em`/`px`/`rem` is a *floor* that soaks up the table's leftover
+  space. So: numeric columns and the nested tree's numeric columns share
+  `--rankedNumericColumnWidth` (a percentage) so both grids land on the same
+  pixels; widths are declared on **header cells only** (enough to size a
+  column in auto layout, no per-row markup) and key off the
+  `data-sort="number"` attribute `renderSortableTableHeader` already emits;
+  and the name column **stays `width: auto`**, which is the mechanism that
+  makes it absorb the rest. Three measured wrong turns, kept because each is
+  easy to repeat: (1) giving the name column a percentage was *worse than the
+  original bug* — `.rowHideColumn`'s `1.6em` became the only non-percentage
+  column and swallowed the remainder, 22px → 226px, so it needs its own `2%`;
+  (2) sizing numerics in `rem` made them grow to 192px from a declared 123px;
+  (3) an `em` inside `.callerTreeInner` resolves against **~26.5px**, not a
+  header cell's 14px, which is why `.bytesColumn`/`.percentColumn` (`9em`/
+  `6em`) measured 239px/159px and never lined up — scope any override to
+  `.cpuHotMethodsTable .callerTreeInner`, since those classes are also worn by
+  the Heap Contents and Allocation drill-down tables. The percentage must
+  clear the widest numeric header's min-content (~115px, "Total Wait (ms)")
+  and headers must stay free to wrap, so a narrow window wraps a header rather
+  than forcing its column wider and breaking alignment.
 
 ## Tool distribution & the stale-cache trap
 

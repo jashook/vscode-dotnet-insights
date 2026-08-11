@@ -446,3 +446,6 @@ $RECYCLE.BIN/
 !.vscode/extensions.json
 
 */out/*
+# Packaged extension builds - produced by `vsce package`, uploaded to the
+# Marketplace by hand, never committed.
+*.vsix

@@ -114,7 +114,11 @@ function renderExceptionTypesTable(exceptionSummary: any): string {
             `<td><span class="leafMethodToggle">&#9656;</span>${escapeHtml(tdTypeName)}</td>` +
             `<td>${tdCount}</td>` +
             `<td>${tdPercent}</td>` +
-            `<td>${escapeHtml(tdSampleMessage)}</td>` +
+            // Wrapped and clamped to two lines by CSS rather than truncated
+            // here: the title keeps the whole message one hover away, which a
+            // server-side substring would throw away outright.
+            `<td class="exceptionSampleMessage" title="${escapeHtml(tdSampleMessage)}">` +
+            `<span class="exceptionSampleMessageText">${escapeHtml(tdSampleMessage)}</span></td>` +
             `</tr>` +
             `<tr id="exceptionTypeDetail${index}" class="callPathsDetail" data-exception-type-lazy="${index}">` +
             `<td colspan="5" class="callerTreeCell"></td>` +

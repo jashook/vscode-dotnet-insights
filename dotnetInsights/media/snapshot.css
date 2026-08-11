@@ -1344,9 +1344,13 @@ td.rowHideColumn:hover
    compatible with .drillDownTable table's table-layout:fixed, which needs a
    matching <colgroup> this table doesn't define). Excludes both column 1
    (rowHideColumn, its own centered/narrow treatment below) and column 2
-   (Method, left-aligned above) - everything from column 3 on is numeric.*/
+   (Method, left-aligned above) - everything from column 3 on is numeric,
+   except Exceptions' Sample Message, which opts out by class (its own rules
+   are below - excluding it here rather than trying to out-specify this
+   selector, which is what a plain .exceptionSampleMessage rule would have to
+   do and would lose). */
 .cpuHotMethodsTable th:not(:first-child):not(:nth-child(2)),
-.cpuHotMethodsTable td:not(:first-child):not(:nth-child(2))
+.cpuHotMethodsTable td:not(:first-child):not(:nth-child(2)):not(.exceptionSampleMessage)
 {
     text-align: right;
 }
@@ -1354,6 +1358,134 @@ td.rowHideColumn:hover
 .cpuHotMethodsTable th:not(:first-child):not(:nth-child(2))
 {
     padding-right: 4px;
+}
+
+/* Column widths for the three ranked tables that share this class (CPU Hot
+   Methods, Contention Sites, Exception Types).
+ *
+ * The problem these fix: the name column above is capped at a fixed 30em, and
+ * this table is table-layout:auto, so ALL the leftover width goes to the other
+ * columns instead. Measured at a 1402px table: Contention's four numeric
+ * columns took 945px (67%) between them - Total Wait alone was 297px to hold
+ * numbers like "1,204.7" - while the lock acquisition site, the only column
+ * whose content is genuinely long, was stuck at 420px. Exceptions was worse:
+ * Sample Message ballooned to 826px (59%) because an unwrapped message column
+ * grows to whatever its longest message needs.
+ *
+ * Widths are declared on the header cells only. In table-layout:auto a width
+ * on any one cell sizes the whole column, and the header is the one row that
+ * exists exactly once per column - so this needs no per-row markup and no
+ * nth-child arithmetic that would break if a column were ever inserted.
+ * They key off data-sort, which renderSortableTableHeader already emits to
+ * describe each column's type, so a numeric column is narrow by virtue of
+ * being declared numeric rather than by its position.
+ *
+ * The name column is left AUTO on purpose, and that is the whole mechanism:
+ * under table-layout:auto the browser hands leftover width to the columns
+ * whose width is auto, and skips the ones given an explicit length or
+ * percentage. So pinning every other column and leaving exactly one auto
+ * makes that one absorb everything else - no percentage has to be kept in
+ * sync with a column count that differs per table (5 here, 4 in Exceptions).
+ * Giving the name column a percentage instead measured WORSE than the
+ * original bug: the rowHideColumn's 1.6em then became the only non-percentage
+ * column and swallowed the remainder, going from 22px to 226px.
+ *
+ * The `> table > tbody > tr >` chain is load-bearing: it scopes these to the
+ * outer ranked table only. The nested .callerTreeInner caller trees inside an
+ * expanded row live in this same div, are table-layout:fixed, and size their
+ * columns from their own <colgroup> - the same trap the Threading tables hit
+ * (see .threadingTable's own rules below). */
+/* One width for every numeric column in these views, shared by the ranked
+   table and by the caller trees nested inside its expanded rows, so the two
+   grids line up instead of merely looking similar. Both tables span the same
+   box, so one percentage lands on the same pixels in both.
+ *
+ * A percentage, not a length, and that distinction is the whole rule here:
+ * under table-layout:auto a percentage column gets exactly its share, while a
+ * column sized in em/px/rem is treated as a floor and grows with the leftover.
+ * Measured both ways - at 9.5rem (123px) these columns came out 192px, and the
+ * nested tree's 9em/6em columns came out 239px/159px because an em inside
+ * .callerTreeInner resolves against ~26.5px rather than the header's 14px.
+ * That mismatch is what made expanding a row look like it shifted the
+ * right-hand columns.
+ *
+ * 8.5% clears the widest numeric header's min-content width (Contention's
+ * "Total Wait (ms)", 115px: 93px of text plus padding and the sort indicator)
+ * at any normal window size. Headers are left free to WRAP rather than pinned
+ * with white-space:nowrap, so that if the window does get narrow enough for
+ * 8.5% to fall under that min-content, the header wraps instead of forcing
+ * its column wider and dragging that one column out of alignment. */
+.cpuHotMethodsTable
+{
+    --rankedNumericColumnWidth: 8.5%;
+}
+
+.cpuHotMethodsTable > table > tbody > tr > th[data-sort="number"]
+{
+    width: var(--rankedNumericColumnWidth);
+}
+
+/* The nested caller trees' numeric columns - same width as the ranked table's
+   above, which is what makes the trailing columns of an expanded row line up
+   with the header they sit under. Scoped to .cpuHotMethodsTable rather than
+   changing .bytesColumn/.percentColumn globally: those classes are also worn
+   by the Heap Contents and Allocation drill-down tables, which have their own
+   column shape and are not part of this alignment. */
+.cpuHotMethodsTable .callerTreeInner .bytesColumn,
+.cpuHotMethodsTable .callerTreeInner .percentColumn
+{
+    width: var(--rankedNumericColumnWidth);
+}
+
+/* The hide-button column, pinned as a percentage rather than left on its own
+   1.6em. An em width behaves as a floor here, not a width - Chrome still gave
+   this column a share of the leftover, measuring 54px against the 22px it
+   used to sit at. A percentage is honored exactly, so the leftover goes where
+   it is wanted (the auto name column). */
+.cpuHotMethodsTable > table > tbody > tr > th.rowHideColumn
+{
+    width: 2%;
+}
+
+/* The name column - Method / Lock Acquisition Site / Exception Type. Column 2
+   because column 1 is the rowHideColumn button. Overrides the 30em above for
+   the outer table only (higher specificity): 30em was a CAP on the one column
+   that actually needs room, and dropping it back to auto is what lets it
+   absorb the width the numeric columns just gave up. */
+.cpuHotMethodsTable > table > tbody > tr > th:nth-child(2)
+{
+    width: auto;
+}
+
+/* Exceptions' Sample Message: the only non-numeric column that is not the
+   name column, so it is the one data-sort="text" header past column 2. */
+.cpuHotMethodsTable > table > tbody > tr > th[data-sort="text"]:not(:nth-child(2))
+{
+    width: 24%;
+    text-align: left;
+}
+
+/* A sample exception message is prose, not a measurement: left-aligned like
+   the text it is, and wrapped rather than allowed to set the column width. */
+.cpuHotMethodsTable td.exceptionSampleMessage
+{
+    text-align: left;
+    white-space: normal;
+    word-break: break-word;
+}
+
+/* The clamp lives on an inner span, NOT on the <td>: -webkit-box would take
+   the cell out of table layout entirely (a td is display:table-cell by
+   definition), collapsing the column it belongs to. Two lines so one
+   pathological message can't make its row several times taller than every
+   other; the full text stays reachable as the cell's title tooltip (see
+   ExceptionSummaryRenderer.ts). */
+.exceptionSampleMessageText
+{
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
 }
 
 /* Expandable method rows in the unified Methods table */
