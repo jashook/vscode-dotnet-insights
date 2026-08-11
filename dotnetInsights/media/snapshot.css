@@ -1395,10 +1395,46 @@ td.rowHideColumn:hover
  * expanded row live in this same div, are table-layout:fixed, and size their
  * columns from their own <colgroup> - the same trap the Threading tables hit
  * (see .threadingTable's own rules below). */
+/* One width for every numeric column in these views, shared by the ranked
+   table and by the caller trees nested inside its expanded rows, so the two
+   grids line up instead of merely looking similar. Both tables span the same
+   box, so one percentage lands on the same pixels in both.
+ *
+ * A percentage, not a length, and that distinction is the whole rule here:
+ * under table-layout:auto a percentage column gets exactly its share, while a
+ * column sized in em/px/rem is treated as a floor and grows with the leftover.
+ * Measured both ways - at 9.5rem (123px) these columns came out 192px, and the
+ * nested tree's 9em/6em columns came out 239px/159px because an em inside
+ * .callerTreeInner resolves against ~26.5px rather than the header's 14px.
+ * That mismatch is what made expanding a row look like it shifted the
+ * right-hand columns.
+ *
+ * 8.5% clears the widest numeric header's min-content width (Contention's
+ * "Total Wait (ms)", 115px: 93px of text plus padding and the sort indicator)
+ * at any normal window size. Headers are left free to WRAP rather than pinned
+ * with white-space:nowrap, so that if the window does get narrow enough for
+ * 8.5% to fall under that min-content, the header wraps instead of forcing
+ * its column wider and dragging that one column out of alignment. */
+.cpuHotMethodsTable
+{
+    --rankedNumericColumnWidth: 8.5%;
+}
+
 .cpuHotMethodsTable > table > tbody > tr > th[data-sort="number"]
 {
-    width: 7%;
-    white-space: nowrap;
+    width: var(--rankedNumericColumnWidth);
+}
+
+/* The nested caller trees' numeric columns - same width as the ranked table's
+   above, which is what makes the trailing columns of an expanded row line up
+   with the header they sit under. Scoped to .cpuHotMethodsTable rather than
+   changing .bytesColumn/.percentColumn globally: those classes are also worn
+   by the Heap Contents and Allocation drill-down tables, which have their own
+   column shape and are not part of this alignment. */
+.cpuHotMethodsTable .callerTreeInner .bytesColumn,
+.cpuHotMethodsTable .callerTreeInner .percentColumn
+{
+    width: var(--rankedNumericColumnWidth);
 }
 
 /* The hide-button column, pinned as a percentage rather than left on its own
