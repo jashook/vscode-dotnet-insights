@@ -2285,6 +2285,31 @@ td.rowHideColumn:hover
     margin-bottom: 4px;
 }
 
+/* Beats .callPathsDetail.expanded by ordering, not by !important: both are
+   two-class selectors of equal specificity, and this one comes later in the
+   file. That is deliberate - an expanded stack whose summary row got filtered
+   out by the timeline zoom must not keep rendering on its own, but it also
+   must not LOSE its .expanded state, so it comes back expanded when the zoom
+   is cleared. */
+.callPathsDetail.threadingFilteredOut
+{
+    display: none;
+}
+
+/* Only visible while the timeline is zoomed - see ZOOM_AGGREGATE_NOTE_HTML in
+   ThreadingRenderer.ts for why these tables cannot follow the zoom. Amber
+   rather than the .threadingNote blue: this one is a caveat about what is on
+   screen right now, not standing explanatory text. */
+.threadingZoomAggregateNote
+{
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    border-left: 3px solid rgba(224, 168, 82, 0.9);
+    background-color: rgba(224, 168, 82, 0.12);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
 /* Mirrors .cpuHotMethodsTable (the shared ranked-table styling that
    Exceptions and Contention both use), shifted one column left: those tables
    carry a rowHideColumn in column 1 so their name column is :nth-child(2),

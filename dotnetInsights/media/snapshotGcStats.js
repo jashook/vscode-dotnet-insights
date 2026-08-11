@@ -4688,15 +4688,59 @@ var allocationDatasets = {};
         }
     }
 
+    // Expand All / Collapse All for one threading table. The .expanded class
+    // lives on BOTH halves of each pair (the summary row and its detail row),
+    // so both are set - matching the delegated per-row toggle in
+    // wireThreadingTab, which does the same.
+    function setAllThreadingStacksExpanded(tableId, isExpanded) {
+        var table = document.getElementById(tableId);
+        if (!table) {
+            return;
+        }
+
+        var rows = table.querySelectorAll('[data-threading-expandable="true"]');
+        for (var rowIndex = 0; rowIndex < rows.length; ++rowIndex) {
+            var row = rows[rowIndex];
+            var detailRow = document.getElementById(row.getAttribute('data-threading-target'));
+
+            if (isExpanded) {
+                row.classList.add('expanded');
+                if (detailRow) {
+                    detailRow.classList.add('expanded');
+                }
+            } else {
+                row.classList.remove('expanded');
+                if (detailRow) {
+                    detailRow.classList.remove('expanded');
+                }
+            }
+        }
+    }
+
     // Worker-thread count over time. Deliberately a line chart with three
     // series (min/avg/max per bucket) rather than one: the pool's average
     // hides exactly the excursions worth seeing - a bucket whose max spikes
     // while its average barely moves is a brief injection burst, which is
     // what a stall looks like from the outside.
-    function renderThreadingTimeline() {
+    //
+    // Drag-to-zoom follows the same contract as the CPU/contention/exception
+    // timelines: the chart is destroyed and rebuilt against a bucket slice
+    // rather than mutating axis bounds, and the previous zoom handle is
+    // detached first (a leaked handle keeps listening on a dead canvas).
+    var threadingTimelineZoomRange = null;
+    var threadingTimelineChartHandle = null;
+
+    function renderThreadingTimeline(zoomRange) {
         var canvas = document.getElementById('threadingTimeline');
         if (!canvas || !threadingSummaryJson) {
             return;
+        }
+
+        if (threadingTimelineChartHandle) {
+            threadingTimelineChartHandle.zoomHandle.detach();
+            threadingTimelineChartHandle.crosshairHandle.detach();
+            threadingTimelineChartHandle.chart.destroy();
+            threadingTimelineChartHandle = null;
         }
 
         var timeline = threadingSummaryJson["timeline"];
@@ -4704,20 +4748,49 @@ var allocationDatasets = {};
             return;
         }
 
+        var bucketCount = timeline["bucketCount"];
+        var bucketDurationMSec = timeline["bucketDurationMSec"];
+        var minRelativeMSec = timeline["minRelativeMSec"];
+
         var labels = [];
-        for (var bucketIndex = 0; bucketIndex < timeline["bucketCount"]; ++bucketIndex) {
-            var bucketStartMSec = timeline["minRelativeMSec"] + (bucketIndex * timeline["bucketDurationMSec"]);
+        var bucketStartMSecs = [];
+        for (var bucketIndex = 0; bucketIndex < bucketCount; ++bucketIndex) {
+            var bucketStartMSec = minRelativeMSec + bucketIndex * bucketDurationMSec;
             labels.push(formatElapsedMs(bucketStartMSec));
+            bucketStartMSecs.push(bucketStartMSec);
         }
 
-        new Chart(canvas.getContext('2d'), {
+        var zoomStartBucket = 0;
+        var zoomEndBucket = bucketCount - 1;
+        if (zoomRange !== null) {
+            zoomStartBucket = Math.max(0, Math.floor((zoomRange.startMSec - minRelativeMSec) / bucketDurationMSec));
+            zoomEndBucket = Math.min(bucketCount - 1, Math.ceil((zoomRange.endMSec - minRelativeMSec) / bucketDurationMSec));
+        }
+
+        var visibleLabels = labels.slice(zoomStartBucket, zoomEndBucket + 1);
+        var visibleBucketStartMSecs = bucketStartMSecs.slice(zoomStartBucket, zoomEndBucket + 1);
+        var visibleMax = timeline["maxActiveByBucket"].slice(zoomStartBucket, zoomEndBucket + 1);
+        var visibleAverage = timeline["averageActiveByBucket"].slice(zoomStartBucket, zoomEndBucket + 1);
+        var visibleMin = timeline["minActiveByBucket"].slice(zoomStartBucket, zoomEndBucket + 1);
+
+        var dragStateHolder = { current: null };
+        var crosshairStateHolder = { current: null };
+
+        // Category scale (labels are pre-formatted strings), so the category
+        // variant - the linear one would misread the axis. Shared by the drag
+        // and the crosshair so both read the hovered time the same way.
+        function pixelToMSecOnThreadingTimeline(chartArg, pixelX) {
+            return pixelToMSecCategory(chartArg, pixelX, visibleBucketStartMSecs);
+        }
+
+        var chart = new Chart(canvas, {
             type: 'line',
             data: {
-                labels: labels,
+                labels: visibleLabels,
                 datasets: [
                     {
                         label: 'Max workers',
-                        data: timeline["maxActiveByBucket"],
+                        data: visibleMax,
                         borderColor: 'rgba(224, 82, 82, 0.9)',
                         backgroundColor: 'rgba(224, 82, 82, 0.10)',
                         borderWidth: 1,
@@ -4726,7 +4799,7 @@ var allocationDatasets = {};
                     },
                     {
                         label: 'Average workers',
-                        data: timeline["averageActiveByBucket"],
+                        data: visibleAverage,
                         borderColor: 'rgba(78, 121, 167, 0.95)',
                         backgroundColor: 'rgba(78, 121, 167, 0.15)',
                         borderWidth: 2,
@@ -4735,7 +4808,7 @@ var allocationDatasets = {};
                     },
                     {
                         label: 'Min workers',
-                        data: timeline["minActiveByBucket"],
+                        data: visibleMin,
                         borderColor: 'rgba(53, 163, 83, 0.9)',
                         backgroundColor: 'rgba(53, 163, 83, 0.10)',
                         borderWidth: 1,
@@ -4744,13 +4817,16 @@ var allocationDatasets = {};
                     }
                 ]
             },
+            // Chart.js 2.x wants the plugins array as a TOP-LEVEL config key,
+            // not under options - see CLAUDE.md; this has been a real bug here
+            // before.
+            plugins: [createCrosshairPlugin(crosshairStateHolder), createZoomSelectionPlugin(dragStateHolder)],
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
                 animation: { duration: 0 },
                 scales: {
-                    // Chart.js 2.x shape (yAxes array, not a `y` object) - see
-                    // CLAUDE.md; this codebase is pinned to 2.x.
+                    // Chart.js 2.x shape (yAxes array, not a `y` object).
                     yAxes: [{
                         ticks: { beginAtZero: false },
                         scaleLabel: { display: true, labelString: 'Worker threads' }
@@ -4765,10 +4841,114 @@ var allocationDatasets = {};
                 }
             }
         });
+
+        var zoomHandle = attachDragToZoom(chart, canvas, dragStateHolder, pixelToMSecOnThreadingTimeline, function (startMSec, endMSec) {
+            setThreadingTimelineZoom({ startMSec: startMSec, endMSec: endMSec });
+        });
+
+        var crosshairHandle = attachCrosshair(chart, canvas, crosshairStateHolder, pixelToMSecOnThreadingTimeline, formatElapsedMs);
+
+        threadingTimelineChartHandle = { chart: chart, zoomHandle: zoomHandle, crosshairHandle: crosshairHandle };
+    }
+
+    // The single place the threading zoom changes - drag, Reset button and the
+    // Backspace/swipe back gesture all route through here so the chart, the
+    // status strip and the tables below can never disagree about what window
+    // is being shown. Pass null to clear the zoom.
+    function setThreadingTimelineZoom(zoomRange) {
+        threadingTimelineZoomRange = zoomRange;
+        updateThreadingTimelineZoomStatusUi(zoomRange);
+        renderThreadingTimeline(zoomRange);
+        applyThreadingZoomFilter(zoomRange);
+    }
+
+    // Zooming the timeline narrows the tables below it to the same window.
+    // Only the thread/lock creation tables can follow: their rows carry a
+    // data-threading-msec stamp. The stall-correlation and adjustment-reason
+    // tables are aggregated whole-capture in the parser, so they get a visible
+    // "does not follow the zoom" note instead of being silently left stale.
+    function applyThreadingZoomFilter(zoomRange) {
+        var rows = document.querySelectorAll('#view-threading [data-threading-msec]');
+        for (var rowIndex = 0; rowIndex < rows.length; ++rowIndex) {
+            var row = rows[rowIndex];
+            var relativeMSec = parseFloat(row.getAttribute('data-threading-msec'));
+            var isVisible = zoomRange === null ||
+                (relativeMSec >= zoomRange.startMSec && relativeMSec <= zoomRange.endMSec);
+
+            // The detail row keeps its own .expanded state so collapsing is not
+            // a side effect of filtering - it just stays hidden while filtered
+            // out, and comes back expanded if it was expanded before.
+            if (row.classList.contains('callPathsDetail')) {
+                row.classList.toggle('threadingFilteredOut', !isVisible);
+                continue;
+            }
+
+            row.style.display = isVisible ? '' : 'none';
+        }
+
+        updateThreadingSectionCounts();
+
+        var aggregateNotes = document.getElementsByClassName('threadingZoomAggregateNote');
+        for (var noteIndex = 0; noteIndex < aggregateNotes.length; ++noteIndex) {
+            aggregateNotes[noteIndex].style.display = zoomRange === null ? 'none' : '';
+        }
+    }
+
+    function updateThreadingSectionCounts() {
+        var counts = document.getElementsByClassName('threadingSectionCount');
+        for (var countIndex = 0; countIndex < counts.length; ++countIndex) {
+            var countElement = counts[countIndex];
+            var total = parseInt(countElement.getAttribute('data-threading-total'), 10);
+
+            // The count element is named "<idPrefix>Count" for the table
+            // "<idPrefix>Table" - same prefix the expand-all buttons key off.
+            var tableId = countElement.id.replace(/Count$/, 'Table');
+            var table = document.getElementById(tableId);
+            if (!table) {
+                continue;
+            }
+
+            var visibleCount = 0;
+            var rows = table.querySelectorAll('[data-threading-expandable="true"]');
+            for (var rowIndex = 0; rowIndex < rows.length; ++rowIndex) {
+                if (rows[rowIndex].style.display !== 'none') {
+                    ++visibleCount;
+                }
+            }
+
+            countElement.textContent = visibleCount === total
+                ? total.toLocaleString()
+                : visibleCount.toLocaleString() + ' of ' + total.toLocaleString();
+        }
+    }
+
+    function updateThreadingTimelineZoomStatusUi(zoomRange) {
+        var statusEl = document.getElementById('threadingTimelineZoomStatus');
+        var labelEl = document.getElementById('threadingTimelineZoomLabel');
+        if (!statusEl) {
+            return;
+        }
+
+        if (!zoomRange) {
+            statusEl.style.display = 'none';
+            return;
+        }
+
+        statusEl.style.display = '';
+        if (labelEl) {
+            labelEl.textContent = formatElapsedMs(zoomRange.startMSec) + " – " + formatElapsedMs(zoomRange.endMSec) + " (Backspace to reset)";
+        }
     }
 
     function wireThreadingTab() {
-        renderThreadingTimeline();
+        renderThreadingTimeline(null);
+
+        var threadingResetZoomBtn = document.getElementById('threadingTimelineResetZoomBtn');
+        if (threadingResetZoomBtn) {
+            threadingResetZoomBtn.addEventListener('click', function () {
+                setThreadingTimelineZoom(null);
+            });
+        }
 
         var threadingPanel = document.getElementById('view-threading');
         if (!threadingPanel) {
@@ -4778,6 +4958,17 @@ var allocationDatasets = {};
         // Thread/lock creation rows expand to their captured stack. Delegated
         // so the two tables share one handler.
         threadingPanel.addEventListener('click', function (event) {
+            // Expand All/Collapse All is checked first, before the row
+            // toggle below - the buttons sit outside the table, but a
+            // delegated listener on the panel sees both.
+            var expandButton = event.target.closest('[data-threading-expand-target]');
+            if (expandButton) {
+                setAllThreadingStacksExpanded(
+                    expandButton.getAttribute('data-threading-expand-target'),
+                    expandButton.getAttribute('data-threading-expand') === 'true');
+                return;
+            }
+
             var row = event.target.closest('[data-threading-expandable="true"]');
             if (!row) {
                 return;
@@ -4960,6 +5151,14 @@ var allocationDatasets = {};
             renderCpuTimeline(null);
             filterCpuMethodsTableToZoomRange(null);
             updateCpuTimelineZoomStatusUi(null);
+            return true;
+        }
+
+        // Threading view's worker-thread timeline - same single-level zoom
+        // as the CPU/contention/exception timelines, so "back" clears it.
+        var threadingPanelForZoom = document.getElementById('view-threading');
+        if (threadingPanelForZoom && threadingPanelForZoom.classList.contains('active') && threadingTimelineZoomRange) {
+            setThreadingTimelineZoom(null);
             return true;
         }
 
