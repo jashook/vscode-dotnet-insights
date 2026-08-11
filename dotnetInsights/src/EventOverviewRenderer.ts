@@ -15,9 +15,32 @@
 // allocationSummary/exceptionSummary, eventOverview is always meaningful
 // whenever it's present - every real capture has *some* events - so there's
 // no "topTypes.length === 0" placeholder branch here the way those two have.
-export function renderEventOverviewTable(eventOverview: any): string {
+//
+// timeBreakdown (gcData["timeBreakdown"], see Overview/TimeBreakdownBuilder.cs)
+// is a SEPARATE top-level JSON field, not nested under eventOverview - passed
+// through as its own optional parameter so a missing/absent value (older
+// cached nettraceParser binary predating this feature - see the stale-cache
+// trap in CLAUDE.md) degrades to simply omitting the tile rather than
+// throwing. GC%/Contending Locks% render whenever hasCaptureDuration is true;
+// Idle%/CPU-Bound% render only when hasCpuSampleBreakdown is ALSO true (both
+// gates independent per TimeBreakdownBuilder's own contract) - all four are
+// shown together as one tile only once every value in it is real, since a
+// partial "2 of 4 metrics" tile would be confusing, not a graceful
+// degradation.
+export function renderEventOverviewTable(eventOverview: any, timeBreakdown?: any): string {
     const totalEventCount = eventOverview["totalEventCount"];
     const eventTypes = eventOverview["eventTypes"] || [];
+
+    const hasTimeBreakdown = !!(timeBreakdown && timeBreakdown["hasCaptureDuration"] && timeBreakdown["hasCpuSampleBreakdown"]);
+
+    const timeBreakdownTileHtml = hasTimeBreakdown ? `
+            <div class="total timeBreakdownTile">
+                <div>Time Breakdown</div>
+                <div>Contending Locks<span>${timeBreakdown["contentionPercent"].toFixed(1)}%</span></div>
+                <div>GC<span>${timeBreakdown["gcPercent"].toFixed(1)}%</span></div>
+                <div>Idle (est.)<span>${timeBreakdown["idlePercent"].toFixed(1)}%</span></div>
+                <div>CPU Bound (est.)<span>${timeBreakdown["cpuBoundPercent"].toFixed(1)}%</span></div>
+            </div>` : "";
 
     const summaryTilesHtml = `
         <div class="summaryGcDiv">
@@ -25,7 +48,7 @@ export function renderEventOverviewTable(eventOverview: any): string {
                 <div>Events</div>
                 <div>Total<span>${totalEventCount.toLocaleString()}</span></div>
                 <div>Distinct Types<span>${eventTypes.length}</span></div>
-            </div>
+            </div>${timeBreakdownTileHtml}
         </div>`;
 
     var rows = "";

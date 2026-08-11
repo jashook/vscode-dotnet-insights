@@ -54,6 +54,73 @@ public static class ContentionJsonExporter
 
     private const int MaxTimelineBuckets = 100;
 
+    // Lock Timeline view: EVERY contended lock is exported, sorted by total
+    // wait time descending, and the UI chooses how many tracks to actually
+    // draw (its own Top-N control, which includes "All"). Exporting the full
+    // set costs far less than it looks: a segment is one contended wait, and
+    // every wait belongs to exactly one lock, so the total segment count
+    // across all locks is bounded by the capture's own contention count
+    // (10,533 on the reference capture) rather than by the lock count. A
+    // "top 40 only" cut would have saved nothing on segments while making
+    // the long tail permanently unreachable - and the tail is exactly where
+    // a rare-but-seconds-long lock hides.
+    //
+    // Hard cap on emitted ownership segments as a safety valve for a
+    // pathological capture. Segments are taken longest-wait-first within
+    // each lock, and the budget is spent in rank order, so truncation drops
+    // the least interesting intervals of the least contended locks first.
+    private const int MaxOwnershipSegments = 60000;
+
+    // Global node budget for the per-lock caller trees, also spent in rank
+    // order. Bounded in practice by the number of DISTINCT contention stacks
+    // (3,852 on the reference capture), which folding collapses heavily -
+    // this cap only matters if a capture has an unusually wide spread of
+    // distinct stacks across many locks.
+    private const int MaxLockDrillDownNodes = 40000;
+    private const int LockDrillDownNodeBudgetPerLock = 300;
+
+    // How many individual worst-case waits to surface. Small on purpose -
+    // this is a "jump straight to the stalls" list, not a data dump.
+    private const int LongestWaitsLimit = 25;
+
+    // Frames to skip when naming a lock after the code that contends it.
+    // Every contention stack bottoms out in the same generic runtime
+    // lock-acquisition frame (Monitor.Enter_Slowpath on every single lock in
+    // the reference capture), so the LEAF is useless as an identity - naming
+    // locks by it would label all 1447 of them identically. The first frame
+    // BELOW those primitives is the one that actually distinguishes a lock
+    // ("SslStream.DecryptData" vs "MemoryCache.TryGetValue"), which is what
+    // makes a hex pointer legible without clicking into it.
+    private static readonly string[] LockAcquisitionFramePrefixes = new string[]
+    {
+        "System.Threading.Monitor.",
+        "System.Threading.Lock.",
+        "System.Threading.LockHolder.",
+        "System.Threading.SpinLock.",
+        "System.Threading.ObjectHeader."
+    };
+
+    // Frames that identify a stack as running on a managed thread-pool
+    // worker. Used to tell "this lock blocks pool threads" (which starves
+    // every queued work item behind it) from "two dedicated background
+    // threads contend with each other" (which costs those two threads and
+    // nobody else) - the raw contention count cannot distinguish them.
+    //
+    // Matched anywhere in the stack, not just at the root: a pool worker's
+    // stack always passes through the dispatch loop on its way to user
+    // code, and the frames above it vary per work item. Deliberately
+    // conservative - an unrecognized pool entry point undercounts (a real
+    // pool wait looks like a non-pool one) rather than misreporting a
+    // dedicated thread as a pool thread.
+    private static readonly string[] WorkerThreadFrameMarkers = new string[]
+    {
+        "System.Threading.PortableThreadPool",
+        "System.Threading.ThreadPoolWorkQueue",
+        "System.Threading.ThreadPool.",
+        "System.Threading._ThreadPoolWaitCallback",
+        "System.Threading.TimerQueue"
+    };
+
     private sealed class SiteStats
     {
         public int LeafFrameId;
@@ -62,12 +129,72 @@ public static class ContentionJsonExporter
         public double TotalWaitMSec;
     }
 
+    // One contended-wait window on a lock. A readonly struct held in a
+    // List<T> (rather than indices back into the caller's Span) because a
+    // Span is a ref struct and so can't be captured by the sort comparison
+    // below - copying these four values per event is the cheaper tradeoff
+    // against re-deriving them.
+    private readonly struct OwnershipSegment
+    {
+        public readonly double StartMSec;
+        public readonly double EndMSec;
+        public readonly double DurationMSec;
+        public readonly long OwnerThreadId;
+        public readonly long WaiterThreadId;
+
+        public OwnershipSegment(double startMSec, double endMSec, double durationMSec, long ownerThreadId, long waiterThreadId)
+        {
+            this.StartMSec = startMSec;
+            this.EndMSec = endMSec;
+            this.DurationMSec = durationMSec;
+            this.OwnerThreadId = ownerThreadId;
+            this.WaiterThreadId = waiterThreadId;
+        }
+    }
+
+    private sealed class LockStats
+    {
+        public long LockId;
+        public int ContentionCount;
+        public double TotalWaitMSec;
+        // The single worst wait on this lock - a lock can be unremarkable in
+        // aggregate and still hold the one stall worth investigating.
+        public double MaxWaitMSec;
+        // Distinct participants, tracked separately because they answer
+        // different questions and routinely disagree: a lock contended
+        // thousands of times by TWO threads is a ping-pong between them,
+        // while the same count spread across a hundred threads is a
+        // serialization bottleneck for the whole pool. Owners are tracked
+        // apart from waiters for the same reason - many waiters behind a
+        // single persistent owner is a different shape of problem than
+        // everyone fighting everyone.
+        public HashSet<long> WaiterThreadIds = new HashSet<long>();
+        public HashSet<long> OwnerThreadIds = new HashSet<long>();
+        // Waiters whose own stack shows them to be managed thread-pool
+        // workers (see IsWorkerThreadStack). This is the number that separates
+        // "two background threads ping-ponging, which nobody cares about"
+        // from "this lock is starving the pool" - the same contention count
+        // means very different things in those two cases.
+        public HashSet<long> WorkerWaiterThreadIds = new HashSet<long>();
+        public int WorkerContentionCount;
+        public List<OwnershipSegment> Segments = new List<OwnershipSegment>();
+        // Distinct stacks contended on this lock, keyed by stack array
+        // reference (same ReferenceEqualityComparer discipline the site
+        // aggregation uses - see this file's own stacksByRankedSite).
+        public Dictionary<long[], ContentionStackAggregate> StacksByReference = new Dictionary<long[], ContentionStackAggregate>(ReferenceEqualityComparer.Instance);
+    }
+
     private sealed class ContentionStackAggregate
     {
         public long[] Stack;
         public int ContentionCount;
         public double TotalWaitMSec;
         public double FirstSeenRelativeMSec;
+        // Where this stack's attributed site frame sits (see
+        // ResolveSiteFrame). The caller tree folds from here rather than
+        // from index 0, so it starts at the site the row names instead of
+        // replaying the lock-primitive prefix every stack shares.
+        public int SiteFrameIndex;
     }
 
     private sealed class ContentionTreeNode
@@ -100,6 +227,8 @@ public static class ContentionJsonExporter
             writer.WriteEndArray();
             writer.WritePropertyName("timeline");
             writer.WriteNullValue();
+            writer.WritePropertyName("lockTimeline");
+            writer.WriteNullValue();
             writer.WritePropertyName("methodNames");
             writer.WriteStartArray();
             writer.WriteEndArray();
@@ -109,8 +238,8 @@ public static class ContentionJsonExporter
 
         Span<ContentionEvent> eventsSpan = CollectionsMarshal.AsSpan(contentionEvents);
 
-        // Pass 1: compute per-leaf-frame stats and track the overall time range
-        // for timeline bucketing.
+        // Pass 1: compute per-site stats and track the overall time range for
+        // timeline bucketing.
         Dictionary<int, SiteStats> statsByLeafFrameId = new Dictionary<int, SiteStats>();
         double totalWaitMSec = 0;
         double minRelativeMSec = double.MaxValue;
@@ -122,17 +251,9 @@ public static class ContentionJsonExporter
 
             int leafFrameId;
             string leafFrameName;
+            int siteFrameIndex;
 
-            if (contentionEvent.Stack.Length == 0)
-            {
-                leafFrameId = NoStackFrameId;
-                leafFrameName = NoStackLeafName;
-            }
-            else
-            {
-                leafFrameId = symbolTable.ResolveId(contentionEvent.Stack[0], contentionEvent.RelativeMSec);
-                leafFrameName = symbolTable.NameForId(leafFrameId);
-            }
+            ResolveSiteFrame(contentionEvent.Stack, contentionEvent.RelativeMSec, symbolTable, out leafFrameId, out leafFrameName, out siteFrameIndex);
 
             SiteStats stats;
 
@@ -216,15 +337,10 @@ public static class ContentionJsonExporter
             ref readonly ContentionEvent contentionEvent = ref eventsSpan[eventIndex];
 
             int leafFrameId;
+            string unusedFrameName;
+            int siteFrameIndex;
 
-            if (contentionEvent.Stack.Length == 0)
-            {
-                leafFrameId = NoStackFrameId;
-            }
-            else
-            {
-                leafFrameId = symbolTable.ResolveId(contentionEvent.Stack[0], contentionEvent.RelativeMSec);
-            }
+            ResolveSiteFrame(contentionEvent.Stack, contentionEvent.RelativeMSec, symbolTable, out leafFrameId, out unusedFrameName, out siteFrameIndex);
 
             int siteIndex;
 
@@ -245,6 +361,7 @@ public static class ContentionJsonExporter
                     aggregate = new ContentionStackAggregate();
                     aggregate.Stack = contentionEvent.Stack;
                     aggregate.FirstSeenRelativeMSec = contentionEvent.RelativeMSec;
+                    aggregate.SiteFrameIndex = siteFrameIndex;
                     siteStacks[contentionEvent.Stack] = aggregate;
                 }
 
@@ -345,6 +462,8 @@ public static class ContentionJsonExporter
             writer.WriteEndObject();
         }
 
+        WriteLockTimeline(writer, eventsSpan, minRelativeMSec, maxRelativeMSec, symbolTable, frameIdCache, methodNames, methodNameIndexByName);
+
         writer.WritePropertyName("methodNames");
         writer.WriteStartArray();
 
@@ -356,6 +475,517 @@ public static class ContentionJsonExporter
         writer.WriteEndArray();
 
         writer.WriteEndObject();
+    }
+
+    // Writes the "lockTimeline" block backing the Contention view's Lock
+    // Timeline tab: one track per ranked lock, each holding the ownership
+    // segments observed for it.
+    //
+    // What a segment actually means, and why it isn't a full ownership
+    // timeline: the CLR only emits contention events when a lock is
+    // CONTENDED, so a lock held with no one waiting produces no events at
+    // all. Each segment here is therefore one contended wait - [start, end]
+    // is the window during which `waiterThreadId` was BLOCKED, and
+    // `ownerThreadId` is whoever held the lock at the moment that wait
+    // began. Rendering it as an ownership bar for ownerThreadId is the
+    // correct reading (that thread demonstrably held the lock across that
+    // window, which is why the waiter was stuck), but the gaps between
+    // segments are NOT proof the lock was free - only that nobody was
+    // blocked on it. The view labels this rather than implying completeness.
+    //
+    // ownerThreadId is 0 whenever the runtime couldn't attribute an owner
+    // (~12% of waits on a real capture) and is emitted as 0 for the renderer
+    // to show as "unknown" - deliberately not dropped, since a wait with an
+    // unknown owner is still a real wait on that lock.
+    private static void WriteLockTimeline(Utf8JsonWriter writer, Span<ContentionEvent> eventsSpan, double minRelativeMSec, double maxRelativeMSec, MethodSymbolTable symbolTable, Dictionary<long[], int[]> frameIdCache, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    {
+        Dictionary<long, LockStats> statsByLockId = new Dictionary<long, LockStats>();
+        Dictionary<long[], bool> workerStackCache = new Dictionary<long[], bool>(ReferenceEqualityComparer.Instance);
+
+        for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
+        {
+            ref readonly ContentionEvent contentionEvent = ref eventsSpan[eventIndex];
+
+            // A V1 ContentionStart payload carries no lock identity at all
+            // (see ClrContentionStart.Decode) - such an event can't be
+            // placed on any lock's track, so it's skipped here rather than
+            // being folded into a bogus shared "lock 0" row.
+            if (contentionEvent.LockId == 0)
+            {
+                continue;
+            }
+
+            LockStats stats;
+
+            if (!statsByLockId.TryGetValue(contentionEvent.LockId, out stats))
+            {
+                stats = new LockStats();
+                stats.LockId = contentionEvent.LockId;
+                statsByLockId[contentionEvent.LockId] = stats;
+            }
+
+            ++stats.ContentionCount;
+            stats.TotalWaitMSec += contentionEvent.DurationMSec;
+            stats.WaiterThreadIds.Add(contentionEvent.ThreadId);
+
+            if (contentionEvent.DurationMSec > stats.MaxWaitMSec)
+            {
+                stats.MaxWaitMSec = contentionEvent.DurationMSec;
+            }
+
+            // Owner 0 means the runtime couldn't attribute one - counting it
+            // would report a phantom extra owner on every lock that has any
+            // unattributed wait (~12% of waits on a real capture).
+            if (contentionEvent.OwnerThreadId != 0)
+            {
+                stats.OwnerThreadIds.Add(contentionEvent.OwnerThreadId);
+            }
+
+            if (IsWorkerThreadStack(contentionEvent.Stack, contentionEvent.RelativeMSec, symbolTable, workerStackCache))
+            {
+                stats.WorkerWaiterThreadIds.Add(contentionEvent.ThreadId);
+                ++stats.WorkerContentionCount;
+            }
+
+            stats.Segments.Add(new OwnershipSegment(contentionEvent.RelativeMSec, contentionEvent.RelativeMSec + contentionEvent.DurationMSec, contentionEvent.DurationMSec, contentionEvent.OwnerThreadId, contentionEvent.ThreadId));
+
+            // Fold this wait's own stack into the lock's distinct-stack set,
+            // so the UI can answer "where in the code is this lock actually
+            // contended" for whichever lock the user clicks.
+            if (contentionEvent.Stack.Length > 0)
+            {
+                ContentionStackAggregate aggregate;
+
+                if (!stats.StacksByReference.TryGetValue(contentionEvent.Stack, out aggregate))
+                {
+                    int siteFrameId;
+                    string siteFrameName;
+                    int siteFrameIndex;
+                    ResolveSiteFrame(contentionEvent.Stack, contentionEvent.RelativeMSec, symbolTable, out siteFrameId, out siteFrameName, out siteFrameIndex);
+
+                    aggregate = new ContentionStackAggregate();
+                    aggregate.Stack = contentionEvent.Stack;
+                    aggregate.FirstSeenRelativeMSec = contentionEvent.RelativeMSec;
+                    // Same skip as the sites table, so a lock's tree starts
+                    // at the method the lock is named after rather than at
+                    // the shared primitive prefix.
+                    aggregate.SiteFrameIndex = siteFrameIndex;
+                    stats.StacksByReference[contentionEvent.Stack] = aggregate;
+                }
+
+                ++aggregate.ContentionCount;
+                aggregate.TotalWaitMSec += contentionEvent.DurationMSec;
+            }
+        }
+
+        writer.WritePropertyName("lockTimeline");
+
+        if (statsByLockId.Count == 0)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+
+        // A contention capture's wait durations are extremely long-tailed,
+        // which is exactly what makes the outliers invisible on a timeline:
+        // measured on the reference capture the median wait is 0.015ms
+        // against a 5.66ms maximum (374x), so across a 5-minute x-axis EVERY
+        // bar - typical or pathological - is sub-pixel and gets drawn at the
+        // same minimum width. Yet the top 1% of waits account for 34% of all
+        // time spent blocked. Exporting the p99 threshold lets the renderer
+        // mark exactly that tail, and lets the UI state the real cutoff
+        // instead of an arbitrary "long wait" number.
+        List<double> allWaitDurations = new List<double>();
+
+        foreach (KeyValuePair<long, LockStats> durationEntry in statsByLockId)
+        {
+            List<OwnershipSegment> lockSegments = durationEntry.Value.Segments;
+            for (int segmentIndex = 0; segmentIndex < lockSegments.Count; ++segmentIndex)
+            {
+                allWaitDurations.Add(lockSegments[segmentIndex].DurationMSec);
+            }
+        }
+
+        allWaitDurations.Sort();
+
+        double outlierThresholdMSec = 0;
+
+        if (allWaitDurations.Count > 0)
+        {
+            int thresholdIndex = (int)(allWaitDurations.Count * 0.99);
+
+            if (thresholdIndex >= allWaitDurations.Count)
+            {
+                thresholdIndex = allWaitDurations.Count - 1;
+            }
+
+            outlierThresholdMSec = allWaitDurations[thresholdIndex];
+        }
+
+        List<LockStats> sortedLocks = new List<LockStats>(statsByLockId.Values);
+        sortedLocks.Sort((LockStats left, LockStats right) => right.TotalWaitMSec.CompareTo(left.TotalWaitMSec));
+
+        // Every lock is emitted - see MaxOwnershipSegments' own comment for
+        // why that's affordable.
+        int rankedLockCount = sortedLocks.Count;
+
+        // Budgets are shared across every lock, spent in rank order, so the
+        // busiest locks keep full detail rather than every lock losing the
+        // same fraction.
+        int remainingSegmentBudget = MaxOwnershipSegments;
+        int remainingDrillDownBudget = MaxLockDrillDownNodes;
+
+        // Union of every thread seen blocked inside thread-pool work,
+        // across all locks - lets the view mark which thread ids in its
+        // filter list are pool workers (and offer "pool threads only")
+        // without re-deriving it per lock in the webview.
+        HashSet<long> allWorkerThreadIds = new HashSet<long>();
+
+        foreach (KeyValuePair<long, LockStats> entry in statsByLockId)
+        {
+            foreach (long workerThreadId in entry.Value.WorkerWaiterThreadIds)
+            {
+                allWorkerThreadIds.Add(workerThreadId);
+            }
+        }
+
+        writer.WriteStartObject();
+        writer.WriteNumber("minRelativeMSec", minRelativeMSec);
+        writer.WriteNumber("maxRelativeMSec", maxRelativeMSec);
+        writer.WriteNumber("totalDistinctLockCount", statsByLockId.Count);
+        writer.WriteNumber("outlierThresholdMSec", outlierThresholdMSec);
+        WriteLongestWaits(writer, statsByLockId);
+        writer.WritePropertyName("workerThreadIds");
+        writer.WriteStartArray();
+
+        foreach (long workerThreadId in allWorkerThreadIds)
+        {
+            writer.WriteNumberValue(workerThreadId);
+        }
+
+        writer.WriteEndArray();
+        writer.WritePropertyName("locks");
+        writer.WriteStartArray();
+
+        for (int lockIndex = 0; lockIndex < rankedLockCount; ++lockIndex)
+        {
+            LockStats stats = sortedLocks[lockIndex];
+
+            writer.WriteStartObject();
+            // Hex string, not a JSON number: a lock id is a 64-bit pointer
+            // value, which loses precision past 2^53 once JSON.parse turns
+            // it into a JS double. It's an opaque identity here (grouping
+            // key and display label), never arithmetic, so a string is both
+            // safe and directly renderable.
+            writer.WriteString("lockId", "0x" + stats.LockId.ToString("X"));
+            writer.WriteNumber("contentionCount", stats.ContentionCount);
+            writer.WriteNumber("totalWaitMSec", stats.TotalWaitMSec);
+            writer.WriteNumber("maxWaitMSec", stats.MaxWaitMSec);
+            writer.WriteNumber("waiterThreadCount", stats.WaiterThreadIds.Count);
+            writer.WriteNumber("ownerThreadCount", stats.OwnerThreadIds.Count);
+            writer.WriteNumber("workerWaiterThreadCount", stats.WorkerWaiterThreadIds.Count);
+            writer.WriteNumber("workerContentionCount", stats.WorkerContentionCount);
+            // Index into the shared methodNames pool, or -1 when this lock
+            // has no stack to name it after. The renderer shows this as the
+            // lock's primary label and keeps lockId as the secondary
+            // identifier - two distinct locks can legitimately share a name
+            // (the same method locking different instances), so the hex
+            // pointer stays the real identity.
+            writer.WriteNumber("nameFrame", ResolveLockNameFrameIndex(stats, symbolTable, frameIdCache, methodNames, methodNameIndexByName));
+
+            List<OwnershipSegment> segments = stats.Segments;
+
+            // Longest waits first, so a lock truncated by the shared budget
+            // keeps its visually significant bars rather than an arbitrary
+            // time-ordered prefix.
+            segments.Sort((OwnershipSegment left, OwnershipSegment right) => right.DurationMSec.CompareTo(left.DurationMSec));
+
+            int segmentCount = segments.Count < remainingSegmentBudget ? segments.Count : remainingSegmentBudget;
+            remainingSegmentBudget -= segmentCount;
+
+            writer.WriteNumber("totalSegmentCount", segments.Count);
+            writer.WritePropertyName("segments");
+            writer.WriteStartArray();
+
+            for (int segmentIndex = 0; segmentIndex < segmentCount; ++segmentIndex)
+            {
+                OwnershipSegment segment = segments[segmentIndex];
+
+                writer.WriteStartObject();
+                writer.WriteNumber("startMSec", segment.StartMSec);
+                writer.WriteNumber("endMSec", segment.EndMSec);
+                writer.WriteNumber("ownerThreadId", segment.OwnerThreadId);
+                writer.WriteNumber("waiterThreadId", segment.WaiterThreadId);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+
+            // Per-lock caller tree - the same node shape siteDrillDown
+            // emits, deliberately, so the webview reuses
+            // buildInlineContentionSiteCallerTree verbatim rather than
+            // needing a second renderer. Written as null once the shared
+            // node budget is spent, which the UI shows as "stack detail
+            // unavailable" instead of an empty (and misleading) tree.
+            writer.WritePropertyName("drillDown");
+
+            if (stats.StacksByReference.Count > 0 && remainingDrillDownBudget > 0)
+            {
+                List<ContentionStackAggregate> stackList = new List<ContentionStackAggregate>(stats.StacksByReference.Values);
+
+                ContentionTreeNode tree = BuildCallerTree(stackList, symbolTable, frameIdCache);
+
+                WriteBudget budget = new WriteBudget();
+                budget.Remaining = LockDrillDownNodeBudgetPerLock < remainingDrillDownBudget ? LockDrillDownNodeBudgetPerLock : remainingDrillDownBudget;
+                int budgetBefore = budget.Remaining;
+
+                writer.WriteStartObject();
+                writer.WriteNumber("contentionCount", stats.ContentionCount);
+                writer.WriteNumber("totalWaitMSec", stats.TotalWaitMSec);
+                writer.WriteNumber("distinctStackCount", stackList.Count);
+                WriteCallerTreeChildren(writer, tree, symbolTable, methodNames, methodNameIndexByName, budget);
+                writer.WriteEndObject();
+
+                remainingDrillDownBudget -= (budgetBefore - budget.Remaining);
+            }
+            else
+            {
+                writer.WriteNullValue();
+            }
+
+            writer.WriteEndObject();
+
+            // Flushing once per lock bounds Utf8JsonWriter's own internal
+            // buffer to roughly one lock's segments - same reasoning as
+            // GcJsonExporter.WriteToFile's own per-GC flush.
+            writer.Flush();
+        }
+
+        writer.WriteEndArray();
+        writer.WriteEndObject();
+    }
+
+    // The single worst individual waits in the capture, across every lock.
+    // A ranked list of LOCKS answers "which lock costs the most in
+    // aggregate"; this answers the different question "when did something
+    // actually stall", which aggregation hides - a lock whose total is
+    // unremarkable can still contain the one 5ms stop-the-world wait that a
+    // latency investigation is looking for. Emitted with absolute times so
+    // the view can jump the viewport straight to each one.
+    private static void WriteLongestWaits(Utf8JsonWriter writer, Dictionary<long, LockStats> statsByLockId)
+    {
+        List<KeyValuePair<long, OwnershipSegment>> allSegments = new List<KeyValuePair<long, OwnershipSegment>>();
+
+        foreach (KeyValuePair<long, LockStats> entry in statsByLockId)
+        {
+            List<OwnershipSegment> lockSegments = entry.Value.Segments;
+            for (int segmentIndex = 0; segmentIndex < lockSegments.Count; ++segmentIndex)
+            {
+                allSegments.Add(new KeyValuePair<long, OwnershipSegment>(entry.Key, lockSegments[segmentIndex]));
+            }
+        }
+
+        allSegments.Sort((KeyValuePair<long, OwnershipSegment> left, KeyValuePair<long, OwnershipSegment> right) => right.Value.DurationMSec.CompareTo(left.Value.DurationMSec));
+
+        int longestCount = allSegments.Count < LongestWaitsLimit ? allSegments.Count : LongestWaitsLimit;
+
+        writer.WritePropertyName("longestWaits");
+        writer.WriteStartArray();
+
+        for (int waitIndex = 0; waitIndex < longestCount; ++waitIndex)
+        {
+            long lockId = allSegments[waitIndex].Key;
+            OwnershipSegment segment = allSegments[waitIndex].Value;
+
+            writer.WriteStartObject();
+            writer.WriteString("lockId", "0x" + lockId.ToString("X"));
+            writer.WriteNumber("startMSec", segment.StartMSec);
+            writer.WriteNumber("endMSec", segment.EndMSec);
+            writer.WriteNumber("durationMSec", segment.DurationMSec);
+            writer.WriteNumber("ownerThreadId", segment.OwnerThreadId);
+            writer.WriteNumber("waiterThreadId", segment.WaiterThreadId);
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
+    }
+
+    // Resolves the frame a contention should be ATTRIBUTED to, and where in
+    // the stack it sits.
+    //
+    // Not the leaf frame, which is what this originally used. Contention
+    // stacks are structurally unlike the allocation/exception stacks the
+    // rest of this codebase folds: those bottom out in the method that did
+    // the interesting thing (the allocation, the throw), whereas every
+    // contention stack bottoms out in the same generic runtime lock
+    // primitive. Attributing by leaf therefore collapsed the entire view
+    // into a handful of rows - on the reference capture, 10,126 of 10,533
+    // contentions (96%) landed on one row named
+    // "System.Threading.Monitor.Enter_Slowpath", which is true and
+    // completely useless: it says a lock was contended, not which one or
+    // where. Ranking by the first frame BELOW the primitives instead yields
+    // 54 real sites (SslStream.DecryptData, Http2Stream.TryEnsureHeaders,
+    // ...) over the same total wait, and matches how the Lock Timeline tab
+    // names its locks so the two views agree.
+    //
+    // siteFrameIndex is where that frame sits in the stack, so the caller
+    // tree can be folded from it rather than replaying the primitive
+    // prefix that every stack shares.
+    private static void ResolveSiteFrame(long[] stack, double relativeMSec, MethodSymbolTable symbolTable, out int siteFrameId, out string siteFrameName, out int siteFrameIndex)
+    {
+        if (stack.Length == 0)
+        {
+            siteFrameId = NoStackFrameId;
+            siteFrameName = NoStackLeafName;
+            siteFrameIndex = 0;
+            return;
+        }
+
+        for (int frameIndex = 0; frameIndex < stack.Length; ++frameIndex)
+        {
+            int frameId = symbolTable.ResolveId(stack[frameIndex], relativeMSec);
+            string frameName = symbolTable.NameForId(frameId);
+
+            if (string.IsNullOrEmpty(frameName) || IsLockAcquisitionFrame(frameName))
+            {
+                continue;
+            }
+
+            siteFrameId = frameId;
+            siteFrameName = frameName;
+            siteFrameIndex = frameIndex;
+            return;
+        }
+
+        // Every frame is a lock primitive - fall back to the leaf so the
+        // wait is still attributed somewhere real rather than dropped.
+        siteFrameId = symbolTable.ResolveId(stack[0], relativeMSec);
+        siteFrameName = symbolTable.NameForId(siteFrameId);
+        siteFrameIndex = 0;
+    }
+
+    // Names a lock after the code that contends it: takes the lock's
+    // heaviest stack (by wait time, matching how locks themselves are
+    // ranked) and walks it leaf-first past the generic runtime
+    // lock-acquisition frames, returning the first frame that actually
+    // identifies the caller. Returns -1 when the lock has no stacks at all,
+    // or when every frame in its dominant stack is a lock primitive - in
+    // both cases the renderer falls back to showing the raw pointer.
+    private static int ResolveLockNameFrameIndex(LockStats stats, MethodSymbolTable symbolTable, Dictionary<long[], int[]> frameIdCache, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    {
+        ContentionStackAggregate dominantStack = null;
+
+        foreach (KeyValuePair<long[], ContentionStackAggregate> entry in stats.StacksByReference)
+        {
+            if (dominantStack == null || entry.Value.TotalWaitMSec > dominantStack.TotalWaitMSec)
+            {
+                dominantStack = entry.Value;
+            }
+        }
+
+        if (dominantStack == null || dominantStack.Stack.Length == 0)
+        {
+            return -1;
+        }
+
+        int[] frameIds;
+
+        if (!frameIdCache.TryGetValue(dominantStack.Stack, out frameIds))
+        {
+            frameIds = new int[dominantStack.Stack.Length];
+
+            for (int frameIndex = 0; frameIndex < dominantStack.Stack.Length; ++frameIndex)
+            {
+                frameIds[frameIndex] = symbolTable.ResolveId(dominantStack.Stack[frameIndex], dominantStack.FirstSeenRelativeMSec);
+            }
+
+            frameIdCache[dominantStack.Stack] = frameIds;
+        }
+
+        for (int frameIndex = 0; frameIndex < frameIds.Length; ++frameIndex)
+        {
+            string frameName = symbolTable.NameForId(frameIds[frameIndex]);
+
+            if (string.IsNullOrEmpty(frameName) || IsLockAcquisitionFrame(frameName))
+            {
+                continue;
+            }
+
+            return InternMethodName(frameName, methodNames, methodNameIndexByName);
+        }
+
+        return -1;
+    }
+
+    // Whether this wait happened on a managed thread-pool worker, decided
+    // from the waiting thread's own stack. Cached by stack array reference
+    // (stacks are interned at parse time - see EventBlock.cs) because a real
+    // capture has ~10k waits over only ~4k distinct stacks, and this walks
+    // every frame of one.
+    private static bool IsWorkerThreadStack(long[] stack, double relativeMSec, MethodSymbolTable symbolTable, Dictionary<long[], bool> workerStackCache)
+    {
+        if (stack.Length == 0)
+        {
+            return false;
+        }
+
+        bool isPoolStack;
+
+        if (workerStackCache.TryGetValue(stack, out isPoolStack))
+        {
+            return isPoolStack;
+        }
+
+        isPoolStack = false;
+
+        for (int frameIndex = 0; frameIndex < stack.Length && !isPoolStack; ++frameIndex)
+        {
+            string frameName = symbolTable.NameForId(symbolTable.ResolveId(stack[frameIndex], relativeMSec));
+
+            if (string.IsNullOrEmpty(frameName))
+            {
+                continue;
+            }
+
+            for (int markerIndex = 0; markerIndex < WorkerThreadFrameMarkers.Length; ++markerIndex)
+            {
+                if (frameName.StartsWith(WorkerThreadFrameMarkers[markerIndex], StringComparison.Ordinal))
+                {
+                    isPoolStack = true;
+                    break;
+                }
+            }
+        }
+
+        workerStackCache[stack] = isPoolStack;
+        return isPoolStack;
+    }
+
+    private static bool IsLockAcquisitionFrame(string frameName)
+    {
+        for (int prefixIndex = 0; prefixIndex < LockAcquisitionFramePrefixes.Length; ++prefixIndex)
+        {
+            if (frameName.StartsWith(LockAcquisitionFramePrefixes[prefixIndex], StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static int InternMethodName(string frameName, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    {
+        int frameNameIndex;
+
+        if (!methodNameIndexByName.TryGetValue(frameName, out frameNameIndex))
+        {
+            frameNameIndex = methodNames.Count;
+            methodNames.Add(frameName);
+            methodNameIndexByName[frameName] = frameNameIndex;
+        }
+
+        return frameNameIndex;
     }
 
     // Builds the folded caller-stack tree for one contention site, accumulating
@@ -393,7 +1023,12 @@ public static class ContentionJsonExporter
                 frameIdCache[rawStack.Stack] = frameIds;
             }
 
-            for (int frameIndex = 0; frameIndex < frameIds.Length; ++frameIndex)
+            // Starts at the stack's own site frame, not index 0 - the frames
+            // below it are the generic lock primitives every contention
+            // stack shares (see ResolveSiteFrame), so replaying them would
+            // put an identical, uninformative "Monitor.Enter_Slowpath" row
+            // at the top of every single tree before any real caller.
+            for (int frameIndex = rawStack.SiteFrameIndex; frameIndex < frameIds.Length; ++frameIndex)
             {
                 current = GetOrAddChild(current, frameIds[frameIndex]);
                 AccumulateTreeNode(current, rawStack);
@@ -449,15 +1084,7 @@ public static class ContentionJsonExporter
                 --budget.Remaining;
 
                 string frameName = frameId == NoStackFrameId ? NoStackLeafName : symbolTable.NameForId(frameId);
-
-                int frameNameIndex;
-
-                if (!methodNameIndexByName.TryGetValue(frameName, out frameNameIndex))
-                {
-                    frameNameIndex = methodNames.Count;
-                    methodNames.Add(frameName);
-                    methodNameIndexByName[frameName] = frameNameIndex;
-                }
+                int frameNameIndex = InternMethodName(frameName, methodNames, methodNameIndexByName);
 
                 writer.WriteStartObject();
                 writer.WriteNumber("frame", frameNameIndex);

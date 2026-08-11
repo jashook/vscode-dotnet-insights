@@ -83,7 +83,143 @@ export function renderContentionView(contentionSummary: any): string {
 
     const sitesTableHtml = renderTopSitesTable(contentionSummary);
 
-    return `${summaryTilesHtml}${timelineHtml}${sitesHideStatusHtml}${sitesTableHtml}`;
+    // Two tabs, mirroring the Profile view's own Flame Graph/Methods bar
+    // (same heapContentsTabBar/heapContentsTabPanel classes, so the existing
+    // tab CSS and switching idiom apply unchanged). The Lock Timeline tab is
+    // omitted entirely - not rendered empty - when the capture carries no
+    // lock identity at all, which is the case for any pre-.NET-9 runtime
+    // emitting V1 ContentionStart payloads (see ClrContentionStart.Decode).
+    const lockTimeline = contentionSummary["lockTimeline"];
+    const hasLockTimeline = !!(lockTimeline && lockTimeline["locks"] && lockTimeline["locks"].length > 0);
+
+    const sitesPanelInner = `${summaryTilesHtml}${timelineHtml}${sitesHideStatusHtml}${sitesTableHtml}`;
+
+    if (!hasLockTimeline) {
+        return sitesPanelInner;
+    }
+
+    const tabBarHtml = `
+        <div class="heapContentsTabBar">
+            <button class="heapContentsTabButton active" data-contentiontab="sites">Sites</button>
+            <button class="heapContentsTabButton" data-contentiontab="locktimeline">Lock Timeline</button>
+        </div>`;
+
+    const sitesPanelHtml = `<div id="contention-tab-sites" class="heapContentsTabPanel active">${sitesPanelInner}</div>`;
+    const lockTimelinePanelHtml = `<div id="contention-tab-locktimeline" class="heapContentsTabPanel">${renderLockTimelinePanel(lockTimeline)}</div>`;
+
+    return `${tabBarHtml}${sitesPanelHtml}${lockTimelinePanelHtml}`;
+}
+
+// Lock Timeline tab: a Gantt-style track per lock (y) against capture time
+// (x), each bar an observed ownership window colored by the owning thread.
+//
+// The canvas itself is drawn entirely by media/lockTimeline.js rather than
+// Chart.js - this codebase is pinned to Chart.js 2.x (see CLAUDE.md), which
+// has no floating/range bar type at all (arbitrary [start,end] bars only
+// arrived in Chart.js 3), and a hand-drawn canvas also handles the ~9k
+// segments a real capture produces far faster than a chart library's own
+// per-element model would.
+//
+// The explanatory note is deliberately part of the UI, not a comment: these
+// bars are inferred from contention events, which the CLR only emits when a
+// lock is actually contended, so a gap means "nobody was blocked here", NOT
+// "the lock was free". Without saying so the view reads as a complete
+// ownership history, which it cannot be.
+function renderLockTimelinePanel(lockTimeline: any): string {
+    const totalDistinctLockCount = lockTimeline["totalDistinctLockCount"];
+
+    // The lock list and the thread dropdown are both populated by
+    // media/lockTimeline.js rather than server-rendered here: the lock list
+    // has to rebuild whenever the Top-N selector changes, and the thread
+    // list is derived from the segments themselves. Server-rendering either
+    // would mean emitting one markup blob and then immediately replacing it.
+    return `
+        <div class="lockTimelineNote">
+            Each bar is a window where a thread held a lock while another thread was blocked on it.
+            Because the runtime only reports contended locks, a gap means no thread was blocked - not that the lock was free.
+            This capture had ${totalDistinctLockCount.toLocaleString()} contended ${totalDistinctLockCount === 1 ? "lock" : "locks"}; locks are ranked by total wait time.
+            <span id="lockOutlierNote" class="lockOutlierNote"></span>
+        </div>
+        <div class="lockTimelineToolbar">
+            <label class="lockTimelineControl">Show
+                <select id="lockTopNSelect">
+                    <option value="10">Top 10</option>
+                    <option value="25">Top 25</option>
+                    <option value="40" selected>Top 40</option>
+                    <option value="100">Top 100</option>
+                    <option value="250">Top 250</option>
+                    <option value="all">All (${totalDistinctLockCount.toLocaleString()})</option>
+                </select>
+            </label>
+            <label class="lockTimelineControl">Rank by
+                <select id="lockRankMetricSelect">
+                    <option value="wait" selected>Total wait</option>
+                    <option value="contentions">Contentions</option>
+                    <option value="threads">Contending threads</option>
+                    <option value="workerthreads">Worker threads blocked</option>
+                    <option value="maxwait">Longest single wait</option>
+                </select>
+            </label>
+            <label class="lockTimelineControl">Stalls
+                <select id="lockLongestWaitSelect">
+                    <option value="">Jump to longest…</option>
+                </select>
+            </label>
+            <button id="lockTimelineResetZoomBtn" class="resetZoomButton" style="display:none">Reset Zoom</button>
+            <span id="lockTimelineZoomLabel" class="lockTimelineZoomLabel"></span>
+            <span class="lockTimelineHint">Drag to zoom · double-click to reset · click a lock name for its stacks</span>
+        </div>
+        <div class="lockTimelineLayout">
+            <div class="lockTimelineChartArea">
+                <div id="lockTimelineContainer" class="lockTimelineContainer">
+                    <canvas id="lockTimelineCanvas"></canvas>
+                </div>
+                <div id="lockTimelineTooltip" class="lockTimelineTooltip" style="display:none"></div>
+            </div>
+            <div class="lockSidebar">
+                <div class="lockFilterPanel">
+                    <div class="lockFilterHeader">
+                        <span id="lockFilterHeaderLabel">Locks</span>
+                        <span class="lockFilterButtons">
+                            <button id="lockFilterAllBtn" class="resetZoomButton">All</button>
+                            <button id="lockFilterNoneBtn" class="resetZoomButton">None</button>
+                        </span>
+                    </div>
+                    <div id="lockFilterList" class="lockFilterList"></div>
+                </div>
+                <div class="lockFilterPanel">
+                    <div class="lockFilterHeader">
+                        <span id="threadFilterHeaderLabel">Threads</span>
+                        <span class="lockFilterButtons">
+                            <button id="threadFilterAllBtn" class="resetZoomButton">All</button>
+                            <button id="threadFilterNoneBtn" class="resetZoomButton">None</button>
+                            <button id="threadFilterWorkerBtn" class="resetZoomButton" title="Select only .NET worker threads">Worker</button>
+                        </span>
+                    </div>
+                    <input id="threadFilterSearch" class="threadFilterSearch" type="text" placeholder="Find thread id…">
+                    <div id="threadFilterList" class="lockFilterList"></div>
+                </div>
+            </div>
+        </div>
+        <div class="lockTableSection">
+            <div id="lockTableContainer" class="detailTable lockTable"></div>
+        </div>
+        <div id="lockContextMenu" class="lockContextMenu" style="display:none">
+            <div class="lockContextMenuTitle" id="lockContextMenuTitle"></div>
+            <button class="lockContextMenuItem" data-lock-menu="only">Show only this lock</button>
+            <button class="lockContextMenuItem" data-lock-menu="hide">Hide this lock</button>
+            <button class="lockContextMenuItem" data-lock-menu="onlyThreads">Show only this lock's threads</button>
+            <div class="lockContextMenuSeparator"></div>
+            <button class="lockContextMenuItem" data-lock-menu="stacks">Show contended stacks</button>
+            <button class="lockContextMenuItem" data-lock-menu="reset">Reset all filters</button>
+        </div>
+        <div id="lockStackPanel" class="lockStackPanel" style="display:none">
+            <div class="lockStackHeader">
+                <span id="lockStackTitle"></span>
+                <button id="lockStackCloseBtn" class="resetZoomButton">Close</button>
+            </div>
+            <div id="lockStackBody" class="lockStackBody"></div>
+        </div>`;
 }
 
 // Ranked sites table: each row shows the contention site (leaf frame),

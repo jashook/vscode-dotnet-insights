@@ -229,8 +229,14 @@ function buildInlineExceptionTypeCallerTree(entry, methodNames, grandTotalCount)
         var frameHtml = formatExceptionFrameHtml(methodNames[leafNode["frame"]]);
 
         // No left-indent (depth 0), never tinted at the top level - same
-        // reasoning as drillDownStats.js's renderDrillDownTable.
-        rows += renderExceptionTreeRow(rowId, EXCEPTION_THROW_SITE_ROLE, frameHtml, ``, leafNode, totalCount, grandTotalCount, "", leafNode["count"]);
+        // reasoning as drillDownStats.js's renderDrillDownTable. Written as
+        // an explicit "padding-left: 0em" rather than an empty attribute:
+        // with no inline style at all the cell falls back to .detailTable
+        // td's own `padding: 4px`, which put every throw-site row 4px
+        // further right than the depth-0 caller rows nested directly under
+        // it (those all carry this same explicit 0em) and than the Profile
+        // tab's own equivalent first row.
+        rows += renderExceptionTreeRow(rowId, EXCEPTION_THROW_SITE_ROLE, frameHtml, ` style="padding-left: 0em"`, leafNode, totalCount, grandTotalCount, "", leafNode["count"]);
     }
 
     return `<table class="callerTreeInner">${EXCEPTION_CALLER_TREE_COLGROUP}${rows}</table>`;

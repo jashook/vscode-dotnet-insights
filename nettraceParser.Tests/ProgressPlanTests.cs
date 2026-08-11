@@ -53,12 +53,14 @@ public class ProgressPlanTests
     }
 
     [Fact]
-    public void PlanProjectorPhases_ReturnsSevenContiguousRangesCoveringTheirCombinedRange()
+    public void PlanProjectorPhases_ReturnsEightContiguousRangesCoveringTheirCombinedRange()
     {
         ProgressRange combined = ProgressPlan.PlanProjectorsCombined();
         ProgressRange[] phases = ProgressPlan.PlanProjectorPhases();
 
-        Assert.Equal(7, phases.Length);
+        // One range per projector call in Program.cs's fixed order, now
+        // including the threading projector.
+        Assert.Equal(8, phases.Length);
         Assert.Equal(combined.Start, phases[0].Start);
         Assert.Equal(combined.End, phases[phases.Length - 1].End);
 

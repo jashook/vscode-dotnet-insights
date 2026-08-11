@@ -1638,3 +1638,765 @@ td.rowHideColumn:hover
 {
     color: rgba(0, 0, 0, 0.65);
 }
+
+/* The Overview page's Time Breakdown tile carries four metrics, not the two
+   or three every other .total tile holds, and two of its labels are long
+   ("Contending Locks", "CPU Bound (est.)"). At .total's own 20em width and
+   .total>div's own 4em per-metric width those four wrap onto a second row
+   with the last label broken across three lines - so this one tile gets a
+   wider box and wider per-metric cells to keep all four on a single row.
+
+   Width is in this tile's OWN font-size (13px), while .total>div's width is
+   in the children's larger 16px - so the four 7em children are 4 x (112px +
+   5px margins either side) = 488px, and the tile needs at least that:
+   40em x 13px = 520px. */
+.timeBreakdownTile
+{
+    width: 40em;
+}
+
+.timeBreakdownTile>div
+{
+    width: 7em;
+}
+
+/* ---- Contention view: Lock Timeline tab ---- */
+
+/* The bars are inferred from contention events, which only exist while a
+   lock is contended - stated in the UI itself because without it the view
+   reads as a complete ownership history (see ContentionRenderer.ts's
+   renderLockTimelinePanel comment). */
+.lockTimelineNote
+{
+    padding: 8px 12px;
+    margin: 8px 0;
+    border-left: 3px solid rgba(174, 207, 27, 0.8);
+    background-color: rgba(128, 128, 128, 0.10);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.lockTimelineToolbar
+{
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 8px;
+    min-height: 26px;
+}
+
+.lockTimelineZoomLabel
+{
+    font-size: 12px;
+    font-weight: bold;
+}
+
+.lockTimelineHint
+{
+    font-size: 11px;
+    opacity: 0.7;
+    margin-left: auto;
+}
+
+/* Chart area and filter list side by side - the filter list is a fixed
+   sidebar so the chart keeps a stable width as locks are toggled (a
+   percentage-width sidebar would resize the canvas on every filter change
+   and force a redraw at a new scale). */
+.lockTimelineLayout
+{
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+}
+
+.lockTimelineChartArea
+{
+    flex: 1 1 auto;
+    min-width: 0;
+    position: relative;
+}
+
+/* position:relative anchors the absolutely-positioned tooltip below. */
+.lockTimelineContainer
+{
+    position: relative;
+    width: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
+    max-height: 70vh;
+}
+
+.lockTimelineContainer canvas
+{
+    display: block;
+    cursor: crosshair;
+}
+
+.lockTimelineTooltip
+{
+    position: absolute;
+    pointer-events: none;
+    background-color: rgba(30, 30, 30, 0.96);
+    color: #f0f0f0;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-size: 11px;
+    line-height: 1.5;
+    z-index: 10;
+    white-space: nowrap;
+}
+
+.lockTooltipTitle
+{
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+
+.lockFilterPanel
+{
+    flex: 0 0 240px;
+    border: 1px solid rgba(128, 128, 128, 0.35);
+    border-radius: 4px;
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.lockFilterHeader
+{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.35);
+    font-weight: bold;
+    font-size: 12px;
+}
+
+.lockFilterButtons
+{
+    display: flex;
+    gap: 4px;
+}
+
+.lockFilterList
+{
+    overflow-y: auto;
+    padding: 4px;
+}
+
+.lockFilterItem
+{
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 4px;
+    font-size: 11px;
+    cursor: pointer;
+    border-radius: 3px;
+}
+
+.lockFilterItem:hover
+{
+    background-color: rgba(128, 128, 128, 0.18);
+}
+
+/* flex-shrink:0 - without it the swatch collapses to nothing once a long
+   lock id pushes the row past the sidebar width. */
+.lockFilterSwatch
+{
+    flex: 0 0 auto;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    display: inline-block;
+}
+
+.lockFilterId
+{
+    flex: 1 1 auto;
+    font-family: monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lockFilterStat
+{
+    flex: 0 0 auto;
+    opacity: 0.75;
+}
+
+.lockTimelineControl
+{
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+}
+
+.lockTimelineControl select
+{
+    background: var(--vscode-dropdown-background, #3c3c3c);
+    color: var(--vscode-dropdown-foreground, #f0f0f0);
+    border: 1px solid var(--vscode-dropdown-border, rgba(128,128,128,0.4));
+    border-radius: 2px;
+    padding: 2px 4px;
+    font-size: 12px;
+    max-width: 16em;
+}
+
+/* A lock the thread filter has emptied stays listed rather than vanishing -
+   a row disappearing because of an unrelated control reads as data loss. */
+.lockFilterItemDimmed
+{
+    opacity: 0.4;
+}
+
+.lockFilterItemSelected
+{
+    background-color: rgba(100, 150, 220, 0.28);
+}
+
+.lockFilterId
+{
+    cursor: pointer;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+}
+
+.lockStackPanel
+{
+    margin-top: 12px;
+    border: 1px solid rgba(128, 128, 128, 0.35);
+    border-radius: 4px;
+}
+
+.lockStackHeader
+{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 6px 8px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.35);
+    font-weight: bold;
+    font-size: 12px;
+}
+
+.lockStackBody
+{
+    max-height: 45vh;
+    overflow-y: auto;
+    padding: 4px;
+}
+
+/* The lock filter row is two lines now: the contending method (primary
+   identity - see lockTimeline.js's lockDisplayName) over the raw pointer
+   and stats, since several distinct locks can share a method name and the
+   pointer is what actually tells them apart. */
+.lockFilterItem
+{
+    flex-direction: column;
+    align-items: stretch;
+    gap: 1px;
+}
+
+.lockFilterTopLine
+{
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.lockFilterSubLine
+{
+    padding-left: 22px;
+    font-family: monospace;
+    font-size: 10px;
+    opacity: 0.7;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lockTooltipSubtitle
+{
+    font-family: monospace;
+    opacity: 0.7;
+    margin-bottom: 4px;
+}
+
+.lockTooltipTotals
+{
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.2);
+    opacity: 0.85;
+}
+
+/* Two stacked filter panels (locks, threads) share the sidebar column.
+   Each panel is sized by its own content up to a max-height and scrolls
+   internally, rather than splitting the sidebar with flex-grow: the
+   layout row uses align-items:flex-start, so the sidebar has no definite
+   height to distribute and `flex: 1 1 0` collapsed both panels to their
+   borders (measured: sidebar 12px tall, panels 2px each). */
+.lockSidebar
+{
+    flex: 0 0 260px;
+    width: 260px;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.lockSidebar .lockFilterPanel
+{
+    flex: 0 1 auto;
+    min-height: 0;
+    max-height: 34vh;
+}
+
+.lockSidebar .lockFilterList
+{
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.threadFilterSearch
+{
+    margin: 4px;
+    padding: 3px 5px;
+    font-size: 11px;
+    background: var(--vscode-input-background, #3c3c3c);
+    color: var(--vscode-input-foreground, #f0f0f0);
+    border: 1px solid var(--vscode-input-border, rgba(128,128,128,0.4));
+    border-radius: 2px;
+}
+
+.threadFilterItem
+{
+    flex-direction: row;
+    align-items: center;
+}
+
+.threadFilterId
+{
+    flex: 0 0 auto;
+    font-family: monospace;
+}
+
+/* Marks a thread as a managed thread-pool worker - the distinction that
+   separates "this lock starves the pool" from "two background threads
+   contend with each other". */
+.workerThreadBadge
+{
+    flex: 0 0 auto;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0 4px;
+    border-radius: 6px;
+    background-color: rgba(100, 150, 220, 0.35);
+}
+
+.threadFilterItem .lockFilterStat
+{
+    margin-left: auto;
+}
+
+.lockOutlierNote
+{
+    display: inline;
+}
+
+/* Ranked locks table - the scannable counterpart to the chart above it.
+   The sidebar list is a filter (260px, truncated names); finding the worst
+   locks needs full-width sortable columns. */
+.lockTableSection
+{
+    margin-top: 12px;
+}
+
+.lockTable table
+{
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.lockTableSortable
+{
+    cursor: pointer;
+    user-select: none;
+}
+
+.lockTableSortable:hover
+{
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+.lockTableRow
+{
+    cursor: pointer;
+}
+
+.lockTableId
+{
+    font-family: monospace;
+    opacity: 0.75;
+}
+
+.lockTableRowSelected
+{
+    background-color: rgba(100, 150, 220, 0.28);
+}
+
+.lockTableRowDimmed
+{
+    opacity: 0.45;
+}
+
+/* position:fixed so the menu is placed in viewport coordinates from the
+   event's clientX/clientY - the surfaces that open it (a scrolling canvas
+   container, the sidebar list, the table) each have their own scroll
+   offsets, and anchoring to any of them would misplace it. */
+.lockContextMenu
+{
+    position: fixed;
+    z-index: 100;
+    min-width: 15em;
+    padding: 4px 0;
+    background: var(--vscode-menu-background, #252526);
+    color: var(--vscode-menu-foreground, #cccccc);
+    border: 1px solid rgba(128, 128, 128, 0.45);
+    border-radius: 4px;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
+    font-size: 12px;
+}
+
+.lockContextMenuTitle
+{
+    padding: 4px 10px 6px 10px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.35);
+    font-weight: bold;
+    max-width: 22em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lockContextMenuItem
+{
+    display: block;
+    width: 100%;
+    padding: 4px 10px;
+    background: none;
+    border: none;
+    color: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.lockContextMenuItem:hover
+{
+    background-color: var(--vscode-menu-selectionBackground, rgba(100, 150, 220, 0.35));
+}
+
+.lockContextMenuSeparator
+{
+    height: 1px;
+    margin: 4px 0;
+    background-color: rgba(128, 128, 128, 0.35);
+}
+
+/* ---- Two-capture comparison view (see src/NettraceDiffRenderer.ts) ---- */
+
+.diffCaptureHeader
+{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 24px;
+    margin: 12px 0;
+}
+
+.diffCaptureSide
+{
+    text-align: center;
+    min-width: 16em;
+}
+
+.diffCaptureLabel
+{
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    opacity: 0.7;
+}
+
+.diffCaptureName
+{
+    font-size: 15px;
+    font-weight: bold;
+    word-break: break-all;
+}
+
+.diffCaptureMeta
+{
+    font-size: 11px;
+    opacity: 0.8;
+}
+
+.diffCaptureArrow
+{
+    font-size: 22px;
+    opacity: 0.6;
+}
+
+.diffToolbar
+{
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 8px 0 12px 0;
+}
+
+.diffToolbarControl
+{
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.diffToolbarHint
+{
+    font-size: 11px;
+    opacity: 0.75;
+}
+
+/* A dimension one capture never recorded is not a change in behavior - it is
+   a difference in which providers were enabled. Called out loudly because
+   every row in such a tab otherwise reads as newly appeared. */
+.diffCoverageWarning
+{
+    padding: 8px 12px;
+    margin: 8px 0;
+    border-left: 3px solid #e0a020;
+    background-color: rgba(224, 160, 32, 0.12);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.diffTable table
+{
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.diffTable th[data-diff-sort]
+{
+    cursor: pointer;
+    user-select: none;
+}
+
+.diffTable th[data-diff-sort]:hover
+{
+    background-color: rgba(255, 255, 255, 0.12);
+}
+
+/* Direction of "worse" is declared per table rather than inferred from sign -
+   more allocations is a regression, more CPU samples is not inherently
+   either. */
+.deltaWorse
+{
+    color: #e05252;
+    font-weight: bold;
+}
+
+.deltaBetter
+{
+    color: #35a353;
+    font-weight: bold;
+}
+
+.deltaNeutral
+{
+    font-weight: bold;
+}
+
+.deltaNew, .deltaGone
+{
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0 4px;
+    border-radius: 6px;
+}
+
+.deltaNew
+{
+    background-color: rgba(53, 163, 83, 0.35);
+}
+
+.deltaGone
+{
+    background-color: rgba(224, 82, 82, 0.30);
+}
+
+/* ---- Threading view ---- */
+
+.threadingSection
+{
+    margin-top: 18px;
+}
+
+.threadingSectionTitle
+{
+    font-size: 15px;
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+
+/* These notes are load-bearing, not decoration: the thread-pool events carry
+   no stacks, so the view has to say where its numbers come from and what they
+   exclude, or the "during pool stalls" table reads as a direct measurement
+   rather than a time-window correlation. */
+.threadingNote
+{
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    border-left: 3px solid rgba(78, 121, 167, 0.8);
+    background-color: rgba(128, 128, 128, 0.10);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.threadingChartHint
+{
+    font-size: 12px;
+    opacity: 0.8;
+    margin-bottom: 4px;
+}
+
+/* Beats .callPathsDetail.expanded by ordering, not by !important: both are
+   two-class selectors of equal specificity, and this one comes later in the
+   file. That is deliberate - an expanded stack whose summary row got filtered
+   out by the timeline zoom must not keep rendering on its own, but it also
+   must not LOSE its .expanded state, so it comes back expanded when the zoom
+   is cleared. */
+.callPathsDetail.threadingFilteredOut
+{
+    display: none;
+}
+
+/* Only visible while the timeline is zoomed - see ZOOM_AGGREGATE_NOTE_HTML in
+   ThreadingRenderer.ts for why these tables cannot follow the zoom. Amber
+   rather than the .threadingNote blue: this one is a caveat about what is on
+   screen right now, not standing explanatory text. */
+.threadingZoomAggregateNote
+{
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    border-left: 3px solid rgba(224, 168, 82, 0.9);
+    background-color: rgba(224, 168, 82, 0.12);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+/* Mirrors .cpuHotMethodsTable (the shared ranked-table styling that
+   Exceptions and Contention both use), shifted one column left: those tables
+   carry a rowHideColumn in column 1 so their name column is :nth-child(2),
+   while the Threading tables have no row-hide affordance and put the name
+   first. Same left-aligned wrapping name column, same right-aligned numerics,
+   so the three views read as one family rather than three near-misses. */
+/* Every selector here uses the child chain `> table > tbody > tr >` so it
+   applies ONLY to the outer ranked table, never to the .callerTreeInner stack
+   table nested inside an expanded row's cell. .cpuHotMethodsTable deliberately
+   does NOT scope its equivalent rules, because there the nested caller tree
+   has the same five-column shape and wants the same treatment - but the
+   threading stack table is two columns, so an unscoped rule put 30em on its
+   1.6em spacer and 7% on its frame column, inverting it (measured: spacer
+   1300px, frames 98px). */
+.threadingTable > table > tbody > tr > td:first-child,
+.threadingTable > table > tbody > tr > th:first-child
+{
+    text-align: left;
+    white-space: normal;
+    width: 30em;
+    word-break: break-word;
+}
+
+.threadingTable > table > tbody > tr > th:not(:first-child),
+.threadingTable > table > tbody > tr > td:not(:first-child)
+{
+    text-align: right;
+}
+
+.threadingTable > table > tbody > tr > th:not(:first-child)
+{
+    padding-right: 4px;
+}
+
+/* The nested stack table needs its own left alignment now that the outer
+   rules are scoped away from it: .detailTable td defaults to center, which
+   centered every frame and hid the per-depth indent entirely (the indent is
+   padding-left, invisible when the text is centered anyway).
+   .cpuHotMethodsTable gets this for free because its unscoped nth-child(2)
+   rule reaches its nested rows too. */
+.threadingTable .callerTreeInner td
+{
+    text-align: left;
+    white-space: normal;
+    word-break: break-word;
+}
+
+/* The shared ranked-table rules assume five or six columns, which between
+   them consume the row. These tables have two or three, so the leftover width
+   is split among the columns in proportion to their declared widths - and an
+   em width acts only as a MINIMUM here, since .detailTable table is not
+   table-layout:fixed. At 1398px that gave Time and Thread 261px each for
+   values like "119.30 s" and "39871". A small percentage caps them instead,
+   so the slack goes to the name column, which is the one that can use it. */
+.threadingTable > table > tbody > tr > th:not(:first-child),
+.threadingTable > table > tbody > tr > td:not(:first-child)
+{
+    width: 7%;
+}
+
+.threadingStallRow
+{
+    background-color: rgba(224, 160, 32, 0.14);
+}
+
+.threadingStallBadge
+{
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0 5px;
+    border-radius: 6px;
+    background-color: rgba(224, 160, 32, 0.45);
+}
+
+.threadingStackRow
+{
+    cursor: pointer;
+}
+
+.threadingStackRow:hover
+{
+    background-color: rgba(128, 128, 128, 0.18);
+}
+
+.threadingStackRow.expanded .leafMethodToggle
+{
+    transform: rotate(90deg);
+}
+

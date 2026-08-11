@@ -26,6 +26,12 @@ public class PayloadBuilder
 {
     private readonly List<byte> bytes = new List<byte>();
 
+    public PayloadBuilder WriteByte(byte value)
+    {
+        this.bytes.Add(value);
+        return this;
+    }
+
     public PayloadBuilder WriteInt16(short value)
     {
         this.bytes.AddRange(BitConverter.GetBytes(value));
