@@ -2285,10 +2285,42 @@ td.rowHideColumn:hover
     margin-bottom: 4px;
 }
 
-.threadingTable table
+/* Mirrors .cpuHotMethodsTable (the shared ranked-table styling that
+   Exceptions and Contention both use), shifted one column left: those tables
+   carry a rowHideColumn in column 1 so their name column is :nth-child(2),
+   while the Threading tables have no row-hide affordance and put the name
+   first. Same left-aligned wrapping name column, same right-aligned numerics,
+   so the three views read as one family rather than three near-misses. */
+.threadingTable td:first-child,
+.threadingTable th:first-child
 {
-    width: 100%;
-    border-collapse: collapse;
+    text-align: left;
+    white-space: normal;
+    width: 30em;
+    word-break: break-word;
+}
+
+.threadingTable th:not(:first-child),
+.threadingTable td:not(:first-child)
+{
+    text-align: right;
+}
+
+.threadingTable th:not(:first-child)
+{
+    padding-right: 4px;
+}
+
+/* The shared ranked-table rules assume five or six columns, which between
+   them consume the row. These tables have two or three, so without a width
+   here the leftover space is handed to the numeric columns and the last one
+   drifts to the far right, an inch of blank row separating a count from the
+   method it belongs to. Pinning the numerics sends the slack to the name
+   column instead, which is the one that can use it. */
+.threadingTable th:not(:first-child),
+.threadingTable td:not(:first-child)
+{
+    width: 9em;
 }
 
 .threadingStallRow
