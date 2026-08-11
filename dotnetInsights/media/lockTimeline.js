@@ -819,6 +819,162 @@
         state.threadFilterAll = state.selectedThreadIds.size === state.threads.length;
     }
 
+    // ---- right-click context menu ----
+
+    // Isolating a lock has to do more than uncheck its neighbours: the
+    // target can sit outside the current Top-N slice, in which case
+    // "show only this" would leave an empty chart. Top-N is widened to
+    // include it (and the control synced), the same reveal the stall jump
+    // performs, so the action always ends with the lock actually on screen.
+    function ensureLockRevealed(lockIndex) {
+        state.visibleByIndex[lockIndex] = true;
+
+        var rankPosition = state.order.indexOf(lockIndex);
+        if (rankPosition >= 0 && state.topLockCount !== null && rankPosition >= state.topLockCount) {
+            state.topLockCount = null;
+
+            var topSelect = document.getElementById('lockTopNSelect');
+            if (topSelect) {
+                topSelect.value = 'all';
+            }
+        }
+    }
+
+    function isolateLock(lockIndex) {
+        for (var index = 0; index < state.visibleByIndex.length; ++index) {
+            state.visibleByIndex[index] = (index === lockIndex);
+        }
+
+        ensureLockRevealed(lockIndex);
+        renderLockFilterList();
+        renderLockTable();
+        draw();
+    }
+
+    // Narrows the thread filter to exactly the threads that touched this
+    // lock, in either role - the natural follow-up to isolating a lock when
+    // the question is "who is actually fighting over this thing".
+    function isolateThreadsForLock(lockIndex) {
+        var segments = state.locks[lockIndex]['segments'];
+
+        state.selectedThreadIds.clear();
+
+        for (var segmentIndex = 0; segmentIndex < segments.length; ++segmentIndex) {
+            var segment = segments[segmentIndex];
+
+            if (segment['ownerThreadId'] !== 0) {
+                state.selectedThreadIds.add(segment['ownerThreadId']);
+            }
+
+            if (segment['waiterThreadId'] !== 0) {
+                state.selectedThreadIds.add(segment['waiterThreadId']);
+            }
+        }
+
+        syncThreadFilterAllFlag();
+        ensureLockRevealed(lockIndex);
+        renderThreadFilterList();
+        renderLockFilterList();
+        renderLockTable();
+        draw();
+    }
+
+    function resetAllLockFilters() {
+        for (var index = 0; index < state.visibleByIndex.length; ++index) {
+            state.visibleByIndex[index] = true;
+        }
+
+        state.selectedThreadIds.clear();
+        for (var threadIndex = 0; threadIndex < state.threads.length; ++threadIndex) {
+            state.selectedThreadIds.add(state.threads[threadIndex].threadId);
+        }
+
+        syncThreadFilterAllFlag();
+        renderThreadFilterList();
+        renderLockFilterList();
+        renderLockTable();
+        draw();
+    }
+
+    window.showLockTimelineContextMenu = function (lockIndex, clientX, clientY) {
+        if (state === null || !state.locks[lockIndex]) {
+            return;
+        }
+
+        var menu = document.getElementById('lockContextMenu');
+        var title = document.getElementById('lockContextMenuTitle');
+        if (!menu || !title) {
+            return;
+        }
+
+        state.contextMenuLockIndex = lockIndex;
+        title.textContent = shortMethodName(lockDisplayName(state.locks[lockIndex]));
+
+        // Shown first, then measured: offsetWidth/offsetHeight are 0 while
+        // display is none, so flipping near the viewport edge has to happen
+        // after it is visible.
+        menu.style.display = 'block';
+        menu.style.left = '0px';
+        menu.style.top = '0px';
+
+        var left = clientX;
+        var top = clientY;
+
+        if (left + menu.offsetWidth > window.innerWidth) {
+            left = window.innerWidth - menu.offsetWidth - 4;
+        }
+
+        if (top + menu.offsetHeight > window.innerHeight) {
+            top = window.innerHeight - menu.offsetHeight - 4;
+        }
+
+        menu.style.left = left + 'px';
+        menu.style.top = top + 'px';
+    };
+
+    window.hideLockTimelineContextMenu = function () {
+        var menu = document.getElementById('lockContextMenu');
+        if (menu) {
+            menu.style.display = 'none';
+        }
+    };
+
+    window.runLockTimelineContextAction = function (action) {
+        if (state === null) {
+            return;
+        }
+
+        var lockIndex = state.contextMenuLockIndex;
+        hideLockTimelineContextMenu();
+
+        if (lockIndex === undefined || lockIndex < 0) {
+            return;
+        }
+
+        if (action === 'only') {
+            isolateLock(lockIndex);
+        } else if (action === 'hide') {
+            setLockTimelineLockVisible(lockIndex, false);
+        } else if (action === 'onlyThreads') {
+            isolateThreadsForLock(lockIndex);
+        } else if (action === 'stacks') {
+            ensureLockRevealed(lockIndex);
+            selectLock(lockIndex);
+        } else if (action === 'reset') {
+            resetAllLockFilters();
+        }
+    };
+
+    // Maps a right-click on the canvas to the lock whose track it landed on.
+    window.lockTimelineLockIndexAtY = function (offsetY) {
+        if (state === null) {
+            return -1;
+        }
+
+        var row = findRowAt(offsetY);
+        return row ? row.originalIndex : -1;
+    };
+
     // ---- ranked locks table ----
 
     // Columns are declared once and drive both the header and the body, so

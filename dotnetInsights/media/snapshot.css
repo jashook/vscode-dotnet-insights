@@ -2058,3 +2058,58 @@ td.rowHideColumn:hover
 {
     opacity: 0.45;
 }
+
+/* position:fixed so the menu is placed in viewport coordinates from the
+   event's clientX/clientY - the surfaces that open it (a scrolling canvas
+   container, the sidebar list, the table) each have their own scroll
+   offsets, and anchoring to any of them would misplace it. */
+.lockContextMenu
+{
+    position: fixed;
+    z-index: 100;
+    min-width: 15em;
+    padding: 4px 0;
+    background: var(--vscode-menu-background, #252526);
+    color: var(--vscode-menu-foreground, #cccccc);
+    border: 1px solid rgba(128, 128, 128, 0.45);
+    border-radius: 4px;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
+    font-size: 12px;
+}
+
+.lockContextMenuTitle
+{
+    padding: 4px 10px 6px 10px;
+    margin-bottom: 4px;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.35);
+    font-weight: bold;
+    max-width: 22em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.lockContextMenuItem
+{
+    display: block;
+    width: 100%;
+    padding: 4px 10px;
+    background: none;
+    border: none;
+    color: inherit;
+    font-size: 12px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.lockContextMenuItem:hover
+{
+    background-color: var(--vscode-menu-selectionBackground, rgba(100, 150, 220, 0.35));
+}
+
+.lockContextMenuSeparator
+{
+    height: 1px;
+    margin: 4px 0;
+    background-color: rgba(128, 128, 128, 0.35);
+}

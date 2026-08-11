@@ -204,6 +204,15 @@ function renderLockTimelinePanel(lockTimeline: any): string {
         <div class="lockTableSection">
             <div id="lockTableContainer" class="detailTable lockTable"></div>
         </div>
+        <div id="lockContextMenu" class="lockContextMenu" style="display:none">
+            <div class="lockContextMenuTitle" id="lockContextMenuTitle"></div>
+            <button class="lockContextMenuItem" data-lock-menu="only">Show only this lock</button>
+            <button class="lockContextMenuItem" data-lock-menu="hide">Hide this lock</button>
+            <button class="lockContextMenuItem" data-lock-menu="onlyThreads">Show only this lock's threads</button>
+            <div class="lockContextMenuSeparator"></div>
+            <button class="lockContextMenuItem" data-lock-menu="stacks">Show contended stacks</button>
+            <button class="lockContextMenuItem" data-lock-menu="reset">Reset all filters</button>
+        </div>
         <div id="lockStackPanel" class="lockStackPanel" style="display:none">
             <div class="lockStackHeader">
                 <span id="lockStackTitle"></span>

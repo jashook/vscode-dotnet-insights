@@ -4493,6 +4493,70 @@ var allocationDatasets = {};
             });
         }
 
+        // Right-click to filter, from any of the three surfaces that
+        // represent a lock: its track on the canvas, its sidebar row, and
+        // its table row. One delegated handler per surface, all funnelling
+        // into the same menu.
+        var lockTimelineCanvas = document.getElementById('lockTimelineCanvas');
+        if (lockTimelineCanvas) {
+            lockTimelineCanvas.addEventListener('contextmenu', function (event) {
+                var lockIndex = lockTimelineLockIndexAtY(event.offsetY);
+                if (lockIndex < 0) {
+                    return;
+                }
+
+                event.preventDefault();
+                showLockTimelineContextMenu(lockIndex, event.clientX, event.clientY);
+            });
+        }
+
+        var lockFilterListForMenu = document.getElementById('lockFilterList');
+        if (lockFilterListForMenu) {
+            lockFilterListForMenu.addEventListener('contextmenu', function (event) {
+                var row = event.target.closest('[data-lock-row]');
+                if (!row) {
+                    return;
+                }
+
+                event.preventDefault();
+                showLockTimelineContextMenu(parseInt(row.getAttribute('data-lock-row'), 10), event.clientX, event.clientY);
+            });
+        }
+
+        var lockContextMenu = document.getElementById('lockContextMenu');
+        if (lockContextMenu) {
+            lockContextMenu.addEventListener('click', function (event) {
+                var item = event.target.closest('[data-lock-menu]');
+                if (!item) {
+                    return;
+                }
+
+                runLockTimelineContextAction(item.getAttribute('data-lock-menu'));
+            });
+        }
+
+        // Any click outside the menu, Escape, or scrolling the tracks
+        // dismisses it - a menu left floating over a chart that has since
+        // scrolled points at the wrong row.
+        document.addEventListener('click', function (event) {
+            if (!event.target.closest('#lockContextMenu')) {
+                hideLockTimelineContextMenu();
+            }
+        });
+
+        document.addEventListener('keydown', function (event) {
+            if (event.key === 'Escape') {
+                hideLockTimelineContextMenu();
+            }
+        });
+
+        var lockTimelineContainerForMenu = document.getElementById('lockTimelineContainer');
+        if (lockTimelineContainerForMenu) {
+            lockTimelineContainerForMenu.addEventListener('scroll', function () {
+                hideLockTimelineContextMenu();
+            });
+        }
+
         var lockTableContainer = document.getElementById('lockTableContainer');
         if (lockTableContainer) {
             // Delegated on the container, which is stable - the table inside
@@ -4508,6 +4572,16 @@ var allocationDatasets = {};
                 if (row) {
                     selectLockTimelineLock(parseInt(row.getAttribute('data-lock-row-index'), 10));
                 }
+            });
+
+            lockTableContainer.addEventListener('contextmenu', function (event) {
+                var row = event.target.closest('[data-lock-row-index]');
+                if (!row) {
+                    return;
+                }
+
+                event.preventDefault();
+                showLockTimelineContextMenu(parseInt(row.getAttribute('data-lock-row-index'), 10), event.clientX, event.clientY);
             });
         }
 
