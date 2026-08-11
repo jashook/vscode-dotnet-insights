@@ -49,6 +49,7 @@ var allocationDatasets = {};
     // contention events - see GcSnapshotRenderer.ts's hasContention. Eagerly
     // parsed for the same reason the others are.
     var contentionSummaryJson = JSON.parse(document.getElementById("contentionSummaryJson").textContent);
+    var threadingSummaryJson = JSON.parse(document.getElementById("threadingSummaryJson").textContent);
 
     // Generic "hide this row, recompute everything else" controller shared
     // by every ranked/percent table on this page (CPU Methods, Contention
@@ -1878,6 +1879,7 @@ var allocationDatasets = {};
     var exceptionSummaryInjected = false;
     var cpuProfileInjected = false;
     var contentionInjected = false;
+    var threadingInjected = false;
 
     // { chart, zoomHandle } for every currently-rendered Heap Contents
     // chart - detached/destroyed and rebuilt on every zoom change (renderHeapContentsCharts
@@ -2309,6 +2311,15 @@ var allocationDatasets = {};
                 wireContentionTab();
                 setupDetailTableSortHandlers(document.getElementById('view-contention'));
                 contentionInjected = true;
+            } else if (targetView === 'threading' && !threadingInjected) {
+                var threadingHolder = document.getElementById("threadingHtml");
+                var threadingHtmlContent = threadingHolder.innerHTML.slice(4, threadingHolder.innerHTML.length - 3);
+
+                document.getElementById('view-threading').innerHTML = threadingHtmlContent;
+
+                wireThreadingTab();
+                setupDetailTableSortHandlers(document.getElementById('view-threading'));
+                threadingInjected = true;
             } else if (targetView === 'profile' && !cpuProfileInjected) {
                 var cpuProfileHolder = document.getElementById("cpuProfileHtml");
                 var cpuProfileHtml = cpuProfileHolder.innerHTML.slice(4, cpuProfileHolder.innerHTML.length - 3);
@@ -2345,7 +2356,23 @@ var allocationDatasets = {};
     // AllocationSummaryRenderer.ts's markup is injected above (the buttons
     // don't exist in the DOM before that).
     function switchHeapContentsTab(targetTab) {
-        var buttons = document.getElementsByClassName("heapContentsTabButton");
+        // Scoped to #view-heapContents, NOT queried globally. The
+        // heapContentsTabButton/heapContentsTabPanel classes are shared for
+        // styling by the Profile and Contention views' own tab bars (see
+        // switchProfileTab/switchContentionTab, which have always scoped
+        // their own queries), so a global query here reached into those
+        // views and deactivated their panels - after which the
+        // 'heapContents-tab-<null>' lookup below threw, leaving whichever
+        // view the user was actually in blank. It presented as "the table
+        // sometimes isn't populated", intermittent because it depended on
+        // which view got wired first and therefore whose click listener ran
+        // last.
+        var heapContentsView = document.getElementById('view-heapContents');
+        if (!heapContentsView) {
+            return;
+        }
+
+        var buttons = heapContentsView.getElementsByClassName("heapContentsTabButton");
         for (var buttonIndex = 0; buttonIndex < buttons.length; ++buttonIndex) {
             buttons[buttonIndex].classList.remove('active');
             if (buttons[buttonIndex].getAttribute('data-heaptab') === targetTab) {
@@ -2353,11 +2380,17 @@ var allocationDatasets = {};
             }
         }
 
-        var panels = document.getElementsByClassName("heapContentsTabPanel");
+        var panels = heapContentsView.getElementsByClassName("heapContentsTabPanel");
         for (var panelIndex = 0; panelIndex < panels.length; ++panelIndex) {
             panels[panelIndex].classList.remove('active');
         }
-        document.getElementById('heapContents-tab-' + targetTab).classList.add('active');
+
+        var targetPanel = document.getElementById('heapContents-tab-' + targetTab);
+        if (!targetPanel) {
+            return;
+        }
+
+        targetPanel.classList.add('active');
 
         var backButton = document.getElementById('backToChartsButton');
         if (backButton) {
@@ -2588,7 +2621,11 @@ var allocationDatasets = {};
     }
 
     function wireHeapContentsInnerTabs() {
-        var heapContentsTabButtons = document.getElementsByClassName("heapContentsTabButton");
+        // Scoped for the same reason switchHeapContentsTab is - an unscoped
+        // query bound this handler to the Profile and Contention views' tab
+        // buttons too, so clicking those ran the heap-contents switcher with
+        // a null target.
+        var heapContentsTabButtons = document.querySelectorAll('#view-heapContents .heapContentsTabButton');
         for (var tabButtonIndex = 0; tabButtonIndex < heapContentsTabButtons.length; ++tabButtonIndex) {
             heapContentsTabButtons[tabButtonIndex].addEventListener('click', function (event) {
                 switchHeapContentsTab(event.currentTarget.getAttribute('data-heaptab'));
@@ -4326,12 +4363,648 @@ var allocationDatasets = {};
         filterContentionSitesToZoomRange(contentionTimelineZoomRange);
     }
 
+    // Mirrors buildCpuDrillDownRowIfLazy against contentionDrillDownStats.js's
+    // buildLazyContentionDrillDownSubtree and the data-contention-lazy-inner
+    // attribute.
+    function buildContentionDrillDownRowIfLazy(detailRow) {
+        if (detailRow.getAttribute('data-contention-lazy-inner') !== 'true') {
+            return;
+        }
+
+        var subtreeHtml = buildLazyContentionDrillDownSubtree(detailRow.id);
+        if (subtreeHtml) {
+            detailRow.querySelector('.callerTreeCell').innerHTML = subtreeHtml;
+            detailRow.removeAttribute('data-contention-lazy-inner');
+        }
+    }
+
+    // Mirrors followCpuDrillDownLinearRun/followExceptionDrillDownLinearRun -
+    // see those for the full rationale (follow a chain of single-child rows
+    // down to the first real branch or the end, in one click, so a long
+    // non-branching call chain doesn't need one click per frame). Contention
+    // was the only drill-down tab that never had this, so expanding a site
+    // stopped at its single immediate caller.
+    function followContentionDrillDownLinearRun(detailRow) {
+        var currentDetailRow = detailRow;
+        for (;;) {
+            var innerTable = currentDetailRow.querySelector('table.callerTreeInner');
+            if (!innerTable) {
+                return;
+            }
+
+            var childRows = [];
+            for (var rowIndex = 0; rowIndex < innerTable.rows.length; ++rowIndex) {
+                if (innerTable.rows[rowIndex].classList.contains('callerRow')) {
+                    childRows.push(innerTable.rows[rowIndex]);
+                }
+            }
+
+            if (childRows.length !== 1) {
+                return;
+            }
+
+            var onlyChildRow = childRows[0];
+            if (onlyChildRow.getAttribute('data-contention-expandable') !== 'true') {
+                return;
+            }
+
+            var onlyChildDetailRow = document.getElementById(onlyChildRow.getAttribute('data-contention-target'));
+            if (!onlyChildDetailRow) {
+                return;
+            }
+
+            buildContentionDrillDownRowIfLazy(onlyChildDetailRow);
+            onlyChildRow.classList.add('expanded');
+            onlyChildDetailRow.classList.add('expanded');
+            currentDetailRow = onlyChildDetailRow;
+        }
+    }
+
+    // Mirrors switchProfileTab. The Lock Timeline canvas is drawn on first
+    // reveal, never at injection time: a canvas inside a display:none panel
+    // has zero layout width, so sizing it there produces a 0-wide backing
+    // store and an invisible chart.
+    function switchContentionTab(targetTab) {
+        var buttons = document.querySelectorAll('#view-contention .heapContentsTabButton');
+        for (var buttonIndex = 0; buttonIndex < buttons.length; ++buttonIndex) {
+            buttons[buttonIndex].classList.remove('active');
+            if (buttons[buttonIndex].getAttribute('data-contentiontab') === targetTab) {
+                buttons[buttonIndex].classList.add('active');
+            }
+        }
+
+        var panels = document.querySelectorAll('#view-contention .heapContentsTabPanel');
+        for (var panelIndex = 0; panelIndex < panels.length; ++panelIndex) {
+            panels[panelIndex].classList.remove('active');
+        }
+
+        var targetPanel = document.getElementById('contention-tab-' + targetTab);
+        if (targetPanel) {
+            targetPanel.classList.add('active');
+        }
+
+        if (targetTab === 'locktimeline' && contentionSummaryJson && contentionSummaryJson["lockTimeline"]) {
+            // renderLockTimeline is idempotent (it re-draws against its own
+            // retained state on every call), so this also covers a redraw
+            // after the panel was hidden and re-shown at a different size.
+            renderLockTimeline(contentionSummaryJson["lockTimeline"], contentionSummaryJson["methodNames"]);
+        }
+    }
+
+    function wireLockTimelinePanel() {
+        var lockTimeline = contentionSummaryJson ? contentionSummaryJson["lockTimeline"] : null;
+        if (!lockTimeline) {
+            return;
+        }
+
+        var filterList = document.getElementById('lockFilterList');
+        if (filterList) {
+            // Delegated, not one listener per row - the list is rebuilt
+            // whenever the Top-N slice changes (and can hold every lock in
+            // the capture), so per-row listeners would have to be re-bound
+            // each time and would leak on every rebuild.
+            filterList.addEventListener('change', function (event) {
+                var checkbox = event.target.closest('.lockFilterCheckbox');
+                if (!checkbox) {
+                    return;
+                }
+
+                setLockTimelineLockVisible(parseInt(checkbox.getAttribute('data-lock-index'), 10), checkbox.checked);
+            });
+
+            // Clicking the lock id itself (not the checkbox) opens that
+            // lock's contended stacks.
+            filterList.addEventListener('click', function (event) {
+                var idSpan = event.target.closest('[data-lock-select]');
+                if (!idSpan) {
+                    return;
+                }
+
+                // The span lives inside a <label>, whose default behavior is
+                // to forward the click to its checkbox - which would toggle
+                // the lock's visibility as a side effect of asking to see
+                // its stacks.
+                event.preventDefault();
+                selectLockTimelineLock(parseInt(idSpan.getAttribute('data-lock-select'), 10));
+            });
+        }
+
+        var rankMetricSelect = document.getElementById('lockRankMetricSelect');
+        if (rankMetricSelect) {
+            rankMetricSelect.addEventListener('change', function (event) {
+                setLockTimelineRankMetric(event.currentTarget.value);
+            });
+        }
+
+        var topNSelect = document.getElementById('lockTopNSelect');
+        if (topNSelect) {
+            topNSelect.addEventListener('change', function (event) {
+                var rawValue = event.currentTarget.value;
+                setLockTimelineTopCount(rawValue === 'all' ? null : parseInt(rawValue, 10));
+            });
+        }
+
+        // Right-click to filter, from any of the three surfaces that
+        // represent a lock: its track on the canvas, its sidebar row, and
+        // its table row. One delegated handler per surface, all funnelling
+        // into the same menu.
+        var lockTimelineCanvas = document.getElementById('lockTimelineCanvas');
+        if (lockTimelineCanvas) {
+            lockTimelineCanvas.addEventListener('contextmenu', function (event) {
+                var lockIndex = lockTimelineLockIndexAtY(event.offsetY);
+                if (lockIndex < 0) {
+                    return;
+                }
+
+                event.preventDefault();
+                showLockTimelineContextMenu(lockIndex, event.clientX, event.clientY);
+            });
+        }
+
+        var lockFilterListForMenu = document.getElementById('lockFilterList');
+        if (lockFilterListForMenu) {
+            lockFilterListForMenu.addEventListener('contextmenu', function (event) {
+                var row = event.target.closest('[data-lock-row]');
+                if (!row) {
+                    return;
+                }
+
+                event.preventDefault();
+                showLockTimelineContextMenu(parseInt(row.getAttribute('data-lock-row'), 10), event.clientX, event.clientY);
+            });
+        }
+
+        var lockContextMenu = document.getElementById('lockContextMenu');
+        if (lockContextMenu) {
+            lockContextMenu.addEventListener('click', function (event) {
+                var item = event.target.closest('[data-lock-menu]');
+                if (!item) {
+                    return;
+                }
+
+                runLockTimelineContextAction(item.getAttribute('data-lock-menu'));
+            });
+        }
+
+        // Any click outside the menu, Escape, or scrolling the tracks
+        // dismisses it - a menu left floating over a chart that has since
+        // scrolled points at the wrong row.
+        document.addEventListener('click', function (event) {
+            if (!event.target.closest('#lockContextMenu')) {
+                hideLockTimelineContextMenu();
+            }
+        });
+
+        document.addEventListener('keydown', function (event) {
+            if (event.key === 'Escape') {
+                hideLockTimelineContextMenu();
+            }
+        });
+
+        var lockTimelineContainerForMenu = document.getElementById('lockTimelineContainer');
+        if (lockTimelineContainerForMenu) {
+            lockTimelineContainerForMenu.addEventListener('scroll', function () {
+                hideLockTimelineContextMenu();
+            });
+        }
+
+        var lockTableContainer = document.getElementById('lockTableContainer');
+        if (lockTableContainer) {
+            // Delegated on the container, which is stable - the table inside
+            // it is re-rendered on every sort, filter and selection change.
+            lockTableContainer.addEventListener('click', function (event) {
+                var header = event.target.closest('[data-lock-sort]');
+                if (header) {
+                    setLockTimelineSortColumn(header.getAttribute('data-lock-sort'));
+                    return;
+                }
+
+                var row = event.target.closest('[data-lock-row-index]');
+                if (row) {
+                    selectLockTimelineLock(parseInt(row.getAttribute('data-lock-row-index'), 10));
+                }
+            });
+
+            lockTableContainer.addEventListener('contextmenu', function (event) {
+                var row = event.target.closest('[data-lock-row-index]');
+                if (!row) {
+                    return;
+                }
+
+                event.preventDefault();
+                showLockTimelineContextMenu(parseInt(row.getAttribute('data-lock-row-index'), 10), event.clientX, event.clientY);
+            });
+        }
+
+        var longestWaitSelect = document.getElementById('lockLongestWaitSelect');
+        if (longestWaitSelect) {
+            longestWaitSelect.addEventListener('change', function (event) {
+                var rawValue = event.currentTarget.value;
+                if (rawValue === '') {
+                    return;
+                }
+
+                jumpToLockTimelineLongestWait(parseInt(rawValue, 10));
+            });
+        }
+
+        var threadFilterList = document.getElementById('threadFilterList');
+        if (threadFilterList) {
+            // Delegated - the list is rebuilt on every selection change and
+            // on every search keystroke, so per-checkbox listeners would be
+            // re-bound (and leaked) each time.
+            threadFilterList.addEventListener('change', function (event) {
+                var checkbox = event.target.closest('.threadFilterCheckbox');
+                if (!checkbox) {
+                    return;
+                }
+
+                setLockTimelineThreadSelected(parseInt(checkbox.getAttribute('data-thread-id'), 10), checkbox.checked);
+            });
+        }
+
+        var threadSearch = document.getElementById('threadFilterSearch');
+        if (threadSearch) {
+            threadSearch.addEventListener('input', function () {
+                refreshLockTimelineThreadList();
+            });
+        }
+
+        var threadAllBtn = document.getElementById('threadFilterAllBtn');
+        if (threadAllBtn) {
+            threadAllBtn.addEventListener('click', function () {
+                setLockTimelineThreadSelectionMode('all');
+            });
+        }
+
+        var threadNoneBtn = document.getElementById('threadFilterNoneBtn');
+        if (threadNoneBtn) {
+            threadNoneBtn.addEventListener('click', function () {
+                setLockTimelineThreadSelectionMode('none');
+            });
+        }
+
+        var threadWorkerBtn = document.getElementById('threadFilterWorkerBtn');
+        if (threadWorkerBtn) {
+            threadWorkerBtn.addEventListener('click', function () {
+                setLockTimelineThreadSelectionMode('worker');
+            });
+        }
+
+        var stackCloseBtn = document.getElementById('lockStackCloseBtn');
+        if (stackCloseBtn) {
+            stackCloseBtn.addEventListener('click', function () {
+                closeLockTimelineStackPanel();
+            });
+        }
+
+        var allBtn = document.getElementById('lockFilterAllBtn');
+        if (allBtn) {
+            allBtn.addEventListener('click', function () {
+                setAllLockFilterCheckboxes(true);
+            });
+        }
+
+        var noneBtn = document.getElementById('lockFilterNoneBtn');
+        if (noneBtn) {
+            noneBtn.addEventListener('click', function () {
+                setAllLockFilterCheckboxes(false);
+            });
+        }
+
+        var resetZoomBtn = document.getElementById('lockTimelineResetZoomBtn');
+        if (resetZoomBtn) {
+            resetZoomBtn.addEventListener('click', function () {
+                resetLockTimelineZoom();
+            });
+        }
+    }
+
+    function setAllLockFilterCheckboxes(isChecked) {
+        var checkboxes = document.getElementsByClassName('lockFilterCheckbox');
+        for (var checkboxIndex = 0; checkboxIndex < checkboxes.length; ++checkboxIndex) {
+            checkboxes[checkboxIndex].checked = isChecked;
+            setLockTimelineLockVisible(parseInt(checkboxes[checkboxIndex].getAttribute('data-lock-index'), 10), isChecked);
+        }
+    }
+
+    // Expand All / Collapse All for one threading table. The .expanded class
+    // lives on BOTH halves of each pair (the summary row and its detail row),
+    // so both are set - matching the delegated per-row toggle in
+    // wireThreadingTab, which does the same.
+    function setAllThreadingStacksExpanded(tableId, isExpanded) {
+        var table = document.getElementById(tableId);
+        if (!table) {
+            return;
+        }
+
+        var rows = table.querySelectorAll('[data-threading-expandable="true"]');
+        for (var rowIndex = 0; rowIndex < rows.length; ++rowIndex) {
+            var row = rows[rowIndex];
+            var detailRow = document.getElementById(row.getAttribute('data-threading-target'));
+
+            if (isExpanded) {
+                row.classList.add('expanded');
+                if (detailRow) {
+                    detailRow.classList.add('expanded');
+                }
+            } else {
+                row.classList.remove('expanded');
+                if (detailRow) {
+                    detailRow.classList.remove('expanded');
+                }
+            }
+        }
+    }
+
+    // Worker-thread count over time. Deliberately a line chart with three
+    // series (min/avg/max per bucket) rather than one: the pool's average
+    // hides exactly the excursions worth seeing - a bucket whose max spikes
+    // while its average barely moves is a brief injection burst, which is
+    // what a stall looks like from the outside.
+    //
+    // Drag-to-zoom follows the same contract as the CPU/contention/exception
+    // timelines: the chart is destroyed and rebuilt against a bucket slice
+    // rather than mutating axis bounds, and the previous zoom handle is
+    // detached first (a leaked handle keeps listening on a dead canvas).
+    var threadingTimelineZoomRange = null;
+    var threadingTimelineChartHandle = null;
+
+    function renderThreadingTimeline(zoomRange) {
+        var canvas = document.getElementById('threadingTimeline');
+        if (!canvas || !threadingSummaryJson) {
+            return;
+        }
+
+        if (threadingTimelineChartHandle) {
+            threadingTimelineChartHandle.zoomHandle.detach();
+            threadingTimelineChartHandle.crosshairHandle.detach();
+            threadingTimelineChartHandle.chart.destroy();
+            threadingTimelineChartHandle = null;
+        }
+
+        var timeline = threadingSummaryJson["timeline"];
+        if (!timeline) {
+            return;
+        }
+
+        var bucketCount = timeline["bucketCount"];
+        var bucketDurationMSec = timeline["bucketDurationMSec"];
+        var minRelativeMSec = timeline["minRelativeMSec"];
+
+        var labels = [];
+        var bucketStartMSecs = [];
+        for (var bucketIndex = 0; bucketIndex < bucketCount; ++bucketIndex) {
+            var bucketStartMSec = minRelativeMSec + bucketIndex * bucketDurationMSec;
+            labels.push(formatElapsedMs(bucketStartMSec));
+            bucketStartMSecs.push(bucketStartMSec);
+        }
+
+        var zoomStartBucket = 0;
+        var zoomEndBucket = bucketCount - 1;
+        if (zoomRange !== null) {
+            zoomStartBucket = Math.max(0, Math.floor((zoomRange.startMSec - minRelativeMSec) / bucketDurationMSec));
+            zoomEndBucket = Math.min(bucketCount - 1, Math.ceil((zoomRange.endMSec - minRelativeMSec) / bucketDurationMSec));
+        }
+
+        var visibleLabels = labels.slice(zoomStartBucket, zoomEndBucket + 1);
+        var visibleBucketStartMSecs = bucketStartMSecs.slice(zoomStartBucket, zoomEndBucket + 1);
+        var visibleMax = timeline["maxActiveByBucket"].slice(zoomStartBucket, zoomEndBucket + 1);
+        var visibleAverage = timeline["averageActiveByBucket"].slice(zoomStartBucket, zoomEndBucket + 1);
+        var visibleMin = timeline["minActiveByBucket"].slice(zoomStartBucket, zoomEndBucket + 1);
+
+        var dragStateHolder = { current: null };
+        var crosshairStateHolder = { current: null };
+
+        // Category scale (labels are pre-formatted strings), so the category
+        // variant - the linear one would misread the axis. Shared by the drag
+        // and the crosshair so both read the hovered time the same way.
+        function pixelToMSecOnThreadingTimeline(chartArg, pixelX) {
+            return pixelToMSecCategory(chartArg, pixelX, visibleBucketStartMSecs);
+        }
+
+        var chart = new Chart(canvas, {
+            type: 'line',
+            data: {
+                labels: visibleLabels,
+                datasets: [
+                    {
+                        label: 'Max workers',
+                        data: visibleMax,
+                        borderColor: 'rgba(224, 82, 82, 0.9)',
+                        backgroundColor: 'rgba(224, 82, 82, 0.10)',
+                        borderWidth: 1,
+                        pointRadius: 1,
+                        fill: false
+                    },
+                    {
+                        label: 'Average workers',
+                        data: visibleAverage,
+                        borderColor: 'rgba(78, 121, 167, 0.95)',
+                        backgroundColor: 'rgba(78, 121, 167, 0.15)',
+                        borderWidth: 2,
+                        pointRadius: 1,
+                        fill: false
+                    },
+                    {
+                        label: 'Min workers',
+                        data: visibleMin,
+                        borderColor: 'rgba(53, 163, 83, 0.9)',
+                        backgroundColor: 'rgba(53, 163, 83, 0.10)',
+                        borderWidth: 1,
+                        pointRadius: 1,
+                        fill: false
+                    }
+                ]
+            },
+            // Chart.js 2.x wants the plugins array as a TOP-LEVEL config key,
+            // not under options - see CLAUDE.md; this has been a real bug here
+            // before.
+            plugins: [createCrosshairPlugin(crosshairStateHolder), createZoomSelectionPlugin(dragStateHolder)],
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 0 },
+                scales: {
+                    // Chart.js 2.x shape (yAxes array, not a `y` object).
+                    yAxes: [{
+                        ticks: { beginAtZero: false },
+                        scaleLabel: { display: true, labelString: 'Worker threads' }
+                    }],
+                    xAxes: [{
+                        ticks: { maxTicksLimit: 12, autoSkip: true }
+                    }]
+                },
+                tooltips: {
+                    mode: 'index',
+                    intersect: false
+                }
+            }
+        });
+
+        var zoomHandle = attachDragToZoom(chart, canvas, dragStateHolder, pixelToMSecOnThreadingTimeline, function (startMSec, endMSec) {
+            setThreadingTimelineZoom({ startMSec: startMSec, endMSec: endMSec });
+        });
+
+        var crosshairHandle = attachCrosshair(chart, canvas, crosshairStateHolder, pixelToMSecOnThreadingTimeline, formatElapsedMs);
+
+        threadingTimelineChartHandle = { chart: chart, zoomHandle: zoomHandle, crosshairHandle: crosshairHandle };
+    }
+
+    // The single place the threading zoom changes - drag, Reset button and the
+    // Backspace/swipe back gesture all route through here so the chart, the
+    // status strip and the tables below can never disagree about what window
+    // is being shown. Pass null to clear the zoom.
+    function setThreadingTimelineZoom(zoomRange) {
+        threadingTimelineZoomRange = zoomRange;
+        updateThreadingTimelineZoomStatusUi(zoomRange);
+        renderThreadingTimeline(zoomRange);
+        applyThreadingZoomFilter(zoomRange);
+    }
+
+    // Zooming the timeline narrows the tables below it to the same window.
+    // Only the thread/lock creation tables can follow: their rows carry a
+    // data-threading-msec stamp. The stall-correlation and adjustment-reason
+    // tables are aggregated whole-capture in the parser, so they get a visible
+    // "does not follow the zoom" note instead of being silently left stale.
+    function applyThreadingZoomFilter(zoomRange) {
+        var rows = document.querySelectorAll('#view-threading [data-threading-msec]');
+        for (var rowIndex = 0; rowIndex < rows.length; ++rowIndex) {
+            var row = rows[rowIndex];
+            var relativeMSec = parseFloat(row.getAttribute('data-threading-msec'));
+            var isVisible = zoomRange === null ||
+                (relativeMSec >= zoomRange.startMSec && relativeMSec <= zoomRange.endMSec);
+
+            // The detail row keeps its own .expanded state so collapsing is not
+            // a side effect of filtering - it just stays hidden while filtered
+            // out, and comes back expanded if it was expanded before.
+            if (row.classList.contains('callPathsDetail')) {
+                row.classList.toggle('threadingFilteredOut', !isVisible);
+                continue;
+            }
+
+            row.style.display = isVisible ? '' : 'none';
+        }
+
+        updateThreadingSectionCounts();
+
+        var aggregateNotes = document.getElementsByClassName('threadingZoomAggregateNote');
+        for (var noteIndex = 0; noteIndex < aggregateNotes.length; ++noteIndex) {
+            aggregateNotes[noteIndex].style.display = zoomRange === null ? 'none' : '';
+        }
+    }
+
+    function updateThreadingSectionCounts() {
+        var counts = document.getElementsByClassName('threadingSectionCount');
+        for (var countIndex = 0; countIndex < counts.length; ++countIndex) {
+            var countElement = counts[countIndex];
+            var total = parseInt(countElement.getAttribute('data-threading-total'), 10);
+
+            // The count element is named "<idPrefix>Count" for the table
+            // "<idPrefix>Table" - same prefix the expand-all buttons key off.
+            var tableId = countElement.id.replace(/Count$/, 'Table');
+            var table = document.getElementById(tableId);
+            if (!table) {
+                continue;
+            }
+
+            var visibleCount = 0;
+            var rows = table.querySelectorAll('[data-threading-expandable="true"]');
+            for (var rowIndex = 0; rowIndex < rows.length; ++rowIndex) {
+                if (rows[rowIndex].style.display !== 'none') {
+                    ++visibleCount;
+                }
+            }
+
+            countElement.textContent = visibleCount === total
+                ? total.toLocaleString()
+                : visibleCount.toLocaleString() + ' of ' + total.toLocaleString();
+        }
+    }
+
+    function updateThreadingTimelineZoomStatusUi(zoomRange) {
+        var statusEl = document.getElementById('threadingTimelineZoomStatus');
+        var labelEl = document.getElementById('threadingTimelineZoomLabel');
+        if (!statusEl) {
+            return;
+        }
+
+        if (!zoomRange) {
+            statusEl.style.display = 'none';
+            return;
+        }
+
+        statusEl.style.display = '';
+        if (labelEl) {
+            labelEl.textContent = formatElapsedMs(zoomRange.startMSec) + " – " + formatElapsedMs(zoomRange.endMSec) + " (Backspace to reset)";
+        }
+    }
+
+    function wireThreadingTab() {
+        renderThreadingTimeline(null);
+
+        var threadingResetZoomBtn = document.getElementById('threadingTimelineResetZoomBtn');
+        if (threadingResetZoomBtn) {
+            threadingResetZoomBtn.addEventListener('click', function () {
+                setThreadingTimelineZoom(null);
+            });
+        }
+
+        var threadingPanel = document.getElementById('view-threading');
+        if (!threadingPanel) {
+            return;
+        }
+
+        // Thread/lock creation rows expand to their captured stack. Delegated
+        // so the two tables share one handler.
+        threadingPanel.addEventListener('click', function (event) {
+            // Expand All/Collapse All is checked first, before the row
+            // toggle below - the buttons sit outside the table, but a
+            // delegated listener on the panel sees both.
+            var expandButton = event.target.closest('[data-threading-expand-target]');
+            if (expandButton) {
+                setAllThreadingStacksExpanded(
+                    expandButton.getAttribute('data-threading-expand-target'),
+                    expandButton.getAttribute('data-threading-expand') === 'true');
+                return;
+            }
+
+            var row = event.target.closest('[data-threading-expandable="true"]');
+            if (!row) {
+                return;
+            }
+
+            var detailRow = document.getElementById(row.getAttribute('data-threading-target'));
+            if (!detailRow) {
+                return;
+            }
+
+            if (row.classList.contains('expanded')) {
+                row.classList.remove('expanded');
+                detailRow.classList.remove('expanded');
+                return;
+            }
+
+            row.classList.add('expanded');
+            detailRow.classList.add('expanded');
+        });
+    }
+
     function wireContentionTab() {
         if (!contentionSummaryJson) {
             return;
         }
 
         initContentionDrillDownMethodNames(contentionSummaryJson["methodNames"]);
+
+        var contentionTabButtons = document.querySelectorAll('#view-contention .heapContentsTabButton');
+        for (var tabButtonIndex = 0; tabButtonIndex < contentionTabButtons.length; ++tabButtonIndex) {
+            contentionTabButtons[tabButtonIndex].addEventListener('click', function (event) {
+                switchContentionTab(event.currentTarget.getAttribute('data-contentiontab'));
+            });
+        }
+
+        wireLockTimelinePanel();
 
         var resetZoomBtn = document.getElementById('contentionTimelineResetZoomBtn');
         if (resetZoomBtn) {
@@ -4390,16 +5063,10 @@ var allocationDatasets = {};
                     return;
                 }
 
-                if (innerDetailRow.getAttribute('data-contention-lazy-inner') === 'true') {
-                    var subtreeHtml = buildLazyContentionDrillDownSubtree(callerRow.getAttribute('data-contention-target'));
-                    if (subtreeHtml) {
-                        innerDetailRow.querySelector('.callerTreeCell').innerHTML = subtreeHtml;
-                        innerDetailRow.removeAttribute('data-contention-lazy-inner');
-                    }
-                }
-
+                buildContentionDrillDownRowIfLazy(innerDetailRow);
                 callerRow.classList.add('expanded');
                 innerDetailRow.classList.add('expanded');
+                followContentionDrillDownLinearRun(innerDetailRow);
                 return;
             }
 
@@ -4433,6 +5100,7 @@ var allocationDatasets = {};
 
             siteRow.classList.add('expanded');
             detailRow.classList.add('expanded');
+            followContentionDrillDownLinearRun(detailRow);
 
             // Rotate toggle arrow.
             var toggle = siteRow.querySelector('.leafMethodToggle');
@@ -4484,6 +5152,25 @@ var allocationDatasets = {};
             filterCpuMethodsTableToZoomRange(null);
             updateCpuTimelineZoomStatusUi(null);
             return true;
+        }
+
+        // Threading view's worker-thread timeline - same single-level zoom
+        // as the CPU/contention/exception timelines, so "back" clears it.
+        var threadingPanelForZoom = document.getElementById('view-threading');
+        if (threadingPanelForZoom && threadingPanelForZoom.classList.contains('active') && threadingTimelineZoomRange) {
+            setThreadingTimelineZoom(null);
+            return true;
+        }
+
+        // Contention view's Lock Timeline tab - checked BEFORE the Sites
+        // branch below, and gated on its own panel being the active tab, so
+        // a zoom left behind on the Sites timeline can't swallow a swipe
+        // aimed at the lock chart. lockTimelineSwipeZoomOut steps back one
+        // level (see media/lockTimeline.js) and reports whether it did
+        // anything, same contract as flameGraphSwipeZoomOut below.
+        var lockTimelinePanel = document.getElementById('contention-tab-locktimeline');
+        if (lockTimelinePanel && lockTimelinePanel.classList.contains('active')) {
+            return lockTimelineSwipeZoomOut();
         }
 
         var contentionPanel = document.getElementById('view-contention');
@@ -4541,6 +5228,13 @@ var allocationDatasets = {};
             return true;
         }
 
+        // Lock Timeline's redo counterpart - same panel-active gate as its
+        // own branch in performGoBackAction.
+        var lockTimelinePanel = document.getElementById('contention-tab-locktimeline');
+        if (lockTimelinePanel && lockTimelinePanel.classList.contains('active')) {
+            return lockTimelineSwipeZoomForward();
+        }
+
         if (sharedZoomRange || !zoomRangeForForward) {
             return false;
         }
@@ -4588,8 +5282,43 @@ var allocationDatasets = {};
     // reported.
     var SWIPE_THRESHOLD_PX = 60;
     var SWIPE_GESTURE_IDLE_RESET_MS = 400;
+
+    // One physical swipe must fire exactly ONE action, and two swipes in a
+    // row must fire two - which is harder than it sounds on macOS, because a
+    // trackpad swipe doesn't end when the fingers lift. It keeps emitting
+    // wheel events as decaying momentum for the better part of a second.
+    //
+    // Two failure modes had to be closed, in opposite directions:
+    //
+    //  - Firing repeatedly within one swipe. Merely zeroing the accumulator
+    //    after firing isn't enough: the same burst keeps arriving and
+    //    re-crosses SWIPE_THRESHOLD_PX several more times. Against a
+    //    single-level toggle that's invisible, but against the flame graph's
+    //    multi-level undo stack (flameGraph.js's flameGraphBackStack) it
+    //    drained the whole stack per swipe, so "step back one zoom" behaved
+    //    like "reset entirely". Hence latching after a fire.
+    //
+    //  - Never re-arming, so only the FIRST swipe ever works. Clearing the
+    //    latch purely on an idle gap fails for exactly the case that matters
+    //    (going back several levels): the momentum tail keeps resetting the
+    //    idle timer, so a second deliberate swipe ~200ms later lands while
+    //    still latched and is swallowed. Reproduced directly against a
+    //    simulated ramp-then-decay burst.
+    //
+    // So re-arming is driven by momentum DECAY, not elapsed time: once the
+    // per-event magnitude falls to REARM_QUIET_DELTA the tail is spent and
+    // the next real swipe can fire. The idle timer stays only as a backstop.
+    // GESTURE_START_DELTA then stops that spent tail from itself
+    // accumulating into a fresh gesture - a deliberate swipe ramps well past
+    // it within a couple of events, while 1-3px momentum dust never does.
+    // The gap between the two constants is what keeps those two rules from
+    // fighting each other.
+    var SWIPE_REARM_QUIET_DELTA = 3;
+    var SWIPE_GESTURE_START_DELTA = 8;
+
     var swipeAccumulatedDeltaX = 0;
     var swipeGestureResetTimer = null;
+    var swipeGestureLatched = false;
 
     document.addEventListener('wheel', function (event) {
         if (event.ctrlKey || Math.abs(event.deltaX) <= Math.abs(event.deltaY)) {
@@ -4600,18 +5329,40 @@ var allocationDatasets = {};
         clearTimeout(swipeGestureResetTimer);
         swipeGestureResetTimer = setTimeout(function () {
             swipeAccumulatedDeltaX = 0;
+            swipeGestureLatched = false;
         }, SWIPE_GESTURE_IDLE_RESET_MS);
+
+        var magnitude = Math.abs(event.deltaX);
+
+        if (swipeGestureLatched) {
+            // Momentum has decayed to nothing - this gesture is over, so
+            // re-arm for the next one without waiting out the idle timer.
+            if (magnitude <= SWIPE_REARM_QUIET_DELTA) {
+                swipeGestureLatched = false;
+                swipeAccumulatedDeltaX = 0;
+            }
+
+            return;
+        }
+
+        // Don't let a spent momentum tail accumulate into a gesture of its
+        // own - a real swipe opens well above this.
+        if (swipeAccumulatedDeltaX === 0 && magnitude < SWIPE_GESTURE_START_DELTA) {
+            return;
+        }
 
         swipeAccumulatedDeltaX += event.deltaX;
 
         if (swipeAccumulatedDeltaX <= -SWIPE_THRESHOLD_PX) {
             swipeAccumulatedDeltaX = 0;
+            swipeGestureLatched = true;
 
             if (performGoBackAction()) {
                 event.preventDefault();
             }
         } else if (swipeAccumulatedDeltaX >= SWIPE_THRESHOLD_PX) {
             swipeAccumulatedDeltaX = 0;
+            swipeGestureLatched = true;
 
             if (performGoForwardAction()) {
                 event.preventDefault();

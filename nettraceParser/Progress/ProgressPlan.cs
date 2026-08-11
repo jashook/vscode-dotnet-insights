@@ -143,7 +143,19 @@ public static class ProgressPlan
     // combined were only ~21-22% of the non-read total on both captures),
     // so even a poorly-weighted split here moves the bar less than
     // ReadShareOfTotal or the jsonExport sub-writer weights would.
-    private static readonly double[] ProjectorPhaseWeights = { 0.2792, 0.1884, 0.0533, 0.2674, 0.0767, 0.1004, 0.0348 };
+    // The 8th entry (threading) is derived from a RATIO rather than from one
+    // capture's absolute proportion, deliberately: the other seven were
+    // averaged across two differently-shaped captures precisely because one
+    // overfits, and overwriting that calibration from a single run would
+    // throw it away. Threading's cost is structurally the same kind as
+    // eventOverview's - a scan of every event doing trivial per-event work -
+    // and it makes two such passes (one to find the threading events' own
+    // time range, one to bucket) against eventOverview's one. Measured on the
+    // reference capture: threadingProject=547ms against eventOverview=254ms,
+    // a 2.15x ratio, so it takes 2.15x eventOverview's calibrated weight.
+    // Recalibrate from the Timing: line's threadingProject= field if a
+    // differently-shaped capture disagrees.
+    private static readonly double[] ProjectorPhaseWeights = { 0.2792, 0.1884, 0.0533, 0.2674, 0.0767, 0.1004, 0.0348, 0.5749 };
 
     // jsonExport sub-writer per-item costs, in nanoseconds/record - REAL
     // measured values (not seeds/guesses) from the two reference captures

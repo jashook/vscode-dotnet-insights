@@ -145,15 +145,21 @@ function createCrosshairPlugin(crosshairStateHolder) {
 //
 // Returns { detach() } - same reasoning as attachDragToZoom's own.
 function attachCrosshair(chart, canvasElement, crosshairStateHolder, pixelToMSecFn, formatLabelFn) {
-    var redrawScheduled = false;
+    var redrawHandle = 0;
+    var isDetached = false;
 
     function scheduleRedraw() {
-        if (redrawScheduled) {
+        if (redrawHandle !== 0) {
             return;
         }
-        redrawScheduled = true;
-        window.requestAnimationFrame(function () {
-            redrawScheduled = false;
+        redrawHandle = window.requestAnimationFrame(function () {
+            redrawHandle = 0;
+            // Same destroyed-chart guard as attachDragToZoom's - a hover
+            // redraw can still be pending when a zoom rebuilds the chart.
+            if (isDetached) {
+                return;
+            }
+
             chart.draw();
         });
     }
@@ -188,6 +194,12 @@ function attachCrosshair(chart, canvasElement, crosshairStateHolder, pixelToMSec
 
     return {
         detach: function () {
+            isDetached = true;
+            if (redrawHandle !== 0) {
+                window.cancelAnimationFrame(redrawHandle);
+                redrawHandle = 0;
+            }
+
             canvasElement.removeEventListener("mousemove", onMouseMove);
             canvasElement.removeEventListener("mouseleave", clearCrosshair);
         }
@@ -212,16 +224,25 @@ function attachCrosshair(chart, canvasElement, crosshairStateHolder, pixelToMSec
 // each time - without detaching first, old listeners referencing the
 // stale/destroyed chart would keep piling up.
 function attachDragToZoom(chart, canvasElement, dragStateHolder, pixelToMSecFn, onRangeSelected) {
-    var redrawScheduled = false;
+    var redrawHandle = 0;
     var suppressNextClick = false;
+    var isDetached = false;
 
     function scheduleRedraw() {
-        if (redrawScheduled) {
+        if (redrawHandle !== 0) {
             return;
         }
-        redrawScheduled = true;
-        window.requestAnimationFrame(function () {
-            redrawScheduled = false;
+        redrawHandle = window.requestAnimationFrame(function () {
+            redrawHandle = 0;
+            // A drag's LAST mousemove schedules a redraw, and the mouseup
+            // that follows it rebuilds the chart (destroying this one) before
+            // that frame ever runs - so without this guard the pending frame
+            // calls draw() on a destroyed chart, whose ctx is already null
+            // ("Cannot read properties of null (reading 'clearRect')").
+            if (isDetached) {
+                return;
+            }
+
             // draw(), not update() - the data/scales haven't changed, only
             // the selection-box overlay has, so a full layout recalculation
             // (what update() does) is unnecessary work on every mousemove.
@@ -305,6 +326,12 @@ function attachDragToZoom(chart, canvasElement, dragStateHolder, pixelToMSecFn, 
 
     return {
         detach: function () {
+            isDetached = true;
+            if (redrawHandle !== 0) {
+                window.cancelAnimationFrame(redrawHandle);
+                redrawHandle = 0;
+            }
+
             canvasElement.removeEventListener("mousedown", onMouseDown);
             window.removeEventListener("mousemove", onMouseMove);
             window.removeEventListener("mouseup", onMouseUp);

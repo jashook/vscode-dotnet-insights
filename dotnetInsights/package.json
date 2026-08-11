@@ -3,7 +3,7 @@
   "displayName": ".NET Insights",
   "publisher": "jashoo",
   "description": "Monitor .NET Processes for GC information in real time, or drill into .NET DLLs by viewing the IL and compiled code. Relies on ildasm and a public .NET JIT tool PMI.",
-  "version": "1.6.9",
+  "version": "1.7.0",
   "license": "MIT",
   "preview": false,
   "icon": "media/dep.png",
@@ -30,6 +30,7 @@
     "onLanguage:csharp",
     "onLanguage:fsharp",
     "onCommand:dotnetInsights.startGCMonitor",
+    "onCommand:dotnetInsights.diffNettrace",
     "onCustomEditor:dotnetInsights.edit",
     "onCustomEditor:dotnetInsightsGc.edit",
     "onCustomEditor:dotnetInsightsGcSnapshot.edit",
@@ -340,9 +341,21 @@
       {
         "command": "dotnetInsights.loadEvents",
         "title": "Show details on all load events"
+      },
+      {
+        "command": "dotnetInsights.diffNettrace",
+        "title": "Compare Two .nettrace Captures",
+        "category": "dotnet-insights"
       }
     ],
     "menus": {
+      "explorer/context": [
+        {
+          "command": "dotnetInsights.diffNettrace",
+          "when": "resourceExtname == .nettrace",
+          "group": "navigation@100"
+        }
+      ],
       "editor/context": [
         {
           "command": "dotnetInsights.realtimeIL",

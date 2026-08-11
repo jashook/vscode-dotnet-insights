@@ -242,13 +242,15 @@ public static class GcEventProjector
         // A background GC's own PauseDurationMSec is seeded at GCStart with
         // just its initiating SuspendEEBegin-to-SuspendEEEnd gap (the time to
         // actually stop every thread - a few tens of microseconds, not a
-        // lasting pause), then updated at each RestartEEEnd that routes to
-        // it: SuspendForGCPrep cycles (its own internal synchronization
-        // pauses) *accumulate* onto the running total, while a SuspendForGC
-        // cycle (matching a nested/ephemeral GC's own suspend rather than
-        // the BGC's) *replaces* it with the full SuspendEEBegin-to-this-
-        // RestartEEEnd window - both verified field-for-field against
-        // TraceManagedProcess.cs's AddConcurrentPauseTime.
+        // lasting pause), then *accumulates* one increment per RestartEEEnd
+        // that both routes to it AND closes a SuspendForGCPrep cycle (its own
+        // internal synchronization pauses). Restarts routed to it under any
+        // other suspend reason are unrelated pauses that merely overlapped
+        // its concurrent phase and are ignored entirely - see the
+        // GCRestartEEEnd handler's own comment for the real capture this was
+        // verified against, and why the alternative (replacing with the full
+        // suspend-to-restart window) silently reports a background GC's whole
+        // multi-second concurrent phase as stop-the-world pause time.
         long pendingSuspendQpc = -1;
         long mostRecentQualifyingSuspendBeginQpc = -1;
         int mostRecentQualifyingSuspendReason = -1;
@@ -495,23 +497,71 @@ public static class GcEventProjector
                     gcsById.TryGetValue(targetGcId, out gcEvent) &&
                     pauseStartQpcById.TryGetValue(targetGcId, out pauseStartQpc))
                 {
-                    if (routeToBackgroundGc && mostRecentQualifyingSuspendReason == GCSuspendEEReason.SuspendForGCPrep)
+                    if (routeToBackgroundGc)
                     {
-                        // This cycle was the background GC's own internal
-                        // synchronization pause - accumulate onto its
-                        // running total rather than replacing it.
-                        double pauseIncrementMSec = (record.TimeStampRelativeQPC - mostRecentQualifyingSuspendBeginQpc) * 1000.0 / qpcFrequency;
-                        gcEvent.PauseDurationMSec += pauseIncrementMSec;
+                        // A restart routed to a still-open background GC only
+                        // means something when it closes one of that GC's OWN
+                        // internal synchronization cycles (SuspendForGCPrep),
+                        // in which case it accumulates onto the running total.
+                        //
+                        // Every other suspend reason routing here - in
+                        // practice overwhelmingly SuspendOther (tiering,
+                        // debugger, thread-pool bookkeeping...) - is an
+                        // unrelated pause that merely happened to occur while
+                        // this background GC was concurrently marking, and
+                        // must not touch its pause time at all. Verified
+                        // against a real Server GC capture: background GC
+                        // #18682 spans ~4.2 seconds of concurrent work
+                        // containing ~3000 SuspendOther cycles and exactly
+                        // ONE SuspendForGCPrep cycle (98.748ms). Its true
+                        // pause is that one cycle plus the initiating
+                        // suspend gap seeded at GCStart (0.023ms) = 98.771ms,
+                        // matching TraceEvent's own ground-truth 98.7704ms.
+                        // Falling through to the replace-with-full-window
+                        // branch below on those SuspendOther restarts instead
+                        // reported 4214ms - the entire concurrent phase
+                        // misattributed as stop-the-world pause time, which
+                        // also inflated the Overview page's "% time in GC"
+                        // from ~4% to over 50%.
+                        if (mostRecentQualifyingSuspendReason == GCSuspendEEReason.SuspendForGCPrep)
+                        {
+                            double pauseIncrementMSec = (record.TimeStampRelativeQPC - mostRecentQualifyingSuspendBeginQpc) * 1000.0 / qpcFrequency;
+                            gcEvent.PauseDurationMSec += pauseIncrementMSec;
+                            gcEvent.PauseEndRelativeMSec = (record.TimeStampRelativeQPC - referenceQpc) * 1000.0 / qpcFrequency;
+                            gcIdsWithSuspendBasedPause.Add(targetGcId);
+                        }
                     }
                     else
                     {
                         gcEvent.PauseDurationMSec = (record.TimeStampRelativeQPC - pauseStartQpc) * 1000.0 / qpcFrequency;
+                        gcEvent.PauseStartRelativeMSec = (pauseStartQpc - referenceQpc) * 1000.0 / qpcFrequency;
+                        gcEvent.PauseEndRelativeMSec = (record.TimeStampRelativeQPC - referenceQpc) * 1000.0 / qpcFrequency;
+                        gcIdsWithSuspendBasedPause.Add(targetGcId);
                     }
-
-                    gcEvent.PauseStartRelativeMSec = (pauseStartQpc - referenceQpc) * 1000.0 / qpcFrequency;
-                    gcEvent.PauseEndRelativeMSec = (record.TimeStampRelativeQPC - referenceQpc) * 1000.0 / qpcFrequency;
-                    gcIdsWithSuspendBasedPause.Add(targetGcId);
                 }
+
+                // Every GCRestartEEEnd consumes exactly one prior qualifying
+                // GCSuspendEEBegin (they pair 1:1 on the wire - threads
+                // suspend, GC work happens, threads restart). Without this
+                // reset, a background GC's own internal SuspendForGCPrep
+                // cycle whose matching RestartEEEnd got routed elsewhere (a
+                // real, observed case under Server GC - see this method's
+                // own header comment on why routing can't always find the
+                // "right" GC) leaves mostRecentQualifyingSuspendBeginQpc
+                // stale. A much later, unrelated RestartEEEnd routed to the
+                // SAME still-open background GC would then read that stale
+                // timestamp as if it were fresh and accumulate a bogus
+                // multi-second/multi-minute increment spanning the entire
+                // gap since - confirmed against a real capture where this
+                // inflated one GC's own PauseDurationMSec to 19x its own
+                // recorded PauseStart-to-PauseEnd window, which is
+                // impossible for a correct accumulator (every real increment
+                // must fall inside that window). Resetting unconditionally
+                // (whether or not targetGcId resolved to a GC above) mirrors
+                // the real protocol: once ANY restart has occurred, the
+                // suspend it paired with is spent, full stop, regardless of
+                // whether this code found a GC to attribute it to.
+                mostRecentQualifyingSuspendReason = -1;
             }
         }
 

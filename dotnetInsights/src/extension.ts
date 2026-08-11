@@ -17,6 +17,7 @@ import { DotnetInsightsGcSnapshotEditor } from "./DotnetInsightsGcSnapshotEditor
 import { DotnetInsightsNettraceEditor } from "./DotnetInsightsNettraceEditor";
 import { DotnetInsightsRuntimeLoadEventsEditor } from "./DotnetInsightsRuntimeLoadEventsEditor";
 import { DependencySetup } from "./DependencySetup";
+import { showNettraceDiff, pickCapturesToDiff } from "./NettraceDiffPanel";
 
 import { GcListener } from "./GcListener";
 import { OnSaveIlDasm } from './onSaveIlDasm';
@@ -320,7 +321,16 @@ export async function activate(context: vscode.ExtensionContext) {
     // render at all (its own HTML is gated on exceptionSummary.timeline
     // being present), so a real version bump is required here, not a
     // same-tag re-upload.
-    const latestNettraceParserVersionNumber = "1.6.9";
+    //
+    // Bumped again for 1.7.0: the Overview time breakdown, the lock ownership
+    // timeline, the Threading tab and capture diffing are all fed by JSON
+    // sections (timeBreakdown, contentionSummary's lockTimeline/longestWaits,
+    // threadingSummary) that a pre-1.7.0 binary does not emit at all, plus a
+    // background-GC pause-attribution fix that changes the numbers every GC
+    // view shows. Same reasoning as above: those views are gated on their own
+    // JSON being present, so a stale cached binary silently renders an empty
+    // tab rather than an obviously broken one.
+    const latestNettraceParserVersionNumber = "1.7.0";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;
@@ -768,6 +778,25 @@ export async function activate(context: vscode.ExtensionContext) {
             });
         }
     });
+
+    // Compare two .nettrace captures. VS Code passes an explorer multi-select
+    // as (clickedUri, selectedUris), so right-clicking two selected captures
+    // needs no prompting; invoking from the palette falls back to two pickers
+    // (see pickCapturesToDiff).
+    context.subscriptions.push(vscode.commands.registerCommand("dotnetInsights.diffNettrace", async (contextUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
+        const captures = await pickCapturesToDiff(contextUri, selectedUris);
+
+        if (captures === null) {
+            return;
+        }
+
+        if (captures.baseline === captures.comparison) {
+            vscode.window.showWarningMessage("Select two different captures to compare.");
+            return;
+        }
+
+        await showNettraceDiff(context, insights, captures.baseline, captures.comparison);
+    }));
 
     context.subscriptions.push(DotnetInsightsTextEditorProvider.register(context, insights));
     context.subscriptions.push(DotnetInsightsGcEditor.register(context, insights, listener));
