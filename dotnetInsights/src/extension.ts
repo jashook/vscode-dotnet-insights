@@ -321,7 +321,16 @@ export async function activate(context: vscode.ExtensionContext) {
     // render at all (its own HTML is gated on exceptionSummary.timeline
     // being present), so a real version bump is required here, not a
     // same-tag re-upload.
-    const latestNettraceParserVersionNumber = "1.6.9";
+    //
+    // Bumped again for 1.7.0: the Overview time breakdown, the lock ownership
+    // timeline, the Threading tab and capture diffing are all fed by JSON
+    // sections (timeBreakdown, contentionSummary's lockTimeline/longestWaits,
+    // threadingSummary) that a pre-1.7.0 binary does not emit at all, plus a
+    // background-GC pause-attribution fix that changes the numbers every GC
+    // view shows. Same reasoning as above: those views are gated on their own
+    // JSON being present, so a stale cached binary silently renders an empty
+    // tab rather than an obviously broken one.
+    const latestNettraceParserVersionNumber = "1.7.0";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;
