@@ -7,6 +7,7 @@ import { renderContentionView } from "./ContentionRenderer";
 import { renderCpuProfileView } from "./CpuProfileRenderer";
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
 import { renderEventOverviewTable } from "./EventOverviewRenderer";
+import { renderThreadingView } from "./ThreadingRenderer";
 import { renderExceptionSummaryTable } from "./ExceptionSummaryRenderer";
 import { formatHumanDateTime, renderGcDetailTable } from "./GcDetailTableRenderer";
 import { computeAllocationAmountStats, computePauseTimeStats } from "./GcStatsCalculations";
@@ -162,6 +163,15 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     // GcJsonExporter.cs). Unlike those two, eventOverview is always
     // meaningful whenever it's present (every capture has *some* events),
     // so there's no data-emptiness check here - only the format gate.
+    // "Threading" is nettrace-only and only meaningful when the capture
+    // actually recorded thread-pool events (a capture taken without the
+    // ThreadPool keyword has none).
+    const threadingSummary = gcData["threadingSummary"];
+    const threadingMethodNames = gcData["threadingMethodNames"] || [];
+    const hasThreading = isNettrace && threadingSummary !== null && threadingSummary !== undefined && threadingSummary["hasThreadPoolData"] === true;
+    const threadingHtml = hasThreading ? renderThreadingView(threadingSummary, threadingMethodNames) : "";
+    const threadingSummaryJson = escapeJsonForInlineScript(hasThreading ? JSON.stringify(threadingSummary) : "null");
+
     const eventOverview = gcData["eventOverview"];
     const hasOverview = isNettrace && eventOverview !== null && eventOverview !== undefined;
     const timeBreakdown = gcData["timeBreakdown"];
@@ -466,6 +476,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <script type="application/json" id="exceptionSummaryJson">${exceptionSummaryJson}</script>
             <script type="application/json" id="cpuProfileJson">${cpuProfileJson}</script>
             <script type="application/json" id="contentionSummaryJson">${contentionSummaryJson}</script>
+            <script type="application/json" id="threadingSummaryJson">${threadingSummaryJson}</script>
 
             <!-- High-level view switcher (Overview / Profile / GC / Heap
                  Contents / Exceptions) - browser-tab style, sitting above
@@ -485,7 +496,8 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
                 <button class="viewNavButton${isNettrace ? `` : ` active`}" data-view="gc"${isNettrace && !hasGc ? ` disabled title="No GC events in this capture"` : ``}>GC</button>
                 ${isNettrace ? `<button class="viewNavButton" data-view="heapContents"${hasHeapContents ? `` : ` disabled title="No allocation events in this capture"`}>Heap Contents</button>` : ``}
                 ${isNettrace ? `<button class="viewNavButton" data-view="exceptions"${hasExceptions ? `` : ` disabled title="No exception events in this capture"`}>Exceptions</button>` : ``}
-                ${isNettrace ? `<button class="viewNavButton" data-view="contention"${hasContention ? `` : ` disabled title="No contention events in this capture"`}>Contention</button>` : ``}
+                ${isNettrace ? `<button class="viewNavButton" data-view="threading"${hasThreading ? `` : ` disabled`}>Threading</button>
+            <button class="viewNavButton" data-view="contention"${hasContention ? `` : ` disabled title="No contention events in this capture"`}>Contention</button>` : ``}
             </div>
 
             <h2 class="divider">${gcData["processName"]}</h2>
@@ -687,6 +699,9 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
                  constructed only on the "Exceptions" nav button's first
                  click. -->
             <span style="display:none" id="exceptionSummaryHtml"><!--${exceptionSummaryHtml}--></span>` : ``}
+            ${hasThreading ? `<div id="view-threading" class="viewPanel"></div>
+            <span style="display:none" id="threadingHtml"><!--${threadingHtml}--></span>` : ``}
+
             ${hasContention ? `<div id="view-contention" class="viewPanel"></div>
             <!-- Same lazy-inject pattern as exceptionSummaryHtml above -
                  constructed only on the "Contention" nav button's first

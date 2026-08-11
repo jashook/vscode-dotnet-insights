@@ -49,6 +49,7 @@ var allocationDatasets = {};
     // contention events - see GcSnapshotRenderer.ts's hasContention. Eagerly
     // parsed for the same reason the others are.
     var contentionSummaryJson = JSON.parse(document.getElementById("contentionSummaryJson").textContent);
+    var threadingSummaryJson = JSON.parse(document.getElementById("threadingSummaryJson").textContent);
 
     // Generic "hide this row, recompute everything else" controller shared
     // by every ranked/percent table on this page (CPU Methods, Contention
@@ -1878,6 +1879,7 @@ var allocationDatasets = {};
     var exceptionSummaryInjected = false;
     var cpuProfileInjected = false;
     var contentionInjected = false;
+    var threadingInjected = false;
 
     // { chart, zoomHandle } for every currently-rendered Heap Contents
     // chart - detached/destroyed and rebuilt on every zoom change (renderHeapContentsCharts
@@ -2309,6 +2311,15 @@ var allocationDatasets = {};
                 wireContentionTab();
                 setupDetailTableSortHandlers(document.getElementById('view-contention'));
                 contentionInjected = true;
+            } else if (targetView === 'threading' && !threadingInjected) {
+                var threadingHolder = document.getElementById("threadingHtml");
+                var threadingHtmlContent = threadingHolder.innerHTML.slice(4, threadingHolder.innerHTML.length - 3);
+
+                document.getElementById('view-threading').innerHTML = threadingHtmlContent;
+
+                wireThreadingTab();
+                setupDetailTableSortHandlers(document.getElementById('view-threading'));
+                threadingInjected = true;
             } else if (targetView === 'profile' && !cpuProfileInjected) {
                 var cpuProfileHolder = document.getElementById("cpuProfileHtml");
                 var cpuProfileHtml = cpuProfileHolder.innerHTML.slice(4, cpuProfileHolder.innerHTML.length - 3);
@@ -4675,6 +4686,117 @@ var allocationDatasets = {};
             checkboxes[checkboxIndex].checked = isChecked;
             setLockTimelineLockVisible(parseInt(checkboxes[checkboxIndex].getAttribute('data-lock-index'), 10), isChecked);
         }
+    }
+
+    // Worker-thread count over time. Deliberately a line chart with three
+    // series (min/avg/max per bucket) rather than one: the pool's average
+    // hides exactly the excursions worth seeing - a bucket whose max spikes
+    // while its average barely moves is a brief injection burst, which is
+    // what a stall looks like from the outside.
+    function renderThreadingTimeline() {
+        var canvas = document.getElementById('threadingTimeline');
+        if (!canvas || !threadingSummaryJson) {
+            return;
+        }
+
+        var timeline = threadingSummaryJson["timeline"];
+        if (!timeline) {
+            return;
+        }
+
+        var labels = [];
+        for (var bucketIndex = 0; bucketIndex < timeline["bucketCount"]; ++bucketIndex) {
+            var bucketStartMSec = timeline["minRelativeMSec"] + (bucketIndex * timeline["bucketDurationMSec"]);
+            labels.push(formatElapsedMs(bucketStartMSec));
+        }
+
+        new Chart(canvas.getContext('2d'), {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Max workers',
+                        data: timeline["maxActiveByBucket"],
+                        borderColor: 'rgba(224, 82, 82, 0.9)',
+                        backgroundColor: 'rgba(224, 82, 82, 0.10)',
+                        borderWidth: 1,
+                        pointRadius: 1,
+                        fill: false
+                    },
+                    {
+                        label: 'Average workers',
+                        data: timeline["averageActiveByBucket"],
+                        borderColor: 'rgba(78, 121, 167, 0.95)',
+                        backgroundColor: 'rgba(78, 121, 167, 0.15)',
+                        borderWidth: 2,
+                        pointRadius: 1,
+                        fill: false
+                    },
+                    {
+                        label: 'Min workers',
+                        data: timeline["minActiveByBucket"],
+                        borderColor: 'rgba(53, 163, 83, 0.9)',
+                        backgroundColor: 'rgba(53, 163, 83, 0.10)',
+                        borderWidth: 1,
+                        pointRadius: 1,
+                        fill: false
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 0 },
+                scales: {
+                    // Chart.js 2.x shape (yAxes array, not a `y` object) - see
+                    // CLAUDE.md; this codebase is pinned to 2.x.
+                    yAxes: [{
+                        ticks: { beginAtZero: false },
+                        scaleLabel: { display: true, labelString: 'Worker threads' }
+                    }],
+                    xAxes: [{
+                        ticks: { maxTicksLimit: 12, autoSkip: true }
+                    }]
+                },
+                tooltips: {
+                    mode: 'index',
+                    intersect: false
+                }
+            }
+        });
+    }
+
+    function wireThreadingTab() {
+        renderThreadingTimeline();
+
+        var threadingPanel = document.getElementById('view-threading');
+        if (!threadingPanel) {
+            return;
+        }
+
+        // Thread/lock creation rows expand to their captured stack. Delegated
+        // so the two tables share one handler.
+        threadingPanel.addEventListener('click', function (event) {
+            var row = event.target.closest('[data-threading-expandable="true"]');
+            if (!row) {
+                return;
+            }
+
+            var detailRow = document.getElementById(row.getAttribute('data-threading-target'));
+            if (!detailRow) {
+                return;
+            }
+
+            if (row.classList.contains('expanded')) {
+                row.classList.remove('expanded');
+                detailRow.classList.remove('expanded');
+                return;
+            }
+
+            row.classList.add('expanded');
+            detailRow.classList.add('expanded');
+        });
     }
 
     function wireContentionTab() {

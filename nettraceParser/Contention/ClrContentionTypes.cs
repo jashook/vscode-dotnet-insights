@@ -46,6 +46,12 @@ public static class ClrContentionEventIds
 {
     public const int ContentionStart = 81;
     public const int ContentionStop = 91;
+    // Emitted once per lock the first time the runtime inflates it, carrying
+    // LockID + AssociatedObjectID and - unlike the high-volume thread-pool
+    // events - a full stack. Consumed by the Threading view to answer "where
+    // was this lock created", which complements the Lock Timeline's own
+    // "where was it contended".
+    public const int LockCreated = 90;
 }
 
 // Managed = 0: contention on a managed Monitor lock (the common case).

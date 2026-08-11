@@ -35,6 +35,7 @@ using DotnetInsights.NetTrace.Exceptions;
 using DotnetInsights.NetTrace.Overview;
 using DotnetInsights.NetTrace.Progress;
 using DotnetInsights.NetTrace.Rundown;
+using DotnetInsights.NetTrace.Threading;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -78,7 +79,7 @@ public static class GcJsonExporter
     // becoming its own write() syscall.
     private const int OutputFileStreamBufferSize = 1024 * 1024;
 
-    public static JsonExportTiming WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath, double captureDurationMSec)
+    public static JsonExportTiming WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, ThreadingSummary threadingSummary, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath, double captureDurationMSec)
     {
         // Permanent (not throwaway) per-sub-writer timing - see
         // JsonExportTiming's own comment on why.
@@ -203,6 +204,24 @@ public static class GcJsonExporter
             ContentionJsonExporter.Write(writer, contentionEvents, symbolTable);
             contentionMs = subStopwatch.ElapsedMilliseconds;
             ProgressReporter.CompletePhase();
+
+            // "threadingSummary" is nettrace-only, same reasoning as the
+            // blocks above. Written after contention because its stall
+            // correlation reads the CPU samples, and its own method names are
+            // interned into a pool it owns (the Threading view is rendered
+            // independently of the drill-down tables).
+            writer.WritePropertyName("threadingSummary");
+            List<string> threadingMethodNames = new List<string>();
+            Dictionary<string, int> threadingMethodNameIndexByName = new Dictionary<string, int>();
+            ThreadingJsonExporter.Write(writer, threadingSummary, sampleEvents, symbolTable, threadingMethodNames, threadingMethodNameIndexByName);
+
+            writer.WritePropertyName("threadingMethodNames");
+            writer.WriteStartArray();
+            for (int nameIndex = 0; nameIndex < threadingMethodNames.Count; ++nameIndex)
+            {
+                writer.WriteStringValue(threadingMethodNames[nameIndex]);
+            }
+            writer.WriteEndArray();
 
             writer.WritePropertyName("gcData");
             writer.WriteStartArray();

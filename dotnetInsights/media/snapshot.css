@@ -2249,3 +2249,85 @@ td.rowHideColumn:hover
 {
     background-color: rgba(224, 82, 82, 0.30);
 }
+
+/* ---- Threading view ---- */
+
+.threadingSection
+{
+    margin-top: 18px;
+}
+
+.threadingSectionTitle
+{
+    font-size: 15px;
+    font-weight: bold;
+    margin-bottom: 4px;
+}
+
+/* These notes are load-bearing, not decoration: the thread-pool events carry
+   no stacks, so the view has to say where its numbers come from and what they
+   exclude, or the "during pool stalls" table reads as a direct measurement
+   rather than a time-window correlation. */
+.threadingNote
+{
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    border-left: 3px solid rgba(78, 121, 167, 0.8);
+    background-color: rgba(128, 128, 128, 0.10);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+.threadingChartHint
+{
+    font-size: 12px;
+    opacity: 0.8;
+    margin-bottom: 4px;
+}
+
+.threadingTable table
+{
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.threadingStallRow
+{
+    background-color: rgba(224, 160, 32, 0.14);
+}
+
+.threadingStallBadge
+{
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0 5px;
+    border-radius: 6px;
+    background-color: rgba(224, 160, 32, 0.45);
+}
+
+.threadingStackRow
+{
+    cursor: pointer;
+}
+
+.threadingStackRow:hover
+{
+    background-color: rgba(128, 128, 128, 0.18);
+}
+
+.threadingStackRow.expanded .leafMethodToggle
+{
+    transform: rotate(90deg);
+}
+
+.threadingStackList
+{
+    padding: 6px 10px 6px 26px;
+}
+
+.threadingStackFrame
+{
+    font-size: 11px;
+    line-height: 1.6;
+}

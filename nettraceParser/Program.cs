@@ -29,6 +29,7 @@ using DotnetInsights.NetTrace.Gc;
 using DotnetInsights.NetTrace.Overview;
 using DotnetInsights.NetTrace.Progress;
 using DotnetInsights.NetTrace.Rundown;
+using DotnetInsights.NetTrace.Threading;
 
 if (args.Length < 1)
 {
@@ -306,6 +307,12 @@ if (isJsonMode)
     long contentionProjectMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 
+    ProgressReporter.BeginPhase("Projecting threading events", projectorRanges[7].Start, projectorRanges[7].End);
+    ThreadingSummary threadingSummaryForJson = ThreadingEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, referenceQpc, ProgressReporter.ReportFraction);
+    ProgressReporter.CompletePhase();
+    long threadingProjectMs = phaseStopwatch.ElapsedMilliseconds;
+    phaseStopwatch.Restart();
+
     int totalEventCount = file.Events.Count;
 
     // Whole-capture wall-clock span, on the same referenceQpc/RelativeMSec
@@ -368,7 +375,7 @@ if (isJsonMode)
     // entirely from inside GcJsonExporter.WriteToFile itself - see that
     // method's own comment for why it calls ProgressReporter directly
     // rather than taking an onProgress parameter like every phase above.
-    JsonExportTiming jsonExportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, symbolTable, processName, ticksBinaryPath, captureDurationMSec);
+    JsonExportTiming jsonExportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, threadingSummaryForJson, symbolTable, processName, ticksBinaryPath, captureDurationMSec);
     long jsonExportMs = phaseStopwatch.ElapsedMilliseconds;
 
     long totalMs = totalStopwatch.ElapsedMilliseconds;
@@ -399,6 +406,7 @@ if (isJsonMode)
         $"symbolTable={symbolTableMs}ms " +
         $"sampleProject={sampleProjectMs}ms ({sampleEventsForJson.Count} samples) " +
         $"contentionProject={contentionProjectMs}ms ({contentionEventsForJson.Count} contentions) " +
+        $"threadingProject={threadingProjectMs}ms ({threadingSummaryForJson.Adjustments.Count} pool adjustments) " +
         $"jsonExport={jsonExportMs}ms(alloc={jsonExportTiming.AllocationMs}ms,exc={jsonExportTiming.ExceptionMs}ms,cpu={jsonExportTiming.CpuMs}ms,cont={jsonExportTiming.ContentionMs}ms,gc={jsonExportTiming.GcMs}ms) " +
         $"total={totalMs}ms " +
         $"gcPause={GC.GetTotalPauseDuration().TotalMilliseconds:F1}ms gcCounts=[{GC.CollectionCount(0)},{GC.CollectionCount(1)},{GC.CollectionCount(2)}]");
