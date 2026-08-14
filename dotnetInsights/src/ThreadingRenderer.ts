@@ -257,10 +257,9 @@ function renderAdjustmentsTable(threadingSummary: any): string {
         <div class="threadingSectionTitle">Pool Adjustments
             (<span class="threadingSectionCount" id="poolAdjustmentsCount" data-threading-total="${adjustments.length}">${adjustments.length.toLocaleString()}</span>)</div>
         <div class="threadingNote">Every resize decision the runtime's hill-climbing algorithm made, and why.
-        Open one to see what <b>every thread</b> was doing at that instant - the thread-pool events carry no stacks,
-        so each thread's stack is taken from the CPU sample nearest that decision's own timestamp
-        (&plusmn;${threadingSummary["stallCorrelation"] ? threadingSummary["stallCorrelation"]["windowHalfWidthMSec"] : 25}ms).
+        Open one to see what <b>every thread</b> was doing going into that decision.
         Threads sitting in the same stack are grouped, since the count is the finding.${truncatedNote}</div>
+        ${SNAPSHOT_PROVENANCE_NOTE_HTML}
         ${expandControlsHtml}
         <div class="detailTable threadingTable"><table id="poolAdjustmentsTable">${header}${rows}</table></div>
     </div>`;
@@ -300,6 +299,24 @@ function renderCreationCauseCell(stackedEvent: any): string {
     return `<td style="text-align:left" title="Pool worker. The runtime's most recent pool decision before this thread was created was &quot;${escapeHtmlForThreading(stackedEvent["causeReasonName"])}&quot;, ${formatMSec(delayMSec)} earlier. The events carry no correlation id, so this is the nearest decision in time, not a proven cause.">` +
         `${reasonName}${badge} <span class="threadingCauseDelay">${formatMSec(delayMSec)} earlier</span></td>`;
 }
+
+// The provenance of every stack in this view, stated up front rather than left
+// for the reader to infer from a table that looks like a stack dump.
+//
+// It is not a stack dump. The thread-pool events carry no stacks at all, so
+// these come from the CPU sample profiler, and each thread's stack is the last
+// sample taken BEFORE the decision. The backward-only direction matters enough
+// to say out loud: a sample from after the adjustment would show the state the
+// decision produced (the new thread already running, the queued work already
+// picked up) rather than the state that caused it.
+const SNAPSHOT_PROVENANCE_NOTE_HTML =
+    `<div class="threadingProvenanceNote">
+        <b>How these stacks are found:</b> thread-pool events carry no stacks, so each thread's stack is its
+        <b>last CPU sample before</b> the adjustment - never after it, since a later sample would show the state
+        the decision produced rather than the state that caused it. Each drill-down says how stale its oldest
+        stack is. A thread with no sample in that window does not appear, so this is the sampled picture going
+        into the decision, not a guaranteed-complete thread dump.
+    </div>`;
 
 // Signed, because the direction is the point: "+1" is the pool growing, which
 // is what a stall-driven adjustment does.

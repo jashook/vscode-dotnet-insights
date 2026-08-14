@@ -152,11 +152,13 @@ public class ThreadingAdjustmentDrillDownTests
 
         long[] blockingStack = new long[] { 0x1010, 0x2010 };
 
+        // All before the adjustment at 100.0 - a sample after it is excluded
+        // by design (see Write_IgnoresSamplesAfterTheAdjustmentEvenWhenTheyAreNearer).
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
             new SampleEvent(99.0, threadId: 11, blockingStack),
             new SampleEvent(99.5, threadId: 12, blockingStack),
-            new SampleEvent(100.5, threadId: 13, new long[] { 0x3010 }),
+            new SampleEvent(99.8, threadId: 13, new long[] { 0x3010 }),
         };
 
         using JsonDocument document = WriteAndParse(summary, sampleEvents);
@@ -173,9 +175,10 @@ public class ThreadingAdjustmentDrillDownTests
         Assert.Equal(2, sharedGroup.GetProperty("frames").GetArrayLength());
     }
 
-    // The rule this file exists for: thread 11 samples twice in the window,
-    // and the stack reported must be the one from 100.4 (0.4ms away), not the
-    // one from 80.0 (20ms away) that a first-wins pass would keep.
+    // The rule this file exists for: thread 11 samples twice before the
+    // adjustment, and the stack reported must be the one from 99.6 (0.4ms
+    // before), not the one from 80.0 (20ms before) that a first-wins pass
+    // would keep.
     [Fact]
     public void Write_KeepsTheSampleNearestTheAdjustmentForEachThread()
     {
@@ -184,8 +187,8 @@ public class ThreadingAdjustmentDrillDownTests
 
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
-            new SampleEvent(80.0, threadId: 11, new long[] { 0x3010 }),   // Other.Work, far
-            new SampleEvent(100.4, threadId: 11, new long[] { 0x1010 }),  // Blocking.Read, near
+            new SampleEvent(80.0, threadId: 11, new long[] { 0x3010 }),  // Other.Work, far
+            new SampleEvent(99.6, threadId: 11, new long[] { 0x1010 }),  // Blocking.Read, near
         };
 
         string[] methodNames = MethodNamesFor(summary, sampleEvents, out JsonDocument document);
@@ -201,6 +204,61 @@ public class ThreadingAdjustmentDrillDownTests
             Assert.Equal(1, frames.GetArrayLength());
             Assert.Equal("Blocking.Read", methodNames[frames[0].GetInt32()]);
         }
+    }
+
+    // The snapshot must show the state that PRODUCED the decision, so a
+    // sample taken AFTER the adjustment is ignored even when it is nearer in
+    // absolute time - it shows the state the decision already caused (the
+    // injected thread running, the queued work picked up), which would look
+    // like an answer to the question being asked while being an answer to a
+    // different one.
+    [Fact]
+    public void Write_IgnoresSamplesAfterTheAdjustmentEvenWhenTheyAreNearer()
+    {
+        ThreadingSummary summary = MakeSummary();
+        summary.Adjustments.Add(MakeAdjustment(100.0, newWorkerThreadCount: 5, ThreadAdjustmentReason.CooperativeBlocking));
+
+        List<SampleEvent> sampleEvents = new List<SampleEvent>
+        {
+            new SampleEvent(90.0, threadId: 11, new long[] { 0x1010 }),   // Blocking.Read, 10ms BEFORE
+            new SampleEvent(100.1, threadId: 11, new long[] { 0x3010 }),  // Other.Work, 0.1ms AFTER
+        };
+
+        string[] methodNames = MethodNamesFor(summary, sampleEvents, out JsonDocument document);
+
+        using (document)
+        {
+            JsonElement snapshot = document.RootElement.GetProperty("adjustments")[0].GetProperty("threadSnapshot");
+
+            JsonElement frames = snapshot.GetProperty("stacks")[0].GetProperty("frames");
+            Assert.Equal("Blocking.Read", methodNames[frames[0].GetInt32()]);
+            // ...and the reported staleness is the real one, 10ms, not the
+            // 0.1ms of the sample that was correctly rejected.
+            Assert.Equal(10.0, snapshot.GetProperty("oldestSampleAgeMSec").GetDouble(), 3);
+        }
+    }
+
+    // A thread that only ran after the decision contributes nothing at all -
+    // it is not evidence about the decision, so counting it would inflate
+    // "threads sampled" with threads the pool had not yet been given.
+    [Fact]
+    public void Write_ExcludesAThreadSampledOnlyAfterTheAdjustment()
+    {
+        ThreadingSummary summary = MakeSummary();
+        summary.Adjustments.Add(MakeAdjustment(100.0, newWorkerThreadCount: 5, ThreadAdjustmentReason.CooperativeBlocking));
+
+        List<SampleEvent> sampleEvents = new List<SampleEvent>
+        {
+            new SampleEvent(95.0, threadId: 11, new long[] { 0x1010 }),
+            new SampleEvent(100.5, threadId: 12, new long[] { 0x3010 }),
+            new SampleEvent(101.0, threadId: 13, new long[] { 0x3010 }),
+        };
+
+        using JsonDocument document = WriteAndParse(summary, sampleEvents);
+        JsonElement snapshot = document.RootElement.GetProperty("adjustments")[0].GetProperty("threadSnapshot");
+
+        Assert.Equal(1, snapshot.GetProperty("threadsSampled").GetInt32());
+        Assert.Equal(1, snapshot.GetProperty("stackGroupCount").GetInt32());
     }
 
     // Parked workers are the pool's idle state: flagged, counted, and sorted

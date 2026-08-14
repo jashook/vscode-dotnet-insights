@@ -2417,6 +2417,19 @@ td.rowHideColumn:hover
     margin-bottom: 4px;
 }
 
+/* Provenance disclaimer for the Pool Adjustments stacks. Amber like
+   .threadingZoomAggregateNote, and for the same reason: it is a caveat about
+   how to read what is on screen, not standing explanatory text. */
+.threadingProvenanceNote
+{
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    border-left: 3px solid rgba(224, 168, 82, 0.9);
+    background-color: rgba(224, 168, 82, 0.12);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
 /* Pool Adjustments drill-down: one block per group of threads sharing a
    stack, built lazily in snapshotGcStats.js. */
 .threadingSnapshotNote

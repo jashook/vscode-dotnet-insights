@@ -51,11 +51,24 @@ public static class ThreadingJsonExporter
     private const int MaxAdjustmentsEmitted = 500;
     private const int MaxStackFramesPerEvent = 40;
 
+    // How far BACK from an adjustment the per-adjustment snapshot looks for
+    // each thread's stack.
+    //
+    // Strictly backward, never forward, and that direction is load-bearing
+    // rather than a detail: the snapshot is meant to show the state that
+    // PRODUCED the decision. A sample taken after the adjustment shows the
+    // state the decision already caused - the injected thread is running, the
+    // work that was queued has been picked up - so a window straddling the
+    // timestamp would answer a different question than the one being asked,
+    // while looking like it answered this one.
+    private const double AdjustmentLookbackMSec = 25.0;
+
     // Per-adjustment drill-down bounds. The snapshot keeps ONE stack per
-    // thread (the sample nearest the adjustment - see BuildThreadSnapshots),
-    // so the natural size is the live thread count, ~126 on the reference
-    // capture, collapsing to far fewer distinct stacks once identical ones are
-    // grouped. These caps exist for a pathological capture, not the normal one.
+    // thread (the sample nearest before the adjustment - see
+    // BuildThreadSnapshots), so the natural size is the live thread count,
+    // ~126 on the reference capture, collapsing to far fewer distinct stacks
+    // once identical ones are grouped. These caps exist for a pathological
+    // capture, not the normal one.
     private const int MaxStackGroupsPerAdjustment = 30;
     private const int MaxThreadIdsPerStackGroup = 25;
 
@@ -191,19 +204,20 @@ public static class ThreadingJsonExporter
         public List<long> ThreadIds = new List<long>();
     }
 
-    // For each adjustment, what every thread was doing when the runtime made
-    // that decision.
+    // For each adjustment, what every thread was doing in the moments BEFORE
+    // the runtime made that decision.
     //
-    // "At the time of the decision" is taken literally: a thread produces ~5
-    // samples inside a 50ms window, each potentially a different stack, and
-    // averaging them would describe the window rather than the instant. So
-    // each thread contributes exactly one stack - the sample nearest the
-    // adjustment's own timestamp - which is the closest thing the sample data
-    // can give to a stack dump taken at that moment.
+    // "At the time of the decision" is taken literally in two ways. A thread
+    // produces several samples inside the window, each potentially a different
+    // stack, and averaging them would describe the window rather than the
+    // instant - so each thread contributes exactly one stack, the LAST sample
+    // before the adjustment. And the window never extends past the adjustment
+    // itself, for the reason on AdjustmentLookbackMSec: samples after it show
+    // the outcome, not the cause.
     //
     // Returns one entry per emitted adjustment, parallel to that slice, so a
     // caller can index it by adjustment index.
-    private static List<ThreadStackGroup>[] BuildThreadSnapshots(List<ThreadPoolAdjustmentRecord> adjustments, int emittedCount, List<SampleEvent> sampleEvents, MethodSymbolTable symbolTable, int[] threadsSampledByAdjustment, int[] parkedThreadsByAdjustment)
+    private static List<ThreadStackGroup>[] BuildThreadSnapshots(List<ThreadPoolAdjustmentRecord> adjustments, int emittedCount, List<SampleEvent> sampleEvents, MethodSymbolTable symbolTable, int[] threadsSampledByAdjustment, int[] parkedThreadsByAdjustment, double[] oldestSampleAgeByAdjustment)
     {
         List<ThreadStackGroup>[] groupsByAdjustment = new List<ThreadStackGroup>[emittedCount];
 
@@ -226,7 +240,10 @@ public static class ThreadingJsonExporter
             ref readonly SampleEvent sampleEvent = ref samplesSpan[sampleIndex];
             double sampleTime = sampleEvent.RelativeMSec;
 
-            while (windowCursor < emittedCount && adjustments[windowCursor].RelativeMSec + StallWindowHalfWidthMSec < sampleTime)
+            // An adjustment is retired once the samples have passed it: its
+            // window is [adjustment - lookback, adjustment], so nothing later
+            // can ever fall inside it.
+            while (windowCursor < emittedCount && adjustments[windowCursor].RelativeMSec < sampleTime)
             {
                 ++windowCursor;
             }
@@ -242,22 +259,20 @@ public static class ThreadingJsonExporter
             }
 
             // Windows overlap whenever two adjustments are closer together
-            // than the window width, so a sample can belong to several.
+            // than the lookback, so a sample can belong to several. Every
+            // window from the cursor on has its adjustment at or after this
+            // sample (that is what the retire loop above guarantees), so only
+            // the lower bound still needs checking.
             for (int windowIndex = windowCursor; windowIndex < emittedCount; ++windowIndex)
             {
                 double adjustmentTime = adjustments[windowIndex].RelativeMSec;
 
-                if (adjustmentTime - StallWindowHalfWidthMSec > sampleTime)
+                if (adjustmentTime - AdjustmentLookbackMSec > sampleTime)
                 {
                     break;
                 }
 
-                if (sampleTime > adjustmentTime + StallWindowHalfWidthMSec)
-                {
-                    continue;
-                }
-
-                double distanceMSec = sampleTime > adjustmentTime ? sampleTime - adjustmentTime : adjustmentTime - sampleTime;
+                double distanceMSec = adjustmentTime - sampleTime;
 
                 Dictionary<long, ThreadStackAtAdjustment> closestByThreadId = closestByAdjustment[windowIndex];
 
@@ -294,6 +309,21 @@ public static class ThreadingJsonExporter
             groupsByAdjustment[adjustmentIndex] = GroupThreadStacks(closestByThreadId, adjustments[adjustmentIndex].RelativeMSec, symbolTable, frameBuffer, out int threadsSampled, out int parkedThreads);
             threadsSampledByAdjustment[adjustmentIndex] = threadsSampled;
             parkedThreadsByAdjustment[adjustmentIndex] = parkedThreads;
+
+            // The staleness of the WORST stack in this snapshot, so the view
+            // can state how old the evidence actually is instead of quoting
+            // the window size and letting the reader assume the best case.
+            double oldestSampleAgeMSec = 0;
+
+            foreach (KeyValuePair<long, ThreadStackAtAdjustment> threadEntry in closestByThreadId)
+            {
+                if (threadEntry.Value.DistanceMSec > oldestSampleAgeMSec)
+                {
+                    oldestSampleAgeMSec = threadEntry.Value.DistanceMSec;
+                }
+            }
+
+            oldestSampleAgeByAdjustment[adjustmentIndex] = oldestSampleAgeMSec;
         }
 
         return groupsByAdjustment;
@@ -413,7 +443,8 @@ public static class ThreadingJsonExporter
 
         int[] threadsSampledByAdjustment = new int[emitted];
         int[] parkedThreadsByAdjustment = new int[emitted];
-        List<ThreadStackGroup>[] groupsByAdjustment = BuildThreadSnapshots(summary.Adjustments, emitted, sampleEvents, symbolTable, threadsSampledByAdjustment, parkedThreadsByAdjustment);
+        double[] oldestSampleAgeByAdjustment = new double[emitted];
+        List<ThreadStackGroup>[] groupsByAdjustment = BuildThreadSnapshots(summary.Adjustments, emitted, sampleEvents, symbolTable, threadsSampledByAdjustment, parkedThreadsByAdjustment, oldestSampleAgeByAdjustment);
 
         writer.WritePropertyName("adjustments");
         writer.WriteStartArray();
@@ -436,7 +467,7 @@ public static class ThreadingJsonExporter
             writer.WriteBoolean("isStallDriven", ThreadAdjustmentReason.IsStallDriven(adjustment.Reason));
             writer.WriteNumber("averageThroughput", adjustment.AverageThroughput);
 
-            WriteThreadSnapshot(writer, groupsByAdjustment[adjustmentIndex], threadsSampledByAdjustment[adjustmentIndex], parkedThreadsByAdjustment[adjustmentIndex], symbolTable, methodNames, methodNameIndexByName);
+            WriteThreadSnapshot(writer, groupsByAdjustment[adjustmentIndex], threadsSampledByAdjustment[adjustmentIndex], parkedThreadsByAdjustment[adjustmentIndex], oldestSampleAgeByAdjustment[adjustmentIndex], symbolTable, methodNames, methodNameIndexByName);
 
             writer.WriteEndObject();
         }
@@ -444,7 +475,7 @@ public static class ThreadingJsonExporter
         writer.WriteEndArray();
     }
 
-    private static void WriteThreadSnapshot(Utf8JsonWriter writer, List<ThreadStackGroup> groups, int threadsSampled, int parkedThreads, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    private static void WriteThreadSnapshot(Utf8JsonWriter writer, List<ThreadStackGroup> groups, int threadsSampled, int parkedThreads, double oldestSampleAgeMSec, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         writer.WritePropertyName("threadSnapshot");
 
@@ -461,6 +492,12 @@ public static class ThreadingJsonExporter
         writer.WriteNumber("threadsSampled", threadsSampled);
         writer.WriteNumber("parkedThreadCount", parkedThreads);
         writer.WriteNumber("stackGroupCount", groups.Count);
+        // Both emitted so the view can state the provenance of these stacks
+        // concretely: they are CPU samples from within lookbackMSec BEFORE the
+        // adjustment, the oldest of them oldestSampleAgeMSec old, not a stack
+        // dump taken at the instant of the decision.
+        writer.WriteNumber("lookbackMSec", AdjustmentLookbackMSec);
+        writer.WriteNumber("oldestSampleAgeMSec", oldestSampleAgeMSec);
 
         writer.WritePropertyName("stacks");
         writer.WriteStartArray();

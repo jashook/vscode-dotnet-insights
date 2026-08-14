@@ -4755,18 +4755,31 @@ var allocationDatasets = {};
             // Distinct from "every thread was idle" - see WriteThreadSnapshot
             // in ThreadingJsonExporter.cs, which writes null rather than an
             // empty snapshot precisely so this can be said out loud.
-            return '<div class="threadingSnapshotNote">No CPU samples fell within this adjustment\'s window, ' +
-                'so there is nothing to say about what threads were doing at that moment.</div>';
+            return '<div class="threadingSnapshotNote">No CPU samples were taken in the window before this ' +
+                'adjustment, so there is nothing to say about what threads were doing going into it.</div>';
         }
 
         var stacks = snapshot["stacks"] || [];
         var runningThreads = snapshot["threadsSampled"] - snapshot["parkedThreadCount"];
 
+        // The staleness is per snapshot, not a fixed window size, because it
+        // is what actually qualifies the stacks below: "all within 3ms" and
+        // "the oldest is 24ms old" support very different conclusions from the
+        // same table.
+        var oldestAgeMSec = snapshot["oldestSampleAgeMSec"];
+        var lookbackMSec = snapshot["lookbackMSec"];
+        var provenance = (oldestAgeMSec === undefined || lookbackMSec === undefined)
+            ? ''
+            : ' Stacks are each thread\'s last CPU sample <b>before</b> this decision (never after it); ' +
+              'the oldest is <b>' + Number(oldestAgeMSec).toFixed(1) + 'ms</b> old, within a ' +
+              Number(lookbackMSec).toFixed(0) + 'ms look-back.';
+
         var html = '<div class="threadingSnapshotNote">' +
-            '<b>' + Number(snapshot["threadsSampled"]).toLocaleString() + '</b> threads sampled around this decision: ' +
+            '<b>' + Number(snapshot["threadsSampled"]).toLocaleString() + '</b> threads sampled going into this decision: ' +
             '<b>' + Number(runningThreads).toLocaleString() + '</b> running, ' +
             '<b>' + Number(snapshot["parkedThreadCount"]).toLocaleString() + '</b> parked workers waiting for work ' +
             '(idle - spare capacity, not a blockage). Identical stacks are grouped.' +
+            provenance +
             '</div>';
 
         for (var groupIndex = 0; groupIndex < stacks.length; ++groupIndex) {
