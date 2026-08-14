@@ -171,6 +171,11 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const hasThreading = isNettrace && threadingSummary !== null && threadingSummary !== undefined && threadingSummary["hasThreadPoolData"] === true;
     const threadingHtml = hasThreading ? renderThreadingView(threadingSummary, threadingMethodNames) : "";
     const threadingSummaryJson = escapeJsonForInlineScript(hasThreading ? JSON.stringify(threadingSummary) : "null");
+    // The name pool is embedded separately from the summary because the
+    // Pool Adjustments drill-down is built lazily in the webview (see
+    // renderAdjustmentsTable), and resolving a frame index there needs the
+    // same pool the server-rendered rows used.
+    const threadingMethodNamesJson = escapeJsonForInlineScript(hasThreading ? JSON.stringify(threadingMethodNames) : "[]");
 
     const eventOverview = gcData["eventOverview"];
     const hasOverview = isNettrace && eventOverview !== null && eventOverview !== undefined;
@@ -477,6 +482,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <script type="application/json" id="cpuProfileJson">${cpuProfileJson}</script>
             <script type="application/json" id="contentionSummaryJson">${contentionSummaryJson}</script>
             <script type="application/json" id="threadingSummaryJson">${threadingSummaryJson}</script>
+            <script type="application/json" id="threadingMethodNamesJson">${threadingMethodNamesJson}</script>
 
             <!-- High-level view switcher (Overview / Profile / GC / Heap
                  Contents / Exceptions) - browser-tab style, sitting above

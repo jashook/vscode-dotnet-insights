@@ -51,6 +51,34 @@ public static class ThreadingJsonExporter
     private const int MaxAdjustmentsEmitted = 500;
     private const int MaxStackFramesPerEvent = 40;
 
+    // Per-adjustment drill-down bounds. The snapshot keeps ONE stack per
+    // thread (the sample nearest the adjustment - see BuildThreadSnapshots),
+    // so the natural size is the live thread count, ~126 on the reference
+    // capture, collapsing to far fewer distinct stacks once identical ones are
+    // grouped. These caps exist for a pathological capture, not the normal one.
+    private const int MaxStackGroupsPerAdjustment = 30;
+    private const int MaxThreadIdsPerStackGroup = 25;
+
+    // How far before a ThreadCreating event to look for the pool decision that
+    // provides its context.
+    //
+    // Measured, not assumed: on the reference capture only 6 of 22 worker
+    // creations have any adjustment within 100ms before them, 14 within 500ms
+    // and 16 within 2s - after which the number stops growing even at 10s,
+    // because the remaining 6 genuinely sit nowhere near a decision. So 2s is
+    // where this stops buying anything, and a creation past it is reported as
+    // having no nearby decision rather than being pinned on a stale one.
+    private const double CreationAttributionWindowMSec = 2000.0;
+
+    // A thread the POOL created, identified from the creation stack itself.
+    // This is a recorded fact and the only reliable one available: the
+    // adjustment counters cannot stand in for it (see
+    // FindNearestPrecedingAdjustmentIndex).
+    private static readonly string[] PoolWorkerCreationFramePrefixes = new string[]
+    {
+        "System.Threading.PortableThreadPool"
+    };
+
     // A parked pool worker waiting to be handed work. Its presence in a stall
     // window means the pool had spare capacity, not that anything was blocked.
     private static readonly string[] ParkedWorkerFramePrefixes = new string[]
@@ -84,10 +112,13 @@ public static class ThreadingJsonExporter
 
         WriteTimeline(writer, summary);
         WriteAdjustmentReasons(writer, summary);
-        WriteAdjustments(writer, summary);
+        WriteAdjustments(writer, summary, sampleEvents, symbolTable, methodNames, methodNameIndexByName);
         WriteStallCorrelation(writer, summary, sampleEvents, symbolTable, methodNames, methodNameIndexByName);
-        WriteStackedEvents(writer, "threadCreations", summary.ThreadCreations, symbolTable, methodNames, methodNameIndexByName);
-        WriteStackedEvents(writer, "lockCreations", summary.LockCreations, symbolTable, methodNames, methodNameIndexByName);
+        WriteStackedEvents(writer, "threadCreations", summary.ThreadCreations, summary.Adjustments, symbolTable, methodNames, methodNameIndexByName);
+        // Lock creations get no attribution: a lock is not created by a
+        // thread-pool decision, so pairing one with the nearest adjustment
+        // would be a coincidence dressed up as a cause.
+        WriteStackedEvents(writer, "lockCreations", summary.LockCreations, null, symbolTable, methodNames, methodNameIndexByName);
 
         writer.WriteEndObject();
     }
@@ -142,9 +173,247 @@ public static class ThreadingJsonExporter
         writer.WriteEndArray();
     }
 
-    private static void WriteAdjustments(Utf8JsonWriter writer, ThreadingSummary summary)
+    // One thread's stack at the moment of one adjustment.
+    private struct ThreadStackAtAdjustment
+    {
+        public double DistanceMSec;
+        public long[] Stack;
+    }
+
+    // Identical stacks across threads, collapsed. On a real capture most of
+    // the ~126 live threads are sitting in the same handful of stacks, so
+    // listing them per thread would be the same few stacks repeated dozens of
+    // times - the count IS the finding ("40 threads are all in SslStream.Read").
+    private sealed class ThreadStackGroup
+    {
+        public int[] Frames;
+        public bool IsParkedWorker;
+        public List<long> ThreadIds = new List<long>();
+    }
+
+    // For each adjustment, what every thread was doing when the runtime made
+    // that decision.
+    //
+    // "At the time of the decision" is taken literally: a thread produces ~5
+    // samples inside a 50ms window, each potentially a different stack, and
+    // averaging them would describe the window rather than the instant. So
+    // each thread contributes exactly one stack - the sample nearest the
+    // adjustment's own timestamp - which is the closest thing the sample data
+    // can give to a stack dump taken at that moment.
+    //
+    // Returns one entry per emitted adjustment, parallel to that slice, so a
+    // caller can index it by adjustment index.
+    private static List<ThreadStackGroup>[] BuildThreadSnapshots(List<ThreadPoolAdjustmentRecord> adjustments, int emittedCount, List<SampleEvent> sampleEvents, MethodSymbolTable symbolTable, int[] threadsSampledByAdjustment, int[] parkedThreadsByAdjustment)
+    {
+        List<ThreadStackGroup>[] groupsByAdjustment = new List<ThreadStackGroup>[emittedCount];
+
+        if (emittedCount == 0 || sampleEvents.Count == 0)
+        {
+            return groupsByAdjustment;
+        }
+
+        Dictionary<long, ThreadStackAtAdjustment>[] closestByAdjustment = new Dictionary<long, ThreadStackAtAdjustment>[emittedCount];
+
+        // Same single-ordered-pass shape as WriteStallCorrelation, and for the
+        // same reason: 500 windows x 19.7M samples is not a scan anyone can
+        // afford. Adjustments arrive in event order, so they are already
+        // sorted by time and a cursor over them is enough.
+        Span<SampleEvent> samplesSpan = CollectionsMarshal.AsSpan(sampleEvents);
+        int windowCursor = 0;
+
+        for (int sampleIndex = 0; sampleIndex < samplesSpan.Length; ++sampleIndex)
+        {
+            ref readonly SampleEvent sampleEvent = ref samplesSpan[sampleIndex];
+            double sampleTime = sampleEvent.RelativeMSec;
+
+            while (windowCursor < emittedCount && adjustments[windowCursor].RelativeMSec + StallWindowHalfWidthMSec < sampleTime)
+            {
+                ++windowCursor;
+            }
+
+            if (windowCursor >= emittedCount)
+            {
+                break;
+            }
+
+            if (sampleEvent.Stack.Length == 0)
+            {
+                continue;
+            }
+
+            // Windows overlap whenever two adjustments are closer together
+            // than the window width, so a sample can belong to several.
+            for (int windowIndex = windowCursor; windowIndex < emittedCount; ++windowIndex)
+            {
+                double adjustmentTime = adjustments[windowIndex].RelativeMSec;
+
+                if (adjustmentTime - StallWindowHalfWidthMSec > sampleTime)
+                {
+                    break;
+                }
+
+                if (sampleTime > adjustmentTime + StallWindowHalfWidthMSec)
+                {
+                    continue;
+                }
+
+                double distanceMSec = sampleTime > adjustmentTime ? sampleTime - adjustmentTime : adjustmentTime - sampleTime;
+
+                Dictionary<long, ThreadStackAtAdjustment> closestByThreadId = closestByAdjustment[windowIndex];
+
+                if (closestByThreadId == null)
+                {
+                    closestByThreadId = new Dictionary<long, ThreadStackAtAdjustment>();
+                    closestByAdjustment[windowIndex] = closestByThreadId;
+                }
+
+                if (closestByThreadId.TryGetValue(sampleEvent.ThreadId, out ThreadStackAtAdjustment existing)
+                    && existing.DistanceMSec <= distanceMSec)
+                {
+                    continue;
+                }
+
+                ThreadStackAtAdjustment closest;
+                closest.DistanceMSec = distanceMSec;
+                closest.Stack = sampleEvent.Stack;
+                closestByThreadId[sampleEvent.ThreadId] = closest;
+            }
+        }
+
+        int[] frameBuffer = new int[MaxStackFramesPerEvent];
+
+        for (int adjustmentIndex = 0; adjustmentIndex < emittedCount; ++adjustmentIndex)
+        {
+            Dictionary<long, ThreadStackAtAdjustment> closestByThreadId = closestByAdjustment[adjustmentIndex];
+
+            if (closestByThreadId == null)
+            {
+                continue;
+            }
+
+            groupsByAdjustment[adjustmentIndex] = GroupThreadStacks(closestByThreadId, adjustments[adjustmentIndex].RelativeMSec, symbolTable, frameBuffer, out int threadsSampled, out int parkedThreads);
+            threadsSampledByAdjustment[adjustmentIndex] = threadsSampled;
+            parkedThreadsByAdjustment[adjustmentIndex] = parkedThreads;
+        }
+
+        return groupsByAdjustment;
+    }
+
+    private static List<ThreadStackGroup> GroupThreadStacks(Dictionary<long, ThreadStackAtAdjustment> closestByThreadId, double adjustmentTimeMSec, MethodSymbolTable symbolTable, int[] frameBuffer, out int threadsSampled, out int parkedThreads)
+    {
+        List<ThreadStackGroup> groups = new List<ThreadStackGroup>();
+        // Hash bucket -> indices into groups. Hashing the resolved frame ids
+        // rather than formatting a string key per thread: the key is only ever
+        // used to find candidates, and the frames are then compared exactly,
+        // so a collision costs one extra comparison and can never merge two
+        // different stacks.
+        Dictionary<long, List<int>> groupIndicesByHash = new Dictionary<long, List<int>>();
+
+        threadsSampled = 0;
+        parkedThreads = 0;
+
+        foreach (KeyValuePair<long, ThreadStackAtAdjustment> threadEntry in closestByThreadId)
+        {
+            ++threadsSampled;
+
+            long[] stack = threadEntry.Value.Stack;
+            int frameCount = stack.Length < MaxStackFramesPerEvent ? stack.Length : MaxStackFramesPerEvent;
+
+            long hash = 1469598103934665603L;
+
+            for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex)
+            {
+                int frameId = symbolTable.ResolveId(stack[frameIndex], adjustmentTimeMSec);
+                frameBuffer[frameIndex] = frameId;
+                hash = (hash ^ frameId) * 1099511628211L;
+            }
+
+            bool isParkedWorker = frameCount > 0 && IsParkedWorkerFrame(symbolTable.NameForId(frameBuffer[0]));
+
+            if (isParkedWorker)
+            {
+                ++parkedThreads;
+            }
+
+            int matchedGroupIndex = -1;
+
+            if (groupIndicesByHash.TryGetValue(hash, out List<int> candidateIndices))
+            {
+                for (int candidateIndex = 0; candidateIndex < candidateIndices.Count; ++candidateIndex)
+                {
+                    if (FramesEqual(groups[candidateIndices[candidateIndex]].Frames, frameBuffer, frameCount))
+                    {
+                        matchedGroupIndex = candidateIndices[candidateIndex];
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                candidateIndices = new List<int>();
+                groupIndicesByHash[hash] = candidateIndices;
+            }
+
+            if (matchedGroupIndex < 0)
+            {
+                ThreadStackGroup group = new ThreadStackGroup();
+                group.Frames = new int[frameCount];
+                Array.Copy(frameBuffer, group.Frames, frameCount);
+                group.IsParkedWorker = isParkedWorker;
+
+                matchedGroupIndex = groups.Count;
+                groups.Add(group);
+                candidateIndices.Add(matchedGroupIndex);
+            }
+
+            groups[matchedGroupIndex].ThreadIds.Add(threadEntry.Key);
+        }
+
+        // Running threads first, then by how many threads share the stack.
+        // Parked workers are sorted to the bottom rather than dropped: they
+        // are the pool's idle state, so a snapshot that is mostly parked
+        // threads means the pool had spare capacity - a real answer to "why
+        // did it add a thread", just not the one being looked for.
+        groups.Sort(CompareThreadStackGroups);
+
+        return groups;
+    }
+
+    private static int CompareThreadStackGroups(ThreadStackGroup left, ThreadStackGroup right)
+    {
+        if (left.IsParkedWorker != right.IsParkedWorker)
+        {
+            return left.IsParkedWorker ? 1 : -1;
+        }
+
+        return right.ThreadIds.Count.CompareTo(left.ThreadIds.Count);
+    }
+
+    private static bool FramesEqual(int[] groupFrames, int[] candidateFrames, int candidateFrameCount)
+    {
+        if (groupFrames.Length != candidateFrameCount)
+        {
+            return false;
+        }
+
+        for (int frameIndex = 0; frameIndex < candidateFrameCount; ++frameIndex)
+        {
+            if (groupFrames[frameIndex] != candidateFrames[frameIndex])
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static void WriteAdjustments(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         int emitted = summary.Adjustments.Count < MaxAdjustmentsEmitted ? summary.Adjustments.Count : MaxAdjustmentsEmitted;
+
+        int[] threadsSampledByAdjustment = new int[emitted];
+        int[] parkedThreadsByAdjustment = new int[emitted];
+        List<ThreadStackGroup>[] groupsByAdjustment = BuildThreadSnapshots(summary.Adjustments, emitted, sampleEvents, symbolTable, threadsSampledByAdjustment, parkedThreadsByAdjustment);
 
         writer.WritePropertyName("adjustments");
         writer.WriteStartArray();
@@ -156,14 +425,82 @@ public static class ThreadingJsonExporter
             writer.WriteStartObject();
             writer.WriteNumber("relativeMSec", adjustment.RelativeMSec);
             writer.WriteNumber("newWorkerThreadCount", adjustment.NewWorkerThreadCount);
+            // The change this decision made, not just the resulting count -
+            // "went to 63" doesn't say whether the pool grew or shrank, which
+            // is the whole point of reading an adjustment.
+            writer.WriteNumber("workerThreadDelta", adjustmentIndex > 0
+                ? adjustment.NewWorkerThreadCount - summary.Adjustments[adjustmentIndex - 1].NewWorkerThreadCount
+                : 0);
             writer.WriteNumber("reason", adjustment.Reason);
             writer.WriteString("reasonName", ThreadAdjustmentReason.NameFor(adjustment.Reason));
             writer.WriteBoolean("isStallDriven", ThreadAdjustmentReason.IsStallDriven(adjustment.Reason));
             writer.WriteNumber("averageThroughput", adjustment.AverageThroughput);
+
+            WriteThreadSnapshot(writer, groupsByAdjustment[adjustmentIndex], threadsSampledByAdjustment[adjustmentIndex], parkedThreadsByAdjustment[adjustmentIndex], symbolTable, methodNames, methodNameIndexByName);
+
             writer.WriteEndObject();
         }
 
         writer.WriteEndArray();
+    }
+
+    private static void WriteThreadSnapshot(Utf8JsonWriter writer, List<ThreadStackGroup> groups, int threadsSampled, int parkedThreads, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    {
+        writer.WritePropertyName("threadSnapshot");
+
+        if (groups == null || groups.Count == 0)
+        {
+            // Null rather than an empty snapshot: no CPU samples landed in
+            // this adjustment's window, which is different from "every thread
+            // was idle". The UI says so instead of drawing an empty table.
+            writer.WriteNullValue();
+            return;
+        }
+
+        writer.WriteStartObject();
+        writer.WriteNumber("threadsSampled", threadsSampled);
+        writer.WriteNumber("parkedThreadCount", parkedThreads);
+        writer.WriteNumber("stackGroupCount", groups.Count);
+
+        writer.WritePropertyName("stacks");
+        writer.WriteStartArray();
+
+        int groupsToEmit = groups.Count < MaxStackGroupsPerAdjustment ? groups.Count : MaxStackGroupsPerAdjustment;
+
+        for (int groupIndex = 0; groupIndex < groupsToEmit; ++groupIndex)
+        {
+            ThreadStackGroup group = groups[groupIndex];
+
+            writer.WriteStartObject();
+            writer.WriteNumber("threadCount", group.ThreadIds.Count);
+            writer.WriteBoolean("isParkedWorker", group.IsParkedWorker);
+
+            writer.WritePropertyName("threadIds");
+            writer.WriteStartArray();
+
+            int threadIdsToEmit = group.ThreadIds.Count < MaxThreadIdsPerStackGroup ? group.ThreadIds.Count : MaxThreadIdsPerStackGroup;
+
+            for (int threadIdIndex = 0; threadIdIndex < threadIdsToEmit; ++threadIdIndex)
+            {
+                writer.WriteNumberValue(group.ThreadIds[threadIdIndex]);
+            }
+
+            writer.WriteEndArray();
+
+            writer.WritePropertyName("frames");
+            writer.WriteStartArray();
+
+            for (int frameIndex = 0; frameIndex < group.Frames.Length; ++frameIndex)
+            {
+                writer.WriteNumberValue(InternMethodName(symbolTable.NameForId(group.Frames[frameIndex]), methodNames, methodNameIndexByName));
+            }
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
+        writer.WriteEndObject();
     }
 
     // Joins CPU samples to stall-driven adjustments on time - see this file's
@@ -320,10 +657,82 @@ public static class ThreadingJsonExporter
         return false;
     }
 
-    private static void WriteStackedEvents(Utf8JsonWriter writer, string propertyName, List<StackedThreadingEvent> stackedEvents, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    private static bool IsPoolWorkerCreationStack(long[] stack, MethodSymbolTable symbolTable, double relativeMSec)
+    {
+        for (int frameIndex = 0; frameIndex < stack.Length; ++frameIndex)
+        {
+            string frameName = symbolTable.NameForId(symbolTable.ResolveId(stack[frameIndex], relativeMSec));
+
+            if (frameName == null)
+            {
+                continue;
+            }
+
+            for (int prefixIndex = 0; prefixIndex < PoolWorkerCreationFramePrefixes.Length; ++prefixIndex)
+            {
+                if (frameName.StartsWith(PoolWorkerCreationFramePrefixes[prefixIndex], StringComparison.Ordinal))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    // The pool decision closest in time before this thread was created.
+    //
+    // ThreadCreating carries no reason of its own: the runtime logs the
+    // hill-climbing DECISION (an adjustment, with its reason) and creates the
+    // thread as two unrelated events, with no correlation id between them. So
+    // the best available context is the most recent decision - and it is
+    // reported as exactly that, alongside the elapsed time, rather than as a
+    // proven cause.
+    //
+    // An earlier version of this required the adjustment to have RAISED
+    // NewWorkerThreadCount, on the reasoning that a decision which lowered it
+    // cannot have created a thread. The real data killed that: the counter
+    // oscillates by +/-20 between 64 and 84 on consecutive "Climbing move"
+    // adjustments, so it is hill climbing's TARGET rather than a live count,
+    // and a worker creation 49ms after a "-20" adjustment is perfectly normal.
+    // The filter's only effect was to label threads whose own stack reads
+    // PortableThreadPool.CreateWorkerThread as "not pool-driven", which the
+    // stack plainly contradicts. Pool ownership now comes from the stack (see
+    // IsPoolWorkerCreationStack) and the adjustment supplies only the reason.
+    //
+    // Returns the index into adjustments, or -1 when none falls inside the
+    // window - a real answer, not a failure.
+    private static int FindNearestPrecedingAdjustmentIndex(List<ThreadPoolAdjustmentRecord> adjustments, double creationTimeMSec, ref int searchCursor)
+    {
+        // Both lists are in time order, so the cursor only ever moves forward
+        // across the whole loop - this stays linear rather than rescanning the
+        // adjustment list per creation.
+        while (searchCursor < adjustments.Count && adjustments[searchCursor].RelativeMSec <= creationTimeMSec)
+        {
+            ++searchCursor;
+        }
+
+        int nearestIndex = searchCursor - 1;
+
+        if (nearestIndex < 0)
+        {
+            return -1;
+        }
+
+        if (creationTimeMSec - adjustments[nearestIndex].RelativeMSec > CreationAttributionWindowMSec)
+        {
+            return -1;
+        }
+
+        return nearestIndex;
+    }
+
+    private static void WriteStackedEvents(Utf8JsonWriter writer, string propertyName, List<StackedThreadingEvent> stackedEvents, List<ThreadPoolAdjustmentRecord> adjustmentsForAttribution, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         writer.WritePropertyName(propertyName);
         writer.WriteStartArray();
+
+        int adjustmentSearchCursor = 0;
 
         for (int eventIndex = 0; eventIndex < stackedEvents.Count; ++eventIndex)
         {
@@ -333,6 +742,30 @@ public static class ThreadingJsonExporter
             writer.WriteNumber("relativeMSec", stackedEvent.RelativeMSec);
             writer.WriteNumber("threadId", stackedEvent.ThreadId);
             writer.WriteString("objectId", "0x" + stackedEvent.ObjectId.ToString("X"));
+
+            if (adjustmentsForAttribution != null)
+            {
+                // Whether the POOL created this thread is a fact read off the
+                // stack; the adjustment below only supplies the reason.
+                writer.WriteBoolean("isPoolWorker", IsPoolWorkerCreationStack(stackedEvent.Stack, symbolTable, stackedEvent.RelativeMSec));
+
+                int causingAdjustmentIndex = FindNearestPrecedingAdjustmentIndex(adjustmentsForAttribution, stackedEvent.RelativeMSec, ref adjustmentSearchCursor);
+
+                if (causingAdjustmentIndex >= 0)
+                {
+                    ThreadPoolAdjustmentRecord causingAdjustment = adjustmentsForAttribution[causingAdjustmentIndex];
+
+                    writer.WriteNumber("causeAdjustmentIndex", causingAdjustmentIndex);
+                    writer.WriteNumber("causeReason", causingAdjustment.Reason);
+                    writer.WriteString("causeReasonName", ThreadAdjustmentReason.NameFor(causingAdjustment.Reason));
+                    writer.WriteBoolean("causeIsStallDriven", ThreadAdjustmentReason.IsStallDriven(causingAdjustment.Reason));
+                    writer.WriteNumber("causeDelayMSec", stackedEvent.RelativeMSec - causingAdjustment.RelativeMSec);
+                }
+                else
+                {
+                    writer.WriteNumber("causeAdjustmentIndex", -1);
+                }
+            }
 
             writer.WritePropertyName("frames");
             writer.WriteStartArray();
