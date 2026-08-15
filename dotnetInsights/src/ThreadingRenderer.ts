@@ -84,8 +84,9 @@ export function renderThreadingView(threadingSummary: any, threadingMethodNames:
     return `${summaryTilesHtml}${timelineHtml}` +
         `${renderStallCorrelation(threadingSummary["stallCorrelation"], threadingMethodNames)}` +
         `${renderAdjustmentReasons(threadingSummary["adjustmentReasons"])}` +
-        `${renderStackedEventTable("threadCreations", "Thread Creations", threadingSummary["threadCreations"], threadingMethodNames)}` +
-        `${renderStackedEventTable("lockCreations", "Lock Creations", threadingSummary["lockCreations"], threadingMethodNames)}`;
+        `${renderAdjustmentsTable(threadingSummary)}` +
+        `${renderStackedEventTable("threadCreations", "Thread Creations", threadingSummary["threadCreations"], threadingMethodNames, true)}` +
+        `${renderStackedEventTable("lockCreations", "Lock Creations", threadingSummary["lockCreations"], threadingMethodNames, false)}`;
 }
 
 // The centerpiece: what threads were actually doing at the moments the pool
@@ -128,7 +129,8 @@ function renderStallCorrelation(stallCorrelation: any, methodNames: string[]): s
         <div class="threadingNote">
             The thread-pool events carry no stacks, so this is built by joining CPU samples to the
             <b>${Number(stallCorrelation["stallAdjustmentCount"]).toLocaleString()}</b> adjustments the runtime made because work
-            stopped progressing (±${stallCorrelation["windowHalfWidthMSec"]}ms around each).
+            stopped progressing (the ${stallCorrelation["lookbackMSec"]}ms <b>before</b> each - never after, since samples
+            from after an adjustment show the pool it produced rather than the one that forced it).
             <b>${Number(stallCorrelation["samplesInWindows"]).toLocaleString()}</b> samples across
             <b>${Number(stallCorrelation["threadsInWindows"]).toLocaleString()}</b> threads fell in those windows;
             ${Number(stallCorrelation["parkedWorkerSamples"]).toLocaleString()} of them were idle parked workers waiting for work
@@ -181,6 +183,156 @@ const ZOOM_AGGREGATE_NOTE_HTML =
     `<div class="threadingZoomAggregateNote" style="display:none">Whole-capture totals - this table is aggregated by the parser and does not follow the timeline zoom.</div>`;
 
 
+// Every individual decision the pool made, each drillable into what every
+// thread was doing at that instant.
+//
+// The drill-down content is NOT rendered here. 500 adjustments x ~18 distinct
+// stacks each would be ~9,000 caller trees built into the initial HTML for a
+// view whose rows are mostly never opened; it is built on first expand in
+// snapshotGcStats.js instead, the same lazy pattern the Contention and
+// Exceptions drill-downs already use (data-contention-lazy / the
+// typeDrillDown lazy rows).
+function renderAdjustmentsTable(threadingSummary: any): string {
+    const adjustments = threadingSummary["adjustments"];
+
+    if (!adjustments || adjustments.length === 0) {
+        return "";
+    }
+
+    var rows = "";
+    for (var index = 0; index < adjustments.length; ++index) {
+        const adjustment = adjustments[index];
+        const isStallDriven = adjustment["isStallDriven"];
+        const delta = adjustment["workerThreadDelta"];
+        const snapshot = adjustment["threadSnapshot"];
+
+        // A row with no snapshot still expands - it explains that no CPU
+        // samples landed in its window, which is a different thing from an
+        // empty stack list.
+        const threadsSampledCell = snapshot
+            ? `${Number(snapshot["threadsSampled"]).toLocaleString()}`
+            : `<span class="threadingNoSnapshot">none</span>`;
+
+        rows += `<tr class="threadingStackRow${isStallDriven ? ' threadingStallRow' : ''}" ` +
+            `data-threading-expandable="true" ` +
+            `data-threading-target="poolAdjustmentsDetail${index}" ` +
+            `data-threading-msec="${adjustment["relativeMSec"]}">` +
+            `<td style="text-align:left"><span class="leafMethodToggle">&#9656;</span>` +
+            `${escapeHtmlForThreading(adjustment["reasonName"])}` +
+            `${isStallDriven ? ' <span class="threadingStallBadge">stall</span>' : ''}</td>` +
+            `<td>${formatMSec(adjustment["relativeMSec"])}</td>` +
+            `<td>${formatWorkerDelta(delta)}</td>` +
+            `<td>${adjustment["newWorkerThreadCount"]}</td>` +
+            `<td>${threadsSampledCell}</td>` +
+            `</tr>`;
+
+        rows += `<tr id="poolAdjustmentsDetail${index}" class="callPathsDetail" ` +
+            `data-threading-adjustment-lazy="${index}" data-threading-msec="${adjustment["relativeMSec"]}">` +
+            `<td colspan="5" class="callerTreeCell"></td></tr>`;
+    }
+
+    const header = renderSortableTableHeader([
+        ["Reason", "string"],
+        ["Time", "number"],
+        ["Change", "number"],
+        // "Target", not "Workers After": NewWorkerThreadCount is the count
+        // hill climbing decided to aim for, and it visibly oscillates (64 <->
+        // 84 on consecutive Climbing move adjustments in a real capture)
+        // rather than tracking the live pool size, which the timeline above
+        // already shows from the Wait/Start/Stop events.
+        ["Target Workers", "number"],
+        ["Threads Sampled", "number"]
+    ]);
+
+    const expandControlsHtml = `<div class="drillDownExpandControls">` +
+        `<button class="drillDownExpandControlButton" type="button" data-threading-expand-target="poolAdjustmentsTable" data-threading-expand="true">Expand All</button>` +
+        `<button class="drillDownExpandControlButton" type="button" data-threading-expand-target="poolAdjustmentsTable" data-threading-expand="false">Collapse All</button>` +
+        `</div>`;
+
+    const totalCount = Number(threadingSummary["adjustmentCount"]);
+    const truncatedNote = totalCount > adjustments.length
+        ? ` The first <b>${adjustments.length.toLocaleString()}</b> of <b>${totalCount.toLocaleString()}</b> adjustments are shown.`
+        : "";
+
+    return `<div class="threadingSection">
+        <div class="threadingSectionTitle">Pool Adjustments
+            (<span class="threadingSectionCount" id="poolAdjustmentsCount" data-threading-total="${adjustments.length}">${adjustments.length.toLocaleString()}</span>)</div>
+        <div class="threadingNote">Every resize decision the runtime's hill-climbing algorithm made, and why.
+        Open one to see what <b>every thread</b> was doing going into that decision.
+        Threads sitting in the same stack are grouped, since the count is the finding.${truncatedNote}</div>
+        ${SNAPSHOT_PROVENANCE_NOTE_HTML}
+        ${expandControlsHtml}
+        <div class="detailTable threadingTable"><table id="poolAdjustmentsTable">${header}${rows}</table></div>
+    </div>`;
+}
+
+// Why this thread was created, built from two different grades of evidence and
+// careful not to blur them.
+//
+// Whether the POOL created the thread is a fact, read off the creation stack
+// (a frame under PortableThreadPool). The reason is weaker: ThreadCreating
+// carries none, and the runtime logs its hill-climbing decision as a separate
+// event with no correlation id, so the nearest preceding decision is context,
+// not proven cause - and the cell says how long before it happened so that can
+// be judged rather than assumed.
+//
+// An application thread is not an error or a gap in the data: plenty of
+// threads are started by library code (gRPC, Kafka) and never involve the pool.
+function renderCreationCauseCell(stackedEvent: any): string {
+    const isPoolWorker = stackedEvent["isPoolWorker"] === true;
+
+    if (!isPoolWorker) {
+        return `<td style="text-align:left"><span class="threadingNoSnapshot" ` +
+            `title="The creation stack has no thread-pool frame, so this thread was started by application or library code rather than by the pool.">application thread</span></td>`;
+    }
+
+    const causeIndex = stackedEvent["causeAdjustmentIndex"];
+
+    if (causeIndex === undefined || causeIndex < 0) {
+        return `<td style="text-align:left">pool worker ` +
+            `<span class="threadingNoSnapshot" title="A pool worker (its stack runs through PortableThreadPool), but no pool adjustment was logged close enough before it to say which decision it followed.">(no nearby decision)</span></td>`;
+    }
+
+    const reasonName = escapeHtmlForThreading(stackedEvent["causeReasonName"]);
+    const badge = stackedEvent["causeIsStallDriven"] ? ' <span class="threadingStallBadge">stall</span>' : '';
+    const delayMSec = Number(stackedEvent["causeDelayMSec"]);
+
+    return `<td style="text-align:left" title="Pool worker. The runtime's most recent pool decision before this thread was created was &quot;${escapeHtmlForThreading(stackedEvent["causeReasonName"])}&quot;, ${formatMSec(delayMSec)} earlier. The events carry no correlation id, so this is the nearest decision in time, not a proven cause.">` +
+        `${reasonName}${badge} <span class="threadingCauseDelay">${formatMSec(delayMSec)} earlier</span></td>`;
+}
+
+// The provenance of every stack in this view, stated up front rather than left
+// for the reader to infer from a table that looks like a stack dump.
+//
+// It is not a stack dump. The thread-pool events carry no stacks at all, so
+// these come from the CPU sample profiler, and each thread's stack is the last
+// sample taken BEFORE the decision. The backward-only direction matters enough
+// to say out loud: a sample from after the adjustment would show the state the
+// decision produced (the new thread already running, the queued work already
+// picked up) rather than the state that caused it.
+const SNAPSHOT_PROVENANCE_NOTE_HTML =
+    `<div class="threadingProvenanceNote">
+        <b>How these stacks are found:</b> thread-pool events carry no stacks, so each thread's stack is its
+        <b>last CPU sample before</b> the adjustment - never after it, since a later sample would show the state
+        the decision produced rather than the state that caused it. Each drill-down says how stale its oldest
+        stack is. A thread with no sample in that window does not appear, so this is the sampled picture going
+        into the decision, not a guaranteed-complete thread dump.
+    </div>`;
+
+// Signed, because the direction is the point: "+1" is the pool growing, which
+// is what a stall-driven adjustment does.
+function formatWorkerDelta(delta: number): string {
+    if (delta > 0) {
+        return `<span class="threadingDeltaUp">+${delta}</span>`;
+    }
+
+    if (delta < 0) {
+        return `<span class="threadingDeltaDown">${delta}</span>`;
+    }
+
+    return `<span class="threadingDeltaFlat">0</span>`;
+}
+
 // Renders a captured stack using the SAME nested caller-tree table the
 // allocation/exception/CPU/contention drill-downs use, rather than a bespoke
 // list - identical colgroup, identical .callerRow markup (leading spacer cell
@@ -229,16 +381,19 @@ function renderStackAsCallerTree(frames: number[], methodNames: string[]): strin
 
 // Thread and lock creations are the only threading events that keep a usable
 // stack, so each row expands to show it.
-function renderStackedEventTable(idPrefix: string, title: string, stackedEvents: any[], methodNames: string[]): string {
+function renderStackedEventTable(idPrefix: string, title: string, stackedEvents: any[], methodNames: string[], showCauseColumn: boolean): string {
     if (!stackedEvents || stackedEvents.length === 0) {
         return "";
     }
+
+    const columnCount = showCauseColumn ? 4 : 3;
 
     var rows = "";
     for (var index = 0; index < stackedEvents.length; ++index) {
         const stackedEvent = stackedEvents[index];
         const frames = stackedEvent["frames"] || [];
         const topFrame = frames.length > 0 ? methodNames[frames[0]] : "<no stack captured>";
+        const causeCell = showCauseColumn ? renderCreationCauseCell(stackedEvent) : "";
 
         // data-threading-msec on BOTH halves of the pair, not just the summary
         // row: the timeline's zoom filter hides rows outside the zoomed window,
@@ -248,20 +403,26 @@ function renderStackedEventTable(idPrefix: string, title: string, stackedEvents:
 
         rows += `<tr class="threadingStackRow" data-threading-expandable="true" data-threading-target="${idPrefix}Detail${index}" data-threading-msec="${relativeMSec}">` +
             `<td style="text-align:left"><span class="leafMethodToggle">▸</span>${formatMethodNameHtml(topFrame)}</td>` +
+            `${causeCell}` +
             `<td>${formatMSec(relativeMSec)}</td>` +
             `<td>${stackedEvent["threadId"]}</td>` +
             `</tr>`;
 
-        rows += `<tr id="${idPrefix}Detail${index}" class="callPathsDetail" data-threading-msec="${relativeMSec}"><td colspan="3" class="callerTreeCell">` +
+        rows += `<tr id="${idPrefix}Detail${index}" class="callPathsDetail" data-threading-msec="${relativeMSec}"><td colspan="${columnCount}" class="callerTreeCell">` +
             `${renderStackAsCallerTree(frames, methodNames)}` +
             `</td></tr>`;
     }
 
-    const header = renderSortableTableHeader([
-        ["Created At", "string"],
-        ["Time", "number"],
-        ["Thread", "number"]
-    ]);
+    const columns: Array<[string, string]> = [["Created At", "string"]];
+
+    if (showCauseColumn) {
+        columns.push(["Why", "string"]);
+    }
+
+    columns.push(["Time", "number"]);
+    columns.push(["Thread", "number"]);
+
+    const header = renderSortableTableHeader(columns);
 
     // Same .drillDownExpandControls/.drillDownExpandControlButton pair, in the
     // same place (above the table, not inside a row), that CPU Methods and the

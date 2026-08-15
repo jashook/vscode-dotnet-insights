@@ -2417,6 +2417,105 @@ td.rowHideColumn:hover
     margin-bottom: 4px;
 }
 
+/* Provenance disclaimer for the Pool Adjustments stacks. Amber like
+   .threadingZoomAggregateNote, and for the same reason: it is a caveat about
+   how to read what is on screen, not standing explanatory text. */
+.threadingProvenanceNote
+{
+    padding: 6px 10px;
+    margin-bottom: 8px;
+    border-left: 3px solid rgba(224, 168, 82, 0.9);
+    background-color: rgba(224, 168, 82, 0.12);
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+/* Pool Adjustments drill-down: one block per group of threads sharing a
+   stack, built lazily in snapshotGcStats.js. */
+.threadingSnapshotNote
+{
+    padding: 6px 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    opacity: 0.9;
+}
+
+.threadingSnapshotGroup
+{
+    margin: 0 0 6px 0;
+    border-left: 3px solid rgba(78, 121, 167, 0.8);
+}
+
+/* Parked workers are the pool's idle state - present because their COUNT is
+   informative (spare capacity), but muted so they don't compete with the
+   running threads above them for attention. */
+.threadingSnapshotGroupParked
+{
+    border-left-color: rgba(128, 128, 128, 0.5);
+    opacity: 0.65;
+}
+
+.threadingSnapshotGroupHeader
+{
+    padding: 3px 10px;
+    font-size: 12px;
+    background-color: rgba(128, 128, 128, 0.10);
+}
+
+.threadingSnapshotThreadCount
+{
+    font-weight: bold;
+}
+
+.threadingSnapshotThreadIds
+{
+    opacity: 0.7;
+    font-size: 11px;
+}
+
+.threadingParkedBadge
+{
+    background-color: rgba(128, 128, 128, 0.35);
+    border-radius: 3px;
+    font-size: 10px;
+    padding: 1px 5px;
+    text-transform: uppercase;
+}
+
+/* Used for both "no snapshot" and "not pool-driven" - in each case the honest
+   answer is an absence, and it should read as one rather than as a value. */
+.threadingNoSnapshot
+{
+    opacity: 0.6;
+    font-style: italic;
+}
+
+/* The elapsed time between the pool's decision and the thread actually being
+   created. Shown inline, muted, because it is the reader's means of judging
+   how much the attribution is worth - 20ms earlier is a strong association,
+   1.7s earlier is barely one. */
+.threadingCauseDelay
+{
+    opacity: 0.55;
+    font-size: 11px;
+}
+
+.threadingDeltaUp
+{
+    color: rgba(224, 82, 82, 0.95);
+    font-weight: bold;
+}
+
+.threadingDeltaDown
+{
+    color: rgba(53, 163, 83, 0.95);
+}
+
+.threadingDeltaFlat
+{
+    opacity: 0.5;
+}
+
 /* Beats .callPathsDetail.expanded by ordering, not by !important: both are
    two-class selectors of equal specificity, and this one comes later in the
    file. That is deliberate - an expanded stack whose summary row got filtered
