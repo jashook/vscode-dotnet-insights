@@ -50,6 +50,7 @@ var allocationDatasets = {};
     // parsed for the same reason the others are.
     var contentionSummaryJson = JSON.parse(document.getElementById("contentionSummaryJson").textContent);
     var threadingSummaryJson = JSON.parse(document.getElementById("threadingSummaryJson").textContent);
+    var threadingMethodNames = JSON.parse(document.getElementById("threadingMethodNamesJson").textContent);
 
     // Generic "hide this row, recompute everything else" controller shared
     // by every ranked/percent table on this page (CPU Methods, Contention
@@ -4688,10 +4689,142 @@ var allocationDatasets = {};
         }
     }
 
+    // Builds one adjustment's drill-down: what every thread was doing at the
+    // moment the pool made that decision.
+    //
+    // Built here rather than in ThreadingRenderer.ts because it is lazy - see
+    // that file's renderAdjustmentsTable for why 500 rows' worth of trees are
+    // not rendered up front. Mirrors contentionDrillDownStats.js's own
+    // buildInlineContentionSiteCallerTree: same .callerTreeInner table, same
+    // .callerRow markup, same per-depth indent, so a stack looks identical
+    // everywhere in this UI.
+    var THREADING_CALLER_TREE_COLGROUP = '<colgroup><col style="width: 1.6em"><col></colgroup>';
+    var THREADING_CALLER_INDENT_EM_PER_LEVEL = 0.85;
+    var THREADING_CALLER_INDENT_MAX_EM = 17;
+
+    function escapeHtmlForThreadingDrillDown(value) {
+        return String(value)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+    }
+
+    function formatThreadingFrameHtml(rawFrameName) {
+        if (rawFrameName === undefined || rawFrameName === null) {
+            return '<span class="unresolvedFrame">&lt;unresolved&gt;</span>';
+        }
+
+        if (rawFrameName.indexOf('<unresolved') === 0) {
+            return '<span class="unresolvedFrame">' + escapeHtmlForThreadingDrillDown(rawFrameName) + '</span>';
+        }
+
+        var lastDotIndex = rawFrameName.lastIndexOf('.');
+        if (lastDotIndex === -1) {
+            return '<span class="methodName">' + escapeHtmlForThreadingDrillDown(rawFrameName) + '</span>';
+        }
+
+        return '<span class="methodTypePrefix">' + escapeHtmlForThreadingDrillDown(rawFrameName.slice(0, lastDotIndex + 1)) + '</span>' +
+            '<span class="methodName">' + escapeHtmlForThreadingDrillDown(rawFrameName.slice(lastDotIndex + 1)) + '</span>';
+    }
+
+    function buildThreadingStackTreeHtml(frames) {
+        if (!frames || frames.length === 0) {
+            return '<p style="padding:8px;margin:0">No stack was captured for this thread.</p>';
+        }
+
+        var frameRows = '';
+
+        for (var frameIndex = 0; frameIndex < frames.length; ++frameIndex) {
+            var uncappedIndentEm = frameIndex * THREADING_CALLER_INDENT_EM_PER_LEVEL;
+            var indentEm = uncappedIndentEm < THREADING_CALLER_INDENT_MAX_EM ? uncappedIndentEm : THREADING_CALLER_INDENT_MAX_EM;
+
+            frameRows += '<tr class="callerRow"><td></td>' +
+                '<td style="padding-left: ' + indentEm + 'em">' +
+                '<span class="leafMethodToggle leafMethodToggleEmpty"></span>' +
+                formatThreadingFrameHtml(threadingMethodNames[frames[frameIndex]]) +
+                '</td></tr>';
+        }
+
+        return '<table class="callerTreeInner">' + THREADING_CALLER_TREE_COLGROUP + frameRows + '</table>';
+    }
+
+    function buildAdjustmentThreadSnapshotHtml(adjustment) {
+        var snapshot = adjustment ? adjustment["threadSnapshot"] : null;
+
+        if (!snapshot) {
+            // Distinct from "every thread was idle" - see WriteThreadSnapshot
+            // in ThreadingJsonExporter.cs, which writes null rather than an
+            // empty snapshot precisely so this can be said out loud.
+            return '<div class="threadingSnapshotNote">No CPU samples were taken in the window before this ' +
+                'adjustment, so there is nothing to say about what threads were doing going into it.</div>';
+        }
+
+        var stacks = snapshot["stacks"] || [];
+        var runningThreads = snapshot["threadsSampled"] - snapshot["parkedThreadCount"];
+
+        // The staleness is per snapshot, not a fixed window size, because it
+        // is what actually qualifies the stacks below: "all within 3ms" and
+        // "the oldest is 24ms old" support very different conclusions from the
+        // same table.
+        var oldestAgeMSec = snapshot["oldestSampleAgeMSec"];
+        var lookbackMSec = snapshot["lookbackMSec"];
+        var provenance = (oldestAgeMSec === undefined || lookbackMSec === undefined)
+            ? ''
+            : ' Stacks are each thread\'s last CPU sample <b>before</b> this decision (never after it); ' +
+              'the oldest is <b>' + Number(oldestAgeMSec).toFixed(1) + 'ms</b> old, within a ' +
+              Number(lookbackMSec).toFixed(0) + 'ms look-back.';
+
+        var html = '<div class="threadingSnapshotNote">' +
+            '<b>' + Number(snapshot["threadsSampled"]).toLocaleString() + '</b> threads sampled going into this decision: ' +
+            '<b>' + Number(runningThreads).toLocaleString() + '</b> running, ' +
+            '<b>' + Number(snapshot["parkedThreadCount"]).toLocaleString() + '</b> parked workers waiting for work ' +
+            '(idle - spare capacity, not a blockage). Identical stacks are grouped.' +
+            provenance +
+            '</div>';
+
+        for (var groupIndex = 0; groupIndex < stacks.length; ++groupIndex) {
+            var group = stacks[groupIndex];
+            var threadIds = group["threadIds"] || [];
+            var shownThreadIds = threadIds.join(', ');
+
+            if (threadIds.length < group["threadCount"]) {
+                shownThreadIds += ', +' + (group["threadCount"] - threadIds.length) + ' more';
+            }
+
+            html += '<div class="threadingSnapshotGroup' + (group["isParkedWorker"] ? ' threadingSnapshotGroupParked' : '') + '">' +
+                '<div class="threadingSnapshotGroupHeader">' +
+                '<span class="threadingSnapshotThreadCount">' + group["threadCount"] +
+                (group["threadCount"] === 1 ? ' thread' : ' threads') + '</span>' +
+                (group["isParkedWorker"] ? ' <span class="threadingParkedBadge">parked worker</span>' : '') +
+                ' <span class="threadingSnapshotThreadIds">tid ' + escapeHtmlForThreadingDrillDown(shownThreadIds) + '</span>' +
+                '</div>' +
+                buildThreadingStackTreeHtml(group["frames"]) +
+                '</div>';
+        }
+
+        return html;
+    }
+
     // Expand All / Collapse All for one threading table. The .expanded class
     // lives on BOTH halves of each pair (the summary row and its detail row),
     // so both are set - matching the delegated per-row toggle in
     // wireThreadingTab, which does the same.
+    // Fills a Pool Adjustments detail row on first expand. A no-op for the
+    // thread/lock creation tables, whose stacks are small enough to be
+    // server-rendered up front.
+    function ensureThreadingDetailBuilt(detailRow) {
+        if (!detailRow || !detailRow.hasAttribute('data-threading-adjustment-lazy')) {
+            return;
+        }
+
+        var adjustmentIndex = parseInt(detailRow.getAttribute('data-threading-adjustment-lazy'), 10);
+        var adjustments = threadingSummaryJson ? threadingSummaryJson["adjustments"] : null;
+        var adjustment = adjustments ? adjustments[adjustmentIndex] : null;
+
+        detailRow.querySelector('.callerTreeCell').innerHTML = buildAdjustmentThreadSnapshotHtml(adjustment);
+        detailRow.removeAttribute('data-threading-adjustment-lazy');
+    }
+
     function setAllThreadingStacksExpanded(tableId, isExpanded) {
         var table = document.getElementById(tableId);
         if (!table) {
@@ -4704,6 +4837,7 @@ var allocationDatasets = {};
             var detailRow = document.getElementById(row.getAttribute('data-threading-target'));
 
             if (isExpanded) {
+                ensureThreadingDetailBuilt(detailRow);
                 row.classList.add('expanded');
                 if (detailRow) {
                     detailRow.classList.add('expanded');
@@ -4984,6 +5118,8 @@ var allocationDatasets = {};
                 detailRow.classList.remove('expanded');
                 return;
             }
+
+            ensureThreadingDetailBuilt(detailRow);
 
             row.classList.add('expanded');
             detailRow.classList.add('expanded');
