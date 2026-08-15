@@ -129,7 +129,8 @@ function renderStallCorrelation(stallCorrelation: any, methodNames: string[]): s
         <div class="threadingNote">
             The thread-pool events carry no stacks, so this is built by joining CPU samples to the
             <b>${Number(stallCorrelation["stallAdjustmentCount"]).toLocaleString()}</b> adjustments the runtime made because work
-            stopped progressing (±${stallCorrelation["windowHalfWidthMSec"]}ms around each).
+            stopped progressing (the ${stallCorrelation["lookbackMSec"]}ms <b>before</b> each - never after, since samples
+            from after an adjustment show the pool it produced rather than the one that forced it).
             <b>${Number(stallCorrelation["samplesInWindows"]).toLocaleString()}</b> samples across
             <b>${Number(stallCorrelation["threadsInWindows"]).toLocaleString()}</b> threads fell in those windows;
             ${Number(stallCorrelation["parkedWorkerSamples"]).toLocaleString()} of them were idle parked workers waiting for work

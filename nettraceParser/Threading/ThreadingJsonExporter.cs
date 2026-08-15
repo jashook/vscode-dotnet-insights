@@ -9,9 +9,13 @@
 // on the reference capture carry a stack. But the CPU sample profiler records
 // (timestamp, threadId, stack) continuously, so the two can be joined on time:
 // for every adjustment the runtime made because work was NOT progressing
-// (Starvation / CooperativeBlocking), take the samples around that instant and
-// ask what threads were actually doing. That turns "the pool grew" into "the
-// pool grew while N threads sat in Interop+Sys.Read".
+// (Starvation / CooperativeBlocking), take the samples from just BEFORE that
+// instant and ask what threads were actually doing. That turns "the pool grew"
+// into "the pool grew while N threads sat in Interop+Sys.Read".
+//
+// Just before, not around - see AdjustmentLookbackMSec. Samples from after the
+// adjustment describe the pool the decision produced rather than the one that
+// forced it, which is the opposite of what this view is for.
 //
 // One correction the real data forced: the dominant leaf in every such window
 // is LowLevelLifoSemaphore.WaitForSignal (2,397 of 3,256 samples in the first
@@ -39,29 +43,45 @@ using DotnetInsights.NetTrace.Rundown;
 
 public static class ThreadingJsonExporter
 {
-    // Half-width of the window taken around each stall-driven adjustment.
-    // 25ms is wide enough to catch a meaningful number of ~100Hz-per-thread
-    // samples (measured: ~3,300 samples across ~90 threads on the reference
-    // capture) while staying narrow enough that the answer is about THAT
-    // moment rather than the whole capture.
-    private const double StallWindowHalfWidthMSec = 25.0;
-
     private const int MaxStallFrames = 40;
     private const int MaxStallEvents = 100;
     private const int MaxAdjustmentsEmitted = 500;
     private const int MaxStackFramesPerEvent = 40;
 
-    // How far BACK from an adjustment the per-adjustment snapshot looks for
-    // each thread's stack.
+    // How far BACK from an adjustment both sample-correlated views look: the
+    // per-adjustment snapshot, and the aggregate "during pool stalls" frames.
     //
     // Strictly backward, never forward, and that direction is load-bearing
-    // rather than a detail: the snapshot is meant to show the state that
-    // PRODUCED the decision. A sample taken after the adjustment shows the
-    // state the decision already caused - the injected thread is running, the
-    // work that was queued has been picked up - so a window straddling the
-    // timestamp would answer a different question than the one being asked,
-    // while looking like it answered this one.
-    private const double AdjustmentLookbackMSec = 25.0;
+    // rather than a detail: both views exist to show the state that PRODUCED a
+    // decision. A sample taken after the adjustment shows the state the
+    // decision already caused - the injected thread is running, the work that
+    // was queued has been picked up - so a window straddling the timestamp
+    // answers a different question than the one being asked, while looking
+    // like it answered this one.
+    //
+    // 3ms, chosen by sweeping the real capture rather than by feel. It is the
+    // knee: everything above it buys nothing, and below it coverage collapses.
+    //
+    //   lookback | snapshots | threads sampled  | oldest stack
+    //     1ms    |  480/500  | median 48, min 1 |  max 1.00ms
+    //     2ms    |  500/500  | median 48, min 10|  max 1.98ms
+    //     3ms    |  500/500  | median 48, min 43|  max 2.80ms
+    //     5ms    |  500/500  | median 48, min 43|  max 2.80ms
+    //    25ms    |  500/500  | median 48, min 43|  max 2.80ms
+    //
+    // From 3ms up the picture is byte-for-byte the same one - the extra window
+    // catches no additional thread and no older stack, because every thread
+    // has already been sampled within 2.8ms. The wider window was therefore
+    // pure staleness risk with no coverage benefit. Below 3ms real threads
+    // start dropping out, and at 1ms 20 adjustments lose their snapshot
+    // entirely.
+    //
+    // This tracks EventPipe's SampleProfiler default of one sample per thread
+    // per millisecond, so 3ms is ~3 sampling periods of slack. A capture
+    // configured with a coarser interval degrades visibly rather than
+    // silently: threads simply do not appear, threadsSampled falls, and an
+    // adjustment with nothing in range reports a null snapshot.
+    private const double AdjustmentLookbackMSec = 3.0;
 
     // Per-adjustment drill-down bounds. The snapshot keeps ONE stack per
     // thread (the sample nearest before the adjustment - see
@@ -586,8 +606,10 @@ public static class ThreadingJsonExporter
             ref readonly SampleEvent sampleEvent = ref samplesSpan[sampleIndex];
             double sampleTime = sampleEvent.RelativeMSec;
 
-            // Retire windows this sample has already passed.
-            while (windowCursor < windowCount && stallAdjustments[windowCursor].RelativeMSec + StallWindowHalfWidthMSec < sampleTime)
+            // Retire windows this sample has already passed. Each window is
+            // [adjustment - lookback, adjustment], so once the samples are
+            // past an adjustment nothing later can fall inside it.
+            while (windowCursor < windowCount && stallAdjustments[windowCursor].RelativeMSec < sampleTime)
             {
                 ++windowCursor;
             }
@@ -597,26 +619,12 @@ public static class ThreadingJsonExporter
                 break;
             }
 
-            // Windows can overlap (two adjustments 100ms apart share samples),
-            // so membership is checked against any window still in range, not
-            // just the cursor's own.
-            bool inAnyWindow = false;
-
-            for (int windowIndex = windowCursor; windowIndex < windowCount; ++windowIndex)
-            {
-                double windowStart = stallAdjustments[windowIndex].RelativeMSec - StallWindowHalfWidthMSec;
-
-                if (windowStart > sampleTime)
-                {
-                    break;
-                }
-
-                if (sampleTime <= stallAdjustments[windowIndex].RelativeMSec + StallWindowHalfWidthMSec)
-                {
-                    inAnyWindow = true;
-                    break;
-                }
-            }
+            // Only the cursor's own window needs checking. Every window from
+            // here on has its adjustment at or after this sample, and their
+            // adjustment times only increase - so if the nearest one's
+            // look-back does not reach back to this sample, no later one's
+            // can either.
+            bool inAnyWindow = stallAdjustments[windowCursor].RelativeMSec - AdjustmentLookbackMSec <= sampleTime;
 
             if (!inAnyWindow)
             {
@@ -651,7 +659,11 @@ public static class ThreadingJsonExporter
 
         writer.WriteStartObject();
         writer.WriteNumber("stallAdjustmentCount", stallAdjustments.Count);
-        writer.WriteNumber("windowHalfWidthMSec", StallWindowHalfWidthMSec);
+        // Renamed from windowHalfWidthMSec along with the window itself: this
+        // is a look-back before each adjustment now, not a half-width around
+        // it, and a stale name here would have the view claim symmetry the
+        // data no longer has.
+        writer.WriteNumber("lookbackMSec", AdjustmentLookbackMSec);
         writer.WriteNumber("samplesInWindows", totalSamplesInWindows);
         writer.WriteNumber("threadsInWindows", threadsInWindows.Count);
         // Reported rather than silently dropped: a window that is mostly

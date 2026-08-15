@@ -2,15 +2,19 @@
 // Module: ThreadingAdjustmentDrillDownTests.cs
 //
 // Notes:
-// Pins the two rules in ThreadingJsonExporter that are judgement calls rather
+// Pins the rules in ThreadingJsonExporter that are judgement calls rather
 // than transcriptions of the event payloads, and would therefore regress
 // silently:
 //
-//   1. A thread contributes exactly ONE stack per adjustment - the sample
-//      NEAREST that adjustment's own timestamp. A thread produces several
-//      samples inside the window, and taking the first (or the last, or all of
-//      them) would describe the window rather than the instant the decision
-//      was made.
+//   1. A thread contributes exactly ONE stack per adjustment - its last sample
+//      BEFORE that adjustment. A thread produces several samples inside the
+//      window, and taking the first (or all of them) would describe the window
+//      rather than the instant the decision was made.
+//   1b. Strictly before, never after, for both the per-adjustment snapshot and
+//      the aggregate stall-correlation frames. A sample from after the
+//      adjustment shows the state the decision produced - the injected thread
+//      running, the queued work picked up - which reads as an answer to "what
+//      forced this decision" while being an answer to the opposite question.
 //   2. Whether the POOL created a thread is decided by the creation STACK, not
 //      by the adjustment counters. An earlier version required the nearest
 //      adjustment to have raised NewWorkerThreadCount; real data showed that
@@ -177,7 +181,7 @@ public class ThreadingAdjustmentDrillDownTests
 
     // The rule this file exists for: thread 11 samples twice before the
     // adjustment, and the stack reported must be the one from 99.6 (0.4ms
-    // before), not the one from 80.0 (20ms before) that a first-wins pass
+    // before), not the one from 97.5 (2.5ms before) that a first-wins pass
     // would keep.
     [Fact]
     public void Write_KeepsTheSampleNearestTheAdjustmentForEachThread()
@@ -187,8 +191,8 @@ public class ThreadingAdjustmentDrillDownTests
 
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
-            new SampleEvent(80.0, threadId: 11, new long[] { 0x3010 }),  // Other.Work, far
-            new SampleEvent(99.6, threadId: 11, new long[] { 0x1010 }),  // Blocking.Read, near
+            new SampleEvent(97.5, threadId: 11, new long[] { 0x3010 }),  // Other.Work, 2.5ms before
+            new SampleEvent(99.6, threadId: 11, new long[] { 0x1010 }),  // Blocking.Read, 0.4ms before
         };
 
         string[] methodNames = MethodNamesFor(summary, sampleEvents, out JsonDocument document);
@@ -220,7 +224,7 @@ public class ThreadingAdjustmentDrillDownTests
 
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
-            new SampleEvent(90.0, threadId: 11, new long[] { 0x1010 }),   // Blocking.Read, 10ms BEFORE
+            new SampleEvent(98.0, threadId: 11, new long[] { 0x1010 }),   // Blocking.Read, 2ms BEFORE
             new SampleEvent(100.1, threadId: 11, new long[] { 0x3010 }),  // Other.Work, 0.1ms AFTER
         };
 
@@ -232,9 +236,9 @@ public class ThreadingAdjustmentDrillDownTests
 
             JsonElement frames = snapshot.GetProperty("stacks")[0].GetProperty("frames");
             Assert.Equal("Blocking.Read", methodNames[frames[0].GetInt32()]);
-            // ...and the reported staleness is the real one, 10ms, not the
+            // ...and the reported staleness is the real one, 2ms, not the
             // 0.1ms of the sample that was correctly rejected.
-            Assert.Equal(10.0, snapshot.GetProperty("oldestSampleAgeMSec").GetDouble(), 3);
+            Assert.Equal(2.0, snapshot.GetProperty("oldestSampleAgeMSec").GetDouble(), 3);
         }
     }
 
@@ -249,7 +253,7 @@ public class ThreadingAdjustmentDrillDownTests
 
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
-            new SampleEvent(95.0, threadId: 11, new long[] { 0x1010 }),
+            new SampleEvent(98.0, threadId: 11, new long[] { 0x1010 }),
             new SampleEvent(100.5, threadId: 12, new long[] { 0x3010 }),
             new SampleEvent(101.0, threadId: 13, new long[] { 0x3010 }),
         };
@@ -398,6 +402,40 @@ public class ThreadingAdjustmentDrillDownTests
 
         Assert.Equal(-1, creation.GetProperty("causeAdjustmentIndex").GetInt32());
         Assert.False(creation.TryGetProperty("causeReasonName", out JsonElement _));
+    }
+
+    // The aggregate "during pool stalls" table looks back from each stall
+    // adjustment for exactly the same reason the per-adjustment snapshot does:
+    // a frame sampled after the pool injected a thread describes the recovery,
+    // not the blockage that forced it. Blocking.Read runs before the
+    // adjustment and must be counted; Other.Work runs after and must not.
+    [Fact]
+    public void Write_StallCorrelationCountsOnlySamplesBeforeTheAdjustment()
+    {
+        ThreadingSummary summary = MakeSummary();
+        summary.Adjustments.Add(MakeAdjustment(100.0, newWorkerThreadCount: 5, ThreadAdjustmentReason.Starvation));
+
+        List<SampleEvent> sampleEvents = new List<SampleEvent>
+        {
+            new SampleEvent(98.0, threadId: 11, new long[] { 0x1010 }),   // Blocking.Read, 2ms before
+            new SampleEvent(100.5, threadId: 12, new long[] { 0x3010 }),  // Other.Work, after
+            new SampleEvent(110.0, threadId: 13, new long[] { 0x3010 }),  // Other.Work, after
+        };
+
+        string[] methodNames = MethodNamesFor(summary, sampleEvents, out JsonDocument document);
+
+        using (document)
+        {
+            JsonElement stallCorrelation = document.RootElement.GetProperty("stallCorrelation");
+
+            Assert.Equal(1, stallCorrelation.GetProperty("samplesInWindows").GetInt64());
+            Assert.Equal(1, stallCorrelation.GetProperty("threadsInWindows").GetInt32());
+            Assert.Equal(3.0, stallCorrelation.GetProperty("lookbackMSec").GetDouble(), 3);
+
+            JsonElement frames = stallCorrelation.GetProperty("frames");
+            Assert.Equal(1, frames.GetArrayLength());
+            Assert.Equal("Blocking.Read", methodNames[frames[0].GetProperty("frame").GetInt32()]);
+        }
     }
 
     // Lock creations are not caused by pool decisions, so they must carry no
