@@ -50,9 +50,9 @@ public class NettraceFile
     // into the overall progress bar.
     public static NettraceFile Read(string filePath, Action<double> onProgress = null)
     {
-        byte[] fileBytes = File.ReadAllBytes(filePath);
+        long fileLength = new FileInfo(filePath).Length;
 
-        if (fileBytes.Length < ExpectedMagic.Length || !MagicMatches(fileBytes))
+        if (fileLength < ExpectedMagic.Length || !MagicMatches(filePath))
         {
             throw new InvalidDataException($"'{filePath}' does not start with the expected 'Nettrace' magic bytes.");
         }
@@ -69,43 +69,41 @@ public class NettraceFile
         // close enough to skip most of the early resizes; a wrong guess still
         // falls back to normal doubling for the remainder.
         const int EstimatedBytesPerEvent = 70;
-        int estimatedEventCount = (int)Math.Min(fileBytes.Length / EstimatedBytesPerEvent, int.MaxValue);
+        int estimatedEventCount = (int)Math.Min(fileLength / EstimatedBytesPerEvent, int.MaxValue);
         file.Events = new List<EventRecord>(estimatedEventCount);
         file.StacksById = new Dictionary<int, long[]>();
 
         NettraceHeader header = new NettraceHeader();
 
-        // IOStreamStreamReader (the previous reader here) copies data twice per
-        // event: once from fileBytes into its own internal Fill()'d buffer, then
-        // again out of that buffer into whatever the caller reads into (e.g.
-        // EventBlock.FromStream's per-event payload array). fileBytes is already
-        // the entire file resident in memory (File.ReadAllBytes above), so that
-        // first copy is pure overhead. MemoryStreamReader instead reads directly
-        // out of fileBytes with no intermediate buffer at all.
+        // Streamed, not read whole. This used to be File.ReadAllBytes into one
+        // byte[] with a MemoryStreamReader over it, which was zero-copy but put
+        // a hard 2GB ceiling on the parser: a byte[] cannot hold more than
+        // int.MaxValue elements, so a 3.2GB capture threw "The file is too
+        // long" before a single event was decoded. Blocks now carry their own
+        // buffers instead (see EventBlock.FromStream), so nothing here needs
+        // the whole file resident at once and the ceiling is gone.
         //
-        // MemoryStreamReader(data, start, length, settings)'s `length` parameter
-        // is actually an absolute end-position bound (endPosition = length), not
-        // a count relative to `start` - confirmed by the single-array constructor
-        // MemoryStreamReader(data, settings) delegating as
-        // this(data, 0, data.Length, settings), which only makes sense under that
-        // reading. So skipping the 8-byte "Nettrace" magic is start=8 with the
-        // bound left at fileBytes.Length (not fileBytes.Length - 8), which also
-        // means Current/position values from this reader are already absolute
-        // byte offsets into fileBytes - exactly what EventBlock.FromStream needs
-        // to record a zero-copy (offset, length) slice for each event's payload
-        // instead of allocating and copying a dedicated byte[] per event.
+        // IOStreamStreamReader's own Goto/Fill tracks position with an internal
+        // counter that starts at 0 and is NOT the underlying stream's Position,
+        // which is why the 8-byte "Nettrace" magic is skipped by asking the
+        // READER to Goto(8) rather than by handing it a pre-advanced
+        // FileStream - the latter makes the reader seek to the wrong absolute
+        // offset the first time it refills. Positions from this reader are
+        // therefore absolute file offsets, exactly as the old MemoryStreamReader
+        // start=8 convention produced, so block bookkeeping is unchanged.
         int metadataBlockCount = 0;
         int eventBlockCount = 0;
         int skippedBlockCount = 0;
 
         {
-            MemoryStreamReader reader = new MemoryStreamReader(fileBytes, ExpectedMagic.Length, fileBytes.Length, SerializationSettings.Default);
+            IOStreamStreamReader reader = new IOStreamStreamReader(filePath, SerializationSettings.Default);
+            reader.Goto((StreamLabel)ExpectedMagic.Length);
 
             using (Deserializer deserializer = new Deserializer(reader, filePath))
             {
                 deserializer.RegisterFactory("Trace", () => header);
                 deserializer.RegisterFactory("MetadataBlock", () => { ++metadataBlockCount; return new MetadataBlock(file.MetadataById); });
-                deserializer.RegisterFactory("EventBlock", () => { ++eventBlockCount; return new EventBlock(file.MetadataById, file.Events, fileBytes, file.StacksById); });
+                deserializer.RegisterFactory("EventBlock", () => { ++eventBlockCount; return new EventBlock(file.MetadataById, file.Events, file.StacksById); });
                 // header.PointerSize is read here (not file.Header.PointerSize,
                 // which isn't assigned until after this whole loop finishes) -
                 // safe because GetEntryObject() below reads the Trace header
@@ -127,8 +125,8 @@ public class NettraceFile
                 while (deserializer.ReadObject() != null)
                 {
                     // Deserializer.Current is already an ABSOLUTE byte offset
-                    // into fileBytes (see this method's own comment on
-                    // MemoryStreamReader's start/length convention above), so
+                    // into the file (see this method's own comment on the
+                    // reader's position convention above), so
                     // this fraction is exact, not estimated - and free to
                     // compute here specifically because this loop already
                     // advances one whole top-level block at a time (there can
@@ -136,7 +134,7 @@ public class NettraceFile
                     // capture), not once per event, so no separate throttle
                     // mask is needed the way the per-event projector loops
                     // need one.
-                    onProgress?.Invoke((long)deserializer.Current / (double)fileBytes.Length);
+                    onProgress?.Invoke((long)deserializer.Current / (double)fileLength);
                 }
             }
         }
@@ -149,8 +147,30 @@ public class NettraceFile
         return file;
     }
 
-    private static bool MagicMatches(byte[] magic)
+    // Reads just the leading bytes rather than taking the whole file as an
+    // array - the file is no longer resident in memory when this runs, and a
+    // 3GB capture could not be handed to this method as a byte[] at all.
+    private static bool MagicMatches(string filePath)
     {
+        Span<byte> magic = stackalloc byte[8];
+
+        using (FileStream stream = File.OpenRead(filePath))
+        {
+            int totalRead = 0;
+
+            while (totalRead < magic.Length)
+            {
+                int read = stream.Read(magic.Slice(totalRead));
+
+                if (read == 0)
+                {
+                    return false;
+                }
+
+                totalRead += read;
+            }
+        }
+
         for (int index = 0; index < ExpectedMagic.Length; ++index)
         {
             if (magic[index] != ExpectedMagic[index])
