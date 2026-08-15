@@ -330,7 +330,15 @@ export async function activate(context: vscode.ExtensionContext) {
     // view shows. Same reasoning as above: those views are gated on their own
     // JSON being present, so a stale cached binary silently renders an empty
     // tab rather than an obviously broken one.
-    const latestNettraceParserVersionNumber = "1.7.0";
+    //
+    // Bumped again for 1.8.0: the Threading tab's Pool Adjustments drill-down
+    // reads threadSnapshot on each adjustment, and its Thread Creations "Why"
+    // column reads isPoolWorker/causeReasonName - none of which a 1.7.x binary
+    // emits. Also a real correctness change rather than a new field: the
+    // sample-correlated views now look only BACKWARD from an adjustment, over
+    // 3ms instead of +/-25ms, so a stale binary would keep reporting stacks
+    // taken after the decision it claims to explain.
+    const latestNettraceParserVersionNumber = "1.8.0";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;
