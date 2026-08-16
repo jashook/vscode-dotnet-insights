@@ -184,7 +184,8 @@ public class GroundTruthDiffTests
         List<(double RelativeMSec, long AllocationAmount, string TypeName, string LeafMethodName)> parsedTuples = new List<(double, long, string, string)>(parsedEvents.Count);
         foreach (AllocationEvent parsedEvent in parsedEvents)
         {
-            string leaf = parsedEvent.Stack.Length > 0 ? symbolTable.Resolve(parsedEvent.Stack[0], parsedEvent.RelativeMSec) : null;
+            long[] parsedFrames = file.Stacks.FramesAt(parsedEvent.StackIndex);
+            string leaf = parsedFrames.Length > 0 ? symbolTable.Resolve(parsedFrames[0], parsedEvent.RelativeMSec) : null;
             parsedTuples.Add((parsedEvent.RelativeMSec, parsedEvent.AllocationAmount, parsedEvent.TypeName, leaf));
         }
 
@@ -292,10 +293,11 @@ public class GroundTruthDiffTests
         List<(double RelativeMSec, long AllocationAmount, string TypeName, List<string> Frames)> parsedTuples = new List<(double, long, string, List<string>)>(parsedEvents.Count);
         foreach (AllocationEvent parsedEvent in parsedEvents)
         {
-            List<string> frames = new List<string>(parsedEvent.Stack.Length);
-            for (int frameIndex = 0; frameIndex < parsedEvent.Stack.Length; ++frameIndex)
+            long[] parsedFrames = file.Stacks.FramesAt(parsedEvent.StackIndex);
+            List<string> frames = new List<string>(parsedFrames.Length);
+            for (int frameIndex = 0; frameIndex < parsedFrames.Length; ++frameIndex)
             {
-                frames.Add(symbolTable.Resolve(parsedEvent.Stack[frameIndex], parsedEvent.RelativeMSec));
+                frames.Add(symbolTable.Resolve(parsedFrames[frameIndex], parsedEvent.RelativeMSec));
             }
 
             parsedTuples.Add((parsedEvent.RelativeMSec, parsedEvent.AllocationAmount, parsedEvent.TypeName, frames));
@@ -394,10 +396,11 @@ public class GroundTruthDiffTests
         List<(double RelativeMSec, string ExceptionType, string ExceptionMessage, int HResult, int Flags, List<string> Frames)> parsedTuples = new List<(double, string, string, int, int, List<string>)>(parsedEvents.Count);
         foreach (ExceptionEvent parsedEvent in parsedEvents)
         {
-            List<string> frames = new List<string>(parsedEvent.Stack.Length);
-            for (int frameIndex = 0; frameIndex < parsedEvent.Stack.Length; ++frameIndex)
+            long[] parsedFrames = file.Stacks.FramesAt(parsedEvent.StackIndex);
+            List<string> frames = new List<string>(parsedFrames.Length);
+            for (int frameIndex = 0; frameIndex < parsedFrames.Length; ++frameIndex)
             {
-                frames.Add(symbolTable.Resolve(parsedEvent.Stack[frameIndex], parsedEvent.RelativeMSec));
+                frames.Add(symbolTable.Resolve(parsedFrames[frameIndex], parsedEvent.RelativeMSec));
             }
 
             parsedTuples.Add((parsedEvent.RelativeMSec, parsedEvent.ExceptionType, parsedEvent.ExceptionMessage, parsedEvent.HResult, (int)parsedEvent.Flags, frames));
@@ -505,7 +508,8 @@ public class GroundTruthDiffTests
         List<(double RelativeMSec, long ThreadId, string LeafMethodName)> parsedTuples = new List<(double, long, string)>(parsedEvents.Count);
         foreach (SampleEvent parsedEvent in parsedEvents)
         {
-            string leaf = parsedEvent.Stack.Length > 0 ? symbolTable.Resolve(parsedEvent.Stack[0], parsedEvent.RelativeMSec) : null;
+            long[] parsedFrames = file.Stacks.FramesAt(parsedEvent.StackIndex);
+            string leaf = parsedFrames.Length > 0 ? symbolTable.Resolve(parsedFrames[0], parsedEvent.RelativeMSec) : null;
             parsedTuples.Add((parsedEvent.RelativeMSec, parsedEvent.ThreadId, leaf));
         }
 

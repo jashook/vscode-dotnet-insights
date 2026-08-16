@@ -45,6 +45,44 @@ var allocationDatasets = {};
     // deferred to the "Profile" nav button's first click.
     var cpuProfileJson = JSON.parse(document.getElementById("cpuProfileJson").textContent);
 
+    // Binary container (nettraceParser/Binary/BinaryCaptureFormat.cs), fetched
+    // and decoded here in the webview rather than parsed and re-embedded by
+    // the extension host - see media/nettraceBinary.js for the measured
+    // reasoning. Sections that have migrated overwrite the equivalent JSON
+    // value below; whatever has not migrated keeps coming through the JSON
+    // parsed above, which is why this is additive rather than a replacement.
+    //
+    // Deliberately not awaited: this runs at top level, and blocking the whole
+    // view on a fetch would delay everything that does NOT depend on the
+    // container. The CPU timeline is the only current consumer and is not on
+    // the default view, so it is normally decoded well before anything asks
+    // for it; the redraw below covers the case where it was not.
+    var binaryContainerUriElement = document.getElementById("binaryContainerUri");
+    var binaryContainerUri = binaryContainerUriElement ? JSON.parse(binaryContainerUriElement.textContent) : null;
+
+    NettraceBinary.load(binaryContainerUri).then(function (container) {
+        if (!container || !cpuProfileJson) {
+            return;
+        }
+
+        var decodedTimeline = NettraceBinary.decodeSampleTimeline(container);
+
+        if (!decodedTimeline) {
+            // No such section, or a version this build does not know - the
+            // JSON "sampleTimeline" is still in place, so leave it alone.
+            return;
+        }
+
+        cpuProfileJson["sampleTimeline"] = decodedTimeline;
+
+        // Only if the chart was already built from the JSON values - drawing
+        // it here otherwise would render into a profile view the user has not
+        // opened yet (its DOM is injected lazily on first switch).
+        if (cpuTimelineChartHandle) {
+            renderCpuTimeline(cpuTimelineZoomRange);
+        }
+    });
+
     // null when sourceFormat !== "nettrace" or the capture had zero
     // contention events - see GcSnapshotRenderer.ts's hasContention. Eagerly
     // parsed for the same reason the others are.

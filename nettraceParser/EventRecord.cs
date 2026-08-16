@@ -74,15 +74,22 @@ public readonly struct EventRecord
     // collision. Capturing the array reference at parse time (this field) is
     // immune to later reuse of the same numeric id, since it holds the real
     // long[] object directly rather than a number to re-look-up afterward.
-    // Empty (Array.Empty<long>()), never null, when the event has no stack
-    // (StackId 0, or stack-walking wasn't enabled for that event).
-    public readonly long[] Stack;
+    // StackTable.EmptyStackIndex when the event has no stack (StackId 0, or
+    // stack-walking wasn't enabled for that event) - that index resolves to a
+    // real empty array, so no consumer needs a null or sentinel check.
+    //
+    // An INDEX rather than the long[] itself as of 2026-08-15: consumers group
+    // events by stack constantly, and keying those groupings by the array's
+    // object identity made RuntimeHelpers.GetHashCode the single largest cost
+    // in the whole export (see StackTable.cs). It also drops one reference
+    // from a struct that exists 35M times over.
+    public readonly int StackIndex;
     public readonly Dictionary<string, object> Fields;
     public readonly byte[] PayloadBuffer;
     public readonly int PayloadOffset;
     public readonly int PayloadLength;
 
-    public EventRecord(string providerName, string eventName, int eventId, int version, long timeStampRelativeQpc, long threadId, long[] stack, Dictionary<string, object> fields, byte[] payloadBuffer, int payloadOffset, int payloadLength)
+    public EventRecord(string providerName, string eventName, int eventId, int version, long timeStampRelativeQpc, long threadId, int stackIndex, Dictionary<string, object> fields, byte[] payloadBuffer, int payloadOffset, int payloadLength)
     {
         this.ProviderName = providerName;
         this.EventName = eventName;
@@ -90,7 +97,7 @@ public readonly struct EventRecord
         this.Version = version;
         this.TimeStampRelativeQPC = timeStampRelativeQpc;
         this.ThreadId = threadId;
-        this.Stack = stack;
+        this.StackIndex = stackIndex;
         this.Fields = fields;
         this.PayloadBuffer = payloadBuffer;
         this.PayloadOffset = payloadOffset;

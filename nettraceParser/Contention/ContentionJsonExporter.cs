@@ -181,12 +181,12 @@ public static class ContentionJsonExporter
         // Distinct stacks contended on this lock, keyed by stack array
         // reference (same ReferenceEqualityComparer discipline the site
         // aggregation uses - see this file's own stacksByRankedSite).
-        public Dictionary<long[], ContentionStackAggregate> StacksByReference = new Dictionary<long[], ContentionStackAggregate>(ReferenceEqualityComparer.Instance);
+        public Dictionary<int, ContentionStackAggregate> StacksByReference = new Dictionary<int, ContentionStackAggregate>();
     }
 
     private sealed class ContentionStackAggregate
     {
-        public long[] Stack;
+        public int StackIndex;
         public int ContentionCount;
         public double TotalWaitMSec;
         public double FirstSeenRelativeMSec;
@@ -210,7 +210,7 @@ public static class ContentionJsonExporter
         public int Remaining;
     }
 
-    public static void Write(Utf8JsonWriter writer, List<ContentionEvent> contentionEvents, MethodSymbolTable symbolTable)
+    public static void Write(Utf8JsonWriter writer, List<ContentionEvent> contentionEvents, StackTable stackTable, MethodSymbolTable symbolTable)
     {
         writer.WriteStartObject();
 
@@ -253,7 +253,7 @@ public static class ContentionJsonExporter
             string leafFrameName;
             int siteFrameIndex;
 
-            ResolveSiteFrame(contentionEvent.Stack, contentionEvent.RelativeMSec, symbolTable, out leafFrameId, out leafFrameName, out siteFrameIndex);
+            ResolveSiteFrame(stackTable.FramesAt(contentionEvent.StackIndex), contentionEvent.RelativeMSec, symbolTable, out leafFrameId, out leafFrameName, out siteFrameIndex);
 
             SiteStats stats;
 
@@ -330,7 +330,7 @@ public static class ContentionJsonExporter
         }
 
         // Pass 2: build per-site stack aggregates and fill timeline buckets.
-        Dictionary<long[], ContentionStackAggregate>[] stacksByRankedSite = new Dictionary<long[], ContentionStackAggregate>[topSitesCount];
+        Dictionary<int, ContentionStackAggregate>[] stacksByRankedSite = new Dictionary<int, ContentionStackAggregate>[topSitesCount];
 
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
@@ -340,29 +340,29 @@ public static class ContentionJsonExporter
             string unusedFrameName;
             int siteFrameIndex;
 
-            ResolveSiteFrame(contentionEvent.Stack, contentionEvent.RelativeMSec, symbolTable, out leafFrameId, out unusedFrameName, out siteFrameIndex);
+            ResolveSiteFrame(stackTable.FramesAt(contentionEvent.StackIndex), contentionEvent.RelativeMSec, symbolTable, out leafFrameId, out unusedFrameName, out siteFrameIndex);
 
             int siteIndex;
 
             if (rankIndexByLeafFrameId.TryGetValue(leafFrameId, out siteIndex))
             {
-                Dictionary<long[], ContentionStackAggregate> siteStacks = stacksByRankedSite[siteIndex];
+                Dictionary<int, ContentionStackAggregate> siteStacks = stacksByRankedSite[siteIndex];
 
                 if (siteStacks == null)
                 {
-                    siteStacks = new Dictionary<long[], ContentionStackAggregate>(ReferenceEqualityComparer.Instance);
+                    siteStacks = new Dictionary<int, ContentionStackAggregate>();
                     stacksByRankedSite[siteIndex] = siteStacks;
                 }
 
                 ContentionStackAggregate aggregate;
 
-                if (!siteStacks.TryGetValue(contentionEvent.Stack, out aggregate))
+                if (!siteStacks.TryGetValue(contentionEvent.StackIndex, out aggregate))
                 {
                     aggregate = new ContentionStackAggregate();
-                    aggregate.Stack = contentionEvent.Stack;
+                    aggregate.StackIndex = contentionEvent.StackIndex;
                     aggregate.FirstSeenRelativeMSec = contentionEvent.RelativeMSec;
                     aggregate.SiteFrameIndex = siteFrameIndex;
-                    siteStacks[contentionEvent.Stack] = aggregate;
+                    siteStacks[contentionEvent.StackIndex] = aggregate;
                 }
 
                 ++aggregate.ContentionCount;
@@ -384,7 +384,7 @@ public static class ContentionJsonExporter
         }
 
         // Shared per-Write call state for the drill-down trees.
-        Dictionary<long[], int[]> frameIdCache = new Dictionary<long[], int[]>(ReferenceEqualityComparer.Instance);
+        Dictionary<int, int[]> frameIdCache = new Dictionary<int, int[]>();
         List<string> methodNames = new List<string>();
         Dictionary<string, int> methodNameIndexByName = new Dictionary<string, int>();
 
@@ -393,7 +393,7 @@ public static class ContentionJsonExporter
 
         for (int siteIndex = 0; siteIndex < topSitesCount; ++siteIndex)
         {
-            Dictionary<long[], ContentionStackAggregate> siteStacks = stacksByRankedSite[siteIndex];
+            Dictionary<int, ContentionStackAggregate> siteStacks = stacksByRankedSite[siteIndex];
 
             writer.WriteStartObject();
 
@@ -414,7 +414,7 @@ public static class ContentionJsonExporter
                 writer.WriteNumber("totalWaitMSec", typeTotalWaitMSec);
                 writer.WriteNumber("distinctStackCount", stackList.Count);
 
-                ContentionTreeNode tree = BuildCallerTree(stackList, symbolTable, frameIdCache);
+                ContentionTreeNode tree = BuildCallerTree(stackList, stackTable, symbolTable, frameIdCache);
                 WriteBudget budget = new WriteBudget();
                 budget.Remaining = DrillDownTreeNodeBudgetPerSite;
                 WriteCallerTreeChildren(writer, tree, symbolTable, methodNames, methodNameIndexByName, budget);
@@ -462,7 +462,7 @@ public static class ContentionJsonExporter
             writer.WriteEndObject();
         }
 
-        WriteLockTimeline(writer, eventsSpan, minRelativeMSec, maxRelativeMSec, symbolTable, frameIdCache, methodNames, methodNameIndexByName);
+        WriteLockTimeline(writer, eventsSpan, minRelativeMSec, maxRelativeMSec, stackTable, symbolTable, frameIdCache, methodNames, methodNameIndexByName);
 
         writer.WritePropertyName("methodNames");
         writer.WriteStartArray();
@@ -497,7 +497,7 @@ public static class ContentionJsonExporter
     // (~12% of waits on a real capture) and is emitted as 0 for the renderer
     // to show as "unknown" - deliberately not dropped, since a wait with an
     // unknown owner is still a real wait on that lock.
-    private static void WriteLockTimeline(Utf8JsonWriter writer, Span<ContentionEvent> eventsSpan, double minRelativeMSec, double maxRelativeMSec, MethodSymbolTable symbolTable, Dictionary<long[], int[]> frameIdCache, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    private static void WriteLockTimeline(Utf8JsonWriter writer, Span<ContentionEvent> eventsSpan, double minRelativeMSec, double maxRelativeMSec, StackTable stackTable, MethodSymbolTable symbolTable, Dictionary<int, int[]> frameIdCache, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         Dictionary<long, LockStats> statsByLockId = new Dictionary<long, LockStats>();
         Dictionary<long[], bool> workerStackCache = new Dictionary<long[], bool>(ReferenceEqualityComparer.Instance);
@@ -541,7 +541,7 @@ public static class ContentionJsonExporter
                 stats.OwnerThreadIds.Add(contentionEvent.OwnerThreadId);
             }
 
-            if (IsWorkerThreadStack(contentionEvent.Stack, contentionEvent.RelativeMSec, symbolTable, workerStackCache))
+            if (IsWorkerThreadStack(stackTable.FramesAt(contentionEvent.StackIndex), contentionEvent.RelativeMSec, symbolTable, workerStackCache))
             {
                 stats.WorkerWaiterThreadIds.Add(contentionEvent.ThreadId);
                 ++stats.WorkerContentionCount;
@@ -552,25 +552,25 @@ public static class ContentionJsonExporter
             // Fold this wait's own stack into the lock's distinct-stack set,
             // so the UI can answer "where in the code is this lock actually
             // contended" for whichever lock the user clicks.
-            if (contentionEvent.Stack.Length > 0)
+            if (stackTable.FramesAt(contentionEvent.StackIndex).Length > 0)
             {
                 ContentionStackAggregate aggregate;
 
-                if (!stats.StacksByReference.TryGetValue(contentionEvent.Stack, out aggregate))
+                if (!stats.StacksByReference.TryGetValue(contentionEvent.StackIndex, out aggregate))
                 {
                     int siteFrameId;
                     string siteFrameName;
                     int siteFrameIndex;
-                    ResolveSiteFrame(contentionEvent.Stack, contentionEvent.RelativeMSec, symbolTable, out siteFrameId, out siteFrameName, out siteFrameIndex);
+                    ResolveSiteFrame(stackTable.FramesAt(contentionEvent.StackIndex), contentionEvent.RelativeMSec, symbolTable, out siteFrameId, out siteFrameName, out siteFrameIndex);
 
                     aggregate = new ContentionStackAggregate();
-                    aggregate.Stack = contentionEvent.Stack;
+                    aggregate.StackIndex = contentionEvent.StackIndex;
                     aggregate.FirstSeenRelativeMSec = contentionEvent.RelativeMSec;
                     // Same skip as the sites table, so a lock's tree starts
                     // at the method the lock is named after rather than at
                     // the shared primitive prefix.
                     aggregate.SiteFrameIndex = siteFrameIndex;
-                    stats.StacksByReference[contentionEvent.Stack] = aggregate;
+                    stats.StacksByReference[contentionEvent.StackIndex] = aggregate;
                 }
 
                 ++aggregate.ContentionCount;
@@ -691,7 +691,7 @@ public static class ContentionJsonExporter
             // identifier - two distinct locks can legitimately share a name
             // (the same method locking different instances), so the hex
             // pointer stays the real identity.
-            writer.WriteNumber("nameFrame", ResolveLockNameFrameIndex(stats, symbolTable, frameIdCache, methodNames, methodNameIndexByName));
+            writer.WriteNumber("nameFrame", ResolveLockNameFrameIndex(stats, stackTable, symbolTable, frameIdCache, methodNames, methodNameIndexByName));
 
             List<OwnershipSegment> segments = stats.Segments;
 
@@ -733,7 +733,7 @@ public static class ContentionJsonExporter
             {
                 List<ContentionStackAggregate> stackList = new List<ContentionStackAggregate>(stats.StacksByReference.Values);
 
-                ContentionTreeNode tree = BuildCallerTree(stackList, symbolTable, frameIdCache);
+                ContentionTreeNode tree = BuildCallerTree(stackList, stackTable, symbolTable, frameIdCache);
 
                 WriteBudget budget = new WriteBudget();
                 budget.Remaining = LockDrillDownNodeBudgetPerLock < remainingDrillDownBudget ? LockDrillDownNodeBudgetPerLock : remainingDrillDownBudget;
@@ -871,11 +871,11 @@ public static class ContentionJsonExporter
     // identifies the caller. Returns -1 when the lock has no stacks at all,
     // or when every frame in its dominant stack is a lock primitive - in
     // both cases the renderer falls back to showing the raw pointer.
-    private static int ResolveLockNameFrameIndex(LockStats stats, MethodSymbolTable symbolTable, Dictionary<long[], int[]> frameIdCache, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    private static int ResolveLockNameFrameIndex(LockStats stats, StackTable stackTable, MethodSymbolTable symbolTable, Dictionary<int, int[]> frameIdCache, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         ContentionStackAggregate dominantStack = null;
 
-        foreach (KeyValuePair<long[], ContentionStackAggregate> entry in stats.StacksByReference)
+        foreach (KeyValuePair<int, ContentionStackAggregate> entry in stats.StacksByReference)
         {
             if (dominantStack == null || entry.Value.TotalWaitMSec > dominantStack.TotalWaitMSec)
             {
@@ -883,23 +883,29 @@ public static class ContentionJsonExporter
             }
         }
 
-        if (dominantStack == null || dominantStack.Stack.Length == 0)
+        if (dominantStack == null)
+        {
+            return -1;
+        }
+
+        long[] dominantFrames = stackTable.FramesAt(dominantStack.StackIndex);
+        if (dominantFrames.Length == 0)
         {
             return -1;
         }
 
         int[] frameIds;
 
-        if (!frameIdCache.TryGetValue(dominantStack.Stack, out frameIds))
+        if (!frameIdCache.TryGetValue(dominantStack.StackIndex, out frameIds))
         {
-            frameIds = new int[dominantStack.Stack.Length];
+            frameIds = new int[dominantFrames.Length];
 
-            for (int frameIndex = 0; frameIndex < dominantStack.Stack.Length; ++frameIndex)
+            for (int frameIndex = 0; frameIndex < dominantFrames.Length; ++frameIndex)
             {
-                frameIds[frameIndex] = symbolTable.ResolveId(dominantStack.Stack[frameIndex], dominantStack.FirstSeenRelativeMSec);
+                frameIds[frameIndex] = symbolTable.ResolveId(dominantFrames[frameIndex], dominantStack.FirstSeenRelativeMSec);
             }
 
-            frameIdCache[dominantStack.Stack] = frameIds;
+            frameIdCache[dominantStack.StackIndex] = frameIds;
         }
 
         for (int frameIndex = 0; frameIndex < frameIds.Length; ++frameIndex)
@@ -993,7 +999,7 @@ public static class ContentionJsonExporter
     // ExceptionJsonExporter.BuildCallerTree's own algorithm and rationale (fold
     // at every depth, not just the leaf, to preserve every real caller
     // permutation).
-    private static ContentionTreeNode BuildCallerTree(List<ContentionStackAggregate> rawStacks, MethodSymbolTable symbolTable, Dictionary<long[], int[]> frameIdCache)
+    private static ContentionTreeNode BuildCallerTree(List<ContentionStackAggregate> rawStacks, StackTable stackTable, MethodSymbolTable symbolTable, Dictionary<int, int[]> frameIdCache)
     {
         ContentionTreeNode root = new ContentionTreeNode();
 
@@ -1002,7 +1008,9 @@ public static class ContentionJsonExporter
             ContentionStackAggregate rawStack = rawStacks[stackIndex];
             ContentionTreeNode current = root;
 
-            if (rawStack.Stack.Length == 0)
+            long[] stackFrames = stackTable.FramesAt(rawStack.StackIndex);
+
+            if (stackFrames.Length == 0)
             {
                 current = GetOrAddChild(current, NoStackFrameId);
                 AccumulateTreeNode(current, rawStack);
@@ -1011,16 +1019,16 @@ public static class ContentionJsonExporter
 
             int[] frameIds;
 
-            if (!frameIdCache.TryGetValue(rawStack.Stack, out frameIds))
+            if (!frameIdCache.TryGetValue(rawStack.StackIndex, out frameIds))
             {
-                frameIds = new int[rawStack.Stack.Length];
+                frameIds = new int[stackFrames.Length];
 
-                for (int frameIndex = 0; frameIndex < rawStack.Stack.Length; ++frameIndex)
+                for (int frameIndex = 0; frameIndex < stackFrames.Length; ++frameIndex)
                 {
-                    frameIds[frameIndex] = symbolTable.ResolveId(rawStack.Stack[frameIndex], rawStack.FirstSeenRelativeMSec);
+                    frameIds[frameIndex] = symbolTable.ResolveId(stackFrames[frameIndex], rawStack.FirstSeenRelativeMSec);
                 }
 
-                frameIdCache[rawStack.Stack] = frameIds;
+                frameIdCache[rawStack.StackIndex] = frameIds;
             }
 
             // Starts at the stack's own site frame, not index 0 - the frames

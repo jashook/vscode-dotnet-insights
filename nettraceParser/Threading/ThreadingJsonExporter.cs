@@ -120,7 +120,7 @@ public static class ThreadingJsonExporter
         "System.Threading.PortableThreadPool+WorkerThread.WorkerThreadStart"
     };
 
-    public static void Write(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    public static void Write(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         writer.WriteStartObject();
 
@@ -145,13 +145,13 @@ public static class ThreadingJsonExporter
 
         WriteTimeline(writer, summary);
         WriteAdjustmentReasons(writer, summary);
-        WriteAdjustments(writer, summary, sampleEvents, symbolTable, methodNames, methodNameIndexByName);
-        WriteStallCorrelation(writer, summary, sampleEvents, symbolTable, methodNames, methodNameIndexByName);
-        WriteStackedEvents(writer, "threadCreations", summary.ThreadCreations, summary.Adjustments, symbolTable, methodNames, methodNameIndexByName);
+        WriteAdjustments(writer, summary, sampleEvents, stackTable, symbolTable, methodNames, methodNameIndexByName);
+        WriteStallCorrelation(writer, summary, sampleEvents, stackTable, symbolTable, methodNames, methodNameIndexByName);
+        WriteStackedEvents(writer, "threadCreations", summary.ThreadCreations, summary.Adjustments, stackTable, symbolTable, methodNames, methodNameIndexByName);
         // Lock creations get no attribution: a lock is not created by a
         // thread-pool decision, so pairing one with the nearest adjustment
         // would be a coincidence dressed up as a cause.
-        WriteStackedEvents(writer, "lockCreations", summary.LockCreations, null, symbolTable, methodNames, methodNameIndexByName);
+        WriteStackedEvents(writer, "lockCreations", summary.LockCreations, null, stackTable, symbolTable, methodNames, methodNameIndexByName);
 
         writer.WriteEndObject();
     }
@@ -210,7 +210,7 @@ public static class ThreadingJsonExporter
     private struct ThreadStackAtAdjustment
     {
         public double DistanceMSec;
-        public long[] Stack;
+        public int StackIndex;
     }
 
     // Identical stacks across threads, collapsed. On a real capture most of
@@ -237,7 +237,7 @@ public static class ThreadingJsonExporter
     //
     // Returns one entry per emitted adjustment, parallel to that slice, so a
     // caller can index it by adjustment index.
-    private static List<ThreadStackGroup>[] BuildThreadSnapshots(List<ThreadPoolAdjustmentRecord> adjustments, int emittedCount, List<SampleEvent> sampleEvents, MethodSymbolTable symbolTable, int[] threadsSampledByAdjustment, int[] parkedThreadsByAdjustment, double[] oldestSampleAgeByAdjustment)
+    private static List<ThreadStackGroup>[] BuildThreadSnapshots(List<ThreadPoolAdjustmentRecord> adjustments, int emittedCount, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, int[] threadsSampledByAdjustment, int[] parkedThreadsByAdjustment, double[] oldestSampleAgeByAdjustment)
     {
         List<ThreadStackGroup>[] groupsByAdjustment = new List<ThreadStackGroup>[emittedCount];
 
@@ -273,7 +273,7 @@ public static class ThreadingJsonExporter
                 break;
             }
 
-            if (sampleEvent.Stack.Length == 0)
+            if (stackTable.FramesAt(sampleEvent.StackIndex).Length == 0)
             {
                 continue;
             }
@@ -310,7 +310,7 @@ public static class ThreadingJsonExporter
 
                 ThreadStackAtAdjustment closest;
                 closest.DistanceMSec = distanceMSec;
-                closest.Stack = sampleEvent.Stack;
+                closest.StackIndex = sampleEvent.StackIndex;
                 closestByThreadId[sampleEvent.ThreadId] = closest;
             }
         }
@@ -326,7 +326,7 @@ public static class ThreadingJsonExporter
                 continue;
             }
 
-            groupsByAdjustment[adjustmentIndex] = GroupThreadStacks(closestByThreadId, adjustments[adjustmentIndex].RelativeMSec, symbolTable, frameBuffer, out int threadsSampled, out int parkedThreads);
+            groupsByAdjustment[adjustmentIndex] = GroupThreadStacks(closestByThreadId, adjustments[adjustmentIndex].RelativeMSec, stackTable, symbolTable, frameBuffer, out int threadsSampled, out int parkedThreads);
             threadsSampledByAdjustment[adjustmentIndex] = threadsSampled;
             parkedThreadsByAdjustment[adjustmentIndex] = parkedThreads;
 
@@ -349,7 +349,7 @@ public static class ThreadingJsonExporter
         return groupsByAdjustment;
     }
 
-    private static List<ThreadStackGroup> GroupThreadStacks(Dictionary<long, ThreadStackAtAdjustment> closestByThreadId, double adjustmentTimeMSec, MethodSymbolTable symbolTable, int[] frameBuffer, out int threadsSampled, out int parkedThreads)
+    private static List<ThreadStackGroup> GroupThreadStacks(Dictionary<long, ThreadStackAtAdjustment> closestByThreadId, double adjustmentTimeMSec, StackTable stackTable, MethodSymbolTable symbolTable, int[] frameBuffer, out int threadsSampled, out int parkedThreads)
     {
         List<ThreadStackGroup> groups = new List<ThreadStackGroup>();
         // Hash bucket -> indices into groups. Hashing the resolved frame ids
@@ -366,7 +366,7 @@ public static class ThreadingJsonExporter
         {
             ++threadsSampled;
 
-            long[] stack = threadEntry.Value.Stack;
+            long[] stack = stackTable.FramesAt(threadEntry.Value.StackIndex);
             int frameCount = stack.Length < MaxStackFramesPerEvent ? stack.Length : MaxStackFramesPerEvent;
 
             long hash = 1469598103934665603L;
@@ -457,14 +457,14 @@ public static class ThreadingJsonExporter
         return true;
     }
 
-    private static void WriteAdjustments(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    private static void WriteAdjustments(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         int emitted = summary.Adjustments.Count < MaxAdjustmentsEmitted ? summary.Adjustments.Count : MaxAdjustmentsEmitted;
 
         int[] threadsSampledByAdjustment = new int[emitted];
         int[] parkedThreadsByAdjustment = new int[emitted];
         double[] oldestSampleAgeByAdjustment = new double[emitted];
-        List<ThreadStackGroup>[] groupsByAdjustment = BuildThreadSnapshots(summary.Adjustments, emitted, sampleEvents, symbolTable, threadsSampledByAdjustment, parkedThreadsByAdjustment, oldestSampleAgeByAdjustment);
+        List<ThreadStackGroup>[] groupsByAdjustment = BuildThreadSnapshots(summary.Adjustments, emitted, sampleEvents, stackTable, symbolTable, threadsSampledByAdjustment, parkedThreadsByAdjustment, oldestSampleAgeByAdjustment);
 
         writer.WritePropertyName("adjustments");
         writer.WriteStartArray();
@@ -562,7 +562,7 @@ public static class ThreadingJsonExporter
 
     // Joins CPU samples to stall-driven adjustments on time - see this file's
     // header for why this exists at all.
-    private static void WriteStallCorrelation(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    private static void WriteStallCorrelation(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         List<ThreadPoolAdjustmentRecord> stallAdjustments = new List<ThreadPoolAdjustmentRecord>();
 
@@ -634,12 +634,13 @@ public static class ThreadingJsonExporter
             ++totalSamplesInWindows;
             threadsInWindows.Add(sampleEvent.ThreadId);
 
-            if (sampleEvent.Stack.Length == 0)
+            long[] sampleFrames = stackTable.FramesAt(sampleEvent.StackIndex);
+            if (sampleFrames.Length == 0)
             {
                 continue;
             }
 
-            int leafFrameId = symbolTable.ResolveId(sampleEvent.Stack[0], sampleTime);
+            int leafFrameId = symbolTable.ResolveId(sampleFrames[0], sampleTime);
             string leafName = symbolTable.NameForId(leafFrameId);
 
             if (IsParkedWorkerFrame(leafName))
@@ -776,7 +777,7 @@ public static class ThreadingJsonExporter
         return nearestIndex;
     }
 
-    private static void WriteStackedEvents(Utf8JsonWriter writer, string propertyName, List<StackedThreadingEvent> stackedEvents, List<ThreadPoolAdjustmentRecord> adjustmentsForAttribution, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    private static void WriteStackedEvents(Utf8JsonWriter writer, string propertyName, List<StackedThreadingEvent> stackedEvents, List<ThreadPoolAdjustmentRecord> adjustmentsForAttribution, StackTable stackTable, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         writer.WritePropertyName(propertyName);
         writer.WriteStartArray();
@@ -796,7 +797,7 @@ public static class ThreadingJsonExporter
             {
                 // Whether the POOL created this thread is a fact read off the
                 // stack; the adjustment below only supplies the reason.
-                writer.WriteBoolean("isPoolWorker", IsPoolWorkerCreationStack(stackedEvent.Stack, symbolTable, stackedEvent.RelativeMSec));
+                writer.WriteBoolean("isPoolWorker", IsPoolWorkerCreationStack(stackTable.FramesAt(stackedEvent.StackIndex), symbolTable, stackedEvent.RelativeMSec));
 
                 int causingAdjustmentIndex = FindNearestPrecedingAdjustmentIndex(adjustmentsForAttribution, stackedEvent.RelativeMSec, ref adjustmentSearchCursor);
 
@@ -819,11 +820,12 @@ public static class ThreadingJsonExporter
             writer.WritePropertyName("frames");
             writer.WriteStartArray();
 
-            int frameCount = stackedEvent.Stack.Length < MaxStackFramesPerEvent ? stackedEvent.Stack.Length : MaxStackFramesPerEvent;
+            long[] stackedFrames = stackTable.FramesAt(stackedEvent.StackIndex);
+            int frameCount = stackedFrames.Length < MaxStackFramesPerEvent ? stackedFrames.Length : MaxStackFramesPerEvent;
 
             for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex)
             {
-                string frameName = symbolTable.NameForId(symbolTable.ResolveId(stackedEvent.Stack[frameIndex], stackedEvent.RelativeMSec));
+                string frameName = symbolTable.NameForId(symbolTable.ResolveId(stackedFrames[frameIndex], stackedEvent.RelativeMSec));
                 writer.WriteNumberValue(InternMethodName(frameName, methodNames, methodNameIndexByName));
             }
 

@@ -34,6 +34,10 @@ namespace DotnetInsights.NetTrace.Tests {
 
 public class ContentionSiteGroupingTests
 {
+    // One stack table for the whole class so the static Make* helpers
+    // below can register stacks too - see TestStacks.cs.
+    private static readonly TestStacks stacks = new TestStacks();
+
     private const int PointerSize = 8;
 
     private static byte[] MakeMethodDCStartVerbosePayload(long methodId, long moduleId, long methodStartAddress, int methodSize, string methodName)
@@ -55,7 +59,7 @@ public class ContentionSiteGroupingTests
     {
         byte[] payload = MakeMethodDCStartVerbosePayload(methodId, moduleId: 2, startAddress, size, name);
 
-        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stack: Array.Empty<long>(), fields: null, payload, payloadOffset: 0, payload.Length);
+        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackIndex: StackTable.EmptyStackIndex, fields: null, payload, payloadOffset: 0, payload.Length);
     }
 
     // 0x1000/0x2000 are lock primitives (skipped when attributing a site),
@@ -74,9 +78,9 @@ public class ContentionSiteGroupingTests
         return MethodSymbolTable.Build(events, pointerSize: PointerSize, qpcFrequency: 0, referenceQpc: 0);
     }
 
-    private static ContentionEvent MakeEvent(double relativeMSec, double durationMSec, long[] stack, long threadId)
+    private static ContentionEvent MakeEvent(double relativeMSec, double durationMSec, int stackIndex, long threadId)
     {
-        return new ContentionEvent(relativeMSec, durationMSec, ClrContentionFlags.Managed, threadId, stack, lockId: 0xAA, associatedObjectId: 0, ownerThreadId: 0);
+        return new ContentionEvent(relativeMSec, durationMSec, ClrContentionFlags.Managed, threadId, stackIndex, lockId: 0xAA, associatedObjectId: 0, ownerThreadId: 0);
     }
 
     private static JsonDocument WriteAndParse(List<ContentionEvent> contentionEvents)
@@ -84,7 +88,7 @@ public class ContentionSiteGroupingTests
         using System.IO.MemoryStream stream = new System.IO.MemoryStream();
         using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
         {
-            ContentionJsonExporter.Write(writer, contentionEvents, MakeSymbolTable());
+            ContentionJsonExporter.Write(writer, contentionEvents, stacks.Table, MakeSymbolTable());
         }
 
         return JsonDocument.Parse(stream.ToArray());
@@ -98,8 +102,8 @@ public class ContentionSiteGroupingTests
         // after the primitive.
         List<ContentionEvent> events = new List<ContentionEvent>
         {
-            MakeEvent(10.0, 5.0, new long[] { 0x1000, 0x3000, 0x5000 }, threadId: 1),
-            MakeEvent(20.0, 7.0, new long[] { 0x1000, 0x4000, 0x5000 }, threadId: 2),
+            MakeEvent(10.0, 5.0, stacks.Index(0x1000, 0x3000, 0x5000), threadId: 1),
+            MakeEvent(20.0, 7.0, stacks.Index(0x1000, 0x4000, 0x5000), threadId: 2),
         };
 
         JsonDocument document = WriteAndParse(events);
@@ -126,7 +130,7 @@ public class ContentionSiteGroupingTests
         // only the first one would still name the site after a primitive.
         List<ContentionEvent> events = new List<ContentionEvent>
         {
-            MakeEvent(10.0, 5.0, new long[] { 0x1000, 0x2000, 0x3000 }, threadId: 1),
+            MakeEvent(10.0, 5.0, stacks.Index(0x1000, 0x2000, 0x3000), threadId: 1),
         };
 
         JsonDocument document = WriteAndParse(events);
@@ -143,7 +147,7 @@ public class ContentionSiteGroupingTests
         // ranked table disagree with the capture's own total.
         List<ContentionEvent> events = new List<ContentionEvent>
         {
-            MakeEvent(10.0, 5.0, new long[] { 0x1000, 0x2000 }, threadId: 1),
+            MakeEvent(10.0, 5.0, stacks.Index(0x1000, 0x2000), threadId: 1),
         };
 
         JsonDocument document = WriteAndParse(events);
@@ -161,10 +165,10 @@ public class ContentionSiteGroupingTests
         // them - the whole point is a better breakdown of the SAME total.
         List<ContentionEvent> events = new List<ContentionEvent>
         {
-            MakeEvent(10.0, 5.0, new long[] { 0x1000, 0x3000 }, threadId: 1),
-            MakeEvent(20.0, 7.0, new long[] { 0x1000, 0x4000 }, threadId: 2),
-            MakeEvent(30.0, 3.0, new long[] { 0x1000, 0x2000 }, threadId: 3),
-            MakeEvent(40.0, 1.0, Array.Empty<long>(), threadId: 4),
+            MakeEvent(10.0, 5.0, stacks.Index(0x1000, 0x3000), threadId: 1),
+            MakeEvent(20.0, 7.0, stacks.Index(0x1000, 0x4000), threadId: 2),
+            MakeEvent(30.0, 3.0, stacks.Index(0x1000, 0x2000), threadId: 3),
+            MakeEvent(40.0, 1.0, StackTable.EmptyStackIndex, threadId: 4),
         };
 
         JsonDocument document = WriteAndParse(events);
@@ -188,7 +192,7 @@ public class ContentionSiteGroupingTests
         // uninformative row at the top of every tree.
         List<ContentionEvent> events = new List<ContentionEvent>
         {
-            MakeEvent(10.0, 5.0, new long[] { 0x1000, 0x3000, 0x5000 }, threadId: 1),
+            MakeEvent(10.0, 5.0, stacks.Index(0x1000, 0x3000, 0x5000), threadId: 1),
         };
 
         JsonDocument document = WriteAndParse(events);

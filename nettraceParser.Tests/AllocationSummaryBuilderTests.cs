@@ -33,9 +33,13 @@ namespace DotnetInsights.NetTrace.Tests {
 
 public class AllocationSummaryBuilderTests
 {
+    // One stack table for the whole class so the static Make* helpers
+    // below can register stacks too - see TestStacks.cs.
+    private static readonly TestStacks stacks = new TestStacks();
+
     private static AllocationEvent MakeEvent(string typeName, long amount, GCAllocationKind kind, double relativeMSec)
     {
-        return new AllocationEvent(default, relativeMSec, amount, kind, typeName, heapIndex: 0, stack: Array.Empty<long>());
+        return new AllocationEvent(default, relativeMSec, amount, kind, typeName, heapIndex: 0, stackIndex: StackTable.EmptyStackIndex);
     }
 
     // These tests don't exercise stack resolution (see
@@ -69,7 +73,7 @@ public class AllocationSummaryBuilderTests
             {
                 using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
                 {
-                    AllocationSummaryBuilder.Write(writer, events, EmptySymbolTable(), ticksBinaryPath);
+                    AllocationSummaryBuilder.Write(writer, events, stacks.Table, EmptySymbolTable(), ticksBinaryPath);
                 }
 
                 summary = (JsonObject)JsonNode.Parse(stream.ToArray());
@@ -288,7 +292,7 @@ public class AllocationSummaryBuilderTests
             {
                 using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
                 {
-                    AllocationSummaryBuilder.Write(writer, events, EmptySymbolTable(), ticksBinaryPath);
+                    AllocationSummaryBuilder.Write(writer, events, stacks.Table, EmptySymbolTable(), ticksBinaryPath);
                 }
 
                 summary = (JsonObject)JsonNode.Parse(stream.ToArray());

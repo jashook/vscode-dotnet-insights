@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <WarningLevel>3</WarningLevel>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
@@ -22,5 +22,28 @@
   <ItemGroup>
     <None Include="fixtures\trace2.nettrace" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <!--
+    nettraceParser vendors FastSerialization's source (see nettraceParser/
+    FastSerialization.cs), and TraceEvent - referenced transitively through
+    nettraceParser.GroundTruth - ships its own compiled copy of the SAME
+    namespace and type names. Any test naming a FastSerialization type
+    (IOStreamStreamReader, SerializationSettings, StreamLabel, ...) is
+    therefore ambiguous between the two assemblies.
+
+    Pushing TraceEvent's copy behind an extern alias leaves the bare
+    FastSerialization namespace meaning nettraceParser's own vendored types,
+    which is what these tests are actually testing. Nothing in this project
+    needs TraceEvent's copy by name; the ground-truth readers that use
+    TraceEvent live in the nettraceParser.GroundTruth project, whose own
+    compilation is unaffected by this.
+  -->
+  <Target Name="AliasTraceEventFastSerialization" AfterTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <ReferencePath Condition="'%(FileName)' == 'Microsoft.Diagnostics.FastSerialization'">
+        <Aliases>traceeventfastserialization</Aliases>
+      </ReferencePath>
+    </ItemGroup>
+  </Target>
 
 </Project>

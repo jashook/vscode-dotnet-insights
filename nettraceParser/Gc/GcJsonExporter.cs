@@ -40,16 +40,16 @@ using DotnetInsights.NetTrace.Threading;
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-// Per-sub-writer breakdown of jsonExport's own total time - returned from
+// Per-sub-writer breakdown of the export phase's own total time - returned from
 // WriteToFile so Program.cs's own "Timing: ..." diagnostic line (the one
 // place this codebase already reports phase timing - see that file's own
 // comment) can report it, rather than this class printing its own
 // competing diagnostic output. Exists specifically so
-// Progress/ProgressPlan.cs's own jsonExport sub-writer weight constants
+// Progress/ProgressPlan.cs's own export sub-writer weight constants
 // can be recalibrated against a real capture with a single CLI run (read
 // this line) instead of re-adding throwaway Stopwatch instrumentation
 // each time - see that file's own header comment.
-public readonly struct JsonExportTiming
+public readonly struct ExportTiming
 {
     public readonly long AllocationMs;
     public readonly long ExceptionMs;
@@ -57,7 +57,7 @@ public readonly struct JsonExportTiming
     public readonly long ContentionMs;
     public readonly long GcMs;
 
-    public JsonExportTiming(long allocationMs, long exceptionMs, long cpuMs, long contentionMs, long gcMs)
+    public ExportTiming(long allocationMs, long exceptionMs, long cpuMs, long contentionMs, long gcMs)
     {
         this.AllocationMs = allocationMs;
         this.ExceptionMs = exceptionMs;
@@ -79,10 +79,18 @@ public static class GcJsonExporter
     // becoming its own write() syscall.
     private const int OutputFileStreamBufferSize = 1024 * 1024;
 
-    public static JsonExportTiming WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, ThreadingSummary threadingSummary, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath, double captureDurationMSec)
+    // cpuSampleTimeline: the CPU timeline this export just computed, handed
+    // back so Binary/CpuBinarySections.cs can encode the SAME values into the
+    // binary container in the same run - that shared origin is what lets
+    // --json act as an oracle the binary section is diffed against.
+    public static ExportTiming WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, ThreadingSummary threadingSummary, StackTable stackTable, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath, double captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline)
     {
+        // Stays null when this capture has no CPU samples at all - the same
+        // condition under which the "cpuProfile" JSON key is never written.
+        cpuSampleTimeline = null;
+
         // Permanent (not throwaway) per-sub-writer timing - see
-        // JsonExportTiming's own comment on why.
+        // ExportTiming's own comment on why.
         Stopwatch subStopwatch = Stopwatch.StartNew();
         long allocationMs;
         long exceptionMs;
@@ -104,7 +112,7 @@ public static class GcJsonExporter
         // each a single continuous pass, not a multi-phase orchestrator
         // dispatching to differently-labeled sub-phases the way this
         // method is).
-        ExportSubWriterRanges subWriterRanges = ProgressPlan.PlanJsonExportSubWriters(gcEvents.Count, allocationEvents.Count, exceptionEvents.Count, sampleEvents.Count, contentionEvents.Count);
+        ExportSubWriterRanges subWriterRanges = ProgressPlan.PlanExportSubWriters(gcEvents.Count, allocationEvents.Count, exceptionEvents.Count, sampleEvents.Count, contentionEvents.Count);
 
         using (FileStream fileStream = new FileStream(outputPath, FileMode.Create, FileAccess.Write, FileShare.None, OutputFileStreamBufferSize))
         using (Utf8JsonWriter writer = new Utf8JsonWriter(fileStream))
@@ -121,7 +129,7 @@ public static class GcJsonExporter
             writer.WritePropertyName("allocationSummary");
             ProgressReporter.BeginPhase("Exporting allocation summary", subWriterRanges.Allocation.Start, subWriterRanges.Allocation.End);
             subStopwatch.Restart();
-            AllocationSummaryBuilder.Write(writer, allocationEvents, symbolTable, ticksBinaryPath, ProgressReporter.ReportFraction);
+            AllocationSummaryBuilder.Write(writer, allocationEvents, stackTable, symbolTable, ticksBinaryPath, ProgressReporter.ReportFraction);
             allocationMs = subStopwatch.ElapsedMilliseconds;
             ProgressReporter.CompletePhase();
 
@@ -135,7 +143,7 @@ public static class GcJsonExporter
             writer.WritePropertyName("exceptionSummary");
             ProgressReporter.BeginPhase("Exporting exception summary", subWriterRanges.Exception.Start, subWriterRanges.Exception.End);
             subStopwatch.Restart();
-            ExceptionJsonExporter.Write(writer, exceptionEvents, symbolTable);
+            ExceptionJsonExporter.Write(writer, exceptionEvents, stackTable, symbolTable);
             exceptionMs = subStopwatch.ElapsedMilliseconds;
             ProgressReporter.CompletePhase();
 
@@ -171,14 +179,17 @@ public static class GcJsonExporter
             // split between its four percentages. No dedicated progress
             // phase - a single pass over already-in-memory lists, negligible
             // next to any real sub-writer phase either side of it.
-            TimeBreakdown timeBreakdown = TimeBreakdownBuilder.Build(gcEvents, contentionEvents, sampleEvents, symbolTable, captureDurationMSec);
+            TimeBreakdown timeBreakdown = TimeBreakdownBuilder.Build(gcEvents, contentionEvents, sampleEvents, stackTable, symbolTable, captureDurationMSec);
 
             writer.WritePropertyName("timeBreakdown");
             writer.WriteStartObject();
             writer.WriteBoolean("hasCaptureDuration", timeBreakdown.HasCaptureDuration);
             writer.WriteNumber("captureDurationMSec", timeBreakdown.CaptureDurationMSec);
             writer.WriteNumber("gcPercent", timeBreakdown.GcPercent);
+            writer.WriteNumber("gcPauseMSec", timeBreakdown.GcPauseMSec);
             writer.WriteNumber("contentionPercent", timeBreakdown.ContentionPercent);
+            writer.WriteNumber("contentionWaitMSec", timeBreakdown.ContentionWaitMSec);
+            writer.WriteNumber("averageThreadsBlocked", timeBreakdown.AverageThreadsBlocked);
             writer.WriteBoolean("hasCpuSampleBreakdown", timeBreakdown.HasCpuSampleBreakdown);
             writer.WriteNumber("idlePercent", timeBreakdown.IdlePercent);
             writer.WriteNumber("cpuBoundPercent", timeBreakdown.CpuBoundPercent);
@@ -190,7 +201,7 @@ public static class GcJsonExporter
             writer.WritePropertyName("cpuProfile");
             ProgressReporter.BeginPhase("Exporting CPU profile", subWriterRanges.Cpu.Start, subWriterRanges.Cpu.End);
             subStopwatch.Restart();
-            CpuProfileJsonExporter.Write(writer, sampleEvents, symbolTable, ProgressReporter.ReportFraction);
+            cpuSampleTimeline = CpuProfileJsonExporter.Write(writer, sampleEvents, stackTable, symbolTable, ProgressReporter.ReportFraction);
             cpuMs = subStopwatch.ElapsedMilliseconds;
             ProgressReporter.CompletePhase();
 
@@ -201,7 +212,7 @@ public static class GcJsonExporter
             writer.WritePropertyName("contentionSummary");
             ProgressReporter.BeginPhase("Exporting contention summary", subWriterRanges.Contention.Start, subWriterRanges.Contention.End);
             subStopwatch.Restart();
-            ContentionJsonExporter.Write(writer, contentionEvents, symbolTable);
+            ContentionJsonExporter.Write(writer, contentionEvents, stackTable, symbolTable);
             contentionMs = subStopwatch.ElapsedMilliseconds;
             ProgressReporter.CompletePhase();
 
@@ -213,7 +224,7 @@ public static class GcJsonExporter
             writer.WritePropertyName("threadingSummary");
             List<string> threadingMethodNames = new List<string>();
             Dictionary<string, int> threadingMethodNameIndexByName = new Dictionary<string, int>();
-            ThreadingJsonExporter.Write(writer, threadingSummary, sampleEvents, symbolTable, threadingMethodNames, threadingMethodNameIndexByName);
+            ThreadingJsonExporter.Write(writer, threadingSummary, sampleEvents, stackTable, symbolTable, threadingMethodNames, threadingMethodNameIndexByName);
 
             writer.WritePropertyName("threadingMethodNames");
             writer.WriteStartArray();
@@ -360,7 +371,7 @@ public static class GcJsonExporter
             writer.WriteEndObject();
         }
 
-        return new JsonExportTiming(allocationMs, exceptionMs, cpuMs, contentionMs, gcMs);
+        return new ExportTiming(allocationMs, exceptionMs, cpuMs, contentionMs, gcMs);
     }
 }
 

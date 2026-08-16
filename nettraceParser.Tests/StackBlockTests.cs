@@ -35,8 +35,8 @@ public class StackBlockTests
     {
         NettraceFile file = NettraceFile.Read(FixturePath);
 
-        Assert.NotNull(file.StacksById);
-        Assert.True(file.StacksById.Count > 0, "Expected at least one decoded StackBlock entry in the real fixture.");
+        Assert.NotNull(file.Stacks);
+        Assert.True(file.StackIndexById.Count > 0, "Expected at least one decoded StackBlock entry in the real fixture.");
     }
 
     [Fact]
@@ -49,19 +49,19 @@ public class StackBlockTests
         // over by weakening those checks for every stack.
         NettraceFile file = NettraceFile.Read(FixturePath);
 
-        Assert.Equal(12, file.StacksById.Count);
-        Assert.Empty(file.StacksById[1]);
+        Assert.Equal(12, file.StackIndexById.Count);
+        Assert.Empty(file.Stacks.FramesAt(file.StackIndexById[1]));
 
-        foreach (KeyValuePair<int, long[]> stackEntry in file.StacksById)
+        foreach (KeyValuePair<int, int> stackEntry in file.StackIndexById)
         {
             if (stackEntry.Key == 1)
             {
                 continue;
             }
 
-            Assert.True(stackEntry.Value.Length > 0, $"StackId {stackEntry.Key} decoded to zero instruction pointers.");
+            Assert.True(file.Stacks.FramesAt(stackEntry.Value).Length > 0, $"StackId {stackEntry.Key} decoded to zero instruction pointers.");
 
-            foreach (long instructionPointer in stackEntry.Value)
+            foreach (long instructionPointer in file.Stacks.FramesAt(stackEntry.Value))
             {
                 Assert.True(instructionPointer != 0, $"StackId {stackEntry.Key} contains a zero/null instruction pointer.");
             }
@@ -90,7 +90,7 @@ public class StackBlockTests
             }
 
             ++allocationTickCount;
-            if (record.Stack.Length > 0)
+            if (file.Stacks.FramesAt(record.StackIndex).Length > 0)
             {
                 ++withStackCount;
             }

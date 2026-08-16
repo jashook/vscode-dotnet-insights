@@ -26,7 +26,7 @@ public class EventOverviewBuilderTests
 
     private static EventRecord MakeRecord(string providerName, string eventName, int eventId)
     {
-        return new EventRecord(providerName, eventName, eventId, version: 1, timeStampRelativeQpc: 0, threadId: 0, stack: System.Array.Empty<long>(), fields: null, payloadBuffer: System.Array.Empty<byte>(), payloadOffset: 0, payloadLength: 0);
+        return new EventRecord(providerName, eventName, eventId, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackIndex: StackTable.EmptyStackIndex, fields: null, payloadBuffer: System.Array.Empty<byte>(), payloadOffset: 0, payloadLength: 0);
     }
 
     [Fact]
