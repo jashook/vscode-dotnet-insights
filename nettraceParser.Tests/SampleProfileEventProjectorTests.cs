@@ -24,21 +24,25 @@ namespace DotnetInsights.NetTrace.Tests {
 
 public class SampleProfileEventProjectorTests
 {
+    // One stack table for the whole class so the static Make* helpers
+    // below can register stacks too - see TestStacks.cs.
+    private static readonly TestStacks stacks = new TestStacks();
+
     private const string SampleProfilerProviderName = "Microsoft-DotNETCore-SampleProfiler";
     private const long QpcFrequency = 10_000_000;
 
-    private static EventRecord MakeSampleEvent(long timeStampQpc, long threadId, long[] stack)
+    private static EventRecord MakeSampleEvent(long timeStampQpc, long threadId, int stackIndex)
     {
-        return new EventRecord(SampleProfilerProviderName, string.Empty, eventId: 0, version: 0, timeStampQpc, threadId, stack, fields: null, payloadBuffer: System.Array.Empty<byte>(), payloadOffset: 0, payloadLength: 0);
+        return new EventRecord(SampleProfilerProviderName, string.Empty, eventId: 0, version: 0, timeStampQpc, threadId, stackIndex, fields: null, payloadBuffer: System.Array.Empty<byte>(), payloadOffset: 0, payloadLength: 0);
     }
 
     [Fact]
     public void Project_DecodesSampleEventsWithStackAndThreadId()
     {
-        long[] stack = new long[] { 0x1000, 0x2000, 0x3000 };
+        int stack = stacks.Index(0x1000, 0x2000, 0x3000);
         List<EventRecord> events = new List<EventRecord>
         {
-            MakeSampleEvent(timeStampQpc: 50000, threadId: 42, stack: stack)
+            MakeSampleEvent(timeStampQpc: 50000, threadId: 42, stackIndex: stack)
         };
 
         List<SampleEvent> projected = SampleProfileEventProjector.Project(events, qpcFrequency: QpcFrequency, referenceQpc: 0);
@@ -47,7 +51,7 @@ public class SampleProfileEventProjectorTests
 
         SampleEvent sampleEvent = projected[0];
         Assert.Equal(42, sampleEvent.ThreadId);
-        Assert.Same(stack, sampleEvent.Stack);
+        Assert.Equal(stack, sampleEvent.StackIndex);
         // 50000 QPC ticks @ 10,000,000/sec == 5ms.
         Assert.Equal(5.0, sampleEvent.RelativeMSec, precision: 6);
     }
@@ -55,7 +59,7 @@ public class SampleProfileEventProjectorTests
     [Fact]
     public void Project_IgnoresEventsFromOtherProviders()
     {
-        EventRecord foreignEvent = new EventRecord("Some-Other-Provider", string.Empty, eventId: 0, version: 0, timeStampRelativeQpc: 0, threadId: 0, stack: System.Array.Empty<long>(), fields: null, payloadBuffer: System.Array.Empty<byte>(), payloadOffset: 0, payloadLength: 0);
+        EventRecord foreignEvent = new EventRecord("Some-Other-Provider", string.Empty, eventId: 0, version: 0, timeStampRelativeQpc: 0, threadId: 0, stackIndex: StackTable.EmptyStackIndex, fields: null, payloadBuffer: System.Array.Empty<byte>(), payloadOffset: 0, payloadLength: 0);
 
         List<SampleEvent> projected = SampleProfileEventProjector.Project(new List<EventRecord> { foreignEvent }, qpcFrequency: QpcFrequency, referenceQpc: 0);
 
@@ -65,7 +69,7 @@ public class SampleProfileEventProjectorTests
     [Fact]
     public void Project_IgnoresNonZeroEventIdsOnTheSameProvider()
     {
-        EventRecord otherEvent = new EventRecord(SampleProfilerProviderName, string.Empty, eventId: 1, version: 0, timeStampRelativeQpc: 0, threadId: 0, stack: System.Array.Empty<long>(), fields: null, payloadBuffer: System.Array.Empty<byte>(), payloadOffset: 0, payloadLength: 0);
+        EventRecord otherEvent = new EventRecord(SampleProfilerProviderName, string.Empty, eventId: 1, version: 0, timeStampRelativeQpc: 0, threadId: 0, stackIndex: StackTable.EmptyStackIndex, fields: null, payloadBuffer: System.Array.Empty<byte>(), payloadOffset: 0, payloadLength: 0);
 
         List<SampleEvent> projected = SampleProfileEventProjector.Project(new List<EventRecord> { otherEvent }, qpcFrequency: QpcFrequency, referenceQpc: 0);
 
@@ -77,7 +81,7 @@ public class SampleProfileEventProjectorTests
     {
         List<EventRecord> events = new List<EventRecord>
         {
-            MakeSampleEvent(timeStampQpc: 1_010_000, threadId: 1, stack: new long[] { 0x1000 })
+            MakeSampleEvent(timeStampQpc: 1_010_000, threadId: 1, stackIndex: stacks.Index(0x1000))
         };
 
         List<SampleEvent> projected = SampleProfileEventProjector.Project(events, qpcFrequency: QpcFrequency, referenceQpc: 1_000_000);

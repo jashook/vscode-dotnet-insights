@@ -36,6 +36,10 @@ namespace DotnetInsights.NetTrace.Tests {
 
 public class ContentionLockTimelineTests
 {
+    // One stack table for the whole class so the static Make* helpers
+    // below can register stacks too - see TestStacks.cs.
+    private static readonly TestStacks stacks = new TestStacks();
+
     private const int PointerSize = 8;
 
     private static MethodSymbolTable MakeSymbolTable()
@@ -45,7 +49,7 @@ public class ContentionLockTimelineTests
 
     private static ContentionEvent MakeEvent(double relativeMSec, double durationMSec, long lockId, long ownerThreadId, long waiterThreadId)
     {
-        return new ContentionEvent(relativeMSec, durationMSec, ClrContentionFlags.Managed, waiterThreadId, Array.Empty<long>(), lockId, associatedObjectId: 0, ownerThreadId);
+        return new ContentionEvent(relativeMSec, durationMSec, ClrContentionFlags.Managed, waiterThreadId, StackTable.EmptyStackIndex, lockId, associatedObjectId: 0, ownerThreadId);
     }
 
     private static JsonDocument WriteAndParse(List<ContentionEvent> contentionEvents)
@@ -58,7 +62,7 @@ public class ContentionLockTimelineTests
         using System.IO.MemoryStream stream = new System.IO.MemoryStream();
         using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
         {
-            ContentionJsonExporter.Write(writer, contentionEvents, symbolTable);
+            ContentionJsonExporter.Write(writer, contentionEvents, stacks.Table, symbolTable);
         }
 
         return JsonDocument.Parse(stream.ToArray());
@@ -83,7 +87,7 @@ public class ContentionLockTimelineTests
     {
         byte[] payload = MakeMethodDCStartVerbosePayload(methodId, moduleId: 2, startAddress, size, name);
 
-        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stack: Array.Empty<long>(), fields: null, payload, payloadOffset: 0, payload.Length);
+        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackIndex: StackTable.EmptyStackIndex, fields: null, payload, payloadOffset: 0, payload.Length);
     }
 
     // 0x1000/0x2000 resolve to lock-acquisition primitives (which lock
@@ -313,8 +317,8 @@ public class ContentionLockTimelineTests
         // different one. The lock's drillDown must fold them into the same
         // tree shape siteDrillDown emits (so the webview reuses one
         // renderer), with counts summed at the shared frames.
-        long[] sharedStack = new long[] { 0x1000, 0x2000 };
-        long[] otherStack = new long[] { 0x1000 };
+        int sharedStack = stacks.Index(0x1000, 0x2000);
+        int otherStack = stacks.Index(0x1000);
 
         List<ContentionEvent> events = new List<ContentionEvent>
         {
@@ -346,7 +350,7 @@ public class ContentionLockTimelineTests
 
         List<ContentionEvent> events = new List<ContentionEvent>
         {
-            new ContentionEvent(10.0, 5.0, ClrContentionFlags.Managed, 2, new long[] { 0x1000, 0x2000, 0x3000 }, 0xAA, 0, 1),
+            new ContentionEvent(10.0, 5.0, ClrContentionFlags.Managed, 2, stacks.Index(0x1000, 0x2000, 0x3000), 0xAA, 0, 1),
         };
 
         JsonDocument document = WriteAndParseWith(events, symbolTable);
@@ -370,7 +374,7 @@ public class ContentionLockTimelineTests
 
         List<ContentionEvent> events = new List<ContentionEvent>
         {
-            new ContentionEvent(10.0, 5.0, ClrContentionFlags.Managed, 2, new long[] { 0x1000, 0x2000 }, 0xAA, 0, 1),
+            new ContentionEvent(10.0, 5.0, ClrContentionFlags.Managed, 2, stacks.Index(0x1000, 0x2000), 0xAA, 0, 1),
         };
 
         JsonDocument document = WriteAndParseWith(events, symbolTable);
@@ -387,8 +391,8 @@ public class ContentionLockTimelineTests
         // ranked, not whichever stack happened to arrive first.
         MethodSymbolTable symbolTable = MakeNamedSymbolTable();
 
-        long[] lightStack = new long[] { 0x1000, 0x3000 };
-        long[] heavyStack = new long[] { 0x1000, 0x4000 };
+        int lightStack = stacks.Index(0x1000, 0x3000);
+        int heavyStack = stacks.Index(0x1000, 0x4000);
 
         List<ContentionEvent> events = new List<ContentionEvent>
         {
@@ -415,7 +419,7 @@ public class ContentionLockTimelineTests
         for (int waitIndex = 0; waitIndex < 50; ++waitIndex)
         {
             long waiter = (waitIndex % 2 == 0) ? 100 : 101;
-            events.Add(new ContentionEvent(waitIndex, 1.0, ClrContentionFlags.Managed, waiter, new long[] { 0x1000, 0x3000 }, 0xAA, 0, ownerThreadId: 200));
+            events.Add(new ContentionEvent(waitIndex, 1.0, ClrContentionFlags.Managed, waiter, stacks.Index(0x1000, 0x3000), 0xAA, 0, ownerThreadId: 200));
         }
 
         JsonDocument document = WriteAndParseWith(events, MakeNamedSymbolTable());
@@ -434,8 +438,8 @@ public class ContentionLockTimelineTests
         // unattributed wait.
         List<ContentionEvent> events = new List<ContentionEvent>
         {
-            new ContentionEvent(10.0, 1.0, ClrContentionFlags.Managed, 100, new long[] { 0x1000, 0x3000 }, 0xAA, 0, ownerThreadId: 0),
-            new ContentionEvent(20.0, 1.0, ClrContentionFlags.Managed, 101, new long[] { 0x1000, 0x3000 }, 0xAA, 0, ownerThreadId: 200),
+            new ContentionEvent(10.0, 1.0, ClrContentionFlags.Managed, 100, stacks.Index(0x1000, 0x3000), 0xAA, 0, ownerThreadId: 0),
+            new ContentionEvent(20.0, 1.0, ClrContentionFlags.Managed, 101, stacks.Index(0x1000, 0x3000), 0xAA, 0, ownerThreadId: 200),
         };
 
         JsonDocument document = WriteAndParseWith(events, MakeNamedSymbolTable());
@@ -455,10 +459,10 @@ public class ContentionLockTimelineTests
         List<ContentionEvent> events = new List<ContentionEvent>
         {
             // Two pool workers (stack passes through the dispatch loop).
-            new ContentionEvent(10.0, 1.0, ClrContentionFlags.Managed, 100, new long[] { 0x1000, 0x3000, 0x5000 }, 0xAA, 0, 1),
-            new ContentionEvent(20.0, 1.0, ClrContentionFlags.Managed, 101, new long[] { 0x1000, 0x3000, 0x5000 }, 0xAA, 0, 1),
+            new ContentionEvent(10.0, 1.0, ClrContentionFlags.Managed, 100, stacks.Index(0x1000, 0x3000, 0x5000), 0xAA, 0, 1),
+            new ContentionEvent(20.0, 1.0, ClrContentionFlags.Managed, 101, stacks.Index(0x1000, 0x3000, 0x5000), 0xAA, 0, 1),
             // One dedicated background thread on the same lock.
-            new ContentionEvent(30.0, 1.0, ClrContentionFlags.Managed, 102, new long[] { 0x1000, 0x3000, 0x6000 }, 0xAA, 0, 1),
+            new ContentionEvent(30.0, 1.0, ClrContentionFlags.Managed, 102, stacks.Index(0x1000, 0x3000, 0x6000), 0xAA, 0, 1),
         };
 
         JsonDocument document = WriteAndParseWith(events, MakeNamedSymbolTable());
@@ -477,8 +481,8 @@ public class ContentionLockTimelineTests
         // starving the pool.
         List<ContentionEvent> events = new List<ContentionEvent>
         {
-            new ContentionEvent(10.0, 5.0, ClrContentionFlags.Managed, 100, new long[] { 0x1000, 0x3000, 0x6000 }, 0xAA, 0, 101),
-            new ContentionEvent(20.0, 5.0, ClrContentionFlags.Managed, 101, new long[] { 0x1000, 0x3000, 0x6000 }, 0xAA, 0, 100),
+            new ContentionEvent(10.0, 5.0, ClrContentionFlags.Managed, 100, stacks.Index(0x1000, 0x3000, 0x6000), 0xAA, 0, 101),
+            new ContentionEvent(20.0, 5.0, ClrContentionFlags.Managed, 101, stacks.Index(0x1000, 0x3000, 0x6000), 0xAA, 0, 100),
         };
 
         JsonDocument document = WriteAndParseWith(events, MakeNamedSymbolTable());

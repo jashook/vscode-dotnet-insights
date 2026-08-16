@@ -1782,14 +1782,33 @@ td.rowHideColumn:hover
    in the children's larger 16px - so the four 7em children are 4 x (112px +
    5px margins either side) = 488px, and the tile needs at least that:
    40em x 13px = 520px. */
-.timeBreakdownTile
-{
-    width: 40em;
-}
-
+/* Every summary tile is the same size - these inherit .total's own 20em
+   rather than sizing themselves, so the Overview reads as a uniform row of
+   cards. Only the metric columns are narrowed, from .total>div's own 4em to
+   5em, which is what lets three of them sit inside that shared width. */
 .timeBreakdownTile>div
 {
-    width: 7em;
+    width: 5em;
+}
+
+/* Severity is the TILE's background - see EventOverviewRenderer.ts's
+   severityTileClass for why the whole card is coloured rather than the values
+   inside it, and timeBreakdownSeverity for the thresholds (>=5% warn, >=10%
+   alert, plus "total exceeds capture duration" always alerting).
+
+   No class means healthy, which inherits .total's own lime untouched - the
+   colour a good capture already had. Written as .total.timeBreakdownTileWarn
+   so these outrank .total on specificity rather than relying on source order.
+   Both keep the same ~0.85-0.9 alpha and white text the sibling tiles use, so
+   only the hue carries the signal. */
+.total.timeBreakdownTileWarn
+{
+    background-color: rgba(214, 158, 18, 0.85);
+}
+
+.total.timeBreakdownTileAlert
+{
+    background-color: rgba(198, 58, 48, 0.9);
 }
 
 /* ---- Contention view: Lock Timeline tab ---- */

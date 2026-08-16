@@ -162,6 +162,7 @@ function renderSummaryPanel(baseline: any, comparison: any, coverage: any): stri
     if (baseline["hasTimeBreakdown"] && comparison["hasTimeBreakdown"]) {
         addRow("% time in GC", baseline["gcPercent"], comparison["gcPercent"], "percent", "moreIsWorse");
         addRow("% time contending locks", baseline["contentionPercent"], comparison["contentionPercent"], "percent", "moreIsWorse");
+        addRow("Avg threads blocked", baseline["averageThreadsBlocked"], comparison["averageThreadsBlocked"], "count", "moreIsWorse");
     }
 
     if (baseline["hasCpuBreakdown"] && comparison["hasCpuBreakdown"]) {

@@ -34,6 +34,10 @@ namespace DotnetInsights.NetTrace.Tests {
 
 public class DrillDownBuilderTests
 {
+    // One stack table for the whole class so the static Make* helpers
+    // below can register stacks too - see TestStacks.cs.
+    private static readonly TestStacks stacks = new TestStacks();
+
     // AllocationJsonExporter.cs now aggregates stacks by AllocationEvent.Stack's
     // own array reference, not by a raw StackId int (see EventRecord.cs's own
     // comment on why - StackId values are recyclable in the real wire format).
@@ -42,34 +46,34 @@ public class DrillDownBuilderTests
     // the exact same array instance, which is what real aggregation now
     // requires - EventBlock.cs achieves the same thing in production by
     // resolving against the shared StacksById dictionary at parse time.
-    // stackId 0 always means "no stack" (Array.Empty<long>()), matching the
+    // stackId 0 always means "no stack" (StackTable.EmptyStackIndex), matching the
     // real pipeline's own convention.
-    private static readonly Dictionary<int, long[]> stackCache = new Dictionary<int, long[]>();
+    private static readonly Dictionary<int, int> stackCache = new Dictionary<int, int>();
 
     // address = stackId * 100 is an arbitrary but stable, distinct-per-id
     // convention - tests that need MethodSymbolTable to resolve a stack's
     // frame to a real name build their rundown data at this same address
     // (see MakeRundownEvent's call sites below).
-    private static long[] StackFor(int stackId)
+    private static int StackFor(int stackId)
     {
         if (stackId == 0)
         {
-            return Array.Empty<long>();
+            return StackTable.EmptyStackIndex;
         }
 
-        long[] stack;
-        if (!stackCache.TryGetValue(stackId, out stack))
+        int stackIndex;
+        if (!stackCache.TryGetValue(stackId, out stackIndex))
         {
-            stack = new long[] { stackId * 100 };
-            stackCache[stackId] = stack;
+            stackIndex = stacks.Index(stackId * 100);
+            stackCache[stackId] = stackIndex;
         }
 
-        return stack;
+        return stackIndex;
     }
 
     private static AllocationEvent MakeEvent(string typeName, long amount, double relativeMSec, int stackId, GCAllocationKind kind = GCAllocationKind.Small)
     {
-        return new AllocationEvent(default, relativeMSec, amount, kind, typeName, heapIndex: 0, stack: StackFor(stackId));
+        return new AllocationEvent(default, relativeMSec, amount, kind, typeName, heapIndex: 0, stackIndex: StackFor(stackId));
     }
 
     // AllocationSummaryBuilder.Write streams directly to a Utf8JsonWriter
@@ -89,7 +93,7 @@ public class DrillDownBuilderTests
             {
                 using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
                 {
-                    AllocationSummaryBuilder.Write(writer, events, symbolTable, ticksBinaryPath);
+                    AllocationSummaryBuilder.Write(writer, events, stacks.Table, symbolTable, ticksBinaryPath);
                 }
 
                 return (JsonObject)JsonNode.Parse(stream.ToArray());
@@ -121,7 +125,7 @@ public class DrillDownBuilderTests
             .WriteUnicodeString("").WriteUnicodeString(name).WriteUnicodeString("sig")
             .ToArray();
 
-        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stack: Array.Empty<long>(), fields: null, payload, payloadOffset: 0, payload.Length);
+        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackIndex: StackTable.EmptyStackIndex, fields: null, payload, payloadOffset: 0, payload.Length);
     }
 
     [Fact]
@@ -183,8 +187,8 @@ public class DrillDownBuilderTests
         // preserving both callers as distinct children of it.
         List<AllocationEvent> events = new List<AllocationEvent>
         {
-            new AllocationEvent(timestamp: default, relativeMSec: 100, allocationAmount: 300, allocationKind: GCAllocationKind.Small, typeName: "TypeA", heapIndex: 0, stack: new long[] { 1000, 2000 }),
-            new AllocationEvent(timestamp: default, relativeMSec: 100, allocationAmount: 700, allocationKind: GCAllocationKind.Small, typeName: "TypeA", heapIndex: 0, stack: new long[] { 1000, 3000 })
+            new AllocationEvent(timestamp: default, relativeMSec: 100, allocationAmount: 300, allocationKind: GCAllocationKind.Small, typeName: "TypeA", heapIndex: 0, stackIndex: stacks.Index(1000, 2000)),
+            new AllocationEvent(timestamp: default, relativeMSec: 100, allocationAmount: 700, allocationKind: GCAllocationKind.Small, typeName: "TypeA", heapIndex: 0, stackIndex: stacks.Index(1000, 3000))
         };
 
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(new List<EventRecord>

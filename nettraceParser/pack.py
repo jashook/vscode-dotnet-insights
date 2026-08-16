@@ -90,11 +90,26 @@ def main() -> int:
         targets = ALL_TARGETS
 
     output_dir = Path(args.output_dir)
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    output_dir.mkdir(parents=True)
-
     publish_root = output_dir / "publish"
+
+    # Clean only what this script itself produces - the .tar.gz assets and the
+    # intermediate publish/ tree - NOT the whole output directory.
+    #
+    # This used to be shutil.rmtree(output_dir), which also deleted
+    # artifacts/local/: the unpacked build that
+    # `dotnet-insights.nettraceParserPath` is normally pointed at for local
+    # testing (see CLAUDE.md's "Tool distribution & the stale-cache trap").
+    # Packing therefore left that setting aimed at a path that no longer
+    # existed, and the only symptom is a .nettrace file failing to open - the
+    # setting is still there and still looks right, so nothing indicates the
+    # binary underneath it was removed by an unrelated command.
+    if publish_root.exists():
+        shutil.rmtree(publish_root)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for stale_archive in output_dir.glob("nettraceParser-*.tar.gz"):
+        stale_archive.unlink()
 
     for rid, (os_name, arch) in targets.items():
         publish_dir = publish_root / rid / "nettraceParser"

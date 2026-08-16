@@ -49,12 +49,13 @@ public readonly struct AllocationEvent
     public readonly GCAllocationKind AllocationKind;
     public readonly string TypeName;
     public readonly int HeapIndex;
-    // Copied directly from the owning EventRecord.Stack, already resolved at
-    // parse time (see EventBlock.cs/EventRecord.cs) - empty
-    // (Array.Empty<long>()), never null, when this tick wasn't stack-walked.
-    public readonly long[] Stack;
+    // Index into the capture's StackTable (see StackTable.cs), copied from
+    // the owning EventRecord.StackIndex - resolved at parse time, see
+    // EventBlock.cs. StackTable.EmptyStackIndex when this tick wasn't
+    // stack-walked; that index resolves to an empty array, never null.
+    public readonly int StackIndex;
 
-    public AllocationEvent(DateTime timestamp, double relativeMSec, long allocationAmount, GCAllocationKind allocationKind, string typeName, int heapIndex, long[] stack)
+    public AllocationEvent(DateTime timestamp, double relativeMSec, long allocationAmount, GCAllocationKind allocationKind, string typeName, int heapIndex, int stackIndex)
     {
         this.Timestamp = timestamp;
         this.RelativeMSec = relativeMSec;
@@ -62,7 +63,7 @@ public readonly struct AllocationEvent
         this.AllocationKind = allocationKind;
         this.TypeName = typeName;
         this.HeapIndex = heapIndex;
-        this.Stack = stack;
+        this.StackIndex = stackIndex;
     }
 }
 
@@ -135,7 +136,7 @@ public static class AllocationEventProjector
                 relativeMSec = qpcDelta * 1000.0 / qpcFrequency;
             }
 
-            result.Add(new AllocationEvent(timestamp, relativeMSec, tick.AllocationAmount64, tick.AllocationKind, tick.TypeName, tick.HeapIndex, record.Stack));
+            result.Add(new AllocationEvent(timestamp, relativeMSec, tick.AllocationAmount64, tick.AllocationKind, tick.TypeName, tick.HeapIndex, record.StackIndex));
         }
 
         return result;

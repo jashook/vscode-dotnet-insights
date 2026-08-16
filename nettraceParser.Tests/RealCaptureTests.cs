@@ -36,7 +36,7 @@ public class RealCaptureTests
 {
     private static readonly string FixturePath = Path.Combine(AppContext.BaseDirectory, "fixtures", "trace2.nettrace");
 
-    private static (List<GcEvent> GcEvents, List<AllocationEvent> AllocationEvents, Dictionary<int, long[]> StacksById, MethodSymbolTable SymbolTable) ProjectFixture()
+    private static (List<GcEvent> GcEvents, List<AllocationEvent> AllocationEvents, StackTable StackTable, MethodSymbolTable SymbolTable) ProjectFixture()
     {
         NettraceFile file = NettraceFile.Read(FixturePath);
         long referenceQpc = file.Header.SyncTimeQPC;
@@ -45,14 +45,14 @@ public class RealCaptureTests
         List<AllocationEvent> allocationEvents = AllocationEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc);
         MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, referenceQpc);
 
-        return (gcEvents, allocationEvents, file.StacksById, symbolTable);
+        return (gcEvents, allocationEvents, file.Stacks, symbolTable);
     }
 
     // AllocationSummaryBuilder.Write streams directly to a Utf8JsonWriter
     // (see AllocationJsonExporter.cs for why) rather than returning a
     // JsonObject - write to an in-memory buffer and parse it back so these
     // tests can keep asserting against the real output shape.
-    private static JsonObject BuildAllocationSummary(List<AllocationEvent> allocationEvents, MethodSymbolTable symbolTable)
+    private static JsonObject BuildAllocationSummary(List<AllocationEvent> allocationEvents, StackTable stackTable, MethodSymbolTable symbolTable)
     {
         // ticks is now a binary sidecar file (see AllocationJsonExporter.cs's
         // WriteTicks) - this file's tests don't assert on ticks directly, so
@@ -65,7 +65,7 @@ public class RealCaptureTests
             {
                 using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
                 {
-                    AllocationSummaryBuilder.Write(writer, allocationEvents, symbolTable, ticksBinaryPath);
+                    AllocationSummaryBuilder.Write(writer, allocationEvents, stackTable, symbolTable, ticksBinaryPath);
                 }
 
                 return (JsonObject)JsonNode.Parse(stream.ToArray());
@@ -190,9 +190,9 @@ public class RealCaptureTests
     [Fact]
     public void AllocationSummaryBuilder_Build_ReconcilesTotalSampledBytesAcrossTopTypes()
     {
-        (_, List<AllocationEvent> allocationEvents, _, MethodSymbolTable symbolTable) = ProjectFixture();
+        (_, List<AllocationEvent> allocationEvents, StackTable stackTable, MethodSymbolTable symbolTable) = ProjectFixture();
 
-        JsonObject summary = BuildAllocationSummary(allocationEvents, symbolTable);
+        JsonObject summary = BuildAllocationSummary(allocationEvents, stackTable, symbolTable);
 
         long totalSampledBytes = summary["totalSampledBytes"].GetValue<long>();
         Assert.True(totalSampledBytes > 1_000_000_000L, $"Expected >1GB sampled, got {totalSampledBytes}");
@@ -220,9 +220,9 @@ public class RealCaptureTests
         // "<no stack captured>" (which would mean StackId wasn't actually
         // wired through AllocationEventProjector.cs, or the symbol table
         // silently failed to resolve anything).
-        (_, List<AllocationEvent> allocationEvents, _, MethodSymbolTable symbolTable) = ProjectFixture();
+        (_, List<AllocationEvent> allocationEvents, StackTable stackTable, MethodSymbolTable symbolTable) = ProjectFixture();
 
-        JsonObject summary = BuildAllocationSummary(allocationEvents, symbolTable);
+        JsonObject summary = BuildAllocationSummary(allocationEvents, stackTable, symbolTable);
         JsonObject cells = summary["drillDown"]["cells"].AsObject();
         JsonArray methodNames = summary["methodNames"].AsArray();
 
