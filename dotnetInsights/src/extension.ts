@@ -14,6 +14,7 @@ import { DotnetInsightsTextEditorProvider } from "./DotnetInightsTextEditor";
 import { DotnetInsightsGcTreeDataProvider, GcDependency } from "./dotnetInsightsGc";
 import { DotnetInsightsGcEditor } from "./DotnetInsightsGcEditor";
 import { DotnetInsightsGcSnapshotEditor } from "./DotnetInsightsGcSnapshotEditor";
+import { DotnetInsightsGcDumpEditor } from "./DotnetInsightsGcDumpEditor";
 import { DotnetInsightsNettraceEditor } from "./DotnetInsightsNettraceEditor";
 import { DotnetInsightsRuntimeLoadEventsEditor } from "./DotnetInsightsRuntimeLoadEventsEditor";
 import { DependencySetup } from "./DependencySetup";
@@ -338,7 +339,12 @@ export async function activate(context: vscode.ExtensionContext) {
     // sample-correlated views now look only BACKWARD from an adjustment, over
     // 3ms instead of +/-25ms, so a stale binary would keep reporting stacks
     // taken after the decision it claims to explain.
-    const latestNettraceParserVersionNumber = "1.8.0";
+    // Bumped from 1.8.0 for .gcdump support. This bump is not optional: a
+    // machine that already downloaded 1.8.0 keeps using it forever unless the
+    // version string changes (see CLAUDE.md's "stale-cache trap"), and that
+    // binary has no --gcdump mode at all - so every .gcdump would fail to open
+    // with a confusing error while the code here looked correct.
+    const latestNettraceParserVersionNumber = "1.9.0";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;
@@ -810,6 +816,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(DotnetInsightsGcEditor.register(context, insights, listener));
     context.subscriptions.push(DotnetInsightsGcSnapshotEditor.register(context, insights));
     context.subscriptions.push(DotnetInsightsNettraceEditor.register(context, insights));
+    context.subscriptions.push(DotnetInsightsGcDumpEditor.register(context, insights));
     context.subscriptions.push(DotnetInsightsRuntimeLoadEventsEditor.register(context, insights));
 
     if (startupCallback !== undefined) {

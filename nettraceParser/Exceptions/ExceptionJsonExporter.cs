@@ -80,7 +80,7 @@ public static class ExceptionJsonExporter
     // instance).
     private sealed class ExceptionStackAggregate
     {
-        public long[] Stack;
+        public int StackIndex;
         public int Count;
         public double FirstSeenRelativeMSec;
     }
@@ -103,7 +103,7 @@ public static class ExceptionJsonExporter
         public int Remaining;
     }
 
-    public static void Write(Utf8JsonWriter writer, List<ExceptionEvent> exceptionEvents, MethodSymbolTable symbolTable)
+    public static void Write(Utf8JsonWriter writer, List<ExceptionEvent> exceptionEvents, StackTable stackTable, MethodSymbolTable symbolTable)
     {
         writer.WriteStartObject();
 
@@ -219,7 +219,7 @@ public static class ExceptionJsonExporter
         // BuildDrillDownAggregates, just without the (typeIndex, bucketIndex)
         // cell dimension this feature doesn't have. Also fills the timeline
         // buckets above, since this pass already visits every event.
-        Dictionary<long[], ExceptionStackAggregate>[] stacksByType = new Dictionary<long[], ExceptionStackAggregate>[topTypesCount];
+        Dictionary<int, ExceptionStackAggregate>[] stacksByType = new Dictionary<int, ExceptionStackAggregate>[topTypesCount];
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
             ref readonly ExceptionEvent exceptionEvent = ref eventsSpan[eventIndex];
@@ -248,20 +248,20 @@ public static class ExceptionJsonExporter
                 ++typeSelfByBucket[typeIndex][bucketIndex];
             }
 
-            Dictionary<long[], ExceptionStackAggregate> typeStacks = stacksByType[typeIndex];
+            Dictionary<int, ExceptionStackAggregate> typeStacks = stacksByType[typeIndex];
             if (typeStacks == null)
             {
-                typeStacks = new Dictionary<long[], ExceptionStackAggregate>(ReferenceEqualityComparer.Instance);
+                typeStacks = new Dictionary<int, ExceptionStackAggregate>();
                 stacksByType[typeIndex] = typeStacks;
             }
 
             ExceptionStackAggregate aggregate;
-            if (!typeStacks.TryGetValue(exceptionEvent.Stack, out aggregate))
+            if (!typeStacks.TryGetValue(exceptionEvent.StackIndex, out aggregate))
             {
                 aggregate = new ExceptionStackAggregate();
-                aggregate.Stack = exceptionEvent.Stack;
+                aggregate.StackIndex = exceptionEvent.StackIndex;
                 aggregate.FirstSeenRelativeMSec = exceptionEvent.RelativeMSec;
-                typeStacks[exceptionEvent.Stack] = aggregate;
+                typeStacks[exceptionEvent.StackIndex] = aggregate;
             }
 
             ++aggregate.Count;
@@ -272,7 +272,7 @@ public static class ExceptionJsonExporter
         // (a hot throw site firing repeatedly), so caching each distinct
         // array's resolved frame-id sequence avoids re-resolving it once
         // per occurrence.
-        Dictionary<long[], int[]> frameIdCache = new Dictionary<long[], int[]>(ReferenceEqualityComparer.Instance);
+        Dictionary<int, int[]> frameIdCache = new Dictionary<int, int[]>();
         List<string> methodNames = new List<string>();
         Dictionary<string, int> methodNameIndexByName = new Dictionary<string, int>();
 
@@ -280,7 +280,7 @@ public static class ExceptionJsonExporter
         writer.WriteStartArray();
         for (int typeIndex = 0; typeIndex < topTypesCount; ++typeIndex)
         {
-            Dictionary<long[], ExceptionStackAggregate> typeStacks = stacksByType[typeIndex];
+            Dictionary<int, ExceptionStackAggregate> typeStacks = stacksByType[typeIndex];
 
             writer.WriteStartObject();
 
@@ -297,7 +297,7 @@ public static class ExceptionJsonExporter
                 writer.WriteNumber("count", typeTotalCount);
                 writer.WriteNumber("distinctStackCount", stackList.Count);
 
-                ExceptionTreeNode tree = BuildCallerTree(stackList, symbolTable, frameIdCache);
+                ExceptionTreeNode tree = BuildCallerTree(stackList, stackTable, symbolTable, frameIdCache);
                 WriteBudget budget = new WriteBudget();
                 budget.Remaining = DrillDownTreeNodeBudgetPerType;
                 WriteCallerTreeChildren(writer, tree, symbolTable, methodNames, methodNameIndexByName, budget);
@@ -381,7 +381,7 @@ public static class ExceptionJsonExporter
     // chain, leaf (throw site) first. See AllocationJsonExporter.cs's
     // BuildCallerTree for the fuller rationale (folding at every depth, not
     // just the leaf) this mirrors.
-    private static ExceptionTreeNode BuildCallerTree(List<ExceptionStackAggregate> rawStacks, MethodSymbolTable symbolTable, Dictionary<long[], int[]> frameIdCache)
+    private static ExceptionTreeNode BuildCallerTree(List<ExceptionStackAggregate> rawStacks, StackTable stackTable, MethodSymbolTable symbolTable, Dictionary<int, int[]> frameIdCache)
     {
         ExceptionTreeNode root = new ExceptionTreeNode();
 
@@ -390,7 +390,8 @@ public static class ExceptionJsonExporter
             ExceptionStackAggregate rawStack = rawStacks[stackIndex];
             ExceptionTreeNode current = root;
 
-            if (rawStack.Stack.Length == 0)
+            long[] stackFrames = stackTable.FramesAt(rawStack.StackIndex);
+            if (stackFrames.Length == 0)
             {
                 current = GetOrAddChild(current, NoStackFrameId);
                 AccumulateTreeNode(current, rawStack);
@@ -398,15 +399,15 @@ public static class ExceptionJsonExporter
             }
 
             int[] frameIds;
-            if (!frameIdCache.TryGetValue(rawStack.Stack, out frameIds))
+            if (!frameIdCache.TryGetValue(rawStack.StackIndex, out frameIds))
             {
-                frameIds = new int[rawStack.Stack.Length];
-                for (int frameIndex = 0; frameIndex < rawStack.Stack.Length; ++frameIndex)
+                frameIds = new int[stackFrames.Length];
+                for (int frameIndex = 0; frameIndex < stackFrames.Length; ++frameIndex)
                 {
-                    frameIds[frameIndex] = symbolTable.ResolveId(rawStack.Stack[frameIndex], rawStack.FirstSeenRelativeMSec);
+                    frameIds[frameIndex] = symbolTable.ResolveId(stackFrames[frameIndex], rawStack.FirstSeenRelativeMSec);
                 }
 
-                frameIdCache[rawStack.Stack] = frameIds;
+                frameIdCache[rawStack.StackIndex] = frameIds;
             }
 
             for (int frameIndex = 0; frameIndex < frameIds.Length; ++frameIndex)

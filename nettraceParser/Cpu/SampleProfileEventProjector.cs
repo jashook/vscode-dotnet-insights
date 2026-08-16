@@ -12,12 +12,12 @@
 // `dotnet-trace collect -p <pid>` with no --profile override - its default
 // profile set includes Microsoft-DotNETCore-SampleProfiler): every decoded
 // event on this provider was EventId=0, Version=0, with a non-empty
-// EventRecord.Stack already resolved (see EventBlock.cs/StackBlock.cs -
+// stack already resolved (see EventBlock.cs/StackBlock.cs -
 // stack resolution isn't provider-specific, so this "just worked" with no
 // changes to that layer). Fires at a fixed sampling interval (~100 Hz by
 // default) on every managed thread the runtime is actively running - no
 // per-event payload fields are needed here, only the event's own resolved
-// Stack/ThreadId/timestamp.
+// stack index/ThreadId/timestamp.
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace DotnetInsights.NetTrace.Cpu {
@@ -42,18 +42,20 @@ public readonly struct SampleEvent
 {
     public readonly double RelativeMSec;
     public readonly long ThreadId;
-    // Copied directly from the owning EventRecord.Stack, already resolved at
-    // parse time (see EventBlock.cs/EventRecord.cs) - leaf-first (index 0 is
-    // the innermost/currently-executing frame), the same order every other
-    // Stack in this codebase carries. Empty (Array.Empty<long>()), never
-    // null, on the rare sample that couldn't be stack-walked.
-    public readonly long[] Stack;
+    // Index into the capture's StackTable (see StackTable.cs), copied from
+    // the owning EventRecord.StackIndex - resolved at parse time, see
+    // EventBlock.cs. Resolve it with StackTable.FramesAt, which returns
+    // frames leaf-first (index 0 is the innermost/currently-executing frame),
+    // the same order every stack in this codebase carries.
+    // StackTable.EmptyStackIndex on the rare sample that couldn't be
+    // stack-walked - that index resolves to an empty array, never null.
+    public readonly int StackIndex;
 
-    public SampleEvent(double relativeMSec, long threadId, long[] stack)
+    public SampleEvent(double relativeMSec, long threadId, int stackIndex)
     {
         this.RelativeMSec = relativeMSec;
         this.ThreadId = threadId;
-        this.Stack = stack;
+        this.StackIndex = stackIndex;
     }
 }
 
@@ -69,9 +71,20 @@ public static class SampleProfileEventProjector
     // - a sample carries no pointer-sized payload fields to decode, and
     // every consumer of SampleEvent only needs capture-relative time, not an
     // absolute DateTime.
-    public static List<SampleEvent> Project(List<EventRecord> events, long qpcFrequency, long referenceQpc, Action<double> onProgress = null)
+    // The provider/event id this projector filters for, exposed so a caller
+    // holding an EventOverview can ask it for this capture's exact sample
+    // count and pass it as expectedSampleCount below.
+    public static string ProviderName => SampleProfilerProviderName;
+    public static int EventId => ThreadSampleEventId;
+
+    // expectedSampleCount presizes the result list. A real capture can hold
+    // 16.24M samples (3.23GB assets-registry capture), and growing there from
+    // empty measured 33% of this whole phase - every doubling copies every
+    // SampleEvent already added. 0 (the default) just means "unknown", and
+    // behaves exactly as before.
+    public static List<SampleEvent> Project(List<EventRecord> events, long qpcFrequency, long referenceQpc, Action<double> onProgress = null, int expectedSampleCount = 0)
     {
-        List<SampleEvent> result = new List<SampleEvent>();
+        List<SampleEvent> result = expectedSampleCount > 0 ? new List<SampleEvent>(expectedSampleCount) : new List<SampleEvent>();
 
         // EventRecord is a struct (~70 bytes) - events is the whole
         // capture's event list, so this is iterated as a Span over the
@@ -105,7 +118,7 @@ public static class SampleProfileEventProjector
                 relativeMSec = qpcDelta * 1000.0 / qpcFrequency;
             }
 
-            result.Add(new SampleEvent(relativeMSec, record.ThreadId, record.Stack));
+            result.Add(new SampleEvent(relativeMSec, record.ThreadId, record.StackIndex));
         }
 
         return result;

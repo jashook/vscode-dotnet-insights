@@ -153,7 +153,13 @@ public class MethodSymbolTable
     // lookups, instead of all being assigned upfront before any Resolve
     // call). A real capture will never have anywhere near a billion
     // distinct method ranges, so this can never collide with a real id.
-    private const int UnresolvedIdBase = 1_000_000_000;
+    //
+    // Public because callers that MEMOIZE something per frame id (see
+    // Cpu/IdleWaitFrameCache.cs) have to know the id space is two dense
+    // ranges - [0, namesById.Count) and [UnresolvedIdBase, ...) - rather
+    // than one, so they can index an array per range instead of paying a
+    // dictionary lookup per id.
+    public const int UnresolvedIdBase = 1_000_000_000;
 
     // Ids for addresses that never matched any real range (or matched one
     // whose validity window didn't cover the call - see ResolveId's

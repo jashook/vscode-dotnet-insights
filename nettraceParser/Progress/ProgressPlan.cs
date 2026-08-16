@@ -21,8 +21,8 @@
 //   Stage 0 (before NettraceFile.Read)     -> read's own [0, R) slice.
 //   Stage 1 (right after Read returns)     -> the remaining [R, 100) split
 //                                              into "7 projector phases
-//                                              combined" vs "jsonExport".
-//   Stage 2 (right before GcJsonExporter.WriteToFile) -> jsonExport's own
+//                                              combined" vs "export".
+//   Stage 2 (right before GcJsonExporter.WriteToFile) -> the export phase's own
 //                                              range split across its 5
 //                                              sub-writers, using this
 //                                              run's REAL counts (the one
@@ -112,52 +112,32 @@ public static class ProgressPlan
     // real-world spread already shows.
     public const double ReadShareOfTotal = 0.30;
 
-    // The 7 projector/builder phases combined vs. jsonExport, of whatever
-    // time remains after the read phase - measured 22.4% (A: 2043ms
-    // projectors / 9117ms combined-with-export) and 21.1% (B: 568ms /
-    // 2694ms) - averaged. Much closer agreement between the two captures
-    // than ProjectorPhaseWeights' own per-phase split below, which is
-    // expected: this combined total is dominated by whichever few phases
-    // are large in a given capture, while which SPECIFIC phase that is
-    // varies a lot more (see that field's own comment).
+    // The projector/builder phases combined vs. the export phase, of whatever time
+    // remains after the read phase - measured 22.4% (A: 2043ms projectors /
+    // 9117ms combined-with-export) and 21.1% (B: 568ms / 2694ms) - averaged.
+    // The two captures agree closely here because this combined total is
+    // dominated by whichever few phases are large in a given capture, even
+    // though WHICH phase that is varies a lot.
+    //
+    // There is deliberately no per-projector split any more: the eight
+    // projectors run CONCURRENTLY (see Program.cs), so they no longer occupy
+    // disjoint stretches of the bar that could be weighted against each
+    // other, and the phase advances on the mean of their eight completion
+    // fractions instead. The per-phase weight array this file used to carry
+    // was removed with them - it was already documented as the least
+    // trustworthy calibration here (its two reference captures disagreed by
+    // as much as 7.9% vs 45.6% on a single phase).
+    //
+    // Measured after that change on a real 3.23GB/35.08M-event capture: the
+    // eight passes went from ~1230ms end-to-end in sequence to ~505ms of wall
+    // time, so this share is now smaller than the 22% below on a large
+    // capture. Left as measured rather than re-guessed - it is still an
+    // upper-ish bound, and overshooting here only makes the bar linger
+    // slightly before the export phase rather than jumping backward.
     public const double ProjectorsShareOfRemainder = 0.22;
 
-    // Relative weights among the 7 projector/builder phases, in their
-    // fixed Program.cs call order (gcProject, allocationProject,
-    // exceptionProject, eventOverview, symbolTable, sampleProject,
-    // contentionProject) - averaged from each phase's own SHARE of the
-    // combined projector total on each of the two reference captures
-    // (normalizing by share, not raw ms, since the captures differ ~5x in
-    // total event count):
-    //   Capture A shares: 46.2%, 14.4%, 4.3%, 7.9%, 5.3%, 18.5%, 3.4%
-    //   Capture B shares:  9.7%, 23.2%, 6.3%, 45.6%, 10.0%, 1.6%, 3.5%
-    // These disagree with each other far more than ReadShareOfTotal or
-    // ProjectorsShareOfRemainder do (e.g. eventOverview: 7.9% vs 45.6%) -
-    // a genuinely noisy, capture-content-dependent split (gcProject scales
-    // with GC-relevant event DENSITY, not just total event count;
-    // eventOverview's own cost didn't track total event count cleanly
-    // either), not just measurement noise. Averaging is still the best
-    // available estimate without a third data point, but treat this
-    // specific array as the least trustworthy set of constants in this
-    // file - each of these 7 phases is individually small (all seven
-    // combined were only ~21-22% of the non-read total on both captures),
-    // so even a poorly-weighted split here moves the bar less than
-    // ReadShareOfTotal or the jsonExport sub-writer weights would.
-    // The 8th entry (threading) is derived from a RATIO rather than from one
-    // capture's absolute proportion, deliberately: the other seven were
-    // averaged across two differently-shaped captures precisely because one
-    // overfits, and overwriting that calibration from a single run would
-    // throw it away. Threading's cost is structurally the same kind as
-    // eventOverview's - a scan of every event doing trivial per-event work -
-    // and it makes two such passes (one to find the threading events' own
-    // time range, one to bucket) against eventOverview's one. Measured on the
-    // reference capture: threadingProject=547ms against eventOverview=254ms,
-    // a 2.15x ratio, so it takes 2.15x eventOverview's calibrated weight.
-    // Recalibrate from the Timing: line's threadingProject= field if a
-    // differently-shaped capture disagrees.
-    private static readonly double[] ProjectorPhaseWeights = { 0.2792, 0.1884, 0.0533, 0.2674, 0.0767, 0.1004, 0.0348, 0.5749 };
 
-    // jsonExport sub-writer per-item costs, in nanoseconds/record - REAL
+    // Export sub-writer per-item costs, in nanoseconds/record - REAL
     // measured values (not seeds/guesses) from the two reference captures
     // above, via the permanent per-sub-writer Timing: line breakdown (see
     // Program.cs's own comment on why it's permanent, not throwaway).
@@ -197,49 +177,13 @@ public static class ProgressPlan
         return new ProgressRange(start, start + (ProjectorsShareOfRemainder * remainderPercent));
     }
 
-    public static ProgressRange PlanJsonExport()
+    public static ProgressRange PlanExport()
     {
         ProgressRange projectors = PlanProjectorsCombined();
         return new ProgressRange(projectors.End, 100.0);
     }
 
-    // The 7 individual projector/builder phases' own ranges, in Program.cs's
-    // fixed call order - see ProjectorPhaseWeights' own comment for what
-    // index corresponds to which phase.
-    public static ProgressRange[] PlanProjectorPhases()
-    {
-        ProgressRange combined = PlanProjectorsCombined();
-        double totalWeight = 0.0;
-
-        for (int weightIndex = 0; weightIndex < ProjectorPhaseWeights.Length; ++weightIndex)
-        {
-            totalWeight += ProjectorPhaseWeights[weightIndex];
-        }
-
-        ProgressRange[] ranges = new ProgressRange[ProjectorPhaseWeights.Length];
-        double cursor = combined.Start;
-
-        for (int phaseIndex = 0; phaseIndex < ProjectorPhaseWeights.Length; ++phaseIndex)
-        {
-            double width = totalWeight > 0.0
-                ? (ProjectorPhaseWeights[phaseIndex] / totalWeight) * (combined.End - combined.Start)
-                : (combined.End - combined.Start) / ProjectorPhaseWeights.Length;
-
-            double nextCursor = cursor + width;
-            ranges[phaseIndex] = new ProgressRange(cursor, nextCursor);
-            cursor = nextCursor;
-        }
-
-        // The last range's End can drift a few ULPs short of combined.End
-        // from repeated floating-point addition - snap it exactly so the
-        // next stage (jsonExport) starts from the true boundary rather
-        // than a value a hair below it.
-        ranges[ranges.Length - 1] = new ProgressRange(ranges[ranges.Length - 1].Start, combined.End);
-
-        return ranges;
-    }
-
-    // jsonExport's own [start, 100) range, split across its 5 sub-writers
+    // The export phase's own [start, 100) range, split across its 5 sub-writers
     // by REAL counts known at this exact point in Program.cs (right before
     // GcJsonExporter.WriteToFile is called) - the one place in this whole
     // plan where weighting uses THIS run's own actual data rather than a
@@ -248,9 +192,9 @@ public static class ProgressPlan
     // same run, so a per-item cost estimate is meaningful in a way "bytes
     // vs events" across different units never was (see this file's own
     // header).
-    public static ExportSubWriterRanges PlanJsonExportSubWriters(int gcCount, int allocationCount, int exceptionCount, int sampleCount, int contentionCount)
+    public static ExportSubWriterRanges PlanExportSubWriters(int gcCount, int allocationCount, int exceptionCount, int sampleCount, int contentionCount)
     {
-        ProgressRange exportRange = PlanJsonExport();
+        ProgressRange exportRange = PlanExport();
         double exportWidth = exportRange.End - exportRange.Start;
 
         double allocationWork = allocationCount * AllocationRecordWeight;
@@ -268,9 +212,9 @@ public static class ProgressPlan
         ProgressRange contentionRange = AdvanceRange(ref cursor, contentionWork, totalWork, exportWidth);
         ProgressRange gcRange = AdvanceRange(ref cursor, gcWork, totalWork, exportWidth);
 
-        // Same end-snap reasoning as PlanProjectorPhases - the LAST range
-        // dispatched (gcData, matching GcJsonExporter.WriteToFile's own
-        // real call order) absorbs any floating-point drift.
+        // The LAST range dispatched absorbs any floating-point drift
+        // (gcData, matching GcJsonExporter.WriteToFile's own real call
+        // order), so the bar ends on exactly 100.
         gcRange = new ProgressRange(gcRange.Start, exportRange.End);
 
         return new ExportSubWriterRanges(allocationRange, exceptionRange, cpuRange, contentionRange, gcRange);

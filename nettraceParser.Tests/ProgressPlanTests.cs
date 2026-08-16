@@ -33,19 +33,19 @@ public class ProgressPlanTests
     }
 
     [Fact]
-    public void PlanJsonExport_EndsAtOneHundred()
+    public void PlanExport_EndsAtOneHundred()
     {
-        ProgressRange range = ProgressPlan.PlanJsonExport();
+        ProgressRange range = ProgressPlan.PlanExport();
 
         Assert.Equal(100.0, range.End);
     }
 
     [Fact]
-    public void PlanRead_PlanProjectorsCombined_PlanJsonExport_AreContiguous()
+    public void PlanRead_PlanProjectorsCombined_PlanExport_AreContiguous()
     {
         ProgressRange read = ProgressPlan.PlanRead();
         ProgressRange projectors = ProgressPlan.PlanProjectorsCombined();
-        ProgressRange export = ProgressPlan.PlanJsonExport();
+        ProgressRange export = ProgressPlan.PlanExport();
 
         Assert.Equal(read.End, projectors.Start);
         Assert.Equal(projectors.End, export.Start);
@@ -53,39 +53,10 @@ public class ProgressPlanTests
     }
 
     [Fact]
-    public void PlanProjectorPhases_ReturnsEightContiguousRangesCoveringTheirCombinedRange()
+    public void PlanExportSubWriters_FiveRangesAreContiguousAndCoverTheWholeExportRange()
     {
-        ProgressRange combined = ProgressPlan.PlanProjectorsCombined();
-        ProgressRange[] phases = ProgressPlan.PlanProjectorPhases();
-
-        // One range per projector call in Program.cs's fixed order, now
-        // including the threading projector.
-        Assert.Equal(8, phases.Length);
-        Assert.Equal(combined.Start, phases[0].Start);
-        Assert.Equal(combined.End, phases[phases.Length - 1].End);
-
-        for (int phaseIndex = 1; phaseIndex < phases.Length; ++phaseIndex)
-        {
-            Assert.Equal(phases[phaseIndex - 1].End, phases[phaseIndex].Start);
-        }
-    }
-
-    [Fact]
-    public void PlanProjectorPhases_EveryPhaseHasNonNegativeWidth()
-    {
-        ProgressRange[] phases = ProgressPlan.PlanProjectorPhases();
-
-        for (int phaseIndex = 0; phaseIndex < phases.Length; ++phaseIndex)
-        {
-            Assert.True(phases[phaseIndex].End >= phases[phaseIndex].Start, $"phase {phaseIndex} has negative width");
-        }
-    }
-
-    [Fact]
-    public void PlanJsonExportSubWriters_FiveRangesAreContiguousAndCoverTheWholeExportRange()
-    {
-        ProgressRange exportRange = ProgressPlan.PlanJsonExport();
-        ExportSubWriterRanges ranges = ProgressPlan.PlanJsonExportSubWriters(gcCount: 36, allocationCount: 1926758, exceptionCount: 31733, sampleCount: 26132500, contentionCount: 0);
+        ProgressRange exportRange = ProgressPlan.PlanExport();
+        ExportSubWriterRanges ranges = ProgressPlan.PlanExportSubWriters(gcCount: 36, allocationCount: 1926758, exceptionCount: 31733, sampleCount: 26132500, contentionCount: 0);
 
         Assert.Equal(exportRange.Start, ranges.Allocation.Start);
         Assert.Equal(ranges.Allocation.End, ranges.Exception.Start);
@@ -99,9 +70,9 @@ public class ProgressPlanTests
     // against had genuinely zero contentions - a real, not hypothetical,
     // all-inputs-zero-for-one-writer case.
     [Fact]
-    public void PlanJsonExportSubWriters_ZeroCountWriterGetsZeroWidthNotNaN()
+    public void PlanExportSubWriters_ZeroCountWriterGetsZeroWidthNotNaN()
     {
-        ExportSubWriterRanges ranges = ProgressPlan.PlanJsonExportSubWriters(gcCount: 36, allocationCount: 1926758, exceptionCount: 31733, sampleCount: 26132500, contentionCount: 0);
+        ExportSubWriterRanges ranges = ProgressPlan.PlanExportSubWriters(gcCount: 36, allocationCount: 1926758, exceptionCount: 31733, sampleCount: 26132500, contentionCount: 0);
 
         Assert.Equal(ranges.Contention.Start, ranges.Contention.End);
         Assert.False(double.IsNaN(ranges.Contention.Start));
@@ -112,10 +83,10 @@ public class ProgressPlanTests
     // JIT/thread events, none of the 5 sub-writer-relevant kinds) - must
     // not divide by zero across the board.
     [Fact]
-    public void PlanJsonExportSubWriters_AllCountsZeroProducesNoNaNs()
+    public void PlanExportSubWriters_AllCountsZeroProducesNoNaNs()
     {
-        ProgressRange exportRange = ProgressPlan.PlanJsonExport();
-        ExportSubWriterRanges ranges = ProgressPlan.PlanJsonExportSubWriters(gcCount: 0, allocationCount: 0, exceptionCount: 0, sampleCount: 0, contentionCount: 0);
+        ProgressRange exportRange = ProgressPlan.PlanExport();
+        ExportSubWriterRanges ranges = ProgressPlan.PlanExportSubWriters(gcCount: 0, allocationCount: 0, exceptionCount: 0, sampleCount: 0, contentionCount: 0);
 
         Assert.False(double.IsNaN(ranges.Allocation.Start));
         Assert.False(double.IsNaN(ranges.Gc.End));
@@ -124,12 +95,12 @@ public class ProgressPlanTests
     }
 
     [Fact]
-    public void PlanJsonExportSubWriters_LargerCountGetsProportionallyMoreWidth()
+    public void PlanExportSubWriters_LargerCountGetsProportionallyMoreWidth()
     {
         // Same total scale, but overwhelmingly CPU-sample-dominated (the
         // reference capture's own real shape) - the Cpu range should be by
         // far the widest of the five.
-        ExportSubWriterRanges ranges = ProgressPlan.PlanJsonExportSubWriters(gcCount: 36, allocationCount: 1926758, exceptionCount: 31733, sampleCount: 26132500, contentionCount: 0);
+        ExportSubWriterRanges ranges = ProgressPlan.PlanExportSubWriters(gcCount: 36, allocationCount: 1926758, exceptionCount: 31733, sampleCount: 26132500, contentionCount: 0);
 
         double allocationWidth = ranges.Allocation.End - ranges.Allocation.Start;
         double cpuWidth = ranges.Cpu.End - ranges.Cpu.Start;

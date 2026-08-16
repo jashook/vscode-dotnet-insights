@@ -41,12 +41,13 @@ public readonly struct ExceptionEvent
     public readonly int HResult;
     public readonly ClrExceptionFlags Flags;
     public readonly long ThreadId;
-    // Copied directly from the owning EventRecord.Stack, already resolved at
-    // parse time (see EventBlock.cs/EventRecord.cs) - empty
-    // (Array.Empty<long>()), never null, when this throw wasn't stack-walked.
-    public readonly long[] Stack;
+    // Index into the capture's StackTable (see StackTable.cs), copied from
+    // the owning EventRecord.StackIndex - resolved at parse time, see
+    // EventBlock.cs. StackTable.EmptyStackIndex when this throw wasn't
+    // stack-walked; that index resolves to an empty array, never null.
+    public readonly int StackIndex;
 
-    public ExceptionEvent(DateTime timestamp, double relativeMSec, string exceptionType, string exceptionMessage, int hResult, ClrExceptionFlags flags, long threadId, long[] stack)
+    public ExceptionEvent(DateTime timestamp, double relativeMSec, string exceptionType, string exceptionMessage, int hResult, ClrExceptionFlags flags, long threadId, int stackIndex)
     {
         this.Timestamp = timestamp;
         this.RelativeMSec = relativeMSec;
@@ -55,7 +56,7 @@ public readonly struct ExceptionEvent
         this.HResult = hResult;
         this.Flags = flags;
         this.ThreadId = threadId;
-        this.Stack = stack;
+        this.StackIndex = stackIndex;
     }
 }
 
@@ -77,6 +78,13 @@ public static class ExceptionEventProjector
         // own reasoning (a boxed/virtual IEnumerable<T> enumerator copying a
         // large struct per element measurably regressed once EventRecord
         // stopped being a cheap 8-byte class reference).
+        // One canonical string per distinct type name / message for the whole
+        // capture - see Utf16StringPool. A real 3.23GB capture throws
+        // 1,443,601 exceptions, and decoding each one's type and message into
+        // its own fresh string was over half of this phase.
+        Utf16StringPool exceptionTypePool = new Utf16StringPool();
+        Utf16StringPool exceptionMessagePool = new Utf16StringPool();
+
         Span<EventRecord> eventsSpan = CollectionsMarshal.AsSpan(events);
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
@@ -98,7 +106,7 @@ public static class ExceptionEventProjector
             }
 
             PayloadReader reader = new PayloadReader(record.PayloadBuffer, record.PayloadOffset, record.PayloadLength, pointerSize);
-            ClrExceptionThrown thrown = ClrExceptionThrown.Decode(reader, record.Version);
+            ClrExceptionThrown thrown = ClrExceptionThrown.Decode(reader, record.Version, exceptionTypePool, exceptionMessagePool);
 
             DateTime timestamp = default;
             double relativeMSec = default;
@@ -110,7 +118,7 @@ public static class ExceptionEventProjector
                 relativeMSec = qpcDelta * 1000.0 / qpcFrequency;
             }
 
-            result.Add(new ExceptionEvent(timestamp, relativeMSec, thrown.ExceptionType, thrown.ExceptionMessage, thrown.ExceptionHRESULT, thrown.ExceptionFlags, record.ThreadId, record.Stack));
+            result.Add(new ExceptionEvent(timestamp, relativeMSec, thrown.ExceptionType, thrown.ExceptionMessage, thrown.ExceptionHRESULT, thrown.ExceptionFlags, record.ThreadId, record.StackIndex));
         }
 
         return result;

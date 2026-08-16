@@ -729,8 +729,32 @@ namespace FastSerialization
             // remainder from the stream
             if (length > (bytes.Length - align))
             {
-                // check if our inputstreambytesread < position in stream then throw out delta
-                if (inputStreamBytesRead < positionInStream)
+                // LOCAL DIVERGENCE FROM UPSTREAM (microsoft/perfview). Upstream ran the
+                // "throw out delta" loop below for every stream, seekable or not. That is
+                // only correct for a non-seekable one: inputStreamBytesRead is, per its own
+                // declaration comment, "only required for non-seekable streams", and on a
+                // SEEKABLE stream Fill() positions the stream with inputStream.Seek(...)
+                // and merely accumulates `inputStreamBytesRead += count`. It is therefore a
+                // running total of bytes read, NOT a stream position, and the two drift
+                // apart (each pass through the large-read path below advances
+                // positionInStream by more than it adds to inputStreamBytesRead).
+                //
+                // Once that drift makes inputStreamBytesRead dip below positionInStream, the
+                // loop "catches up" by consuming that many REAL bytes out of the stream, and
+                // every byte the large read below then pulls straight from inputStream is
+                // shifted by that amount. It also scribbles over `bytes` - the cache the
+                // BlockCopy below is about to copy out of.
+                //
+                // Measured on a real 3.01GB capture: the drift crossed zero at EventBlock
+                // #2839 (file offset 513,015,076), the loop swallowed 80 bytes, and the
+                // block's bytes past the cached prefix were garbage - decoding stack IPs
+                // where an event header belonged. Nothing detects this as corruption; it
+                // only surfaced because the block happened to run off its own end.
+                //
+                // For a seekable stream there is nothing to "catch up": positionInStream /
+                // position / endPosition are authoritative (Fill() already treats them that
+                // way), so seek to exactly where the uncached remainder begins.
+                if (!inputStream.CanSeek && inputStreamBytesRead < positionInStream)
                 {
                     long amountToThrowOut = positionInStream - inputStreamBytesRead;
                     while (amountToThrowOut > 0)
@@ -747,7 +771,21 @@ namespace FastSerialization
 
                 int positionAlignmentOffset = position % align;
                 int alignedLength = (length & ~(align - 1)) - positionAlignmentOffset;
-                int cacheBytes = Math.Max(0, endPosition - position);
+                // Clamped to alignedLength, not just Math.Max(0, endPosition - position):
+                // for a `length` only slightly over the cache size the cache can hold MORE
+                // than alignedLength bytes, and copying all of them would both overrun
+                // `data` (alignedLength can be less than length) and leave `bytesRead` past
+                // alignedLength, breaking the position bookkeeping below.
+                int cacheBytes = Math.Min(Math.Max(0, endPosition - position), alignedLength);
+
+                if (inputStream.CanSeek)
+                {
+                    // Current (positionInStream + position) is where the caller's data
+                    // starts; cacheBytes of it are already satisfied from the cache.
+                    inputStream.Seek(positionInStream + position + cacheBytes, SeekOrigin.Begin);
+                    inputStreamBytesRead = positionInStream + position + cacheBytes;
+                }
+
                 Buffer.BlockCopy(bytes, position, data, offset, cacheBytes);
                 int bytesRead = cacheBytes;
                 while (bytesRead < alignedLength)

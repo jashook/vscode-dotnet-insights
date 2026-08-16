@@ -53,6 +53,31 @@ public readonly struct EventOverview
         this.TotalEventCount = totalEventCount;
         this.EventTypes = eventTypes;
     }
+
+    // Exact count of one (provider, eventId) pair in the whole capture, or 0
+    // if the capture has none. This overview is built by a full pass over
+    // every event, so a later projector for that same event type can presize
+    // its own result list from this instead of growing it from empty - on a
+    // real 3.23GB capture, growing List<SampleEvent> to 16.24M entries was
+    // 33% of the entire CPU-sample projection phase, all of it
+    // AddWithResize -> _BulkMoveWithWriteBarrier copying.
+    //
+    // A linear scan on purpose: EventTypes holds one entry per DISTINCT event
+    // type (56 on that capture), and this is called a handful of times per
+    // run, not per event.
+    public int CountForEvent(string providerName, int eventId)
+    {
+        for (int typeIndex = 0; typeIndex < this.EventTypes.Count; ++typeIndex)
+        {
+            EventTypeCount eventType = this.EventTypes[typeIndex];
+            if (eventType.EventId == eventId && eventType.ProviderName == providerName)
+            {
+                return eventType.Count;
+            }
+        }
+
+        return 0;
+    }
 }
 
 public static class EventOverviewBuilder
@@ -67,6 +92,39 @@ public static class EventOverviewBuilder
     {
         public int Count;
         public string EventName;
+
+        // Carried on the accumulator itself now that the dictionary key that
+        // used to hold them is gone (see Build) - the final output loop walks
+        // the accumulators directly.
+        public string ProviderName;
+        public int EventId;
+    }
+
+    // All accumulators for one provider, indexed directly by event id. Event
+    // ids are a ushort on the wire, and a real capture uses a few dozen of
+    // them per provider, so a plain array indexed by id replaces hashing a
+    // (string, int) tuple key on every event.
+    //
+    // A holder class rather than a bare array so that two ProviderSlots
+    // holding two different string INSTANCES of the same provider name (see
+    // Build's alias handling) share one set of accumulators even after the
+    // array is grown and replaced.
+    private sealed class ProviderAccumulators
+    {
+        public EventTypeAccumulator[] ByEventId = new EventTypeAccumulator[64];
+    }
+
+    // One (provider name instance -> accumulators) association. Matched by
+    // REFERENCE, which is exact rather than approximate here: EventBlock.cs
+    // passes the same metadata.ProviderName instance into every EventRecord
+    // sharing that metadata entry. A second instance carrying the same name
+    // (a different MetadataId re-declaring the same provider, or a
+    // hand-built EventRecord in a test) just gets its own slot pointing at
+    // the SAME ProviderAccumulators, so counts still merge correctly.
+    private sealed class ProviderSlot
+    {
+        public string ProviderName;
+        public ProviderAccumulators Accumulators;
     }
 
     // Measured via dotnet-trace (dotnet-sampled-thread-time profile) against
@@ -95,9 +153,26 @@ public static class EventOverviewBuilder
     // the real Dictionary (content equality/hashing), so this remains
     // correct even in the pathological case of full interleaving where the
     // cache never hits.
+    //
+    // The dictionary is gone entirely as of the 2026-08-15 profile, which
+    // showed the fallback path still dominating on a capture whose event
+    // types interleave heavily enough that the sticky cache misses often:
+    // Dictionary<(string,int),_>.FindValue was 72% of this phase's samples on
+    // a real 3.23GB/35.08M-event capture, with Marvin.ComputeHash32 alone at
+    // 24.4% self. The replacement hashes nothing at all - provider instances
+    // are matched by reference against a handful of slots, then the event id
+    // indexes an array directly (see ProviderSlot/ProviderAccumulators). The
+    // sticky cache stays, since it still short-circuits even that.
     public static EventOverview Build(List<EventRecord> events, Action<double> onProgress = null)
     {
-        Dictionary<(string ProviderName, int EventId), EventTypeAccumulator> accumulatorsByKey = new Dictionary<(string, int), EventTypeAccumulator>();
+        // A real capture has a handful of providers (3-5), so this is scanned
+        // linearly rather than hashed.
+        List<ProviderSlot> providerSlots = new List<ProviderSlot>();
+        List<EventTypeAccumulator> allAccumulators = new List<EventTypeAccumulator>();
+
+        // Only ever allocated if a capture actually carries an event id
+        // outside the wire format's own range - see the loop below.
+        Dictionary<(string ProviderName, int EventId), EventTypeAccumulator> outOfRangeAccumulators = null;
 
         string lastProviderName = null;
         int lastEventId = -1;
@@ -127,11 +202,40 @@ public static class EventOverviewBuilder
             }
             else
             {
-                (string, int) key = (record.ProviderName, record.EventId);
-                if (!accumulatorsByKey.TryGetValue(key, out accumulator))
+                if ((uint)record.EventId < MaxDirectIndexedEventId)
                 {
-                    accumulator = new EventTypeAccumulator();
-                    accumulatorsByKey[key] = accumulator;
+                    ProviderAccumulators providerAccumulators = GetOrAddProviderAccumulators(providerSlots, record.ProviderName);
+
+                    EventTypeAccumulator[] byEventId = providerAccumulators.ByEventId;
+                    if (record.EventId >= byEventId.Length)
+                    {
+                        byEventId = GrowByEventId(byEventId, record.EventId);
+                        providerAccumulators.ByEventId = byEventId;
+                    }
+
+                    accumulator = byEventId[record.EventId];
+                    if (accumulator == null)
+                    {
+                        accumulator = CreateAccumulator(allAccumulators, record.ProviderName, record.EventId);
+                        byEventId[record.EventId] = accumulator;
+                    }
+                }
+                else
+                {
+                    // Out-of-range/corrupt event id - kept correct rather than
+                    // fast, and above all kept from sizing an array off an
+                    // arbitrary 32-bit number read out of the file.
+                    if (outOfRangeAccumulators == null)
+                    {
+                        outOfRangeAccumulators = new Dictionary<(string, int), EventTypeAccumulator>();
+                    }
+
+                    (string, int) outOfRangeKey = (record.ProviderName, record.EventId);
+                    if (!outOfRangeAccumulators.TryGetValue(outOfRangeKey, out accumulator))
+                    {
+                        accumulator = CreateAccumulator(allAccumulators, record.ProviderName, record.EventId);
+                        outOfRangeAccumulators[outOfRangeKey] = accumulator;
+                    }
                 }
 
                 lastProviderName = record.ProviderName;
@@ -147,16 +251,83 @@ public static class EventOverviewBuilder
             }
         }
 
-        List<EventTypeCount> eventTypes = new List<EventTypeCount>(accumulatorsByKey.Count);
-        foreach (KeyValuePair<(string ProviderName, int EventId), EventTypeAccumulator> entry in accumulatorsByKey)
+        List<EventTypeCount> eventTypes = new List<EventTypeCount>(allAccumulators.Count);
+        for (int accumulatorIndex = 0; accumulatorIndex < allAccumulators.Count; ++accumulatorIndex)
         {
-            string displayName = ResolveDisplayName(entry.Key.ProviderName, entry.Key.EventId, entry.Value.EventName);
-            eventTypes.Add(new EventTypeCount(entry.Key.ProviderName, displayName, entry.Key.EventId, entry.Value.Count));
+            EventTypeAccumulator accumulator = allAccumulators[accumulatorIndex];
+            string displayName = ResolveDisplayName(accumulator.ProviderName, accumulator.EventId, accumulator.EventName);
+            eventTypes.Add(new EventTypeCount(accumulator.ProviderName, displayName, accumulator.EventId, accumulator.Count));
         }
 
         eventTypes.Sort((left, right) => right.Count.CompareTo(left.Count));
 
         return new EventOverview(events.Count, eventTypes);
+    }
+
+    // The wire format encodes an event id in 32 bits but real providers use a
+    // small dense range (the CLR runtime provider's highest is in the low
+    // hundreds). Anything at or above this goes down the dictionary path
+    // instead of sizing an array from a number read out of the file - a
+    // corrupt id would otherwise ask for gigabytes.
+    private const uint MaxDirectIndexedEventId = 65536;
+
+    private static EventTypeAccumulator CreateAccumulator(List<EventTypeAccumulator> allAccumulators, string providerName, int eventId)
+    {
+        EventTypeAccumulator accumulator = new EventTypeAccumulator();
+        accumulator.ProviderName = providerName;
+        accumulator.EventId = eventId;
+        allAccumulators.Add(accumulator);
+        return accumulator;
+    }
+
+    // Reference match first (the whole point - see ProviderSlot), then a
+    // content match that registers the new instance as an alias onto the same
+    // accumulators, so every later event carrying that instance takes the
+    // reference path too.
+    private static ProviderAccumulators GetOrAddProviderAccumulators(List<ProviderSlot> providerSlots, string providerName)
+    {
+        for (int slotIndex = 0; slotIndex < providerSlots.Count; ++slotIndex)
+        {
+            if (ReferenceEquals(providerSlots[slotIndex].ProviderName, providerName))
+            {
+                return providerSlots[slotIndex].Accumulators;
+            }
+        }
+
+        ProviderAccumulators accumulators = null;
+        for (int slotIndex = 0; slotIndex < providerSlots.Count; ++slotIndex)
+        {
+            if (providerSlots[slotIndex].ProviderName == providerName)
+            {
+                accumulators = providerSlots[slotIndex].Accumulators;
+                break;
+            }
+        }
+
+        if (accumulators == null)
+        {
+            accumulators = new ProviderAccumulators();
+        }
+
+        ProviderSlot slot = new ProviderSlot();
+        slot.ProviderName = providerName;
+        slot.Accumulators = accumulators;
+        providerSlots.Add(slot);
+
+        return accumulators;
+    }
+
+    private static EventTypeAccumulator[] GrowByEventId(EventTypeAccumulator[] byEventId, int requiredEventId)
+    {
+        int newLength = byEventId.Length;
+        while (newLength <= requiredEventId)
+        {
+            newLength *= 2;
+        }
+
+        EventTypeAccumulator[] grown = new EventTypeAccumulator[newLength];
+        Array.Copy(byEventId, grown, byEventId.Length);
+        return grown;
     }
 
     // Precedence: the record's OWN EventName wins when it has one (a

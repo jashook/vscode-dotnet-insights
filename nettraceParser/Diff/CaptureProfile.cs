@@ -161,6 +161,7 @@ public sealed class CaptureProfile
         List<ExceptionEvent> exceptionEvents,
         List<SampleEvent> sampleEvents,
         List<ContentionEvent> contentionEvents,
+        StackTable stackTable,
         MethodSymbolTable symbolTable)
     {
         CaptureProfile profile = new CaptureProfile();
@@ -182,10 +183,10 @@ public sealed class CaptureProfile
         BuildGcProfile(profile, gcEvents);
         BuildAllocationProfile(profile, allocationEvents);
         BuildExceptionProfile(profile, exceptionEvents);
-        BuildCpuProfile(profile, sampleEvents, symbolTable);
-        BuildContentionProfile(profile, contentionEvents, symbolTable);
+        BuildCpuProfile(profile, sampleEvents, stackTable, symbolTable);
+        BuildContentionProfile(profile, contentionEvents, stackTable, symbolTable);
 
-        TimeBreakdown timeBreakdown = TimeBreakdownBuilder.Build(gcEvents, contentionEvents, sampleEvents, symbolTable, captureDurationMSec);
+        TimeBreakdown timeBreakdown = TimeBreakdownBuilder.Build(gcEvents, contentionEvents, sampleEvents, stackTable, symbolTable, captureDurationMSec);
         profile.HasTimeBreakdown = timeBreakdown.HasCaptureDuration;
         profile.GcPercent = timeBreakdown.GcPercent;
         profile.ContentionPercent = timeBreakdown.ContentionPercent;
@@ -271,7 +272,7 @@ public sealed class CaptureProfile
         }
     }
 
-    private static void BuildCpuProfile(CaptureProfile profile, List<SampleEvent> sampleEvents, MethodSymbolTable symbolTable)
+    private static void BuildCpuProfile(CaptureProfile profile, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable)
     {
         Span<SampleEvent> eventsSpan = CollectionsMarshal.AsSpan(sampleEvents);
 
@@ -281,14 +282,15 @@ public sealed class CaptureProfile
 
             ++profile.TotalCpuSampleCount;
 
-            if (sampleEvent.Stack.Length == 0)
+            long[] sampleFrames = stackTable.FramesAt(sampleEvent.StackIndex);
+            if (sampleFrames.Length == 0)
             {
                 continue;
             }
 
             // Self samples only (the leaf frame) - the same "what was actually
             // running" measure Cpu/CpuProfileJsonExporter.cs ranks by.
-            string leafName = NormalizeFrameName(symbolTable.NameForId(symbolTable.ResolveId(sampleEvent.Stack[0], sampleEvent.RelativeMSec)));
+            string leafName = NormalizeFrameName(symbolTable.NameForId(symbolTable.ResolveId(sampleFrames[0], sampleEvent.RelativeMSec)));
 
             NamedMetric metric = GetOrAdd(profile.CpuMethods, leafName);
             ++metric.Count;
@@ -296,7 +298,7 @@ public sealed class CaptureProfile
         }
     }
 
-    private static void BuildContentionProfile(CaptureProfile profile, List<ContentionEvent> contentionEvents, MethodSymbolTable symbolTable)
+    private static void BuildContentionProfile(CaptureProfile profile, List<ContentionEvent> contentionEvents, StackTable stackTable, MethodSymbolTable symbolTable)
     {
         Span<ContentionEvent> eventsSpan = CollectionsMarshal.AsSpan(contentionEvents);
 
@@ -307,7 +309,7 @@ public sealed class CaptureProfile
             ++profile.TotalContentionCount;
             profile.TotalContentionWaitMSec += contentionEvent.DurationMSec;
 
-            string siteName = ResolveContentionSiteName(contentionEvent, symbolTable);
+            string siteName = ResolveContentionSiteName(contentionEvent, stackTable, symbolTable);
 
             NamedMetric siteMetric = GetOrAdd(profile.ContentionSites, siteName);
             ++siteMetric.Count;
@@ -343,16 +345,17 @@ public sealed class CaptureProfile
         "System.Threading.ObjectHeader."
     };
 
-    private static string ResolveContentionSiteName(in ContentionEvent contentionEvent, MethodSymbolTable symbolTable)
+    private static string ResolveContentionSiteName(in ContentionEvent contentionEvent, StackTable stackTable, MethodSymbolTable symbolTable)
     {
-        if (contentionEvent.Stack.Length == 0)
+        long[] contentionFrames = stackTable.FramesAt(contentionEvent.StackIndex);
+        if (contentionFrames.Length == 0)
         {
             return UnresolvedFrameName;
         }
 
-        for (int frameIndex = 0; frameIndex < contentionEvent.Stack.Length; ++frameIndex)
+        for (int frameIndex = 0; frameIndex < contentionFrames.Length; ++frameIndex)
         {
-            string frameName = symbolTable.NameForId(symbolTable.ResolveId(contentionEvent.Stack[frameIndex], contentionEvent.RelativeMSec));
+            string frameName = symbolTable.NameForId(symbolTable.ResolveId(contentionFrames[frameIndex], contentionEvent.RelativeMSec));
 
             if (string.IsNullOrEmpty(frameName))
             {
@@ -376,7 +379,7 @@ public sealed class CaptureProfile
             }
         }
 
-        return NormalizeFrameName(symbolTable.NameForId(symbolTable.ResolveId(contentionEvent.Stack[0], contentionEvent.RelativeMSec)));
+        return NormalizeFrameName(symbolTable.NameForId(symbolTable.ResolveId(contentionFrames[0], contentionEvent.RelativeMSec)));
     }
 }
 

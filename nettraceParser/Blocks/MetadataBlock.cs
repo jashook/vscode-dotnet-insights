@@ -95,9 +95,25 @@ public class MetadataBlock : IFastSerializable, IFastSerializableVersion
         EventMetadata metadata = new EventMetadata();
 
         metadata.MetadataId = reader.ReadInt32();
-        metadata.ProviderName = NettraceStrings.ReadNullTerminatedUtf16String(reader);
+
+        // Interned deliberately, and this is a performance fix, not tidiness.
+        // EventBlock.cs hands this exact instance to every EventRecord sharing
+        // this MetadataId, and every projector then filters with
+        // `record.ProviderName != ClrProviderName` (a literal). String.Equals
+        // short-circuits on REFERENCE equality before comparing content, so a
+        // freshly decoded instance that merely equals the literal loses that
+        // fast path and pays a full content compare - once per event, per
+        // projector pass. On a real 3.23GB/35.08M-event capture that showed up
+        // as SpanHelpers.SequenceEqual at 4.9% of the entire run, spread
+        // across all 8 passes. Interning makes the decoded name BE the literal
+        // instance (the compiler already put those literals in the intern
+        // pool), so every one of those compares becomes a pointer compare.
+        //
+        // Bounded and cheap: a capture declares a few dozen metadata records,
+        // not millions, so this runs ~40 times for a multi-gigabyte file.
+        metadata.ProviderName = string.Intern(NettraceStrings.ReadNullTerminatedUtf16String(reader));
         metadata.EventId = reader.ReadInt32();
-        metadata.EventName = NettraceStrings.ReadNullTerminatedUtf16String(reader);
+        metadata.EventName = string.Intern(NettraceStrings.ReadNullTerminatedUtf16String(reader));
         metadata.Keywords = reader.ReadInt64();
         metadata.Version = reader.ReadInt32();
         metadata.Level = reader.ReadInt32();

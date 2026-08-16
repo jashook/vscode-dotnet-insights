@@ -51,7 +51,17 @@ export function mediaWebviewUri(webview: vscode.Webview, extensionUri: vscode.Ur
 // explicit parameter rather than inferred from allocationSummary's presence
 // because a very short nettrace capture can legitimately have zero
 // allocation ticks, which would make that inference unreliable.
-export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webview: vscode.Webview, extensionUri: vscode.Uri, gcData: any, sourceFormat: "gcinfo" | "nettrace"): string {
+// binaryContainerPath: filesystem path to nettraceParser's binary container
+// (see nettraceParser/Binary/BinaryCaptureFormat.cs), or null. When present,
+// its webview URI is embedded below and media/nettraceBinary.js fetches and
+// decodes it IN THE WEBVIEW - the sections that have migrated never pass
+// through the extension host as JSON at all.
+//
+// Null for the .gcinfo/Perfview XML source, which has no such file. That path
+// keeps supplying the same values through the JSON route, so this stays one
+// renderer with one output shape rather than branching per source - see this
+// file's own role as the shared renderer for both editors.
+export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webview: vscode.Webview, extensionUri: vscode.Uri, gcData: any, sourceFormat: "gcinfo" | "nettrace", binaryContainerPath: string | null = null): string {
     const defaultHtmlReturn = /* html */`
     <!DOCTYPE html>
     <html lang="en">
@@ -67,7 +77,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
         script-src vscode-webview-resource: https: 'unsafe-inline' 'unsafe-eval';
         style-src vscode-webview-resource: https: 'unsafe-inline';
         img-src vscode-resource: https:;
-        connect-src vscode-resource: https: http:;">
+        connect-src vscode-resource: vscode-webview-resource: https: http:;">
 
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
     </head>
@@ -194,6 +204,13 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const hasCpuProfile = isNettrace && cpuProfile !== null && cpuProfile !== undefined && cpuProfile["totalSampleCount"] !== null && cpuProfile["totalSampleCount"] !== undefined && cpuProfile["totalSampleCount"] > 0;
     const cpuProfileHtml = hasCpuProfile ? renderCpuProfileView(cpuProfile) : "";
     const cpuProfileJson = escapeJsonForInlineScript(hasCpuProfile ? JSON.stringify(cpuProfile) : "null");
+
+    // A URI, not the bytes - the whole point is that this payload never gets
+    // read, parsed or re-serialized by the extension host. The webview
+    // fetches it itself (media/nettraceBinary.js) once the document is live.
+    const binaryContainerUri = binaryContainerPath !== null
+        ? escapeJsonForInlineScript(JSON.stringify(webview.asWebviewUri(vscode.Uri.file(binaryContainerPath)).toString()))
+        : "null";
 
     // "Contention" (CLR Contention/Start + Stop event pairs) - same
     // format-level/data-emptiness gating as Heap Contents/Exceptions above
@@ -370,6 +387,9 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const styleVSCodeUri = mediaWebviewUri(webview, extensionUri, 'vscode.css');
 
     const scriptUri = mediaWebviewUri(webview, extensionUri, 'snapshotGcStats.js');
+    // Loaded BEFORE snapshotGcStats.js, which calls into it during its own
+    // top-level run - see that file's binary container load.
+    const binaryScriptUri = mediaWebviewUri(webview, extensionUri, 'nettraceBinary.js');
     const chartZoomScriptUri = mediaWebviewUri(webview, extensionUri, 'chartZoomHelper.js');
     const allocationScriptUri = mediaWebviewUri(webview, extensionUri, 'allocationStats.js');
     const drillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'drillDownStats.js');
@@ -480,6 +500,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <script type="application/json" id="allocationSummaryJson">${allocationSummaryJson}</script>
             <script type="application/json" id="exceptionSummaryJson">${exceptionSummaryJson}</script>
             <script type="application/json" id="cpuProfileJson">${cpuProfileJson}</script>
+            <script type="application/json" id="binaryContainerUri">${binaryContainerUri}</script>
             <script type="application/json" id="contentionSummaryJson">${contentionSummaryJson}</script>
             <script type="application/json" id="threadingSummaryJson">${threadingSummaryJson}</script>
             <script type="application/json" id="threadingMethodNamesJson">${threadingMethodNamesJson}</script>
@@ -729,6 +750,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <script nonce="${nonce}" src="${contentionDrillDownScriptUri}"></script>
             <script nonce="${nonce}" src="${flameGraphScriptUri}"></script>
             <script nonce="${nonce}" src="${lockTimelineScriptUri}"></script>
+            <script nonce="${nonce}" src="${binaryScriptUri}"></script>
             <script nonce="${nonce}" src="${scriptUri}"></script>
         </body>
     </html>`;

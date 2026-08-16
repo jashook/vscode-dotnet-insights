@@ -19,13 +19,17 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 
 using DotnetInsights.NetTrace;
+using DotnetInsights.NetTrace.Binary;
 using DotnetInsights.NetTrace.Contention;
 using DotnetInsights.NetTrace.Cpu;
 using DotnetInsights.NetTrace.Diff;
 using DotnetInsights.NetTrace.Exceptions;
 using DotnetInsights.NetTrace.Gc;
+using DotnetInsights.NetTrace.GcDump;
 using DotnetInsights.NetTrace.Overview;
 using DotnetInsights.NetTrace.Progress;
 using DotnetInsights.NetTrace.Rundown;
@@ -91,6 +95,82 @@ if (diffArgIndex >= 0)
     return;
 }
 
+// --gcdump-from-trace builds a .gcdump out of the heap-dump EVENTS in a
+// .nettrace, so a heap snapshot can be captured with dotnet-trace alone and
+// dotnet-gcdump never enters the pipeline (it silently truncates at 10M nodes -
+// see GcDump/HeapDumpEventDecoder.cs). Checked before --gcdump because the
+// two flags would otherwise both match a command line carrying each.
+int gcDumpFromTraceArgIndex = Array.IndexOf(args, "--gcdump-from-trace");
+
+if (gcDumpFromTraceArgIndex >= 0)
+{
+    if (gcDumpFromTraceArgIndex + 1 >= args.Length)
+    {
+        Console.Error.WriteLine("--gcdump-from-trace requires a trace path: --gcdump-from-trace <trace.nettrace> [-o <out.gcdump>]");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    Environment.ExitCode = GcDumpConvertCommand.Run(args, args[gcDumpFromTraceArgIndex + 1]);
+    return;
+}
+
+// --gcdump reads a heap SNAPSHOT (`dotnet-gcdump collect` output) rather than
+// an event stream. It shares this tool only because a .gcdump is a
+// FastSerialization stream, which this project already vendors a deserializer
+// for - see GcDump/GcDumpFormat.cs. Dispatched here, ahead of the
+// single-capture path, so that path is left exactly as it was.
+int gcDumpArgIndex = Array.IndexOf(args, "--gcdump");
+
+if (gcDumpArgIndex >= 0)
+{
+    if (gcDumpArgIndex + 1 >= args.Length)
+    {
+        Console.Error.WriteLine("--gcdump requires a file path: --gcdump <file.gcdump> [--json <output.json>]");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    // Exit code rather than a returned value: every other branch of these
+    // top-level statements uses a bare `return;`, and introducing a
+    // value-returning one here would change the inferred entry point's
+    // return type and break all of them.
+    Environment.ExitCode = GcDumpCommand.Run(args, args[gcDumpArgIndex + 1]);
+    return;
+}
+
+// Drives the combined "Projecting events" phase's progress bar while the eight
+// projector tasks run concurrently. Progress reporting stays on THIS thread on
+// purpose: ProgressReporter is static, single-threaded state that writes to
+// Console.Error (see Progress/ProgressReporter.cs), so the projectors publish
+// their own completion fraction into a slot each and this loop reads them.
+static void ReportProjectorProgress(Task[] projectorTasks, double[] projectorFractions)
+{
+    // Long enough that polling costs nothing against a phase measured in
+    // hundreds of milliseconds, short enough that the bar still moves
+    // smoothly - ProgressReporter's own ~100ms emit throttle is the real
+    // limit on how often anything reaches the extension anyway.
+    const int PollIntervalMs = 25;
+
+    while (true)
+    {
+        bool allCompleted = Task.WaitAll(projectorTasks, PollIntervalMs);
+
+        double totalFraction = 0.0;
+        for (int slotIndex = 0; slotIndex < projectorFractions.Length; ++slotIndex)
+        {
+            totalFraction += Volatile.Read(ref projectorFractions[slotIndex]);
+        }
+
+        ProgressReporter.ReportFraction(totalFraction / projectorFractions.Length);
+
+        if (allCompleted)
+        {
+            return;
+        }
+    }
+}
+
 // Runs one capture through the same projectors the --json path uses and
 // reduces it to the small named-metric profile the diff needs, reporting
 // progress inside [progressStart, progressEnd) so two captures fill one bar.
@@ -142,6 +222,12 @@ static CaptureProfile BuildProfileForDiff(string captureFilePath, double progres
     // capture is opened - same reasoning as the --json path's own
     // `file = null`, but load-bearing here rather than an optimization,
     // since otherwise both captures' event graphs would be live at once.
+    //
+    // The stack table is captured first: CaptureProfile.Build resolves every
+    // sample's and contention's stack through it (see StackTable.cs), so it
+    // has to survive the file being dropped. It holds only the decoded
+    // stacks, not the event list, so this doesn't weaken the point above.
+    StackTable diffStackTable = captureFile.Stacks;
     captureFile = null;
 
     ProgressReporter.BeginPhase($"Summarizing {Path.GetFileName(captureFilePath)}", projectEnd, progressEnd);
@@ -157,6 +243,7 @@ static CaptureProfile BuildProfileForDiff(string captureFilePath, double progres
         diffExceptionEvents,
         diffSampleEvents,
         diffContentionEvents,
+        diffStackTable,
         diffSymbolTable);
 
     ProgressReporter.CompletePhase();
@@ -219,6 +306,15 @@ string jsonOutputPath = isJsonMode ? args[jsonArgIndex + 1] : null;
 // round-trip a filesystem path through the JSON payload.
 string ticksBinaryPath = isJsonMode ? Path.ChangeExtension(jsonOutputPath, ".ticks.bin") : null;
 
+// --binary <output.bin> writes the container documented in
+// Binary/BinaryCaptureFormat.cs. Independent of --json on purpose: the
+// migration converts one section at a time, so a run needs to be able to
+// emit BOTH and have them diffed against each other (see
+// BinaryCaptureDiffTests). It requires --json today only because every
+// section's data is produced by the JSON export pass.
+int binaryArgIndex = Array.IndexOf(args, "--binary");
+string binaryOutputPath = binaryArgIndex >= 0 && binaryArgIndex + 1 < args.Length ? args[binaryArgIndex + 1] : null;
+
 if (isJsonMode)
 {
     ProgressReporter.Enable();
@@ -263,54 +359,141 @@ if (isJsonMode)
     // Computed now (not before Read) since it needs file.Events.Count,
     // known only once the read phase actually finishes - see
     // Progress/ProgressPlan.cs's own "stage 1" comment.
-    ProgressRange[] projectorRanges = ProgressPlan.PlanProjectorPhases();
+    ProgressRange projectorRange = ProgressPlan.PlanProjectorsCombined();
 
-    ProgressReporter.BeginPhase("Projecting GC events", projectorRanges[0].Start, projectorRanges[0].End);
-    List<GcEvent> gcEventsForJson = GcEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc, ProgressReporter.ReportFraction);
-    ProgressReporter.CompletePhase();
-    long gcProjectMs = phaseStopwatch.ElapsedMilliseconds;
-    phaseStopwatch.Restart();
+    // One slot per projector, written by that projector's own thread and read
+    // by this one - see ReportProjectorProgress. The per-phase weights
+    // ProgressPlan.PlanProjectorPhases used to apportion are no longer
+    // meaningful now that the phases overlap in time, so the bar advances on
+    // the mean of the eight completion fractions instead.
+    double[] projectorFractions = new double[8];
 
-    ProgressReporter.BeginPhase("Projecting allocation events", projectorRanges[1].Start, projectorRanges[1].End);
-    List<AllocationEvent> allocationEventsForJson = AllocationEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc, ProgressReporter.ReportFraction);
-    ProgressReporter.CompletePhase();
-    long allocationProjectMs = phaseStopwatch.ElapsedMilliseconds;
-    phaseStopwatch.Restart();
+    // Every projector below is an INDEPENDENT read-only pass over the same
+    // file.Events list, so they run concurrently rather than one after
+    // another. Measured on a real 3.23GB/35.08M-event capture: the eight
+    // passes cost ~1230ms end to end when run in sequence on a machine with 8
+    // cores and ~0% idle samples anywhere in the run - i.e. seven cores sat
+    // idle for that whole stretch.
+    //
+    // Explicit Tasks rather than Parallel.ForEach (see CLAUDE.md), and
+    // deliberately no onProgress callbacks: ProgressReporter is static,
+    // single-threaded state that writes to Console.Error, so the phase is
+    // reported by THIS thread from the count of completed projectors instead
+    // (see ReportProjectorProgress below). Each task times itself so the
+    // Timing: line still breaks the work down per projector - those numbers
+    // are now concurrent durations, which is why they no longer sum to the
+    // phase's own wall time.
+    ProgressReporter.BeginPhase("Projecting events", projectorRange.Start, projectorRange.End);
 
-    ProgressReporter.BeginPhase("Projecting exception events", projectorRanges[2].Start, projectorRanges[2].End);
-    List<ExceptionEvent> exceptionEventsForJson = ExceptionEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc, ProgressReporter.ReportFraction);
-    ProgressReporter.CompletePhase();
-    long exceptionProjectMs = phaseStopwatch.ElapsedMilliseconds;
-    phaseStopwatch.Restart();
+    List<EventRecord> eventsForProjection = file.Events;
+    int projectionPointerSize = file.Header.PointerSize;
+    long projectionQpcFrequency = file.Header.QPCFrequency;
+    DateTime projectionSyncTimeUtc = file.Header.SyncTimeUtc;
 
-    ProgressReporter.BeginPhase("Building event overview", projectorRanges[3].Start, projectorRanges[3].End);
-    EventOverview eventOverviewForJson = EventOverviewBuilder.Build(file.Events, ProgressReporter.ReportFraction);
-    ProgressReporter.CompletePhase();
-    long eventOverviewMs = phaseStopwatch.ElapsedMilliseconds;
-    phaseStopwatch.Restart();
+    long gcProjectMs = 0;
+    long allocationProjectMs = 0;
+    long exceptionProjectMs = 0;
+    long eventOverviewMs = 0;
+    long symbolTableMs = 0;
+    long sampleProjectMs = 0;
+    long contentionProjectMs = 0;
+    long threadingProjectMs = 0;
 
-    ProgressReporter.BeginPhase("Building method symbol table", projectorRanges[4].Start, projectorRanges[4].End);
-    MethodSymbolTable symbolTable = MethodSymbolTable.Build(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, referenceQpc, ProgressReporter.ReportFraction);
-    ProgressReporter.CompletePhase();
-    long symbolTableMs = phaseStopwatch.ElapsedMilliseconds;
-    phaseStopwatch.Restart();
+    Task<List<GcEvent>> gcProjectTask = Task.Run(() =>
+    {
+        Stopwatch taskStopwatch = Stopwatch.StartNew();
+        List<GcEvent> projected = GcEventProjector.Project(eventsForProjection, projectionPointerSize, projectionQpcFrequency, projectionSyncTimeUtc, referenceQpc, fraction => Volatile.Write(ref projectorFractions[0], fraction));
+        gcProjectMs = taskStopwatch.ElapsedMilliseconds;
+        return projected;
+    });
 
-    ProgressReporter.BeginPhase("Projecting CPU samples", projectorRanges[5].Start, projectorRanges[5].End);
-    List<SampleEvent> sampleEventsForJson = SampleProfileEventProjector.Project(file.Events, file.Header.QPCFrequency, referenceQpc, ProgressReporter.ReportFraction);
-    ProgressReporter.CompletePhase();
-    long sampleProjectMs = phaseStopwatch.ElapsedMilliseconds;
-    phaseStopwatch.Restart();
+    Task<List<AllocationEvent>> allocationProjectTask = Task.Run(() =>
+    {
+        Stopwatch taskStopwatch = Stopwatch.StartNew();
+        List<AllocationEvent> projected = AllocationEventProjector.Project(eventsForProjection, projectionPointerSize, projectionQpcFrequency, projectionSyncTimeUtc, referenceQpc, fraction => Volatile.Write(ref projectorFractions[1], fraction));
+        allocationProjectMs = taskStopwatch.ElapsedMilliseconds;
+        return projected;
+    });
 
-    ProgressReporter.BeginPhase("Projecting contention events", projectorRanges[6].Start, projectorRanges[6].End);
-    List<ContentionEvent> contentionEventsForJson = ContentionEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, file.Header.SyncTimeUtc, referenceQpc, ProgressReporter.ReportFraction);
-    ProgressReporter.CompletePhase();
-    long contentionProjectMs = phaseStopwatch.ElapsedMilliseconds;
-    phaseStopwatch.Restart();
+    Task<List<ExceptionEvent>> exceptionProjectTask = Task.Run(() =>
+    {
+        Stopwatch taskStopwatch = Stopwatch.StartNew();
+        List<ExceptionEvent> projected = ExceptionEventProjector.Project(eventsForProjection, projectionPointerSize, projectionQpcFrequency, projectionSyncTimeUtc, referenceQpc, fraction => Volatile.Write(ref projectorFractions[2], fraction));
+        exceptionProjectMs = taskStopwatch.ElapsedMilliseconds;
+        return projected;
+    });
 
-    ProgressReporter.BeginPhase("Projecting threading events", projectorRanges[7].Start, projectorRanges[7].End);
-    ThreadingSummary threadingSummaryForJson = ThreadingEventProjector.Project(file.Events, file.Header.PointerSize, file.Header.QPCFrequency, referenceQpc, ProgressReporter.ReportFraction);
+    Task<EventOverview> eventOverviewTask = Task.Run(() =>
+    {
+        Stopwatch taskStopwatch = Stopwatch.StartNew();
+        EventOverview built = EventOverviewBuilder.Build(eventsForProjection, fraction => Volatile.Write(ref projectorFractions[3], fraction));
+        eventOverviewMs = taskStopwatch.ElapsedMilliseconds;
+        return built;
+    });
+
+    Task<MethodSymbolTable> symbolTableTask = Task.Run(() =>
+    {
+        Stopwatch taskStopwatch = Stopwatch.StartNew();
+        MethodSymbolTable built = MethodSymbolTable.Build(eventsForProjection, projectionPointerSize, projectionQpcFrequency, referenceQpc, fraction => Volatile.Write(ref projectorFractions[4], fraction));
+        symbolTableMs = taskStopwatch.ElapsedMilliseconds;
+        return built;
+    });
+
+    // The one dependency in this set: the overview's exact per-event-type
+    // counts let this presize its result list (16.24M samples on the capture
+    // above, where growing from empty was a third of this projector's cost -
+    // see EventOverview.CountForEvent). Chained rather than run standalone so
+    // the two still overlap with the other six.
+    Task<List<SampleEvent>> sampleProjectTask = eventOverviewTask.ContinueWith(completedOverview =>
+    {
+        Stopwatch taskStopwatch = Stopwatch.StartNew();
+        int expectedSampleCount = completedOverview.Result.CountForEvent(SampleProfileEventProjector.ProviderName, SampleProfileEventProjector.EventId);
+        List<SampleEvent> projected = SampleProfileEventProjector.Project(eventsForProjection, projectionQpcFrequency, referenceQpc, fraction => Volatile.Write(ref projectorFractions[5], fraction), expectedSampleCount);
+        sampleProjectMs = taskStopwatch.ElapsedMilliseconds;
+        return projected;
+    }, TaskContinuationOptions.ExecuteSynchronously);
+
+    Task<List<ContentionEvent>> contentionProjectTask = Task.Run(() =>
+    {
+        Stopwatch taskStopwatch = Stopwatch.StartNew();
+        List<ContentionEvent> projected = ContentionEventProjector.Project(eventsForProjection, projectionPointerSize, projectionQpcFrequency, projectionSyncTimeUtc, referenceQpc, fraction => Volatile.Write(ref projectorFractions[6], fraction));
+        contentionProjectMs = taskStopwatch.ElapsedMilliseconds;
+        return projected;
+    });
+
+    Task<ThreadingSummary> threadingProjectTask = Task.Run(() =>
+    {
+        Stopwatch taskStopwatch = Stopwatch.StartNew();
+        ThreadingSummary projected = ThreadingEventProjector.Project(eventsForProjection, projectionPointerSize, projectionQpcFrequency, referenceQpc, fraction => Volatile.Write(ref projectorFractions[7], fraction));
+        threadingProjectMs = taskStopwatch.ElapsedMilliseconds;
+        return projected;
+    });
+
+    Task[] projectorTasks = new Task[]
+    {
+        gcProjectTask,
+        allocationProjectTask,
+        exceptionProjectTask,
+        eventOverviewTask,
+        symbolTableTask,
+        sampleProjectTask,
+        contentionProjectTask,
+        threadingProjectTask
+    };
+
+    ReportProjectorProgress(projectorTasks, projectorFractions);
+
+    List<GcEvent> gcEventsForJson = gcProjectTask.Result;
+    List<AllocationEvent> allocationEventsForJson = allocationProjectTask.Result;
+    List<ExceptionEvent> exceptionEventsForJson = exceptionProjectTask.Result;
+    EventOverview eventOverviewForJson = eventOverviewTask.Result;
+    MethodSymbolTable symbolTable = symbolTableTask.Result;
+    List<SampleEvent> sampleEventsForJson = sampleProjectTask.Result;
+    List<ContentionEvent> contentionEventsForJson = contentionProjectTask.Result;
+    ThreadingSummary threadingSummaryForJson = threadingProjectTask.Result;
+
     ProgressReporter.CompletePhase();
-    long threadingProjectMs = phaseStopwatch.ElapsedMilliseconds;
+    long projectorsMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 
     int totalEventCount = file.Events.Count;
@@ -350,6 +533,13 @@ if (isJsonMode)
         captureDurationMSec = (maxTimeStampQpc - minTimeStampQpc) * 1000.0 / file.Header.QPCFrequency;
     }
 
+    // Captured before `file` is dropped below: the export phase resolves
+    // every event's stack through this table (see StackTable.cs), so it has
+    // to outlive the NettraceFile that owns it. This retains no more than
+    // before - the decoded stacks were previously reachable from every
+    // EventRecord/SampleEvent's own long[] field anyway.
+    StackTable stackTable = file.Stacks;
+
     // Nothing past this point ever reads file/file.Events again -
     // GcEventProjector.Project, AllocationEventProjector.Project,
     // ExceptionEventProjector.Project, EventOverviewBuilder.Build,
@@ -358,10 +548,11 @@ if (isJsonMode)
     // back brand-new derived structures; none of them stash a reference to
     // the list itself. But `file` is still a GC root for the rest of this
     // method's stack frame regardless, so without dropping it here, every
-    // gen2 GC during the jsonExport call below still has to trace
+    // gen2 GC during the export call below still has to trace
     // file.Events's full backing array - a real 5-minute capture holds
     // 4.29M+ EventRecord structs, each carrying 5 reference-typed fields
-    // (ProviderName/EventName/Stack/Fields/PayloadBuffer) - tens of millions
+    // (ProviderName/EventName/Fields/PayloadBuffer - one fewer since stacks
+    // became an index, see StackTable.cs) - tens of millions
     // of pointer slots per full mark pass. Confirmed via dotnet-trace
     // gc-verbose as the actual dominant per-gen2-pause cost - the raw
     // byte[] file buffer it's decoded from has zero embedded object
@@ -371,12 +562,38 @@ if (isJsonMode)
 
     string processName = Path.GetFileNameWithoutExtension(filePath);
 
-    // jsonExport's own progress reporting (5 sub-writer phases) is driven
+    // The export phase's own progress reporting (5 sub-writer phases) is driven
     // entirely from inside GcJsonExporter.WriteToFile itself - see that
     // method's own comment for why it calls ProgressReporter directly
     // rather than taking an onProgress parameter like every phase above.
-    JsonExportTiming jsonExportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, threadingSummaryForJson, symbolTable, processName, ticksBinaryPath, captureDurationMSec);
-    long jsonExportMs = phaseStopwatch.ElapsedMilliseconds;
+    ExportTiming exportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, threadingSummaryForJson, stackTable, symbolTable, processName, ticksBinaryPath, captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline);
+    long exportMs = phaseStopwatch.ElapsedMilliseconds;
+    phaseStopwatch.Restart();
+
+    // The binary container the extension will consume instead of the JSON -
+    // see Binary/BinaryCaptureFormat.cs for the format and why it exists.
+    // Written from the SAME in-memory results the JSON writer above just
+    // consumed, in the same run, which is what makes --json usable as an
+    // oracle: BinaryCaptureDiffTests reads both and compares them field for
+    // field. Sections are migrated off JSON one at a time, so for now this
+    // is written IN ADDITION to the JSON rather than instead of it.
+    if (binaryOutputPath != null)
+    {
+        using (BinaryCaptureWriter captureWriter = BinaryCaptureWriter.Create(binaryOutputPath))
+        {
+            if (cpuSampleTimeline != null)
+            {
+                CpuBinarySections.WriteSampleTimeline(captureWriter, cpuSampleTimeline);
+            }
+        }
+    }
+
+    // Timed separately rather than folded into export= above: this write is
+    // outside GcJsonExporter.WriteToFile, and as the migration moves sections
+    // off JSON this number is the one that grows while export= shrinks, so
+    // keeping them apart is what makes that trade visible run to run. Reads
+    // 0ms without --binary, which is the extension's current path.
+    long binaryExportMs = phaseStopwatch.ElapsedMilliseconds;
 
     long totalMs = totalStopwatch.ElapsedMilliseconds;
 
@@ -391,14 +608,21 @@ if (isJsonMode)
     // given run, making cross-run GC-time comparisons via two independent
     // traces unreliable in a way this in-process counter isn't.
     //
-    // jsonExport's own (alloc=..,exc=..,cpu=..,cont=..,gc=..) breakdown is
+    // export=' own (alloc=..,exc=..,cpu=..,cont=..,gc=..) breakdown is
     // permanent, not throwaway, instrumentation - added specifically so
-    // Progress/ProgressPlan.cs's own jsonExport sub-writer weight constants
-    // can be recalibrated against a real capture with a single CLI run
-    // (read this line) rather than needing scaffolding re-added each time -
-    // see that file's own header comment.
+    // Progress/ProgressPlan.cs's own export sub-writer weight constants can
+    // be recalibrated against a real capture with a single CLI run (read this
+    // line) rather than needing scaffolding re-added each time - see that
+    // file's own header comment.
+    //
+    // It is "export", not "jsonExport", because that phase has not written
+    // only JSON for a while: alloc= includes the allocation-tick BINARY
+    // sidecar (AllocationSummaryBuilder.WriteTicks - the ticks array never
+    // went into the JSON at all), and binary= below covers the --binary
+    // capture container, which used to sit outside every timer in this line.
     Console.Error.WriteLine(
         $"Timing: read={readMs}ms ({totalEventCount} events) " +
+        $"projectors={projectorsMs}ms wall, concurrent[" +
         $"gcProject={gcProjectMs}ms ({gcEventsForJson.Count} GCs) " +
         $"allocationProject={allocationProjectMs}ms ({allocationEventsForJson.Count} ticks) " +
         $"exceptionProject={exceptionProjectMs}ms ({exceptionEventsForJson.Count} exceptions) " +
@@ -406,8 +630,9 @@ if (isJsonMode)
         $"symbolTable={symbolTableMs}ms " +
         $"sampleProject={sampleProjectMs}ms ({sampleEventsForJson.Count} samples) " +
         $"contentionProject={contentionProjectMs}ms ({contentionEventsForJson.Count} contentions) " +
-        $"threadingProject={threadingProjectMs}ms ({threadingSummaryForJson.Adjustments.Count} pool adjustments) " +
-        $"jsonExport={jsonExportMs}ms(alloc={jsonExportTiming.AllocationMs}ms,exc={jsonExportTiming.ExceptionMs}ms,cpu={jsonExportTiming.CpuMs}ms,cont={jsonExportTiming.ContentionMs}ms,gc={jsonExportTiming.GcMs}ms) " +
+        $"threadingProject={threadingProjectMs}ms ({threadingSummaryForJson.Adjustments.Count} pool adjustments)] " +
+        $"export={exportMs}ms(alloc={exportTiming.AllocationMs}ms,exc={exportTiming.ExceptionMs}ms,cpu={exportTiming.CpuMs}ms,cont={exportTiming.ContentionMs}ms,gc={exportTiming.GcMs}ms) " +
+        $"binaryExport={binaryExportMs}ms " +
         $"total={totalMs}ms " +
         $"gcPause={GC.GetTotalPauseDuration().TotalMilliseconds:F1}ms gcCounts=[{GC.CollectionCount(0)},{GC.CollectionCount(1)},{GC.CollectionCount(2)}]");
 
@@ -524,7 +749,7 @@ if (Environment.GetEnvironmentVariable("NETTRACE_DEBUG") != null)
         sampleEventIdCounts[record.EventId] = sampleCount + 1;
         sampleEventIdVersion[record.EventId] = record.Version;
         sampleEventIdPayloadLen[record.EventId] = record.PayloadLength;
-        sampleEventIdStackLen[record.EventId] = record.Stack.Length;
+        sampleEventIdStackLen[record.EventId] = file.Stacks.FramesAt(record.StackIndex).Length;
     }
 
     foreach (KeyValuePair<int, int> kv in sampleEventIdCounts)

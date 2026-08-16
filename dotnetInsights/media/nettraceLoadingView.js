@@ -22,6 +22,51 @@
     const percentElement = document.getElementById('nettraceLoadingPercent');
     const labelElement = document.getElementById('nettraceLoadingLabel');
     const errorElement = document.getElementById('nettraceLoadingError');
+    const elapsedElement = document.getElementById('nettraceLoadingElapsed');
+
+    // Elapsed time, recomputed from a start timestamp on every tick rather
+    // than by incrementing a counter. setInterval makes no guarantee it
+    // fires exactly once a second - and a hidden/backgrounded webview gets
+    // its timers throttled hard - so a tick counter would silently drift
+    // slow and under-report precisely during a long parse, which is the
+    // only time anyone reads this. Subtracting timestamps stays correct no
+    // matter how many ticks were coalesced or dropped.
+    const startedAtMSec = Date.now();
+    let elapsedIntervalId = null;
+
+    function formatElapsed(totalSeconds) {
+        const seconds = totalSeconds % 60;
+        const totalMinutes = Math.floor(totalSeconds / 60);
+        const minutes = totalMinutes % 60;
+        const hours = Math.floor(totalMinutes / 60);
+
+        const paddedSeconds = String(seconds).padStart(2, '0');
+
+        // Hours only once there are any - a parse that long is pathological,
+        // but "1:02:03" beats "62:03" if it ever happens.
+        if (hours > 0) {
+            return hours + ':' + String(minutes).padStart(2, '0') + ':' + paddedSeconds;
+        }
+
+        return minutes + ':' + paddedSeconds;
+    }
+
+    function updateElapsed() {
+        elapsedElement.textContent = formatElapsed(Math.floor((Date.now() - startedAtMSec) / 1000));
+    }
+
+    function stopElapsed() {
+        if (elapsedIntervalId !== null) {
+            clearInterval(elapsedIntervalId);
+            elapsedIntervalId = null;
+        }
+    }
+
+    // No stop on success: this whole document is replaced wholesale once
+    // parsing finishes (see NettraceLoadingRenderer.ts's own header comment
+    // on why it's a swap rather than an in-place patch), which tears the
+    // timer down with it.
+    elapsedIntervalId = setInterval(updateElapsed, 1000);
 
     // The ring's own "pie chart" fill - a conic-gradient wedge growing
     // clockwise from 12 o'clock to fill the circle as percent approaches
@@ -69,6 +114,10 @@
         }
 
         if (message.type === 'nettraceError') {
+            // Freeze the clock at the point of failure. Nothing is running
+            // any more, so a still-ticking timer under a "Failed" label
+            // would read as work still in progress.
+            stopElapsed();
             pieRingElement.classList.remove('nettraceLoadingPieIndeterminate');
             errorElement.textContent = message.message;
             errorElement.style.display = 'block';

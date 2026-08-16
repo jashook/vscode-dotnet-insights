@@ -46,7 +46,7 @@ public class AllocationEventProjectorTests
 
         byte[] payload = builder.ToArray();
 
-        return new EventRecord(ClrProviderName, "GCAllocationTick", ClrGcEventIds.GCAllocationTick, version, timeStampQpc, threadId: 0, stack: System.Array.Empty<long>(), fields: null, payload, payloadOffset: 0, payload.Length);
+        return new EventRecord(ClrProviderName, "GCAllocationTick", ClrGcEventIds.GCAllocationTick, version, timeStampQpc, threadId: 0, stackIndex: StackTable.EmptyStackIndex, fields: null, payload, payloadOffset: 0, payload.Length);
     }
 
     [Fact]
@@ -88,7 +88,7 @@ public class AllocationEventProjectorTests
     [Fact]
     public void Project_IgnoresEventsFromOtherProviders()
     {
-        EventRecord foreignEvent = new EventRecord("Some-Other-Provider", "GCAllocationTick", ClrGcEventIds.GCAllocationTick, version: 2, timeStampRelativeQpc: 0, threadId: 0, stack: System.Array.Empty<long>(), fields: null, new byte[64], payloadOffset: 0, payloadLength: 64);
+        EventRecord foreignEvent = new EventRecord("Some-Other-Provider", "GCAllocationTick", ClrGcEventIds.GCAllocationTick, version: 2, timeStampRelativeQpc: 0, threadId: 0, stackIndex: StackTable.EmptyStackIndex, fields: null, new byte[64], payloadOffset: 0, payloadLength: 64);
 
         List<AllocationEvent> projected = AllocationEventProjector.Project(new List<EventRecord> { foreignEvent }, pointerSize: 8, qpcFrequency: QpcFrequency, referenceUtc: ReferenceUtc, referenceQpc: 0);
 
@@ -98,7 +98,7 @@ public class AllocationEventProjectorTests
     [Fact]
     public void Project_IgnoresOtherClrEventTypes()
     {
-        EventRecord gcStartEvent = new EventRecord(ClrProviderName, "GCStart", ClrGcEventIds.GCStart, version: 2, timeStampRelativeQpc: 0, threadId: 0, stack: System.Array.Empty<long>(), fields: null, new byte[64], payloadOffset: 0, payloadLength: 64);
+        EventRecord gcStartEvent = new EventRecord(ClrProviderName, "GCStart", ClrGcEventIds.GCStart, version: 2, timeStampRelativeQpc: 0, threadId: 0, stackIndex: StackTable.EmptyStackIndex, fields: null, new byte[64], payloadOffset: 0, payloadLength: 64);
 
         List<AllocationEvent> projected = AllocationEventProjector.Project(new List<EventRecord> { gcStartEvent }, pointerSize: 8, qpcFrequency: QpcFrequency, referenceUtc: ReferenceUtc, referenceQpc: 0);
 

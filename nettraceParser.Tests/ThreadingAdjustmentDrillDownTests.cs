@@ -41,6 +41,10 @@ namespace DotnetInsights.NetTrace.Tests {
 
 public class ThreadingAdjustmentDrillDownTests
 {
+    // One stack table for the whole class so the static Make* helpers
+    // below can register stacks too - see TestStacks.cs.
+    private static readonly TestStacks stacks = new TestStacks();
+
     // "Parked" here must match ThreadingJsonExporter's own prefix list - a
     // worker sitting in LowLevelLifoSemaphore is the pool's idle state.
     private const string ParkedFrameName = "System.Threading.LowLevelLifoSemaphore.WaitForSignal";
@@ -64,7 +68,7 @@ public class ThreadingAdjustmentDrillDownTests
     {
         byte[] payload = MakeMethodDCStartVerbosePayload(methodId, moduleId: 2, startAddress, size, name);
 
-        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stack: Array.Empty<long>(), fields: null, payload, payloadOffset: 0, payload.Length);
+        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackIndex: StackTable.EmptyStackIndex, fields: null, payload, payloadOffset: 0, payload.Length);
     }
 
     private static MethodSymbolTable MakeSymbolTable()
@@ -100,7 +104,7 @@ public class ThreadingAdjustmentDrillDownTests
         creation.RelativeMSec = relativeMSec;
         creation.ThreadId = threadId;
         creation.ObjectId = threadId;
-        creation.Stack = isPoolWorker ? new long[] { 0x5010, 0x2010 } : new long[] { 0x2010 };
+        creation.StackIndex = isPoolWorker ? stacks.Index(0x5010, 0x2010) : stacks.Index(0x2010);
         return creation;
     }
 
@@ -125,7 +129,7 @@ public class ThreadingAdjustmentDrillDownTests
         using System.IO.MemoryStream stream = new System.IO.MemoryStream();
         using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
         {
-            ThreadingJsonExporter.Write(writer, summary, sampleEvents, MakeSymbolTable(), methodNames, methodNameIndexByName);
+            ThreadingJsonExporter.Write(writer, summary, sampleEvents, stacks.Table, MakeSymbolTable(), methodNames, methodNameIndexByName);
         }
 
         return JsonDocument.Parse(stream.ToArray());
@@ -139,7 +143,7 @@ public class ThreadingAdjustmentDrillDownTests
         using System.IO.MemoryStream stream = new System.IO.MemoryStream();
         using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
         {
-            ThreadingJsonExporter.Write(writer, summary, sampleEvents, MakeSymbolTable(), methodNames, methodNameIndexByName);
+            ThreadingJsonExporter.Write(writer, summary, sampleEvents, stacks.Table, MakeSymbolTable(), methodNames, methodNameIndexByName);
         }
 
         document = JsonDocument.Parse(stream.ToArray());
@@ -154,7 +158,7 @@ public class ThreadingAdjustmentDrillDownTests
         ThreadingSummary summary = MakeSummary();
         summary.Adjustments.Add(MakeAdjustment(100.0, newWorkerThreadCount: 5, ThreadAdjustmentReason.CooperativeBlocking));
 
-        long[] blockingStack = new long[] { 0x1010, 0x2010 };
+        int blockingStack = stacks.Index(0x1010, 0x2010);
 
         // All before the adjustment at 100.0 - a sample after it is excluded
         // by design (see Write_IgnoresSamplesAfterTheAdjustmentEvenWhenTheyAreNearer).
@@ -162,7 +166,7 @@ public class ThreadingAdjustmentDrillDownTests
         {
             new SampleEvent(99.0, threadId: 11, blockingStack),
             new SampleEvent(99.5, threadId: 12, blockingStack),
-            new SampleEvent(99.8, threadId: 13, new long[] { 0x3010 }),
+            new SampleEvent(99.8, threadId: 13, stacks.Index(0x3010)),
         };
 
         using JsonDocument document = WriteAndParse(summary, sampleEvents);
@@ -171,8 +175,8 @@ public class ThreadingAdjustmentDrillDownTests
         Assert.Equal(3, snapshot.GetProperty("threadsSampled").GetInt32());
         Assert.Equal(2, snapshot.GetProperty("stackGroupCount").GetInt32());
 
-        JsonElement stacks = snapshot.GetProperty("stacks");
-        JsonElement sharedGroup = stacks[0];
+        JsonElement stackElements = snapshot.GetProperty("stacks");
+        JsonElement sharedGroup = stackElements[0];
 
         Assert.Equal(2, sharedGroup.GetProperty("threadCount").GetInt32());
         Assert.Equal(2, sharedGroup.GetProperty("threadIds").GetArrayLength());
@@ -191,8 +195,8 @@ public class ThreadingAdjustmentDrillDownTests
 
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
-            new SampleEvent(97.5, threadId: 11, new long[] { 0x3010 }),  // Other.Work, 2.5ms before
-            new SampleEvent(99.6, threadId: 11, new long[] { 0x1010 }),  // Blocking.Read, 0.4ms before
+            new SampleEvent(97.5, threadId: 11, stacks.Index(0x3010)),  // Other.Work, 2.5ms before
+            new SampleEvent(99.6, threadId: 11, stacks.Index(0x1010)),  // Blocking.Read, 0.4ms before
         };
 
         string[] methodNames = MethodNamesFor(summary, sampleEvents, out JsonDocument document);
@@ -224,8 +228,8 @@ public class ThreadingAdjustmentDrillDownTests
 
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
-            new SampleEvent(98.0, threadId: 11, new long[] { 0x1010 }),   // Blocking.Read, 2ms BEFORE
-            new SampleEvent(100.1, threadId: 11, new long[] { 0x3010 }),  // Other.Work, 0.1ms AFTER
+            new SampleEvent(98.0, threadId: 11, stacks.Index(0x1010)),   // Blocking.Read, 2ms BEFORE
+            new SampleEvent(100.1, threadId: 11, stacks.Index(0x3010)),  // Other.Work, 0.1ms AFTER
         };
 
         string[] methodNames = MethodNamesFor(summary, sampleEvents, out JsonDocument document);
@@ -253,9 +257,9 @@ public class ThreadingAdjustmentDrillDownTests
 
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
-            new SampleEvent(98.0, threadId: 11, new long[] { 0x1010 }),
-            new SampleEvent(100.5, threadId: 12, new long[] { 0x3010 }),
-            new SampleEvent(101.0, threadId: 13, new long[] { 0x3010 }),
+            new SampleEvent(98.0, threadId: 11, stacks.Index(0x1010)),
+            new SampleEvent(100.5, threadId: 12, stacks.Index(0x3010)),
+            new SampleEvent(101.0, threadId: 13, stacks.Index(0x3010)),
         };
 
         using JsonDocument document = WriteAndParse(summary, sampleEvents);
@@ -273,14 +277,14 @@ public class ThreadingAdjustmentDrillDownTests
         ThreadingSummary summary = MakeSummary();
         summary.Adjustments.Add(MakeAdjustment(100.0, newWorkerThreadCount: 5, ThreadAdjustmentReason.CooperativeBlocking));
 
-        long[] parkedStack = new long[] { 0x4010 };
+        int parkedStack = stacks.Index(0x4010);
 
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
             new SampleEvent(100.0, threadId: 11, parkedStack),
             new SampleEvent(100.0, threadId: 12, parkedStack),
             new SampleEvent(100.0, threadId: 13, parkedStack),
-            new SampleEvent(100.0, threadId: 14, new long[] { 0x1010 }),
+            new SampleEvent(100.0, threadId: 14, stacks.Index(0x1010)),
         };
 
         using JsonDocument document = WriteAndParse(summary, sampleEvents);
@@ -288,12 +292,12 @@ public class ThreadingAdjustmentDrillDownTests
 
         Assert.Equal(3, snapshot.GetProperty("parkedThreadCount").GetInt32());
 
-        JsonElement stacks = snapshot.GetProperty("stacks");
+        JsonElement stackElements = snapshot.GetProperty("stacks");
         // The single running thread outranks the three parked ones.
-        Assert.False(stacks[0].GetProperty("isParkedWorker").GetBoolean());
-        Assert.Equal(1, stacks[0].GetProperty("threadCount").GetInt32());
-        Assert.True(stacks[1].GetProperty("isParkedWorker").GetBoolean());
-        Assert.Equal(3, stacks[1].GetProperty("threadCount").GetInt32());
+        Assert.False(stackElements[0].GetProperty("isParkedWorker").GetBoolean());
+        Assert.Equal(1, stackElements[0].GetProperty("threadCount").GetInt32());
+        Assert.True(stackElements[1].GetProperty("isParkedWorker").GetBoolean());
+        Assert.Equal(3, stackElements[1].GetProperty("threadCount").GetInt32());
     }
 
     // Samples outside the window contribute nothing, and an adjustment with no
@@ -307,7 +311,7 @@ public class ThreadingAdjustmentDrillDownTests
 
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
-            new SampleEvent(1000.0, threadId: 11, new long[] { 0x1010 }),
+            new SampleEvent(1000.0, threadId: 11, stacks.Index(0x1010)),
         };
 
         using JsonDocument document = WriteAndParse(summary, sampleEvents);
@@ -417,9 +421,9 @@ public class ThreadingAdjustmentDrillDownTests
 
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
-            new SampleEvent(98.0, threadId: 11, new long[] { 0x1010 }),   // Blocking.Read, 2ms before
-            new SampleEvent(100.5, threadId: 12, new long[] { 0x3010 }),  // Other.Work, after
-            new SampleEvent(110.0, threadId: 13, new long[] { 0x3010 }),  // Other.Work, after
+            new SampleEvent(98.0, threadId: 11, stacks.Index(0x1010)),   // Blocking.Read, 2ms before
+            new SampleEvent(100.5, threadId: 12, stacks.Index(0x3010)),  // Other.Work, after
+            new SampleEvent(110.0, threadId: 13, stacks.Index(0x3010)),  // Other.Work, after
         };
 
         string[] methodNames = MethodNamesFor(summary, sampleEvents, out JsonDocument document);
