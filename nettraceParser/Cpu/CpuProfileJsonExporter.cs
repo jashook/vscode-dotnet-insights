@@ -94,6 +94,7 @@ public static class CpuProfileJsonExporter
 
     private const int NoStackFrameId = -1;
 
+
     // Local split of THIS method's own onProgress fraction across its two
     // full per-sample passes (the main loop below, then WriteTimeline's
     // own second pass) - the remaining tail (hot-method ranking, flame-
@@ -102,8 +103,12 @@ public static class CpuProfileJsonExporter
     // unattributed, absorbed by the caller's own phase-completion snap
     // (see ProgressReporter.CompletePhase's own comment on why a small
     // remainder doesn't need internal tracking).
-    private const double MainLoopProgressFractionEnd = 0.7;
-    private const double TimelineLoopProgressFractionEnd = 0.9;
+    // The cheap time-range pre-scan below (see Write) owns the first slice,
+    // then the single per-sample loop owns the rest. There used to be a
+    // SECOND full per-sample loop here (WriteTimeline's own) taking
+    // [MainLoop, Timeline); it's gone - see Write's own comment.
+    private const double TimeRangeScanProgressFractionEnd = 0.1;
+    private const double MainLoopProgressFractionEnd = 0.9;
 
     // Deduplicates resolved method-name strings across every stack this
     // exporter writes into a single shared pool, referenced from
@@ -138,7 +143,7 @@ public static class CpuProfileJsonExporter
 
     // Resolved frames for one distinct raw Stack array, cached together so
     // both are computed exactly once per distinct stack (not once per
-    // sample) - see frameIdCache's own comment in Write below.
+    // sample) - see cachedByStackIndex's own comment in Write below.
     //
     // A prior version of this class cached fully-resolved HotMethodStats/
     // FlameTreeNode OBJECT REFERENCES instead of ids, specifically to
@@ -171,7 +176,7 @@ public static class CpuProfileJsonExporter
         // stack - incremented once per sample regardless of whether that
         // sample was the one that first cached this entry (see Write's main
         // loop). Lets BuildHotMethodCallerTrees fold every hot method's own
-        // caller tree from a single pass over frameIdCache's already-
+        // caller tree from a single pass over the already-
         // deduped entries (633,378 on a real 26.1M-sample capture) instead
         // of re-scanning every raw sample per hot method.
         public int SampleCount;
@@ -340,7 +345,13 @@ public static class CpuProfileJsonExporter
     // Writes the "cpuProfile" object (start-to-end, including its own
     // enclosing braces) directly to writer - callers just do
     // writer.WritePropertyName("cpuProfile"); CpuProfileJsonExporter.Write(writer, ...);
-    public static void Write(Utf8JsonWriter writer, List<SampleEvent> sampleEvents, MethodSymbolTable symbolTable, Action<double> onProgress = null)
+    // Returns the computed sample timeline so Binary/CpuBinarySections.cs can
+    // encode the SAME values this call just wrote as JSON (null when the
+    // capture had too few samples for a timeline, exactly the case where the
+    // JSON omits "sampleTimeline" too). Returned rather than stashed on a
+    // static: xUnit runs test classes in parallel, so a static would be
+    // cross-contaminated by any other test exporting a different capture.
+    public static SampleTimeline Write(Utf8JsonWriter writer, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, Action<double> onProgress = null)
     {
         writer.WriteStartObject();
 
@@ -367,14 +378,18 @@ public static class CpuProfileJsonExporter
             writer.WriteStartArray();
             writer.WriteEndArray();
             writer.WriteEndObject();
-            return;
+
+            // No samples means no timeline - the zeroed shape above omits
+            // "sampleTimeline" entirely, so the binary container omits the
+            // matching section rather than writing an empty one.
+            return null;
         }
 
         MethodNameInterner methodNameInterner = new MethodNameInterner();
 
         // Keyed by Stack array REFERENCE (ReferenceEqualityComparer), not
         // content - same measured reasoning as
-        // AllocationJsonExporter.Write's own frameIdCache: EventBlock.cs
+        // AllocationJsonExporter.Write's own stack cache: EventBlock.cs
         // hands back the SAME long[] instance for every sample that
         // resolved against the same current StackBlock entry, so a real
         // capture's frequent runs of consecutive identical-stack samples
@@ -386,9 +401,20 @@ public static class CpuProfileJsonExporter
         // comment for why a fancier version of this cache measured WORSE
         // (higher GC pressure from the extra arrays that approach needed,
         // outweighing its own reduced Dictionary.FindValue self-time).
-        Dictionary<long[], CachedStackFrames> frameIdCache = new Dictionary<long[], CachedStackFrames>(ReferenceEqualityComparer.Instance);
+        // Indexed by StackIndex (see StackTable.cs) - dense, so a plain array
+        // replaces what used to be a Dictionary keyed by array identity.
+        // distinctStackIndices records, in first-seen order, which entries
+        // were actually filled, so BuildHotMethodCallerTrees can still walk
+        // only the stacks this capture really used rather than the whole
+        // table.
+        CachedStackFrames[] cachedByStackIndex = new CachedStackFrames[stackTable.Count];
+        List<int> distinctStackIndices = new List<int>();
 
-        Dictionary<int, HotMethodStats> statsByFrameId = new Dictionary<int, HotMethodStats>();
+        // Array-indexed rather than hashed - this is looked up once per
+        // sample (16.24M times on a real 3.23GB capture), where
+        // Dictionary<Int32,__Canon>.FindValue measured 13.4% of this whole
+        // phase. See Cpu/FrameIdTable.cs.
+        FrameIdTable<HotMethodStats> statsByFrameId = new FrameIdTable<HotMethodStats>();
 
         // Reused only while computing a NEW distinct stack's own
         // DistinctFrameIds (see CachedStackFrames) - NOT once per sample.
@@ -416,82 +442,153 @@ public static class CpuProfileJsonExporter
         // in the whole export (confirmed via dotnet-trace: a direct
         // CpuProfileJsonExporter.Write -> Buffer._ZeroMemory chain, no
         // Utf8JsonWriter/flush frames involved). A reused plain int[]
-        // scratch buffer, sorted (Array.Sort) then dedup-compacted in
-        // place, needs no zeroing at all - only the portion actually
-        // written this call is ever touched, unlike a hash table's whole
-        // backing store.
+        // scratch buffer needs no zeroing at all - only the portion
+        // actually written this call is ever touched, unlike a hash
+        // table's whole backing store.
+        //
+        // The dedup that fills this buffer was itself sort-based until the
+        // 2026-08-15 profile showed Array.Sort<int> at 16.5% of this phase;
+        // it's now a stamp set (Cpu/FrameIdSet.cs), which keeps the
+        // no-zeroing property and drops the sort entirely.
         int[] distinctFramesScratch = new int[64];
+        FrameIdSet distinctFrames = new FrameIdSet();
 
         FlameTreeNodePool nodePool = new FlameTreeNodePool();
         ChildBufferPool bufferPool = new ChildBufferPool();
         FlameTreeNode root = nodePool.Rent();
 
+        Span<SampleEvent> sampleEventsSpan = CollectionsMarshal.AsSpan(sampleEvents);
+
+        // Time range first, in its own pass, so the timeline's buckets are
+        // known BEFORE the main loop below and can be filled there. This
+        // pre-scan reads one double per sample and touches no dictionary, and
+        // it replaces a second full per-sample loop (WriteTimeline's) that
+        // repeated the identity-hash stack lookup for every sample all over
+        // again purely to recover each sample's own leaf frame.
         double minRelativeMSec = double.MaxValue;
         double maxRelativeMSec = double.MinValue;
 
-        Span<SampleEvent> sampleEventsSpan = CollectionsMarshal.AsSpan(sampleEvents);
         for (int sampleIndex = 0; sampleIndex < sampleEventsSpan.Length; ++sampleIndex)
         {
             if (onProgress != null && (sampleIndex & ProgressReporter.IndexProgressMask) == 0)
             {
-                onProgress((sampleIndex / (double)sampleEventsSpan.Length) * MainLoopProgressFractionEnd);
+                onProgress((sampleIndex / (double)sampleEventsSpan.Length) * TimeRangeScanProgressFractionEnd);
+            }
+
+            double relativeMSec = sampleEventsSpan[sampleIndex].RelativeMSec;
+
+            if (relativeMSec < minRelativeMSec)
+            {
+                minRelativeMSec = relativeMSec;
+            }
+
+            if (relativeMSec > maxRelativeMSec)
+            {
+                maxRelativeMSec = relativeMSec;
+            }
+        }
+
+        // Cap bucket count so tiny captures don't produce mostly-zero arrays,
+        // and so 100 is a useful maximum for large ones (unchanged from when
+        // WriteTimeline computed this itself).
+        int timelineBucketCount = sampleEvents.Count < 100 ? sampleEvents.Count : 100;
+
+        double timelineTotalDurationMSec = maxRelativeMSec - minRelativeMSec;
+        if (timelineTotalDurationMSec <= 0.0)
+        {
+            timelineTotalDurationMSec = 1.0;
+        }
+
+        double timelineBucketDurationMSec = timelineBucketCount > 0 ? timelineTotalDurationMSec / timelineBucketCount : 0.0;
+
+        int[] samplesByBucket = timelineBucketCount > 0 ? new int[timelineBucketCount] : null;
+
+        // Per-LEAF-frame bucket histograms, accumulated in the main loop and
+        // reordered into rank order once the ranking exists. Keyed by frame id
+        // rather than rank because rank isn't known until every sample has
+        // been counted - and it's bounded by the capture's distinct leaf
+        // methods (2,675 on a real capture) x 100 buckets, i.e. ~1MB, not by
+        // sample count.
+        FrameIdTable<int[]> selfBucketsByLeafFrameId = new FrameIdTable<int[]>();
+
+        for (int sampleIndex = 0; sampleIndex < sampleEventsSpan.Length; ++sampleIndex)
+        {
+            if (onProgress != null && (sampleIndex & ProgressReporter.IndexProgressMask) == 0)
+            {
+                onProgress(TimeRangeScanProgressFractionEnd + ((sampleIndex / (double)sampleEventsSpan.Length) * (MainLoopProgressFractionEnd - TimeRangeScanProgressFractionEnd)));
             }
 
             ref readonly SampleEvent sampleEvent = ref sampleEventsSpan[sampleIndex];
 
-            if (sampleEvent.RelativeMSec < minRelativeMSec)
+            int bucketIndex = -1;
+            if (samplesByBucket != null)
             {
-                minRelativeMSec = sampleEvent.RelativeMSec;
+                bucketIndex = (int)((sampleEvent.RelativeMSec - minRelativeMSec) / timelineBucketDurationMSec);
+                if (bucketIndex >= timelineBucketCount)
+                {
+                    bucketIndex = timelineBucketCount - 1;
+                }
+
+                ++samplesByBucket[bucketIndex];
             }
 
-            if (sampleEvent.RelativeMSec > maxRelativeMSec)
-            {
-                maxRelativeMSec = sampleEvent.RelativeMSec;
-            }
+            int stackIndex = sampleEvent.StackIndex;
+            long[] stackFrames = stackTable.FramesAt(stackIndex);
 
-            if (sampleEvent.Stack.Length == 0)
+            if (stackFrames.Length == 0)
             {
                 FlameTreeNode noStackChild = root.GetOrAddChild(NoStackFrameId, nodePool);
                 ++noStackChild.TotalSamples;
                 continue;
             }
 
-            CachedStackFrames cached;
-            bool isNewDistinctStack = !frameIdCache.TryGetValue(sampleEvent.Stack, out cached);
+            // One array index, no hashing and no cache to tune. This used to
+            // be a Dictionary<long[], _> keyed by the stack ARRAY, whose
+            // ReferenceEqualityComparer made RuntimeHelpers.GetHashCode the
+            // single largest cost in this whole phase (71-79% of its CPU
+            // samples on a real 3.23GB/16.24M-sample capture). Two attempts to
+            // soften that - a bigger sticky cache in front of it, and a
+            // content-derived hash - are recorded in CLAUDE.md as measured
+            // failures; carrying a dense index from the parser (see
+            // StackTable.cs) removes the lookup instead of optimizing it.
+            CachedStackFrames cached = cachedByStackIndex[stackIndex];
+            bool isNewDistinctStack = cached == null;
+
             if (isNewDistinctStack)
             {
-                int[] resolvedFrameIds = new int[sampleEvent.Stack.Length];
-                for (int frameIndex = 0; frameIndex < sampleEvent.Stack.Length; ++frameIndex)
+                int[] resolvedFrameIds = new int[stackFrames.Length];
+                for (int frameIndex = 0; frameIndex < stackFrames.Length; ++frameIndex)
                 {
-                    resolvedFrameIds[frameIndex] = symbolTable.ResolveId(sampleEvent.Stack[frameIndex], sampleEvent.RelativeMSec);
+                    resolvedFrameIds[frameIndex] = symbolTable.ResolveId(stackFrames[frameIndex], sampleEvent.RelativeMSec);
                 }
 
                 // Computed once per distinct stack - see distinctFramesScratch's
-                // own comment above for why this must not run per-sample,
-                // and why it's a sorted scratch buffer rather than a
-                // HashSet. Grows (never shrinks) the same way the old
-                // HashSet's capacity did, but growth here costs nothing
-                // extra beyond the copy itself - no zeroing, since
-                // Array.Sort only ever touches the [0, length) prefix
-                // that's about to be overwritten with real content anyway.
+                // own comment above for why this must not run per-sample.
+                // The dedup itself is a stamp set (see Cpu/FrameIdSet.cs),
+                // which replaced a sort-then-compact pass over this same
+                // buffer: sorting cost O(depth log depth) per distinct stack
+                // and measured 16.5% of this whole phase on a real 3.23GB
+                // capture, where a stamp set is O(depth) with no comparisons
+                // and no zeroing. The buffer still grows (never shrinks) to
+                // the deepest stack seen, and still needs no clearing between
+                // stacks - only its [0, distinctCount) prefix is ever read.
                 if (distinctFramesScratch.Length < resolvedFrameIds.Length)
                 {
                     distinctFramesScratch = new int[resolvedFrameIds.Length];
                 }
 
-                Array.Copy(resolvedFrameIds, distinctFramesScratch, resolvedFrameIds.Length);
-                Array.Sort(distinctFramesScratch, 0, resolvedFrameIds.Length);
-
-                // Compact adjacent duplicates in place (standard sorted-
-                // array dedup) - safe despite reading and writing the same
-                // buffer, since the write index never exceeds the read
-                // index it's currently at.
+                // First-occurrence (leaf-first) order rather than the sorted
+                // order this used to produce - DistinctFrameIds is only ever
+                // iterated to increment totals, never compared by position or
+                // searched, so the order genuinely doesn't matter (the field's
+                // own comment below already said so).
+                distinctFrames.StartNewSet();
                 int distinctCount = 0;
-                for (int sortedIndex = 0; sortedIndex < resolvedFrameIds.Length; ++sortedIndex)
+                for (int frameIndex = 0; frameIndex < resolvedFrameIds.Length; ++frameIndex)
                 {
-                    if (distinctCount == 0 || distinctFramesScratch[distinctCount - 1] != distinctFramesScratch[sortedIndex])
+                    if (distinctFrames.Add(resolvedFrameIds[frameIndex]))
                     {
-                        distinctFramesScratch[distinctCount] = distinctFramesScratch[sortedIndex];
+                        distinctFramesScratch[distinctCount] = resolvedFrameIds[frameIndex];
                         ++distinctCount;
                     }
                 }
@@ -522,7 +619,8 @@ public static class CpuProfileJsonExporter
                     Array.Copy(distinctFramesScratch, cached.DistinctFrameIds, distinctCount);
                 }
 
-                frameIdCache[sampleEvent.Stack] = cached;
+                cachedByStackIndex[stackIndex] = cached;
+                distinctStackIndices.Add(stackIndex);
             }
 
             // Every sample sharing this distinct stack counts toward it,
@@ -540,6 +638,22 @@ public static class CpuProfileJsonExporter
             // distinct stack, not once per sample).
             HotMethodStats leafStats = GetOrAddStats(statsByFrameId, frameIds[0]);
             ++leafStats.SelfSamples;
+
+            // Timeline: this sample's own self time, in its own time bucket.
+            // Accumulated HERE, off the leaf frame this loop already resolved,
+            // rather than in a second per-sample pass that had to re-find the
+            // same leaf through the stack dictionary all over again.
+            if (bucketIndex >= 0)
+            {
+                int[] selfBuckets = selfBucketsByLeafFrameId.Get(frameIds[0]);
+                if (selfBuckets == null)
+                {
+                    selfBuckets = new int[timelineBucketCount];
+                    selfBucketsByLeafFrameId.Set(frameIds[0], selfBuckets);
+                }
+
+                ++selfBuckets[bucketIndex];
+            }
 
             int[] distinctFrameIds = cached.DistinctFrameIds;
             for (int distinctIndex = 0; distinctIndex < distinctFrameIds.Length; ++distinctIndex)
@@ -570,7 +684,7 @@ public static class CpuProfileJsonExporter
         if (Environment.GetEnvironmentVariable("NETTRACE_DEBUG") != null)
         {
             Console.Error.WriteLine(
-                $"CpuProfileJsonExporter (debug): samples={sampleEvents.Count} distinctStacks={frameIdCache.Count} " +
+                $"CpuProfileJsonExporter (debug): samples={sampleEvents.Count} distinctStacks={distinctStackIndices.Count} " +
                 $"distinctFrameIds={statsByFrameId.Count} flameTreeNodesBuilt={nodePool.RentCount}");
         }
 
@@ -586,17 +700,17 @@ public static class CpuProfileJsonExporter
         // One caller tree per ranked hot method (same expandable-caller-
         // stack UI drillDownStats.js/exceptionDrillDownStats.js already
         // give allocations/exceptions), built from a single pass over
-        // frameIdCache's already-deduped distinct stacks rather than
+        // the already-deduped distinct stacks rather than
         // rescanning every raw sample per hot method - see
         // BuildHotMethodCallerTrees' own comment.
-        Dictionary<int, FlameTreeNode> hotMethodTreeRoots = BuildHotMethodCallerTrees(rankedHotMethods, frameIdCache, nodePool);
+        FrameIdTable<FlameTreeNode> hotMethodTreeRoots = BuildHotMethodCallerTrees(rankedHotMethods, cachedByStackIndex, distinctStackIndices, nodePool);
 
         writer.WritePropertyName("hotMethodDrillDown");
         writer.WriteStartArray();
         for (int rankIndex = 0; rankIndex < rankedHotMethods.Count; ++rankIndex)
         {
             int frameId = rankedHotMethods[rankIndex].Key;
-            FlameTreeNode methodRoot = hotMethodTreeRoots[frameId];
+            FlameTreeNode methodRoot = hotMethodTreeRoots.Get(frameId);
             MarkIncludedNodes(methodRoot, HotMethodDrillDownNodeBudget, bufferPool);
             methodRoot.Included = true;
             WriteFlameTreeNode(writer, frameId, methodRoot, symbolTable, methodNameInterner, bufferPool);
@@ -644,9 +758,11 @@ public static class CpuProfileJsonExporter
         }
         writer.WriteEndArray();
 
-        WriteTimeline(writer, sampleEvents, frameIdCache, rankedHotMethods, minRelativeMSec, maxRelativeMSec, onProgress);
+        SampleTimeline sampleTimeline = BuildTimeline(writer, rankedHotMethods, selfBucketsByLeafFrameId, samplesByBucket, timelineBucketCount, timelineBucketDurationMSec, timelineTotalDurationMSec, minRelativeMSec);
 
         writer.WriteEndObject();
+
+        return sampleTimeline;
     }
 
     // Writes "sampleTimeline" - bucketed sample counts (total and per ranked
@@ -656,106 +772,98 @@ public static class CpuProfileJsonExporter
     // method set isn't known until after the first pass. For the captures
     // this data is most useful on (tens of thousands to a few million
     // samples), the second pass's cost is negligible compared to the first.
-    private static void WriteTimeline(
-        Utf8JsonWriter writer,
-        List<SampleEvent> sampleEvents,
-        Dictionary<long[], CachedStackFrames> frameIdCache,
-        List<KeyValuePair<int, HotMethodStats>> rankedHotMethods,
-        double minRelativeMSec,
-        double maxRelativeMSec,
-        Action<double> onProgress)
+    // The computed timeline, decoupled from how it gets serialized. Exists so
+    // the JSON writer below and Binary/CpuBinarySections.cs's own writer are
+    // fed by ONE computation rather than two that could drift - the whole
+    // migration off JSON depends on being able to emit both from the same run
+    // and diff them.
+    public sealed class SampleTimeline
     {
-        // Cap bucket count so tiny captures don't produce mostly-zero arrays,
-        // and so 100 is a useful maximum for large ones.
-        int bucketCount = sampleEvents.Count < 100 ? sampleEvents.Count : 100;
-        if (bucketCount < 1)
+        public double MinRelativeMSec;
+        public double TotalDurationMSec;
+        public double BucketDurationMSec;
+        public int BucketCount;
+        public int[] SamplesByBucket;
+        public int[][] MethodSelfByBucket;
+    }
+
+    // Assembles the timeline from counts the main per-sample loop already
+    // accumulated (see Write). This used to be a second full pass over every
+    // sample - 16.24M of them on a real 3.23GB capture - whose only job was to
+    // recover each sample's leaf frame, which it did by re-probing the
+    // stack->frames dictionary keyed by ARRAY IDENTITY. That probe's
+    // RuntimeHelpers.GetHashCode was measured as 71% of this entire export
+    // phase's CPU samples. The main loop already has the leaf frame in hand,
+    // so the counting moved there and this method now touches nothing
+    // per-sample at all.
+    private static SampleTimeline BuildTimeline(
+        Utf8JsonWriter writer,
+        List<KeyValuePair<int, HotMethodStats>> rankedHotMethods,
+        FrameIdTable<int[]> selfBucketsByLeafFrameId,
+        int[] samplesByBucket,
+        int bucketCount,
+        double bucketDurationMSec,
+        double totalDurationMSec,
+        double minRelativeMSec)
+    {
+        if (bucketCount < 1 || samplesByBucket == null)
         {
-            return;
+            return null;
         }
 
-        double totalDurationMSec = maxRelativeMSec - minRelativeMSec;
-        if (totalDurationMSec <= 0.0)
-        {
-            totalDurationMSec = 1.0;
-        }
-
-        double bucketDurationMSec = totalDurationMSec / bucketCount;
-
-        int[] samplesByBucket = new int[bucketCount];
-
+        // Reordered from frame-id keyed to RANK order, which is the order the
+        // JSON (and the webview reading it) expects - parallel to hotMethods.
+        // A ranked method with no recorded samples in any bucket can't
+        // normally happen (it ranked because it had self samples), but an
+        // empty row is written rather than a null so the array stays
+        // rectangular.
         int methodCount = rankedHotMethods.Count;
         int[][] methodSelfByBucket = new int[methodCount][];
-        for (int methodIndex = 0; methodIndex < methodCount; ++methodIndex)
-        {
-            methodSelfByBucket[methodIndex] = new int[bucketCount];
-        }
-
-        // Build a fast reverse-lookup from frameId to rank index so the
-        // per-sample loop below avoids a linear scan through rankedHotMethods.
-        Dictionary<int, int> rankIndexByFrameId = new Dictionary<int, int>(methodCount);
         for (int rankIndex = 0; rankIndex < methodCount; ++rankIndex)
         {
-            rankIndexByFrameId[rankedHotMethods[rankIndex].Key] = rankIndex;
+            int[] selfBuckets = selfBucketsByLeafFrameId.Get(rankedHotMethods[rankIndex].Key);
+            methodSelfByBucket[rankIndex] = selfBuckets ?? new int[bucketCount];
         }
 
-        Span<SampleEvent> span = CollectionsMarshal.AsSpan(sampleEvents);
-        for (int sampleIndex = 0; sampleIndex < span.Length; ++sampleIndex)
-        {
-            if (onProgress != null && (sampleIndex & ProgressReporter.IndexProgressMask) == 0)
-            {
-                double localFraction = MainLoopProgressFractionEnd + ((sampleIndex / (double)span.Length) * (TimelineLoopProgressFractionEnd - MainLoopProgressFractionEnd));
-                onProgress(localFraction);
-            }
+        SampleTimeline timeline = new SampleTimeline();
+        timeline.MinRelativeMSec = minRelativeMSec;
+        timeline.TotalDurationMSec = totalDurationMSec;
+        timeline.BucketDurationMSec = bucketDurationMSec;
+        timeline.BucketCount = bucketCount;
+        timeline.SamplesByBucket = samplesByBucket;
+        timeline.MethodSelfByBucket = methodSelfByBucket;
 
-            ref readonly SampleEvent sampleEvent = ref span[sampleIndex];
+        WriteTimelineJson(writer, timeline);
 
-            int bucketIndex = (int)((sampleEvent.RelativeMSec - minRelativeMSec) / bucketDurationMSec);
-            if (bucketIndex >= bucketCount)
-            {
-                bucketIndex = bucketCount - 1;
-            }
+        return timeline;
+    }
 
-            ++samplesByBucket[bucketIndex];
-
-            if (sampleEvent.Stack.Length > 0)
-            {
-                CachedStackFrames cached;
-                if (frameIdCache.TryGetValue(sampleEvent.Stack, out cached))
-                {
-                    int leafFrameId = cached.FrameIds[0];
-                    int rankIndex;
-                    if (rankIndexByFrameId.TryGetValue(leafFrameId, out rankIndex))
-                    {
-                        ++methodSelfByBucket[rankIndex][bucketIndex];
-                    }
-                }
-            }
-        }
-
+    private static void WriteTimelineJson(Utf8JsonWriter writer, SampleTimeline timeline)
+    {
         writer.WritePropertyName("sampleTimeline");
         writer.WriteStartObject();
-        writer.WriteNumber("minRelativeMSec", minRelativeMSec);
-        writer.WriteNumber("totalDurationMSec", totalDurationMSec);
-        writer.WriteNumber("bucketDurationMSec", bucketDurationMSec);
-        writer.WriteNumber("bucketCount", bucketCount);
+        writer.WriteNumber("minRelativeMSec", timeline.MinRelativeMSec);
+        writer.WriteNumber("totalDurationMSec", timeline.TotalDurationMSec);
+        writer.WriteNumber("bucketDurationMSec", timeline.BucketDurationMSec);
+        writer.WriteNumber("bucketCount", timeline.BucketCount);
 
         writer.WritePropertyName("samplesByBucket");
         writer.WriteStartArray();
-        for (int bucketIndex = 0; bucketIndex < bucketCount; ++bucketIndex)
+        for (int bucketIndex = 0; bucketIndex < timeline.BucketCount; ++bucketIndex)
         {
-            writer.WriteNumberValue(samplesByBucket[bucketIndex]);
+            writer.WriteNumberValue(timeline.SamplesByBucket[bucketIndex]);
         }
 
         writer.WriteEndArray();
 
         writer.WritePropertyName("methodSelfByBucket");
         writer.WriteStartArray();
-        for (int methodIndex = 0; methodIndex < methodCount; ++methodIndex)
+        for (int methodIndex = 0; methodIndex < timeline.MethodSelfByBucket.Length; ++methodIndex)
         {
             writer.WriteStartArray();
-            for (int bucketIndex = 0; bucketIndex < bucketCount; ++bucketIndex)
+            for (int bucketIndex = 0; bucketIndex < timeline.BucketCount; ++bucketIndex)
             {
-                writer.WriteNumberValue(methodSelfByBucket[methodIndex][bucketIndex]);
+                writer.WriteNumberValue(timeline.MethodSelfByBucket[methodIndex][bucketIndex]);
             }
 
             writer.WriteEndArray();
@@ -766,13 +874,13 @@ public static class CpuProfileJsonExporter
         writer.Flush();
     }
 
-    private static HotMethodStats GetOrAddStats(Dictionary<int, HotMethodStats> statsByFrameId, int frameId)
+    private static HotMethodStats GetOrAddStats(FrameIdTable<HotMethodStats> statsByFrameId, int frameId)
     {
-        HotMethodStats stats;
-        if (!statsByFrameId.TryGetValue(frameId, out stats))
+        HotMethodStats stats = statsByFrameId.Get(frameId);
+        if (stats == null)
         {
             stats = new HotMethodStats();
-            statsByFrameId[frameId] = stats;
+            statsByFrameId.Set(frameId, stats);
         }
 
         return stats;
@@ -785,15 +893,35 @@ public static class CpuProfileJsonExporter
     // ranked list so Write can reuse it (rather than re-ranking a second
     // time) to decide which hot methods get their own caller-tree drilldown
     // via BuildHotMethodCallerTrees.
-    private static List<KeyValuePair<int, HotMethodStats>> WriteHotMethods(Utf8JsonWriter writer, Dictionary<int, HotMethodStats> statsByFrameId, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
+    private static List<KeyValuePair<int, HotMethodStats>> WriteHotMethods(Utf8JsonWriter writer, FrameIdTable<HotMethodStats> statsByFrameId, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
     {
-        List<KeyValuePair<int, HotMethodStats>> ranked = new List<KeyValuePair<int, HotMethodStats>>(statsByFrameId.Count);
-        foreach (KeyValuePair<int, HotMethodStats> entry in statsByFrameId)
+        List<int> frameIds = statsByFrameId.Keys;
+        List<KeyValuePair<int, HotMethodStats>> ranked = new List<KeyValuePair<int, HotMethodStats>>(frameIds.Count);
+        for (int keyIndex = 0; keyIndex < frameIds.Count; ++keyIndex)
         {
-            ranked.Add(entry);
+            ranked.Add(new KeyValuePair<int, HotMethodStats>(frameIds[keyIndex], statsByFrameId.Get(frameIds[keyIndex])));
         }
 
-        ranked.Sort((left, right) => right.Value.SelfSamples.CompareTo(left.Value.SelfSamples));
+        // Frame id breaks ties, so the top-N cutoff is deterministic. Without
+        // it, methods tied on SelfSamples were ordered by whatever order
+        // statsByFrameId happened to enumerate, which is insertion order -
+        // meaning a change to the order frames are first SEEN (as the
+        // 2026-08-15 dedup rewrite in Write did) silently swaps which tied
+        // methods make the cut. Verified against a real 3.23GB capture: the
+        // counts themselves were identical for all 197 methods present in
+        // both outputs, and only 3 entries sitting exactly on the cutoff
+        // (SelfSamples == 10) changed places. Frame ids are minted in symbol
+        // resolution order, so this is stable for a given capture.
+        ranked.Sort(static (left, right) =>
+        {
+            int bySelfSamples = right.Value.SelfSamples.CompareTo(left.Value.SelfSamples);
+            if (bySelfSamples != 0)
+            {
+                return bySelfSamples;
+            }
+
+            return left.Key.CompareTo(right.Key);
+        });
 
         int rankedCount = ranked.Count < MaxRankedMethods ? ranked.Count : MaxRankedMethods;
         ranked.RemoveRange(rankedCount, ranked.Count - rankedCount);
@@ -821,7 +949,7 @@ public static class CpuProfileJsonExporter
         return ranked;
     }
 
-    // Folds frameIdCache's already-deduped distinct stacks into one
+    // Folds the already-deduped distinct stacks into one
     // caller-tree per ranked hot method, in a single pass over the cache -
     // NOT one pass per hot method (633,378 distinct stacks x up to 200
     // ranked methods would be a real, measurable cost on a large capture).
@@ -837,21 +965,21 @@ public static class CpuProfileJsonExporter
     // whole-capture flameTree above, but the SAME convention
     // AllocationJsonExporter.BuildCallerTree already uses for exactly this
     // "who called this" question.
-    private static Dictionary<int, FlameTreeNode> BuildHotMethodCallerTrees(List<KeyValuePair<int, HotMethodStats>> rankedHotMethods, Dictionary<long[], CachedStackFrames> frameIdCache, FlameTreeNodePool nodePool)
+    private static FrameIdTable<FlameTreeNode> BuildHotMethodCallerTrees(List<KeyValuePair<int, HotMethodStats>> rankedHotMethods, CachedStackFrames[] cachedByStackIndex, List<int> distinctStackIndices, FlameTreeNodePool nodePool)
     {
-        Dictionary<int, FlameTreeNode> treeRootByLeafFrameId = new Dictionary<int, FlameTreeNode>(rankedHotMethods.Count);
+        FrameIdTable<FlameTreeNode> treeRootByLeafFrameId = new FrameIdTable<FlameTreeNode>();
         for (int rankIndex = 0; rankIndex < rankedHotMethods.Count; ++rankIndex)
         {
-            treeRootByLeafFrameId[rankedHotMethods[rankIndex].Key] = nodePool.Rent();
+            treeRootByLeafFrameId.Set(rankedHotMethods[rankIndex].Key, nodePool.Rent());
         }
 
-        foreach (KeyValuePair<long[], CachedStackFrames> cacheEntry in frameIdCache)
+        for (int distinctIndex = 0; distinctIndex < distinctStackIndices.Count; ++distinctIndex)
         {
-            CachedStackFrames cached = cacheEntry.Value;
+            CachedStackFrames cached = cachedByStackIndex[distinctStackIndices[distinctIndex]];
             int[] frameIds = cached.FrameIds;
 
-            FlameTreeNode treeRoot;
-            if (!treeRootByLeafFrameId.TryGetValue(frameIds[0], out treeRoot))
+            FlameTreeNode treeRoot = treeRootByLeafFrameId.Get(frameIds[0]);
+            if (treeRoot == null)
             {
                 continue;
             }

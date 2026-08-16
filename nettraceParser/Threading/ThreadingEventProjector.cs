@@ -56,7 +56,7 @@ public sealed class StackedThreadingEvent
     // The object this event is about - a managed thread id for ThreadCreating,
     // a lock pointer for LockCreated. Zero when not applicable.
     public long ObjectId;
-    public long[] Stack;
+    public int StackIndex;
 }
 
 public sealed class ThreadingSummary
@@ -275,7 +275,7 @@ public static class ThreadingEventProjector
                 created.RelativeMSec = relativeMSec;
                 created.ThreadId = record.ThreadId;
                 created.ObjectId = reader.Length >= pointerSize ? reader.GetAddressAt(0) : 0;
-                created.Stack = record.Stack;
+                created.StackIndex = record.StackIndex;
                 summary.ThreadCreations.Add(created);
                 continue;
             }
@@ -286,7 +286,7 @@ public static class ThreadingEventProjector
                 created.RelativeMSec = relativeMSec;
                 created.ThreadId = record.ThreadId;
                 created.ObjectId = reader.Length >= pointerSize ? reader.GetAddressAt(0) : 0;
-                created.Stack = record.Stack;
+                created.StackIndex = record.StackIndex;
                 summary.LockCreations.Add(created);
             }
         }

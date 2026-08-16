@@ -76,11 +76,23 @@ public readonly struct ClrExceptionThrown
         this.ClrInstanceID = clrInstanceID;
     }
 
-    public static ClrExceptionThrown Decode(PayloadReader reader, int version)
+    // namePool/messagePool hand back ONE canonical string instance per
+    // distinct content instead of a fresh allocation per event - a real
+    // capture throws the same few dozen exception types (and, overwhelmingly,
+    // the same handful of messages) over and over. Separate pools because the
+    // two have very different distinct-value counts and there is no reason to
+    // make either probe past the other's entries. Both optional: a null pool
+    // decodes exactly as this method always did, which keeps every existing
+    // unit test call site working unchanged.
+    public static ClrExceptionThrown Decode(PayloadReader reader, int version, Utf16StringPool namePool = null, Utf16StringPool messagePool = null)
     {
-        string exceptionType = reader.GetUnicodeStringAt(0);
+        string exceptionType = namePool == null
+            ? reader.GetUnicodeStringAt(0)
+            : namePool.GetOrAdd(reader.GetUnicodeCharsAt(0));
         int messageOffset = reader.SkipUnicodeString(0);
-        string exceptionMessage = reader.GetUnicodeStringAt(messageOffset);
+        string exceptionMessage = messagePool == null
+            ? reader.GetUnicodeStringAt(messageOffset)
+            : messagePool.GetOrAdd(reader.GetUnicodeCharsAt(messageOffset));
         int fixedFieldsOffset = reader.SkipUnicodeString(messageOffset);
 
         long exceptionEIP = 0;

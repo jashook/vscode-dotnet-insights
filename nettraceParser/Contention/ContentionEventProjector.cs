@@ -49,9 +49,10 @@ public readonly struct ContentionEvent
     // OwnerThreadId below, which is whoever it was blocked behind.
     public readonly long ThreadId;
     // Resolved at parse time (EventBlock.cs), same convention as
-    // ExceptionEvent.Stack - empty (Array.Empty<long>()), never null, when
+    // ExceptionEvent.StackIndex - StackTable.EmptyStackIndex, resolving to an
+    // empty array rather than null, when
     // this contention event wasn't stack-walked.
-    public readonly long[] Stack;
+    public readonly int StackIndex;
     // V2 ContentionStart fields (0 when the payload was V1 - see
     // ClrContentionStart.Decode). LockId is what the Lock Timeline view
     // groups rows by; OwnerThreadId is 0 when the runtime couldn't attribute
@@ -60,13 +61,13 @@ public readonly struct ContentionEvent
     public readonly long AssociatedObjectId;
     public readonly long OwnerThreadId;
 
-    public ContentionEvent(double relativeMSec, double durationMSec, ClrContentionFlags contentionFlags, long threadId, long[] stack, long lockId = 0, long associatedObjectId = 0, long ownerThreadId = 0)
+    public ContentionEvent(double relativeMSec, double durationMSec, ClrContentionFlags contentionFlags, long threadId, int stackIndex, long lockId = 0, long associatedObjectId = 0, long ownerThreadId = 0)
     {
         this.RelativeMSec = relativeMSec;
         this.DurationMSec = durationMSec;
         this.ContentionFlags = contentionFlags;
         this.ThreadId = threadId;
-        this.Stack = stack;
+        this.StackIndex = stackIndex;
         this.LockId = lockId;
         this.AssociatedObjectId = associatedObjectId;
         this.OwnerThreadId = ownerThreadId;
@@ -84,16 +85,16 @@ public static class ContentionEventProjector
     {
         public readonly double RelativeMSec;
         public readonly ClrContentionFlags ContentionFlags;
-        public readonly long[] Stack;
+        public readonly int StackIndex;
         public readonly long LockId;
         public readonly long AssociatedObjectId;
         public readonly long OwnerThreadId;
 
-        public PendingStart(double relativeMSec, ClrContentionFlags contentionFlags, long[] stack, long lockId, long associatedObjectId, long ownerThreadId)
+        public PendingStart(double relativeMSec, ClrContentionFlags contentionFlags, int stackIndex, long lockId, long associatedObjectId, long ownerThreadId)
         {
             this.RelativeMSec = relativeMSec;
             this.ContentionFlags = contentionFlags;
-            this.Stack = stack;
+            this.StackIndex = stackIndex;
             this.LockId = lockId;
             this.AssociatedObjectId = associatedObjectId;
             this.OwnerThreadId = ownerThreadId;
@@ -137,7 +138,7 @@ public static class ContentionEventProjector
             {
                 PayloadReader reader = new PayloadReader(record.PayloadBuffer, record.PayloadOffset, record.PayloadLength, pointerSize);
                 ClrContentionStart startEvent = ClrContentionStart.Decode(reader, record.Version);
-                pendingByThread[record.ThreadId] = new PendingStart(relativeMSec, startEvent.ContentionFlags, record.Stack, startEvent.LockID, startEvent.AssociatedObjectID, startEvent.LockOwnerThreadID);
+                pendingByThread[record.ThreadId] = new PendingStart(relativeMSec, startEvent.ContentionFlags, record.StackIndex, startEvent.LockID, startEvent.AssociatedObjectID, startEvent.LockOwnerThreadID);
                 continue;
             }
 
@@ -162,7 +163,7 @@ public static class ContentionEventProjector
                 durationMSec = relativeMSec - pending.RelativeMSec;
             }
 
-            result.Add(new ContentionEvent(pending.RelativeMSec, durationMSec, pending.ContentionFlags, record.ThreadId, pending.Stack, pending.LockId, pending.AssociatedObjectId, pending.OwnerThreadId));
+            result.Add(new ContentionEvent(pending.RelativeMSec, durationMSec, pending.ContentionFlags, record.ThreadId, pending.StackIndex, pending.LockId, pending.AssociatedObjectId, pending.OwnerThreadId));
         }
 
         return result;

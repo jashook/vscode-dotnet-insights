@@ -43,12 +43,18 @@ public class StackBlock : IFastSerializable, IFastSerializableVersion
     public int MinimumVersionCanRead => 0;
     public int MinimumReaderVersion => 0;
 
-    private readonly Dictionary<int, long[]> stacksById;
+    // StackId -> index into stackTable, NOT StackId -> frames. The ids
+    // themselves are recyclable (see EventRecord's own comment); the indices
+    // handed out by stackTable never are, which is what lets an EventRecord
+    // hold one safely for the whole run.
+    private readonly Dictionary<int, int> stackIndexById;
+    private readonly StackTable stackTable;
     private readonly int pointerSize;
 
-    public StackBlock(Dictionary<int, long[]> stacksById, int pointerSize)
+    public StackBlock(Dictionary<int, int> stackIndexById, StackTable stackTable, int pointerSize)
     {
-        this.stacksById = stacksById;
+        this.stackIndexById = stackIndexById;
+        this.stackTable = stackTable;
         this.pointerSize = pointerSize;
     }
 
@@ -80,6 +86,12 @@ public class StackBlock : IFastSerializable, IFastSerializableVersion
         // space for the raw bytes is safe to reuse.
         byte[] scratchBuffer = Array.Empty<byte>();
 
+        // Decoded frames land here first and are only copied into a
+        // persistent array when StackTable finds them genuinely new - 96.6%
+        // of a real capture's stacks are exact repeats, so this keeps that
+        // majority allocation-free (see StackTable.GetOrAdd).
+        long[] frameScratch = Array.Empty<long>();
+
         for (int entryIndex = 0; entryIndex < count; ++entryIndex)
         {
             int stackBytesCount;
@@ -92,19 +104,26 @@ public class StackBlock : IFastSerializable, IFastSerializableVersion
 
             deserializer.Read(scratchBuffer, 0, stackBytesCount);
 
-            long[] instructionPointers = DecodeInstructionPointers(scratchBuffer, stackBytesCount, this.pointerSize);
+            int frameCount = stackBytesCount / this.pointerSize;
+            if (frameScratch.Length < frameCount)
+            {
+                frameScratch = new long[frameCount];
+            }
+
+            DecodeInstructionPointers(scratchBuffer, stackBytesCount, this.pointerSize, frameScratch);
 
             int stackId = firstId + entryIndex;
-            this.stacksById[stackId] = instructionPointers;
+            this.stackIndexById[stackId] = this.stackTable.GetOrAdd(new ReadOnlySpan<long>(frameScratch, 0, frameCount));
         }
 
         deserializer.Reader.Goto((StreamLabel)blockContentEnd);
     }
 
-    private static long[] DecodeInstructionPointers(byte[] stackBytes, int stackBytesLength, int pointerSize)
+    // Writes into the caller's buffer rather than allocating: see
+    // frameScratch's own comment in FromStream.
+    private static void DecodeInstructionPointers(byte[] stackBytes, int stackBytesLength, int pointerSize, long[] instructionPointers)
     {
         int ipCount = stackBytesLength / pointerSize;
-        long[] instructionPointers = new long[ipCount];
 
         ReadOnlySpan<byte> stackBytesSpan = stackBytes.AsSpan(0, stackBytesLength);
 
@@ -121,8 +140,6 @@ public class StackBlock : IFastSerializable, IFastSerializableVersion
                 instructionPointers[ipIndex] = BinaryPrimitives.ReadInt64LittleEndian(stackBytesSpan.Slice(offset, 8));
             }
         }
-
-        return instructionPointers;
     }
 
     public void ToStream(Serializer serializer)

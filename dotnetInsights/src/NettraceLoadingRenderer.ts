@@ -82,6 +82,19 @@ export function renderNettraceLoadingHtml(fileName: string, webview: vscode.Webv
 
             <div class="nettraceLoadingLabel" id="nettraceLoadingLabel">Starting…</div>
 
+            <!-- Ticks once a second from the moment this document's own
+                 script runs (see nettraceLoadingView.js). Deliberately
+                 driven entirely inside the webview rather than fed from the
+                 host: the host would have to post a message every second
+                 purely to animate a clock, and its own event loop is
+                 blocked outright during the synchronous host-side stages
+                 the progress bar reserves [80,100] for (JSON read-back,
+                 HTML build, webview.html assignment - see
+                 NettraceProgress.ts), which is exactly when a user is most
+                 likely to be watching this number to decide whether the
+                 parse has hung. -->
+            <div class="nettraceLoadingElapsed" id="nettraceLoadingElapsed">0:00</div>
+
             <div class="nettraceLoadingError" id="nettraceLoadingError" style="display:none"></div>
         </div>
 

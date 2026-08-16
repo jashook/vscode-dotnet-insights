@@ -77,7 +77,14 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
             enableScripts: true,
             localResourceRoots: [
                 vscode.Uri.joinPath(this.context.extensionUri, 'node_modules', 'chart.js', 'dist'),
-                vscode.Uri.joinPath(this.context.extensionUri, 'media')
+                vscode.Uri.joinPath(this.context.extensionUri, 'media'),
+                // nettraceParser's own output directory. The webview fetches
+                // the binary container (see nettraceParser/Binary/
+                // BinaryCaptureFormat.cs) directly from here rather than
+                // having the extension host read it, parse it and re-embed
+                // it in the HTML - asWebviewUri can only produce a servable
+                // URI for a file underneath one of these roots.
+                vscode.Uri.file(this.insights.nettraceParserOutputPath)
             ]
         };
 
@@ -133,11 +140,24 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
             disposed = true;
             messageSubscription.dispose();
             spawnedProcess?.kill();
+
+            if (binaryOutputPath !== null) {
+                try {
+                    fs.unlinkSync(binaryOutputPath);
+                }
+                catch (e) {
+                    // Best effort - it may never have been written if the
+                    // parse failed or the panel closed mid-run.
+                }
+            }
         });
 
         let spawnedProcess: child.ChildProcess | null = null;
+        // Kept alive for the webview to fetch (see runNettraceParser's own
+        // onBinaryWritten comment), so this panel owns its cleanup.
+        let binaryOutputPath: string | null = null;
 
-        this.runNettraceParser(gcDocument.uri.fsPath, tracker, postProgress, (proc) => { spawnedProcess = proc; })
+        this.runNettraceParser(gcDocument.uri.fsPath, tracker, postProgress, (proc) => { spawnedProcess = proc; }, (binaryPath) => { binaryOutputPath = binaryPath; })
             .then(async (gcData: any) => {
                 if (disposed) {
                     return;
@@ -167,7 +187,7 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
                 // postMessage can be delivered.
                 await new Promise<void>((resolve) => setImmediate(resolve));
 
-                const html = renderGcSnapshotWebview(gcDocument, webviewPanel.webview, this.context.extensionUri, gcData, "nettrace");
+                const html = renderGcSnapshotWebview(gcDocument, webviewPanel.webview, this.context.extensionUri, gcData, "nettrace", binaryOutputPath);
                 postProgress(tracker.recordHostStage(1, RENDER_RANGE, 'Rendering'));
 
                 postProgress(tracker.recordHostStage(0, SWAP_RANGE, 'Finishing up'));
@@ -196,15 +216,24 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
     // resolveCustomEditor's own onDidDispose) as soon as it exists, since
     // spawn() (unlike the previous exec()-based version) returns a real,
     // killable handle rather than only a callback.
-    private runNettraceParser(nettraceFilePath: string, tracker: NettraceProgressTracker, postProgress: (update: NettraceProgressUpdate) => void, onProcessSpawned: (proc: child.ChildProcess) => void): Thenable<any> {
+    // onBinaryWritten hands back the binary container's path as soon as it is
+    // known. Unlike the JSON, this file is NOT deleted when parsing finishes -
+    // the webview fetches it itself, after the host is done, so it has to
+    // outlive this method and is cleaned up on panel dispose instead.
+    private runNettraceParser(nettraceFilePath: string, tracker: NettraceProgressTracker, postProgress: (update: NettraceProgressUpdate) => void, onProcessSpawned: (proc: child.ChildProcess) => void, onBinaryWritten: (binaryPath: string) => void): Thenable<any> {
         if (!fs.existsSync(this.insights.nettraceParserOutputPath)) {
             fs.mkdirSync(this.insights.nettraceParserOutputPath, { recursive: true });
         }
 
         const id = crypto.randomBytes(16).toString("hex");
         const jsonOutputPath = path.join(this.insights.nettraceParserOutputPath, `${id}.json`);
+        // Written alongside the JSON, not instead of it: sections are being
+        // migrated off JSON one at a time (see nettraceParser/Binary/
+        // BinaryCaptureFormat.cs), so whatever hasn't moved yet still comes
+        // through the JSON path.
+        const binaryOutputPath = path.join(this.insights.nettraceParserOutputPath, `${id}.bin`);
 
-        this.insights.outputChannel.appendLine(`"${this.insights.nettraceParserPath}" "${nettraceFilePath}" --json "${jsonOutputPath}"`);
+        this.insights.outputChannel.appendLine(`"${this.insights.nettraceParserPath}" "${nettraceFilePath}" --json "${jsonOutputPath}" --binary "${binaryOutputPath}"`);
 
         // Timing instrumentation - a .nettrace file's parse cost scales with
         // total event volume (JIT/thread/allocation-tick events etc.), not
@@ -222,8 +251,9 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
             // silently break that), and gives a real, killable process
             // handle back immediately rather than only a completion
             // callback.
-            const proc = child.spawn(this.insights.nettraceParserPath, [nettraceFilePath, "--json", jsonOutputPath]);
+            const proc = child.spawn(this.insights.nettraceParserPath, [nettraceFilePath, "--json", jsonOutputPath, "--binary", binaryOutputPath]);
             onProcessSpawned(proc);
+            onBinaryWritten(binaryOutputPath);
 
             let stderrTail = "";
             const maxStderrTailLength = 8192;

@@ -1,0 +1,200 @@
+/* Styling specific to the .gcdump heap snapshot view (GcDumpRenderer.ts /
+   gcDumpView.js).
+
+   Everything this view could reuse, it reuses: snapshot.css already owns
+   .viewTabBar/.viewNavButton/.viewPanel (the top-level view switcher) and the
+   whole .detailTable/.cpuHotMethodsTable ranked-table grid, including the
+   percentage-based column widths CLAUDE.md documents at length. Nothing here
+   overrides those - the rules below are only for elements this view
+   introduces.
+
+   The one rule that does touch the shared grid is the numeric-cell alignment
+   at the bottom, and it is scoped to this view's own tables so the CPU/
+   contention/exception tables that share the class are untouched. */
+
+.summaryTileRow
+{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 12px 0 18px 0;
+}
+
+.summaryTile
+{
+    flex: 0 1 auto;
+    min-width: 120px;
+    padding: 10px 16px;
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 4px;
+    background-color: var(--vscode-editorWidget-background);
+}
+
+.summaryTileLabel
+{
+    font-size: 0.85em;
+    opacity: 0.75;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.summaryTileValue
+{
+    font-size: 1.6em;
+    font-weight: 600;
+    margin-top: 2px;
+}
+
+.summaryTileSublabel
+{
+    font-size: 0.8em;
+    opacity: 0.6;
+    margin-top: 2px;
+}
+
+/* A sampled dump's numbers are estimates. This is styled as a warning rather
+   than a footnote deliberately - the whole view reads as exact counts, and
+   quietly presenting estimated ones the same way would be misleading. */
+.gcDumpSampledWarning
+{
+    padding: 8px 12px;
+    margin-bottom: 14px;
+    border-left: 3px solid var(--vscode-editorWarning-foreground);
+    background-color: var(--vscode-inputValidation-warningBackground, rgba(255, 200, 0, 0.08));
+}
+
+.gcDumpViewBlurb
+{
+    max-width: 62em;
+    margin: 4px 0 12px 0;
+    opacity: 0.8;
+}
+
+.gcDumpFilterRow
+{
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+
+.gcDumpFilterInput
+{
+    flex: 0 1 26em;
+    padding: 4px 8px;
+    color: var(--vscode-input-foreground);
+    background-color: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border, transparent);
+}
+
+.gcDumpSelect
+{
+    flex: 0 1 44em;
+    padding: 4px 8px;
+    color: var(--vscode-dropdown-foreground);
+    background-color: var(--vscode-dropdown-background);
+    border: 1px solid var(--vscode-dropdown-border, transparent);
+}
+
+.gcDumpSelectLabel
+{
+    opacity: 0.75;
+}
+
+.gcDumpFilterCount
+{
+    opacity: 0.6;
+    font-size: 0.9em;
+}
+
+.gcDumpEmpty
+{
+    opacity: 0.7;
+    font-style: italic;
+    margin: 8px 0;
+}
+
+/* A module name is secondary to the type name it qualifies - dimmed so a
+   column of long framework paths does not out-shout the types themselves. */
+.gcDumpModule
+{
+    opacity: 0.55;
+    font-size: 0.9em;
+}
+
+.gcDumpTypeName
+{
+    font-family: var(--vscode-editor-font-family, monospace);
+}
+
+/* Indentation is an inline padding-left on this span (set per row from JS,
+   since depth is data), not a CSS class per level - a reference tree has no
+   fixed maximum depth, so a class-per-level scheme would either cap the tree
+   or need generated CSS. */
+.gcDumpTreeIndent
+{
+    display: inline-block;
+}
+
+.gcDumpTreeToggle
+{
+    display: inline-block;
+    width: 1em;
+    opacity: 0.8;
+    cursor: pointer;
+    user-select: none;
+}
+
+/* Leaves keep the toggle's width but show nothing, so their type names stay
+   aligned with their expandable siblings' rather than shifting left by a
+   character. */
+.gcDumpTreeToggleLeaf
+{
+    cursor: default;
+}
+
+.gcDumpTreeArrow
+{
+    opacity: 0.5;
+}
+
+.gcDumpExpandable
+{
+    cursor: pointer;
+}
+
+.gcDumpExpandable:hover
+{
+    background-color: var(--vscode-list-hoverBackground);
+}
+
+/* Numeric columns right-align so magnitudes line up digit-for-digit down the
+   column, which is the entire point of a ranked table. Scoped to this view's
+   own tables - the class is shared with the CPU/contention/exception tables,
+   which have their own alignment already. */
+#view-census .cpuHotMethodsTable .numericCell,
+#view-retained .cpuHotMethodsTable .numericCell,
+#view-roots .numericCell,
+#view-references .numericCell
+{
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+/* The two tree views build their own tables inside a .callerTreeInner, which
+   snapshot.css sizes for the drill-down trees nested inside ranked-table rows.
+   Here it is a top-level container instead, so it needs its own width and the
+   em-based font sizing that made CLAUDE.md's "an em inside .callerTreeInner
+   resolves against ~26.5px" trap bite does not apply - these widths are
+   percentages for the same reason the ranked tables' are. */
+.gcDumpTreeTable
+{
+    width: 100%;
+}
+
+#view-roots .callerTreeInner,
+#view-references .callerTreeInner
+{
+    width: 100%;
+    font-size: 1em;
+}

@@ -27,6 +27,10 @@ namespace DotnetInsights.NetTrace.Tests {
 
 public class CpuProfileJsonExporterTests
 {
+    // One stack table for the whole class so the static Make* helpers
+    // below can register stacks too - see TestStacks.cs.
+    private static readonly TestStacks stacks = new TestStacks();
+
     private static byte[] MakeMethodDCStartVerbosePayload(long methodId, long moduleId, long methodStartAddress, int methodSize, string methodName)
     {
         return new PayloadBuilder()
@@ -48,7 +52,7 @@ public class CpuProfileJsonExporterTests
     {
         byte[] payload = MakeMethodDCStartVerbosePayload(methodId, moduleId: 2, startAddress, size, name);
 
-        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stack: Array.Empty<long>(), fields: null, payload, payloadOffset: 0, payload.Length);
+        return new EventRecord("Microsoft-Windows-DotNETRuntimeRundown", eventName: null, ClrRundownEventIds.MethodDCStartVerbose, version: 1, timeStampRelativeQpc: 0, threadId: 0, stackIndex: StackTable.EmptyStackIndex, fields: null, payload, payloadOffset: 0, payload.Length);
     }
 
     // Builds a MethodSymbolTable resolving three distinct, non-overlapping
@@ -71,7 +75,7 @@ public class CpuProfileJsonExporterTests
         using System.IO.MemoryStream stream = new System.IO.MemoryStream();
         using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
         {
-            CpuProfileJsonExporter.Write(writer, sampleEvents, symbolTable);
+            CpuProfileJsonExporter.Write(writer, sampleEvents, stacks.Table, symbolTable);
         }
 
         return JsonDocument.Parse(stream.ToArray());
@@ -95,7 +99,7 @@ public class CpuProfileJsonExporterTests
     [Fact]
     public void Write_RanksHotMethodsBySelfSamplesLeafFirst()
     {
-        long[] stack = new long[] { 0x1010, 0x2010 }; // leaf-first: MethodA, then caller MethodB
+        int stack = stacks.Index(0x1010, 0x2010); // leaf-first: MethodA, then caller MethodB
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
             new SampleEvent(0.0, threadId: 1, stack),
@@ -130,7 +134,7 @@ public class CpuProfileJsonExporterTests
     [Fact]
     public void Write_FlameTreeIsRootToLeafNotLeafFirst()
     {
-        long[] stack = new long[] { 0x1010, 0x2010, 0x3010 }; // leaf-first: A, B, C
+        int stack = stacks.Index(0x1010, 0x2010, 0x3010); // leaf-first: A, B, C
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
             new SampleEvent(0.0, threadId: 1, stack),
@@ -166,7 +170,7 @@ public class CpuProfileJsonExporterTests
     [Fact]
     public void Write_DedupesRecursiveFramesWithinOneSampleForInclusiveCount()
     {
-        long[] stack = new long[] { 0x1010, 0x1020, 0x2010 }; // leaf-first: A, A (recursive), B
+        int stack = stacks.Index(0x1010, 0x1020, 0x2010); // leaf-first: A, A (recursive), B
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
             new SampleEvent(0.0, threadId: 1, stack),
@@ -194,7 +198,7 @@ public class CpuProfileJsonExporterTests
     {
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
-            new SampleEvent(0.0, threadId: 1, Array.Empty<long>()),
+            new SampleEvent(0.0, threadId: 1, StackTable.EmptyStackIndex),
         };
 
         JsonDocument document = WriteAndParse(sampleEvents, MakeSymbolTable());
@@ -236,16 +240,16 @@ public class CpuProfileJsonExporterTests
     [Fact]
     public void Write_EveryFrameReferenceAnywhereInOutputIsWithinBoundsOfMethodNames()
     {
-        long[] stackA = new long[] { 0x1010, 0x2010 }; // MethodA, caller MethodB
-        long[] stackRecursive = new long[] { 0x1010, 0x1020, 0x2010 }; // MethodA, MethodA, MethodB
-        long[] stackDeep = new long[] { 0x1010, 0x2010, 0x3010 }; // MethodA, MethodB, MethodC
+        int stackA = stacks.Index(0x1010, 0x2010); // MethodA, caller MethodB
+        int stackRecursive = stacks.Index(0x1010, 0x1020, 0x2010); // MethodA, MethodA, MethodB
+        int stackDeep = stacks.Index(0x1010, 0x2010, 0x3010); // MethodA, MethodB, MethodC
 
         List<SampleEvent> sampleEvents = new List<SampleEvent>
         {
             new SampleEvent(0.0, threadId: 1, stackA),
             new SampleEvent(1.0, threadId: 1, stackRecursive),
             new SampleEvent(2.0, threadId: 1, stackDeep),
-            new SampleEvent(3.0, threadId: 2, Array.Empty<long>()),
+            new SampleEvent(3.0, threadId: 2, StackTable.EmptyStackIndex),
         };
 
         JsonDocument document = WriteAndParse(sampleEvents, MakeSymbolTable());

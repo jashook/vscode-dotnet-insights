@@ -28,6 +28,10 @@ namespace DotnetInsights.NetTrace.Tests {
 
 public class ExceptionJsonExporterTests
 {
+    // One stack table for the whole class so the static helpers below can
+    // register stacks too - see TestStacks.cs.
+    private static readonly TestStacks stacks = new TestStacks();
+
     private static MethodSymbolTable MakeSymbolTable()
     {
         return MethodSymbolTable.Build(new List<EventRecord>(), pointerSize: 8, qpcFrequency: 0, referenceQpc: 0);
@@ -35,7 +39,7 @@ public class ExceptionJsonExporterTests
 
     private static ExceptionEvent MakeEvent(double relativeMSec, string exceptionType, string message = "boom")
     {
-        return new ExceptionEvent(default, relativeMSec, exceptionType, message, hResult: 0, ClrExceptionFlags.None, threadId: 1, Array.Empty<long>());
+        return new ExceptionEvent(default, relativeMSec, exceptionType, message, hResult: 0, ClrExceptionFlags.None, threadId: 1, StackTable.EmptyStackIndex);
     }
 
     private static JsonDocument WriteAndParse(List<ExceptionEvent> exceptionEvents, MethodSymbolTable symbolTable)
@@ -43,7 +47,7 @@ public class ExceptionJsonExporterTests
         using System.IO.MemoryStream stream = new System.IO.MemoryStream();
         using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
         {
-            ExceptionJsonExporter.Write(writer, exceptionEvents, symbolTable);
+            ExceptionJsonExporter.Write(writer, exceptionEvents, stacks.Table, symbolTable);
         }
 
         return JsonDocument.Parse(stream.ToArray());

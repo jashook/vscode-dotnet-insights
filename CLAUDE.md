@@ -144,13 +144,139 @@ only if these stop matching observed behavior:
   `DOTNET_GCgen0size` was also measured as an alternative (best case
   −520ms at 32MB) but is strictly worse: it's a deployment-time env var the
   extension would have to set when spawning the process, and larger values
-  *slowed* `jsonExport` by ~400ms even while speeding up `read`.
+  *slowed* the export phase by ~400ms even while speeding up `read`.
 - The `--json` timing line reports `gcPause=`/`gcCounts=[gen0,gen1,gen2]`
   (from `GC.GetTotalPauseDuration()`/`GC.CollectionCount`) precisely so
   "why was this run slower" is answerable without a `dotnet-trace` attach —
   which has its own confound here, since attach latency can silently miss
   whichever GCs fire earliest, making cross-run comparisons from two
   independent traces unreliable in a way this in-process counter isn't.
+
+### Projector concurrency and the hot-path lookup primitives (2026-08-15)
+
+A phase-attributed self-profile (the harness lives outside the repo, in
+`~/projects/Investigations/nettraceParser-phase-profiler/` — it buckets
+`nettraceParser`'s own CPU samples into its own pipeline phases using the
+`PROGRESS` lines' wall-clock timestamps) took a real 3.23GB/35.08M-event
+capture from **12.4s to ~7.9s**, with byte-identical JSON output (verified
+section-by-section against a pre-change build; the only difference anywhere
+was *which* methods tie at the exact top-200 `hotMethods` cutoff, now made
+deterministic by a frame-id tie-break in `WriteHotMethods`). What changed,
+and the rules worth keeping:
+
+- **The eight projector passes run concurrently** (`Task`-based, explicit —
+  not `Parallel.ForEach`). They're independent read-only passes over the same
+  `List<EventRecord>`; sequential they cost ~1230ms end-to-end on an 8-core
+  machine with ~0% idle samples, concurrently ~505ms. The one dependency is
+  `SampleProfileEventProjector`, chained off the event overview because the
+  overview's exact per-event-type counts presize its 16.24M-element result
+  list (`EventOverview.CountForEvent`); growing that list from empty was 33%
+  of that projector's own cost. Per-projector `Timing:` numbers are now
+  *concurrent* durations and deliberately no longer sum to the phase's wall
+  time — the line reports `projectors=<wall>ms wall, concurrent[...]`.
+- **Provider/event names are interned at metadata-parse time**
+  (`MetadataBlock.ReadMetadataPayload`). Every projector filters with
+  `record.ProviderName != ClrProviderName` against a literal, and
+  `String.Equals` short-circuits on *reference* equality — so a decoded
+  instance that merely equals the literal loses that fast path and content-
+  compares once per event per pass. That was 4.9% of the whole run
+  (`SpanHelpers.SequenceEqual`) and interning ~40 metadata strings removes
+  essentially all of it.
+- **Frame-id-keyed lookups on per-sample paths are array-indexed, not
+  hashed** — `Cpu/FrameIdTable.cs` (was `Dictionary<int, HotMethodStats>`,
+  13.4% of the CPU export phase), `Cpu/FrameIdSet.cs` (stamp-based per-stack
+  dedup; replaced an `Array.Sort`+compact that was 16.5% of that phase, which
+  had itself replaced a `HashSet<int>.Clear()` that was worse), and
+  `Cpu/IdleWaitFrameCache.cs` (memoizes `CpuIdleWaitClassifier`'s 18 string
+  comparisons per distinct method instead of per sample — `TimeBreakdownBuilder`
+  ran it over all 16.24M samples, ~1.0s). All three index **two** dense
+  ranges, not one: see `MethodSymbolTable.UnresolvedIdBase`, now public for
+  exactly that reason.
+- **`EventOverviewBuilder` hashes nothing per event** — its
+  `Dictionary<(string, int), _>` (72% of that phase, `Marvin.ComputeHash32`
+  alone 24.4%) is now provider slots matched by reference with an event-id-
+  indexed array behind each. Event ids at/above 65536 fall back to a
+  dictionary so a corrupt id can't size an array off a number read from the
+  file.
+- **Names decoded from payloads go through `Utf16StringPool`** — the wire
+  format is already UTF-16, so `PayloadReader.GetUnicodeCharsAt` hands out a
+  `ReadOnlySpan<char>` view and the pool returns one canonical string per
+  distinct content, probing `HashSet<string>` through its
+  `GetAlternateLookup<ReadOnlySpan<char>>` so a hit allocates nothing. (That
+  API is net9.0+; the pool first shipped as hand-rolled open addressing while
+  this project was on net8.0, and was rewritten onto the BCL's own when
+  `nettraceParser`/`.Tests`/`.GroundTruth` moved to **net10.0** — matching
+  `roslynHelper`, which was already there. The other C# projects in this repo
+  are untouched.) A capture with 1.44M exceptions holds
+  a few dozen distinct type names; decoding each event's own was over half the
+  exception projection phase (721ms → ~317ms). `FindUnicodeStringEnd` also
+  scans as `char`s (vectorized `IndexOf`) rather than byte pairs.
+- **The CPU export's timeline no longer costs a second per-sample pass.**
+  `WriteTimeline` used to re-walk all 16.24M samples purely to recover each
+  sample's leaf frame, re-probing the stack→frames dictionary to do it; the
+  main loop already has that leaf, so it now accumulates per-leaf bucket
+  histograms directly (`FrameIdTable<int[]>`, ~1MB) and `BuildTimeline` just
+  reorders them into rank order. The sample time range needed for bucketing
+  comes from a cheap min/max pre-scan that touches no dictionary. Verified
+  identical output, including every `methodSelfByBucket` row.
+- **Stacks are deduplicated by content at decode time** (`StackTable.GetOrAdd`),
+  and this is a memory fix first: the runtime re-emits stacks after every
+  sequence point (the same property that makes StackIds recyclable), so on a
+  real 3.23GB capture **2,346,969 of 2,430,313 decoded stacks - 96.6%, 1,481MB
+  of 1,539MB - were byte-identical repeats**. Deduplicating leaves 83,344 real
+  stacks and 57MB. `StackBlock` decodes into a reusable `long[]` scratch and
+  passes a span, so the 96.6% case allocates nothing at all - which matters
+  specifically because the read phase runs inside a no-GC region, where
+  allocating a duplicate and dropping it still holds its pages until the
+  region ends. Peak RSS **7.0GB → 5.52GB**; total run **6.7s → 5.0s**, since
+  the exporters' per-distinct-stack work collapsed by the same 29x (export
+  4.46s → 2.47s). Hash is length + 4 sampled frames with a chain walk on
+  collision, so a collision costs a `SequenceEqual`, never a merge.
+  **Output effect, verified against a dedup-disabled build of the same tree**:
+  every measurement is identical (samples, bytes, counts, `gcData`,
+  `timeBreakdown`, ticks sidecar) and only `distinctStackCount` changes - it
+  now counts distinct call PATHS rather than distinct stack objects, e.g.
+  201,122 → 2,921 for the top exception type, which is what that "N call
+  paths" hint always meant to say. (7 `totalWaitMSec` values also differ in
+  their 15th significant digit, from summing the same doubles in a different
+  order.)
+- **Stacks are referred to by a dense index, not by the decoded `long[]`**
+  (`StackTable.cs`, 2026-08-15). `StackBlock` appends each decoded stack to one
+  table and `EventRecord`/`SampleEvent`/`AllocationEvent`/`ExceptionEvent`/
+  `ContentionEvent` carry a `StackIndex` into it; index 0 is permanently the
+  empty stack, so "no stack" needs no sentinel. Every exporter that used to key
+  a `Dictionary<long[], _>` by array identity now indexes an array (CPU) or a
+  plain int-keyed dictionary (allocation/exception/contention), so
+  `RuntimeHelpers.GetHashCode` is gone from the profile entirely. Measured on
+  the 3.23GB capture: export 5.3s → **4.5s**, of which cpu 1.95s → 1.67s, exc
+  1.1s → 0.85s, alloc 1.5s → 1.34s — *and* the projector phase dropped 505ms →
+  366ms as a side effect, since `EventRecord` lost a reference field (35M fewer
+  pointers for the GC to trace, and a smaller struct to stream). Whole run
+  ~7.5s → **~6.7s**; output byte-identical including the ticks sidecar.
+  Two `file = null`/`captureFile = null` sites in `Program.cs` (the `--json`
+  and `--diff` paths, both deliberate GC-root drops) now capture the table
+  into a local first — reading `file.Stacks` after the null is an immediate
+  `NullReferenceException`, which is exactly how this was caught.
+- **Two measured negative results on that same dictionary, both worth not
+  repeating.** (1) A per-thread sticky cache (64 slots keyed by `ThreadId`)
+  looked obviously better than one global slot and measured *worse* — 51% hits
+  vs 72% — because identical stacks are ONE shared `long[]` here, so the single
+  hottest stack is shared across threads and per-thread slots each re-learn it
+  while evicting each other. An 8-entry global cache scanned linearly gets 79%.
+  (2) `RuntimeHelpers.GetHashCode` (via `ReferenceEqualityComparer`) shows as
+  71–79% of the whole CPU export phase's CPU samples, but that is NOT a
+  wall-time lever: cutting probes 4.56M→3.36M didn't move the phase, and
+  replacing the identity hash with a content-derived one (reference equality
+  kept) made it **6× slower** through collision pileups. The cost is the probe
+  into a 633K-entry dictionary, not the hash call — so the fix is to stop
+  keying by array identity at all — which is what the `StackTable` bullet
+  above then did, confirming the diagnosis.
+- **A sampled leaf is not proof of cost.** In the same profile,
+  `Stopwatch.GetRawElapsedTicks` under `ProgressReporter.ReportFraction`
+  looked like 13.3% of the read phase; direct counters showed 45,434 progress
+  calls / 21,340 stopwatch queries there, and an A/B run with progress
+  disabled showed *no* read-phase difference. Stack-walk misattribution.
+  Confirm a surprising leaf with counters or an A/B before optimizing it.
 
 ### `.nettrace` parsing progress bar (`nettraceParser/Progress/`)
 
@@ -188,7 +314,15 @@ on a GC/allocation-heavy one; `eventOverview` the reverse, 8% vs 46%).
 `ReadShareOfTotal` and `ProjectorsShareOfRemainder` agree far better between
 the two captures (within a few points) since they're each dominated by
 whichever few phases are large in a given capture rather than depending on
-*which specific* phase that is. jsonExport's own 5 sub-writer weights are
+*which specific* phase that is. **The per-projector weight array is gone as
+of 2026-08-15** — the eight projectors now run *concurrently* (see "Projector
+concurrency" below), so they no longer occupy disjoint stretches of the bar
+that could be weighted against each other; they report as one combined
+"Projecting events" phase that advances on the mean of their eight completion
+fractions, published into a `double[]` slot each and read by the main thread
+(`ReportProjectorProgress` in `Program.cs`) because `ProgressReporter` is
+static single-threaded state that writes to `Console.Error`.
+The export phase's own 5 sub-writer weights are
 the one place a per-item estimate compares genuinely comparable
 things — 5 writers in the same phase of the same run — so `GcJsonExporter.
 WriteToFile` computes that split dynamically from THIS run's own real
@@ -196,7 +330,7 @@ counts rather than a fixed constant.
 
 Only `Cpu/CpuProfileJsonExporter.cs` and `Gc/AllocationJsonExporter.cs`
 (`AllocationSummaryBuilder.Write`) get internal fine-grained progress
-tracking within jsonExport — the other three sub-writers (exceptions,
+tracking within the export phase — the other three sub-writers (exceptions,
 contention, the `gcData` array) are small enough on every capture measured
 so far (all under ~1% of total time) that a start/complete snap is visually
 indistinguishable from tracking them internally. Every per-event loop's
@@ -237,8 +371,20 @@ it receives that signal.
 
 Recalibrating `ProgressPlan.cs`'s weight constants against a third
 differently-shaped capture is a single CLI run, not scaffolding that needs
-re-adding: the final `Timing: ...` line's `jsonExport=` field permanently
-breaks down as `jsonExport=Xms(alloc=..,exc=..,cpu=..,cont=..,gc=..)`.
+re-adding: the final `Timing: ...` line's `export=` field permanently breaks
+down as `export=Xms(alloc=..,exc=..,cpu=..,cont=..,gc=..)`.
+
+That field is called `export=`, not `jsonExport=` (renamed 2026-08-15, along
+with `JsonExportTiming`/`ProgressPlan.PlanJsonExport*`), because the phase has
+not written only JSON for some time: `alloc=` includes the allocation-tick
+**binary** sidecar (`AllocationSummaryBuilder.WriteTicks` — that array never
+went into the JSON at all), and the `--binary` capture container
+(`Binary/BinaryCaptureWriter.cs`) is written right after it. That container
+write used to sit outside every timer in the line; it now reports as
+`binaryExport=`, deliberately separate from `export=` so that as sections
+migrate off JSON the number that grows and the number that shrinks stay
+visible against each other. `GcJsonExporter`/`--json` keep their names — they
+really do still write JSON.
 
 Packaging: `nettraceParser/pack.py` (Python — a bash version was explicitly
 rejected in favor of this). Publishes self-contained, non-single-file builds
@@ -247,6 +393,183 @@ for `osx-x64`/`linux-x64`/`win-x64` and archives each as
 folder, matching `roslynHelper`'s real release-asset layout exactly (verified
 by inspecting a real `roslynHelper-osx-x64.tar.gz`). Upload with
 `gh release upload <tag> nettraceParser/artifacts/*.tar.gz --clobber`.
+
+### `.gcdump` heap snapshots (`nettraceParser/GcDump/`)
+
+`nettraceParser --gcdump <file.gcdump> [--json <out>]` reads a
+`dotnet-gcdump collect` heap SNAPSHOT (what is on the heap right now and what
+keeps it alive) rather than an event stream. It lives inside nettraceParser
+only because a `.gcdump` is a `!FastSerialization.1` stream - the same
+serializer `FastSerialization.cs` already vendors - so it reuses the
+deserializer, `Progress/`, `pack.py`, `DependencySetup.ts` and the version
+constant with no new release asset. The extension side is
+`DotnetInsightsGcDumpEditor.ts` / `GcDumpRenderer.ts` / `media/gcDumpView.js`,
+registered on `*.gcdump`.
+
+Hard-won facts, all verified against real captures and against
+dotnet/diagnostics' own `Graph.cs`/`GCHeapDump.cs` (the code that WRITES the
+format):
+
+- **No magic prefix.** Unlike `.nettrace` the FastSerialization signature is at
+  offset 0, so the `Deserializer` reads the file directly - no `MemoryStream`
+  slicing (contrast the "Stream positioning" note above).
+- **Stream label width is `FourBytes`, always.** `SerializationSettings.Default`
+  is `EightBytes` (what `.nettrace` wants), so `.gcdump` needs an explicit
+  override; getting it wrong misreads every reference rather than failing
+  loudly. `Graph.cs` carries an `m_isVeryLargeGraph` flag that widens counts to
+  int64 and labels to 8 bytes, but it is **never stored in the file** (it is a
+  constructor argument), dotnet-gcdump's own reader hardcodes `FourBytes` and
+  `new MemoryGraph(1)`, and nothing in dotnet-gcdump ever constructs one with
+  the flag set. It is dead for any file that tool produces, and a reader could
+  not detect it anyway.
+- **Object count is not the limit; blob length is.** `nodeCount` is an int32,
+  but `blobLength` is too, capping the node blob at 2GB - roughly 100M+ objects
+  at typical per-node record sizes. Separately, **`dotnet-gcdump` itself caps a
+  capture at 10,000,000 nodes** (a 12M-object process produced a dump with
+  exactly 10,000,000, with `AverageCountMultiplier` still 1). That cap is the
+  practical ceiling on real input, not anything in this reader.
+- **`type.Size == 0` means the size is encoded per node** (arrays, strings);
+  otherwise it comes from the type table. `dotnet-gcdump report`'s own
+  "Object Bytes" column is `type.Size` - the TYPE's size, not the type's
+  total - so it does not sum to the heap and only equals `size x count` for
+  fixed-size types. Its **Count** column is the real per-type oracle.
+- **The root is synthetic.** `RootIndex` names a `[.NET Roots]` node of size 0
+  whose children are root categories (`[static var ...]` and friends, also size
+  0). `dotnet-gcdump report`'s "GC Heap objects" is the RAW node count and
+  therefore includes it; `TypeCensusBuilder` excludes it, so the expected
+  relationship is `theirs == ours + 1`, asserted explicitly in
+  `GcDumpReaderTests.cs` rather than papered over.
+- **Real captures contain unrooted objects** - 7-9% of nodes on every file
+  checked, all with no incoming references at all. Their retained sizes are
+  necessarily 0, so the count is reported in the UI rather than swallowed.
+- **Lengauer-Tarjan, not Cooper-Harvey-Kennedy, for dominators.** CHK is the
+  obvious choice (flat-array sweeps, trivially simple) and was tried first; it
+  took **108 seconds** of a 110 second run on a real 10M-node/29.8M-edge dump.
+  Its `Intersect` walks two nodes up the dominator tree, and heap graphs are
+  deep (any linked list) with high-fan-in shared nodes (a pooled buffer), so
+  that product blows up on exactly the shape real heaps take - unlike the
+  shallow control-flow graphs CHK's own paper measures. LT has no such step:
+  same dump, **~4 seconds**, identical retained sizes. Both the DFS and LT's
+  `COMPRESS` must be **iterative** - the graphs that made CHK slow are deep
+  enough to overflow the stack.
+- **Retained bytes per type sums only "outermost" instances** (those whose
+  immediate dominator is not itself of that type). Summing over ALL instances
+  is the obvious implementation and is badly wrong for self-nesting types: on a
+  480MB heap of 9.9M linked nodes it reported **633GB** for the node type,
+  because a list's tail is counted once per element ahead of it.
+- Everything shipped to the webview is aggregated to the **type** level, so a
+  237MB / 10M-object dump leaves as **53KB of JSON** (a type-rich 445KB dump
+  produces 829KB). That is why there is no DNIBIN binary sidecar here even
+  though the `.nettrace` path has one - there is nothing for it to save.
+  Type names are interned into a dense pool for the same reason the `.nettrace`
+  path interns method names.
+
+#### Memory, and what did and did not help
+
+`--gcdump-from-trace` is memory-bound, not CPU-bound. On a real
+12M-object/35.8M-edge heap (814MB capture) peak RSS started at **5.15GB** and
+is now a **~2.2GB median of 5 runs** (range 1.8-2.3GB), with byte-identical
+output. What worked, and what backfired:
+
+- **Exactly-sized allocations beat growable ones, by more than their own
+  size.** A `List<T>` reaching hundreds of MB by doubling holds the old array
+  alive while allocating one twice as large. Counting first (one extra pass
+  over payloads already in memory) removed those spikes from the edge buffer,
+  the node arrays and the node blob. `GcDumpWriter.MeasureBlobLength` exists
+  purely for this and must stay in lockstep with `NodeBlob.Build`.
+- **Resolving edge targets to node indices during the pass, not after,**
+  deleted a 35.8M-entry `ulong[]` (286MB) outright rather than shrinking it.
+  It works because node indices are handed out in definition order, which is
+  the order the flat edge stream follows - so edges land directly in their
+  final CSR slots.
+- **`AddressToIndexMap` instead of `Dictionary<ulong, int>`** - 470MB to
+  201MB at 12M entries, no resize copies (see that file's header).
+- **Streaming the capture instead of materializing it made things WORSE, and
+  was reverted.** Consuming events per block (never retaining ~800MB of block
+  buffers) sounds strictly better and is not: the three decode passes then
+  need three reads, tripling the read phase's allocation churn. Under this
+  project's Server GC that took collections from 2 to 32, GC pause from ~4ms
+  to ~2s, wall clock ~7s to ~12s, and peak RSS UP. Holding the buffers is
+  cheaper than re-allocating them. The `NettraceFile.Read` / `EventBlock`
+  callback hook added for this was reverted too.
+- **Forcing `GC.Collect` before the write phase did not help** (measured
+  ~3.2-3.7GB across 3 runs vs ~2.2GB without). The peak happens during
+  read+decode; a collect afterward is too late and the compaction itself
+  commits pages.
+
+Peak RSS is genuinely noisy here - Server GC commits lazily, so single runs
+vary by ~500MB and a 1-vs-1 comparison proves nothing. Measure a median of
+several, under `/usr/bin/time -l` (`Process.PeakWorkingSet64` returns 0 on
+macOS, which is why the `Timing:` line reports working set at exit instead).
+
+
+#### Speed
+
+Same 12M-object capture, Release build: **7372ms -> ~3500ms median of 5**, with
+identical output. Two changes account for almost all of it:
+
+- **`GC.AllocateUninitializedArray` for `EventBlock`'s per-block buffer.** The
+  next statement overwrites every byte from the stream, so the zeroing `new
+  byte[]` does first is pure waste - and at ~800MB of blocks it was the single
+  largest item in a CPU profile (~33% of the run, attributed to allocation and
+  first-touch). This one is in the SHARED read path, so every nettraceParser
+  mode benefits, not just `--gcdump-from-trace`. It also collapsed GC pause
+  from ~1900ms to ~3ms and collections from [32,5,2] to [2,1,1].
+- **A one-entry cache in front of `TypeTableBuilder.IndexOfTypeId`.** Objects
+  of a type arrive in runs, so most of the 12M per-capture lookups become a
+  comparison; the dictionary was ~3.6% of the whole run.
+
+- **Writing the node blob eight bytes at a time instead of one**, in
+  `Graphs.MemoryGraph.ToStream`. `Serializer` has no bulk byte write (the
+  reader side has `Read(byte[], int, int)`; the writer side has no
+  counterpart), and adding one would mean editing vendored FastSerialization.
+  Widening to `long` needs no such change and cuts ~139 million interface
+  calls to ~17 million. Controlled A/B on the same binary state: write phase
+  737ms -> ~550ms, output **byte-identical** (`cmp` clean). This is what
+  dotnet-gcdump's own `Graph.FromStream` already does on the read side, and it
+  uses `Unsafe.ReadUnaligned<long>` so the native-endian load pairs with
+  `MemoryStreamWriter.Write(long)`'s native-endian store.
+
+Sub-phase timings (Stopwatch, not sampling): pass 2 (define nodes)
+~650ms, allocation of the CSR edge array ~690ms, pass 3 (resolve edges)
+~1050ms, blob measure+build ~370ms, serializer/file write ~550ms.
+
+Two things that did NOT work, both measured:
+
+- **Hoisting the big allocations to the top of `BuildGraph` made it slower**
+  (4192ms vs 3613ms). Acquiring ~190MB of fresh pages from the OS costs the
+  same wherever it happens - a single 143MB `AllocateUninitializedArray`
+  measured ~690ms on its own - but doing it while the 800MB trace is live and
+  the node arrays are still empty gave the runtime a worse moment to grow the
+  heap. Allocation placement is not free to move around at this scale.
+- **`AllocateUninitializedArray` on the decode's own node arrays changed
+  nothing measurable.** They are large enough to come straight from fresh OS
+  pages, which arrive zeroed anyway; the win in `EventBlock` came from the
+  sheer volume (800MB across ~1200 blocks), not from the API itself.
+
+Profiling notes: self-profile with `dotnet-trace collect -- <nettraceParser
+...>` and read the result with nettraceParser's own CPU view. Trust the SELF
+percentages - the caller-tree totals came out inconsistent (two sequential
+methods each reporting ~80% inclusive), so attribution by stack is unreliable
+on these captures. Sub-phase `Stopwatch` instrumentation was what actually
+localised the cost.
+
+Measure the RELEASE build. Debug and Release differ enough to mislead: the
+same input peaked at ~2.2GB median under Debug and ~2.9GB median under Release,
+and Release is what `pack.py` ships.
+
+
+Ground truth is `dotnet-gcdump report` itself, driven from
+`nettraceParser.Tests/GcDumpReaderTests.cs` behind `GCDUMP_GROUNDTRUTH_FIXTURE`
+(same opt-in shape as `NETTRACE_GROUNDTRUTH_FIXTURE`):
+```
+GCDUMP_GROUNDTRUTH_FIXTURE=~/path/to/some.gcdump \
+  dotnet test --filter GcDumpReaderTests
+```
+`testApps/GcDumpObjectGraphGenerator` builds a retained graph of a chosen
+object count (deep chains + shared payloads, so retained size and own size
+genuinely differ) to capture large fixtures against.
+
 
 ## Extension rendering (`dotnetInsights/src/`)
 

@@ -218,7 +218,7 @@ public static class AllocationSummaryBuilder
     // default) for every caller except GcJsonExporter.WriteToFile's --json
     // mode dispatch (see that method's own comment on why this file is one
     // of only two JSON sub-writers with internal fine-grained tracking).
-    public static void Write(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, MethodSymbolTable symbolTable, string ticksBinaryPath, Action<double> onProgress = null)
+    public static void Write(Utf8JsonWriter writer, List<AllocationEvent> allocationEvents, StackTable stackTable, MethodSymbolTable symbolTable, string ticksBinaryPath, Action<double> onProgress = null)
     {
         // Sorted once, in place, up front - every pass below (including
         // WriteTicks, which used to make its own defensive copy+sort just
@@ -247,14 +247,14 @@ public static class AllocationSummaryBuilder
         // makes (drillDown AND typeDrillDown, "all" AND "loh") - see
         // BuildCallerTree's own comment on why resolving the same distinct
         // raw stack's frames more than once is pure waste: a given
-        // AllocationEvent.Stack array reference commonly feeds BOTH its
+        // AllocationEvent.StackIndex commonly feeds BOTH its
         // (type, bucket) cell's tree AND its type's whole-capture tree, and
         // every "loh" stack is by construction also an "all" stack (loh is
         // just a Large-kind filter over the same events) - without this
         // cache, MethodSymbolTable.ResolveId (and its own internal
         // address cache lookup) was measured (dotnet-trace, a real
         // capture) running up to 4x on the same physical stack.
-        Dictionary<long[], int[]> frameIdCache = new Dictionary<long[], int[]>(ReferenceEqualityComparer.Instance);
+        Dictionary<int, int[]> frameIdCache = new Dictionary<int, int[]>();
 
         // Shared by every BuildCallerTree call this whole Write invocation
         // makes, the same way frameIdCache is - see DrillDownTreeNodePool's
@@ -295,7 +295,7 @@ public static class AllocationSummaryBuilder
         writer.WritePropertyName("ticks");
         WriteTicks(writer, allocationEvents, ticksBinaryPath, ScaleProgress(onProgress, 0.0, TicksProgressFractionEnd));
 
-        WriteTypeBreakdown(writer, allocationEvents, bucketCount, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool, ScaleProgress(onProgress, TicksProgressFractionEnd, allBreakdownFractionEnd));
+        WriteTypeBreakdown(writer, allocationEvents, bucketCount, stackTable, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool, ScaleProgress(onProgress, TicksProgressFractionEnd, allBreakdownFractionEnd));
 
         // Identical breakdown (same totalSampledBytes/topTypes/typeTimeline/
         // drillDown/typeDrillDown field names and shapes as above), scoped
@@ -312,7 +312,7 @@ public static class AllocationSummaryBuilder
         // type-oriented views.
         writer.WritePropertyName("loh");
         writer.WriteStartObject();
-        WriteTypeBreakdown(writer, lohEvents, bucketCount, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool, ScaleProgress(onProgress, allBreakdownFractionEnd, 1.0));
+        WriteTypeBreakdown(writer, lohEvents, bucketCount, stackTable, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool, ScaleProgress(onProgress, allBreakdownFractionEnd, 1.0));
         writer.WriteEndObject();
 
         // Written last since it's only fully populated once every stack in
@@ -373,7 +373,7 @@ public static class AllocationSummaryBuilder
     // events must already be sorted ascending by RelativeMSec (true both for
     // the full list, sorted once in Write, and any filtered subset of it,
     // since filtering preserves relative order).
-    private static void WriteTypeBreakdown(Utf8JsonWriter writer, List<AllocationEvent> events, int bucketCount, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner, Dictionary<long[], int[]> frameIdCache, DrillDownTreeNodePool nodePool, ChildBufferPool bufferPool, Action<double> onProgress = null)
+    private static void WriteTypeBreakdown(Utf8JsonWriter writer, List<AllocationEvent> events, int bucketCount, StackTable stackTable, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner, Dictionary<int, int[]> frameIdCache, DrillDownTreeNodePool nodePool, ChildBufferPool bufferPool, Action<double> onProgress = null)
     {
         Dictionary<string, TypeAllocStats> statsByType = new Dictionary<string, TypeAllocStats>();
         long totalSampledBytes = 0;
@@ -475,7 +475,7 @@ public static class AllocationSummaryBuilder
         int distinctStackCountEstimate = 0;
         for (int typeIndex = 0; typeIndex < aggregates.ByType.Length; ++typeIndex)
         {
-            Dictionary<long[], StackAggregate> typeStacks = aggregates.ByType[typeIndex];
+            Dictionary<int, StackAggregate> typeStacks = aggregates.ByType[typeIndex];
             if (typeStacks != null)
             {
                 distinctStackCountEstimate += typeStacks.Count;
@@ -485,10 +485,10 @@ public static class AllocationSummaryBuilder
         frameIdCache.EnsureCapacity(frameIdCache.Count + distinctStackCountEstimate);
 
         writer.WritePropertyName("drillDown");
-        WriteCellDrillDown(writer, aggregates.ByCell, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool);
+        WriteCellDrillDown(writer, aggregates.ByCell, stackTable, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool);
 
         writer.WritePropertyName("typeDrillDown");
-        WriteTypeDrillDown(writer, aggregates.ByType, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool);
+        WriteTypeDrillDown(writer, aggregates.ByType, stackTable, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool);
     }
 
     // Shared by WriteTypeTimeline and WriteDrillDown so both agree on
@@ -602,7 +602,7 @@ public static class AllocationSummaryBuilder
 
     private class StackAggregate
     {
-        public long[] Stack;
+        public int StackIndex;
         public long TotalBytes;
         public int TickCount;
         // The first tick's own RelativeMSec that contributed to this
@@ -618,8 +618,8 @@ public static class AllocationSummaryBuilder
 
     private struct DrillDownAggregates
     {
-        public Dictionary<(int TypeIndex, int BucketIndex), Dictionary<long[], StackAggregate>> ByCell;
-        public Dictionary<long[], StackAggregate>[] ByType;
+        public Dictionary<(int TypeIndex, int BucketIndex), Dictionary<int, StackAggregate>> ByCell;
+        public Dictionary<int, StackAggregate>[] ByType;
     }
 
     // Single pass over every tick, building both drill-down shapes at once:
@@ -634,7 +634,7 @@ public static class AllocationSummaryBuilder
     // stacks across the whole capture, not just one chart segment's slice
     // of it.
     //
-    // Both aggregations key stacks by AllocationEvent.Stack's own array
+    // Both aggregations key stacks by AllocationEvent.StackIndex's own
     // reference (ReferenceEqualityComparer, see below), NOT by the raw
     // StackId integer the wire format uses - that integer is recyclable
     // (NetTraceFormat_v5.md's StackBlock section describes a *bounded*
@@ -648,6 +648,34 @@ public static class AllocationSummaryBuilder
     // same array instance, and Array.Empty<long>() (the "no stack" value)
     // is itself a single cached instance shared by every no-stack tick, so
     // those still group together too.
+    // Floor keeps a rarely-allocated type's cells from starting at 1-2 slots
+    // (where every insert reallocates); ceiling keeps one dominant type from
+    // reserving thousands of slots per cell it appears in.
+    private const int MinCellStackCapacity = 8;
+    private const int MaxCellStackCapacity = 4096;
+
+    private static int EstimateCellCapacity(List<TypeAllocStats> sortedStats, int chartTypeIndex, int bucketCount)
+    {
+        if (bucketCount <= 0 || chartTypeIndex < 0 || chartTypeIndex >= sortedStats.Count)
+        {
+            return MinCellStackCapacity;
+        }
+
+        int averagePerBucket = sortedStats[chartTypeIndex].TickCount / bucketCount;
+
+        if (averagePerBucket < MinCellStackCapacity)
+        {
+            return MinCellStackCapacity;
+        }
+
+        if (averagePerBucket > MaxCellStackCapacity)
+        {
+            return MaxCellStackCapacity;
+        }
+
+        return averagePerBucket;
+    }
+
     private static DrillDownAggregates BuildDrillDownAggregates(List<AllocationEvent> allocationEvents, Dictionary<string, int> columnIndexByType, Dictionary<string, int> typeIndexByName, List<TypeAllocStats> sortedStats, int topTypesCount, int bucketCount)
     {
         DrillDownAggregates aggregates = new DrillDownAggregates();
@@ -664,15 +692,15 @@ public static class AllocationSummaryBuilder
         // every cell will actually get a tick, but reserving the full grid
         // up front avoids ByCell's own resize churn as new cells are
         // discovered one at a time below.
-        aggregates.ByCell = new Dictionary<(int, int), Dictionary<long[], StackAggregate>>(columnIndexByType.Count * bucketCount);
-        aggregates.ByType = new Dictionary<long[], StackAggregate>[topTypesCount];
+        aggregates.ByCell = new Dictionary<(int, int), Dictionary<int, StackAggregate>>(columnIndexByType.Count * bucketCount);
+        aggregates.ByType = new Dictionary<int, StackAggregate>[topTypesCount];
 
         Span<AllocationEvent> allocationEventsSpan = CollectionsMarshal.AsSpan(allocationEvents);
         for (int eventIndex = 0; eventIndex < allocationEventsSpan.Length; ++eventIndex)
         {
             ref readonly AllocationEvent allocationEvent = ref allocationEventsSpan[eventIndex];
             string typeName = string.IsNullOrEmpty(allocationEvent.TypeName) ? "<unknown>" : allocationEvent.TypeName;
-            long[] stackKey = allocationEvent.Stack;
+            int stackKey = allocationEvent.StackIndex;
 
             if (bucketCount > 0)
             {
@@ -682,10 +710,25 @@ public static class AllocationSummaryBuilder
                     int bucketIndex = ComputeBucketIndex(allocationEvent.RelativeMSec, bucketCount);
                     (int TypeIndex, int BucketIndex) cellKey = (chartTypeIndex, bucketIndex);
 
-                    Dictionary<long[], StackAggregate> cellStacks;
+                    Dictionary<int, StackAggregate> cellStacks;
                     if (!aggregates.ByCell.TryGetValue(cellKey, out cellStacks))
                     {
-                        cellStacks = new Dictionary<long[], StackAggregate>(ReferenceEqualityComparer.Instance);
+                        // Presized the same way ByType's own dictionaries
+                        // below are, and for the same measured reason: this
+                        // one used to start at capacity 0 and rehash its way
+                        // up (3, 7, 17, 37, 89, ...) once per cell, and on a
+                        // real 3.23GB/895k-tick capture Dictionary.Resize
+                        // under this method was 21.3% of the whole allocation
+                        // export phase - the single largest self cost in it.
+                        //
+                        // No exact per-cell bound exists without a second
+                        // pass over every tick, so this uses the type's own
+                        // average ticks per bucket, which is an estimate but
+                        // a data-driven one (and an over-estimate of DISTINCT
+                        // stacks, since stacks repeat within a cell). Clamped
+                        // at both ends so neither a huge concentrated type nor
+                        // a one-tick type can distort it.
+                        cellStacks = new Dictionary<int, StackAggregate>(EstimateCellCapacity(sortedStats, chartTypeIndex, bucketCount));
                         aggregates.ByCell[cellKey] = cellStacks;
                     }
 
@@ -696,7 +739,7 @@ public static class AllocationSummaryBuilder
             int globalTypeIndex;
             if (typeIndexByName.TryGetValue(typeName, out globalTypeIndex))
             {
-                Dictionary<long[], StackAggregate> typeStacks = aggregates.ByType[globalTypeIndex];
+                Dictionary<int, StackAggregate> typeStacks = aggregates.ByType[globalTypeIndex];
                 if (typeStacks == null)
                 {
                     // sortedStats[globalTypeIndex].TickCount (already
@@ -712,7 +755,7 @@ public static class AllocationSummaryBuilder
                     // a real capture's single largest type had 140,444
                     // distinct stacks, meaning ~18 resize-and-copy cycles
                     // from an unsized start.
-                    typeStacks = new Dictionary<long[], StackAggregate>(sortedStats[globalTypeIndex].TickCount, ReferenceEqualityComparer.Instance);
+                    typeStacks = new Dictionary<int, StackAggregate>(sortedStats[globalTypeIndex].TickCount);
                     aggregates.ByType[globalTypeIndex] = typeStacks;
                 }
 
@@ -723,13 +766,13 @@ public static class AllocationSummaryBuilder
         return aggregates;
     }
 
-    private static void AddToStackAggregate(Dictionary<long[], StackAggregate> stacks, long[] stackKey, long allocationAmount, double relativeMSec)
+    private static void AddToStackAggregate(Dictionary<int, StackAggregate> stacks, int stackKey, long allocationAmount, double relativeMSec)
     {
         StackAggregate aggregate;
         if (!stacks.TryGetValue(stackKey, out aggregate))
         {
             aggregate = new StackAggregate();
-            aggregate.Stack = stackKey;
+            aggregate.StackIndex = stackKey;
             aggregate.FirstSeenRelativeMSec = relativeMSec;
             stacks[stackKey] = aggregate;
         }
@@ -1051,7 +1094,7 @@ public static class AllocationSummaryBuilder
     // either way), and "loh" stacks are always a subset of "all" stacks,
     // so without this a real capture re-resolved the same stack's frames
     // up to 4x.
-    private static DrillDownTreeNode BuildCallerTree(List<StackAggregate> rawStacks, MethodSymbolTable symbolTable, Dictionary<long[], int[]> frameIdCache, DrillDownTreeNodePool nodePool)
+    private static DrillDownTreeNode BuildCallerTree(List<StackAggregate> rawStacks, StackTable stackTable, MethodSymbolTable symbolTable, Dictionary<int, int[]> frameIdCache, DrillDownTreeNodePool nodePool)
     {
         DrillDownTreeNode root = nodePool.Rent();
 
@@ -1060,7 +1103,8 @@ public static class AllocationSummaryBuilder
             StackAggregate rawStack = rawStacks[stackIndex];
             DrillDownTreeNode current = root;
 
-            if (rawStack.Stack.Length == 0)
+            long[] stackFrames = stackTable.FramesAt(rawStack.StackIndex);
+            if (stackFrames.Length == 0)
             {
                 current = current.GetOrAddChild(NoStackFrameId, nodePool);
                 AccumulateTreeNode(current, rawStack);
@@ -1068,15 +1112,15 @@ public static class AllocationSummaryBuilder
             }
 
             int[] frameIds;
-            if (!frameIdCache.TryGetValue(rawStack.Stack, out frameIds))
+            if (!frameIdCache.TryGetValue(rawStack.StackIndex, out frameIds))
             {
-                frameIds = new int[rawStack.Stack.Length];
-                for (int frameIndex = 0; frameIndex < rawStack.Stack.Length; ++frameIndex)
+                frameIds = new int[stackFrames.Length];
+                for (int frameIndex = 0; frameIndex < stackFrames.Length; ++frameIndex)
                 {
-                    frameIds[frameIndex] = symbolTable.ResolveId(rawStack.Stack[frameIndex], rawStack.FirstSeenRelativeMSec);
+                    frameIds[frameIndex] = symbolTable.ResolveId(stackFrames[frameIndex], rawStack.FirstSeenRelativeMSec);
                 }
 
-                frameIdCache[rawStack.Stack] = frameIds;
+                frameIdCache[rawStack.StackIndex] = frameIds;
             }
 
             for (int frameIndex = 0; frameIndex < frameIds.Length; ++frameIndex)
@@ -1302,13 +1346,13 @@ public static class AllocationSummaryBuilder
     // actually drawn from) from the capped tree alone, which previously
     // made the drill-down view's own displayed percentages silently
     // disagree with the bar they were opened from.
-    private static void WriteCellDrillDown(Utf8JsonWriter writer, Dictionary<(int TypeIndex, int BucketIndex), Dictionary<long[], StackAggregate>> stacksByCell, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner, Dictionary<long[], int[]> frameIdCache, DrillDownTreeNodePool nodePool, ChildBufferPool bufferPool)
+    private static void WriteCellDrillDown(Utf8JsonWriter writer, Dictionary<(int TypeIndex, int BucketIndex), Dictionary<int, StackAggregate>> stacksByCell, StackTable stackTable, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner, Dictionary<int, int[]> frameIdCache, DrillDownTreeNodePool nodePool, ChildBufferPool bufferPool)
     {
         writer.WriteStartObject();
         writer.WritePropertyName("cells");
         writer.WriteStartObject();
 
-        foreach (KeyValuePair<(int TypeIndex, int BucketIndex), Dictionary<long[], StackAggregate>> cellEntry in stacksByCell)
+        foreach (KeyValuePair<(int TypeIndex, int BucketIndex), Dictionary<int, StackAggregate>> cellEntry in stacksByCell)
         {
             List<StackAggregate> cellStackList = new List<StackAggregate>(cellEntry.Value.Values);
 
@@ -1320,7 +1364,7 @@ public static class AllocationSummaryBuilder
                 cellTotalTickCount += cellStackList[stackIndex].TickCount;
             }
 
-            DrillDownTreeNode tree = BuildCallerTree(cellStackList, symbolTable, frameIdCache, nodePool);
+            DrillDownTreeNode tree = BuildCallerTree(cellStackList, stackTable, symbolTable, frameIdCache, nodePool);
             MarkIncludedNodes(tree, DrillDownTreeNodeBudgetPerCell, bufferPool);
 
             writer.WritePropertyName($"{cellEntry.Key.TypeIndex}:{cellEntry.Key.BucketIndex}");
@@ -1369,13 +1413,13 @@ public static class AllocationSummaryBuilder
     // stacks than the cap needs a way to recover its real (topTypes-
     // matching) total from something other than summing the possibly-
     // truncated tree.
-    private static void WriteTypeDrillDown(Utf8JsonWriter writer, Dictionary<long[], StackAggregate>[] stacksByType, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner, Dictionary<long[], int[]> frameIdCache, DrillDownTreeNodePool nodePool, ChildBufferPool bufferPool)
+    private static void WriteTypeDrillDown(Utf8JsonWriter writer, Dictionary<int, StackAggregate>[] stacksByType, StackTable stackTable, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner, Dictionary<int, int[]> frameIdCache, DrillDownTreeNodePool nodePool, ChildBufferPool bufferPool)
     {
         writer.WriteStartArray();
 
         for (int typeIndex = 0; typeIndex < stacksByType.Length; ++typeIndex)
         {
-            Dictionary<long[], StackAggregate> typeStacks = stacksByType[typeIndex];
+            Dictionary<int, StackAggregate> typeStacks = stacksByType[typeIndex];
 
             writer.WriteStartObject();
 
@@ -1395,7 +1439,7 @@ public static class AllocationSummaryBuilder
                 writer.WriteNumber("totalTickCount", typeTotalTickCount);
                 writer.WriteNumber("distinctStackCount", stackList.Count);
 
-                DrillDownTreeNode tree = BuildCallerTree(stackList, symbolTable, frameIdCache, nodePool);
+                DrillDownTreeNode tree = BuildCallerTree(stackList, stackTable, symbolTable, frameIdCache, nodePool);
                 MarkIncludedNodes(tree, DrillDownTreeNodeBudgetPerType, bufferPool);
                 WriteCallerTreeChildren(writer, tree, symbolTable, methodNameInterner, bufferPool);
 

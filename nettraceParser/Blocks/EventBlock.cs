@@ -56,16 +56,23 @@ public class EventBlock : IFastSerializable, IFastSerializableVersion
     // than deferring to a later pass, is what makes EventRecord.Stack immune
     // to a later StackBlock reusing the same numeric id (see EventRecord.cs's
     // own comment on Stack for why that reuse is real and this matters).
-    private readonly Dictionary<int, long[]> stacksById;
+    public static long DebugBlockBytesTotal;
+    public static long DebugBlockCount;
+    public static long DebugClrPayloadBytes;
+    public static long DebugOtherPayloadBytes;
+    public static long DebugClrEvents;
+    public static long DebugOtherEvents;
+
+    private readonly Dictionary<int, int> stackIndexById;
 
     public int EventCount { get; set; }
     public int SkippedEventCount { get; set; }
 
-    public EventBlock(Dictionary<int, EventMetadata> metadataById, List<EventRecord> events, Dictionary<int, long[]> stacksById)
+    public EventBlock(Dictionary<int, EventMetadata> metadataById, List<EventRecord> events, Dictionary<int, int> stackIndexById)
     {
         this.metadataById = metadataById;
         this.events = events;
-        this.stacksById = stacksById;
+        this.stackIndexById = stackIndexById;
     }
 
     public void FromStream(Deserializer deserializer)
@@ -96,7 +103,15 @@ public class EventBlock : IFastSerializable, IFastSerializableVersion
         // (it avoided a per-event copy out of an intermediate buffer, and that
         // property is preserved here: events are still parsed in place out of
         // this array).
-        byte[] blockBytes = new byte[blockSize];
+        // Uninitialized: the very next statement overwrites every byte of
+        // this buffer from the stream, so the zeroing `new byte[]` would do
+        // first is pure waste. It is not free at this size - a heap-dump
+        // capture is ~800MB of blocks, and a CPU profile of the .gcdump
+        // conversion attributed roughly a third of the whole run to
+        // allocating and first-touching these buffers.
+        byte[] blockBytes = GC.AllocateUninitializedArray<byte>(blockSize);
+        DebugBlockBytesTotal += blockSize;
+        ++DebugBlockCount;
         deserializer.Reader.Read(blockBytes, 0, blockSize);
 
         MemoryStreamReader blockReader = new MemoryStreamReader(blockBytes, 0, blockSize, SerializationSettings.Default);
@@ -189,15 +204,15 @@ public class EventBlock : IFastSerializable, IFastSerializableVersion
                     fields = EmptyFields;
                 }
 
-                // Resolved NOW, against whatever this.stacksById holds at
+                // Resolved NOW, against whatever this.stackIndexById holds at
                 // this exact point in the (in-order) parse - see
                 // EventRecord.cs's own comment on Stack for why a deferred,
                 // look-up-by-id-later approach is wrong (StackId values get
                 // reused later in the file).
-                long[] stack;
-                if (eventHeader.StackId == 0 || !this.stacksById.TryGetValue(eventHeader.StackId, out stack))
+                int stackIndex;
+                if (eventHeader.StackId == 0 || !this.stackIndexById.TryGetValue(eventHeader.StackId, out stackIndex))
                 {
-                    stack = System.Array.Empty<long>();
+                    stackIndex = StackTable.EmptyStackIndex;
                 }
 
                 EventRecord record = new EventRecord(
@@ -207,11 +222,22 @@ public class EventBlock : IFastSerializable, IFastSerializableVersion
                     metadata.Version,
                     eventHeader.TimeStamp,
                     eventHeader.ThreadId,
-                    stack,
+                    stackIndex,
                     fields,
                     blockBytes,
                     payloadStart,
                     eventHeader.PayloadSize);
+
+                if (metadata.ProviderName == "Microsoft-Windows-DotNETRuntime" || metadata.ProviderName == "Microsoft-Windows-DotNETRuntimeRundown")
+                {
+                    DebugClrPayloadBytes += eventHeader.PayloadSize;
+                    ++DebugClrEvents;
+                }
+                else
+                {
+                    DebugOtherPayloadBytes += eventHeader.PayloadSize;
+                    ++DebugOtherEvents;
+                }
 
                 this.events.Add(record);
                 ++this.EventCount;
