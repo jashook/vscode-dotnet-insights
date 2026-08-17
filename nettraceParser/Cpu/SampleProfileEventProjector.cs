@@ -14,10 +14,16 @@
 // event on this provider was EventId=0, Version=0, with a non-empty
 // stack already resolved (see EventBlock.cs/StackBlock.cs -
 // stack resolution isn't provider-specific, so this "just worked" with no
-// changes to that layer). Fires at a fixed sampling interval (~100 Hz by
-// default) on every managed thread the runtime is actively running - no
-// per-event payload fields are needed here, only the event's own resolved
-// stack index/ThreadId/timestamp.
+// changes to that layer). Fires at a fixed sampling interval on EVERY managed
+// thread, not only the running ones - a thread blocked in a syscall is sampled
+// just the same, which is what makes a thread's sample count a proxy for its
+// wall-clock time rather than for its CPU.
+//
+// The event's payload is a single int32, the runtime's own ThreadSampleType
+// (see that enum below). It was skipped here originally - the CPU view needs
+// only stack/thread/timestamp - and is decoded now because it is the one thing
+// in the capture that distinguishes a thread executing managed code from one
+// parked in a native call, which the stack alone cannot do.
 ////////////////////////////////////////////////////////////////////////////////
 
 namespace DotnetInsights.NetTrace.Cpu {
@@ -26,6 +32,7 @@ namespace DotnetInsights.NetTrace.Cpu {
 ////////////////////////////////////////////////////////////////////////////////
 
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
@@ -33,6 +40,37 @@ using DotnetInsights.NetTrace.Progress;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
+
+// The runtime's own answer to "what was this thread executing when the
+// sampler caught it", read from the event's 4-byte payload. Values match
+// the CLR's SampleProfilerSampleType (ep-sample-profiler.c) and TraceEvent's
+// ThreadSampleType.
+//
+// External is the interesting one and its name undersells it: it means the
+// thread was NOT executing managed code - in a P/Invoke, in the runtime, or
+// blocked in a syscall. A thread parked forever in a native poll
+// (Grpc.Core.Internal.GrpcThreadPool.RunHandlerLoop,
+// Confluent.Kafka.Consumer.Consume, epoll) reports External on every single
+// sample while its managed leaf frame still looks like ordinary running code.
+// That is the only signal in the capture that can tell those apart WITHOUT a
+// per-library list of blocking methods, which is why it is plumbed through
+// (see Threading/ThreadActivityProfiler.cs, the one consumer).
+//
+// External is emphatically NOT "blocked" on its own - 92.6% of all samples on
+// a real 836MB service capture are External, because any thread doing socket
+// or file work spends most of its time in native code. It only means
+// something combined with the thread's other whole-capture aggregates.
+public enum ThreadSampleType : byte
+{
+    // The capture's samples carry no type at all (payload shorter than the
+    // 4 bytes this field occupies). Deliberately distinct from Managed rather
+    // than folded into it: a consumer that treats "unknown" as "was running"
+    // degrades to making no claim, which is what should happen.
+    Unknown = 0,
+    Error = 1,
+    External = 2,
+    Managed = 3
+}
 
 // A readonly struct, not a class - mirrors AllocationEvent's own reasoning
 // (see that type's header comment): SampleProfileEventProjector.Project can
@@ -50,12 +88,18 @@ public readonly struct SampleEvent
     // StackTable.EmptyStackIndex on the rare sample that couldn't be
     // stack-walked - that index resolves to an empty array, never null.
     public readonly int StackIndex;
+    // Free, size-wise: the three fields above are 8+8+4 = 20 bytes in a
+    // struct aligned to 8, so this lands in padding that was already being
+    // paid for. Worth checking before adding a fifth - a real capture holds
+    // 16.24M of these.
+    public readonly ThreadSampleType SampleType;
 
-    public SampleEvent(double relativeMSec, long threadId, int stackIndex)
+    public SampleEvent(double relativeMSec, long threadId, int stackIndex, ThreadSampleType sampleType = ThreadSampleType.Unknown)
     {
         this.RelativeMSec = relativeMSec;
         this.ThreadId = threadId;
         this.StackIndex = stackIndex;
+        this.SampleType = sampleType;
     }
 }
 
@@ -118,10 +162,47 @@ public static class SampleProfileEventProjector
                 relativeMSec = qpcDelta * 1000.0 / qpcFrequency;
             }
 
-            result.Add(new SampleEvent(relativeMSec, record.ThreadId, record.StackIndex));
+            result.Add(new SampleEvent(relativeMSec, record.ThreadId, record.StackIndex, DecodeSampleType(record)));
         }
 
         return result;
+    }
+
+    // The event's whole payload is one int32 - confirmed against real
+    // captures, where every SampleProfiler event has PayloadLength exactly 4
+    // and only the values 1 (External) and 2 (Managed) ever appear. The
+    // header comment on this projector used to say the event carried nothing
+    // worth decoding, which was true only for the CPU view's needs.
+    //
+    // The CLR's own enum is 1-based with Error=0/External=1/Managed=2, so the
+    // wire values are shifted by one into ThreadSampleType, whose 0 is
+    // reserved for "the capture did not carry this at all". A payload too
+    // short to hold the field (no real capture seen so far, but nothing in
+    // the format prevents an older or trimmed producer) reports Unknown
+    // rather than being guessed at.
+    private static ThreadSampleType DecodeSampleType(in EventRecord record)
+    {
+        if (record.PayloadLength < sizeof(int) || record.PayloadBuffer == null)
+        {
+            return ThreadSampleType.Unknown;
+        }
+
+        int rawSampleType = BinaryPrimitives.ReadInt32LittleEndian(record.PayloadBuffer.AsSpan(record.PayloadOffset, sizeof(int)));
+
+        switch (rawSampleType)
+        {
+            case 0:
+                return ThreadSampleType.Error;
+
+            case 1:
+                return ThreadSampleType.External;
+
+            case 2:
+                return ThreadSampleType.Managed;
+
+            default:
+                return ThreadSampleType.Unknown;
+        }
     }
 }
 

@@ -278,6 +278,121 @@ and the rules worth keeping:
   disabled showed *no* read-phase difference. Stack-walk misattribution.
   Confirm a surprising leaf with counters or an A/B before optimizing it.
 
+### Thread classification (`nettraceParser/Threading/ThreadActivityProfiler.cs`)
+
+The Threading view's tables all answer "what stack was this thread in at time
+T", and on a real service that question is mostly answered by threads that are
+parked ON PURPOSE - native poll loops, message consumers, watchers, the
+runtime's own gate and timer threads. They look blocked in every window ever
+taken and explain none of them, so every table was topped by them. Each thread
+is now classified over the WHOLE capture and the tables read that
+classification.
+
+Hard-won facts, all measured against three real service captures
+(ads-retrieval 836MB/66 threads, asset-delivery 1.39GB/132, assets-registry
+3.23GB/518):
+
+- **`ThreadSampleType` is the load-bearing signal, and it was being thrown
+  away.** The `Microsoft-DotNETCore-SampleProfiler` event's 4-byte payload is
+  the CLR's own `SampleProfilerSampleType` (`Error`/`External`/`Managed`);
+  `SampleProfileEventProjector`'s header used to say the event carried no
+  payload worth decoding, which was true only for the CPU view's needs.
+  `External` means the thread was NOT executing managed code - in a P/Invoke,
+  the runtime, or blocked in a syscall. This is the only thing in the capture
+  that identifies a thread parked in a native call, because its MANAGED leaf
+  frame reads like ordinary running code: six
+  `Grpc.Core.Internal.GrpcThreadPool.RunHandlerLoop` threads produced 222,240
+  samples each, 100% External, zero managed, and `CpuIdleWaitClassifier`
+  scored all six as "100% running". No list of library method names can ever
+  keep up with this (Kafka, gRPC, `FileSystemWatcher`, ...) and the runtime
+  already knows the answer. **`External` alone is NOT "blocked"** - 92.6% of
+  all samples on the ads-retrieval capture are External, because any thread
+  doing socket or file work is mostly in native code.
+- **Benign-parked needs all four gates**, and they are set where a false
+  POSITIVE costs most (hiding the one thread that mattered): contention
+  accounting for `< 1%` of the thread's life, `managedFraction <= 0.05`,
+  `topStacksShare >= 0.95`, and enough evidence to say so (>= 50 samples,
+  >= 1000ms observed). The managed fraction threshold sits in a measured empty
+  band - working threads clustered at 0.058-1.0, parked ones at 0.0-0.021,
+  nothing in between. An earlier 0.02 split the parked cluster itself.
+- **A parked worker is a small LOOP, not one frozen stack** - the
+  concentration gate is over the top THREE stacks, not the top one. A real
+  `Roblox.Coordination.BackgroundWorker.Run` drain worker parks on an empty
+  `BlockingCollection` 90.9% of the time, sleeps out its poll interval a
+  further 6.4%, and spends 1.0% in the blocking call that ships the batch:
+  98.2% across three stacks, 90.9% in the top one. Judging it on the top stack
+  alone called it `Blocked`, along with ~45 sibling queue-drain threads on
+  another capture. Across all three captures every non-pool thread that should
+  be benign sits at 0.982-1.000 on the three-stack figure.
+- **Contention evidence must be MATERIAL, not merely present.** "Any
+  contention event at all" was validated only against captures whose parked
+  threads happened to have exactly zero - luck, not a property. That same
+  drain worker carries 157 contention events worth 8.3ms across a 300-second
+  life: 0.0028%, ambient lock traffic explaining none of its idleness. 1% of
+  the thread's own observed life sits in a measured gap - non-pool threads
+  that should be benign account for 0.0000-0.33%, everything genuinely stuck
+  starts at 1.09%.
+- **A pool worker can only ever be benign by being parked in the pool's OWN
+  park**, and this is the one place where looking *more* parked makes a thread
+  *more* interesting rather than less. Getting it backwards hid the single
+  best finding in a reference capture: four threads running a synchronous
+  `Confluent.Kafka.Consumer.Consume` inside an `ExecuteAsync`, rooted in
+  `PortableThreadPool+WorkerThread.WorkerThreadStart` ->
+  `ThreadPoolWorkQueue.Dispatch`, each pinned for the entire 300-second
+  capture - textbook pool starvation, previously labelled benign `Parked`
+  because they sat so still. Behaviourally they are indistinguishable from the
+  benign dedicated drain worker above; the difference is entirely **whose
+  thread they are standing on**, which is why `isPoolWorker` has to be right
+  (hence the majority-of-samples test) and why it is checked before anything
+  behavioural.
+- **`ParkShareOfWait` answers the pool-worker question on BOTH paths.** A
+  parked-looking worker and a busy-looking one are the same population at
+  different duty cycles, so measuring them differently puts a seam through the
+  middle of it: gating the parked path on `PoolParkFraction >= 0.95` instead
+  split one capture's idle workers at 0.937/0.939 versus 0.956 - three
+  readings of the same thing.
+- **Classify the runtime's own parked threads by IDENTITY, not behaviour.**
+  `TimerQueue.TimerThread`, `PortableThreadPool+GateThread.GateThreadStart`
+  and `PortableThreadPool+WaitThread.WaitThreadStart` all park by design. The
+  timer thread carries `TimerQueue` on its stack (so it reads as a pool
+  worker), parks in `WaitHandle.WaitOneNoCheck` rather than the pool's
+  semaphore (so it is not an idle worker), and wakes on every tick to run real
+  managed code - 11.8% of its samples - so the parked test misses it too.
+  Behaviour alone therefore lands it on `BlockedPoolWorker`, the loudest label
+  the view has, on a thread doing exactly its job. Confirmed on a real
+  capture. The pool's actual WORKER entry point is deliberately not on that
+  list: a starved worker is the finding, not the noise.
+- **The exclusion is per THREAD, never per frame**, and there is a direct
+  proof in the data: `Confluent.Kafka.Consumer.Consume` appears in both the
+  actionable stall table (108 samples, from the one consumer that does real
+  work) and the excluded one (431 samples, from four that are parked in it).
+  Any method-name filter has to be wrong about one of them.
+- **`IsPoolWorker` is a fraction, not a flag**, and it is load-bearing for the
+  rule above. An "any sample ever" test marked a gRPC handler thread a pool
+  worker off 8 samples in 222,240 because it queued a work item once.
+- **`ParkShareOfWaitForHealthyWorker = 0.75`** separates a pool worker parked
+  between work items from one stuck elsewhere. Measured on captures that each
+  contain only one population, which is what makes the gap trustworthy:
+  healthy 0.872-0.951 (ads-retrieval, 34 workers), blocked 0.039-0.729
+  (assets-registry, 6 workers, each independently corroborated by 30ms-4,909ms
+  of real contention wait).
+- Excluded samples are **shown under their own heading**, not dropped. A
+  filter that cannot be audited is one nobody believes the first time it hides
+  something they expected - and on the ads-retrieval capture this filter sets
+  aside half of every sample in the file.
+- With no `ThreadSampleType` in the capture, **nothing** is classified as
+  parked (`HasSampleTypeData`) and the view says so, rather than falling back
+  to the leaf-frame heuristic this whole file exists because of.
+- Cost: one extra pass over every CPU sample, reported as `threading=` on the
+  `Timing:` line and 341-591ms across the three captures. A run-length front
+  end on the per-thread stack histogram (parked threads emit the same stack in
+  long runs) took that from 750-791ms to 586-611ms on the 3.23GB capture with
+  byte-identical output. **Measured and declined**: folding the leaf's
+  idle/wait answer into the per-stack memo saves less (to 661-678ms) and would
+  pin each leaf's resolution to first use, where every other consumer resolves
+  per sample - the whole-stack scans are memoized that way only because they
+  ask about a stack's shape, which does not move.
+
 ### `.nettrace` parsing progress bar (`nettraceParser/Progress/`)
 
 `--json` mode (only — the plain CLI/`--dump-fields` path is byte-for-byte
@@ -322,18 +437,21 @@ that could be weighted against each other; they report as one combined
 fractions, published into a `double[]` slot each and read by the main thread
 (`ReportProjectorProgress` in `Program.cs`) because `ProgressReporter` is
 static single-threaded state that writes to `Console.Error`.
-The export phase's own 5 sub-writer weights are
+The export phase's own 6 sub-writer weights are
 the one place a per-item estimate compares genuinely comparable
-things — 5 writers in the same phase of the same run — so `GcJsonExporter.
+things — 6 writers in the same phase of the same run — so `GcJsonExporter.
 WriteToFile` computes that split dynamically from THIS run's own real
 counts rather than a fixed constant.
 
-Only `Cpu/CpuProfileJsonExporter.cs` and `Gc/AllocationJsonExporter.cs`
-(`AllocationSummaryBuilder.Write`) get internal fine-grained progress
-tracking within the export phase — the other three sub-writers (exceptions,
-contention, the `gcData` array) are small enough on every capture measured
-so far (all under ~1% of total time) that a start/complete snap is visually
-indistinguishable from tracking them internally. Every per-event loop's
+Only `Cpu/CpuProfileJsonExporter.cs`, `Gc/AllocationJsonExporter.cs`
+(`AllocationSummaryBuilder.Write`) and `Threading/ThreadActivityProfiler.cs`
+get internal fine-grained progress tracking within the export phase — the
+other three sub-writers (exceptions, contention, the `gcData` array) are small
+enough on every capture measured so far (all under ~1% of total time) that a
+start/complete snap is visually indistinguishable from tracking them
+internally. The threading writer crossed that line when the thread
+classification landed: it went from a rounding error to 341–591ms (~10% of the
+run), which is long enough for a frozen bar to be noticed. Every per-event loop's
 progress check is gated by `(index & ProgressReporter.IndexProgressMask) ==
 0` (a power-of-two mask, not `% N`) specifically because a delegate call on
 every iteration of a 26M-sample loop is exactly the kind of per-iteration
@@ -372,7 +490,7 @@ it receives that signal.
 Recalibrating `ProgressPlan.cs`'s weight constants against a third
 differently-shaped capture is a single CLI run, not scaffolding that needs
 re-adding: the final `Timing: ...` line's `export=` field permanently breaks
-down as `export=Xms(alloc=..,exc=..,cpu=..,cont=..,gc=..)`.
+down as `export=Xms(alloc=..,exc=..,cpu=..,cont=..,threading=..,gc=..)`.
 
 That field is called `export=`, not `jsonExport=` (renamed 2026-08-15, along
 with `JsonExportTiming`/`ProgressPlan.PlanJsonExport*`), because the phase has
