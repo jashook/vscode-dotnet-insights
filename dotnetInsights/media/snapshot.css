@@ -2650,3 +2650,136 @@ td.rowHideColumn:hover
     transform: rotate(90deg);
 }
 
+
+/* ---------------------------------------------------------------------------
+   Threads roster (ThreadingRenderer.ts renderThreadRoster)
+
+   The classification's whole purpose is to let the reader skip rows, so the
+   styling has one job: make "skip me" legible at a glance without hiding the
+   row. Benign rows are dimmed rather than collapsed or filtered out - a thread
+   somebody knows well WILL be classified in a way they want to argue with, and
+   a row they cannot see is a row they cannot argue with.
+   --------------------------------------------------------------------------- */
+.threadingBenignRow > td
+{
+    opacity: 0.55;
+}
+
+.threadingStackRow.threadingBenignRow:hover > td
+{
+    opacity: 1;
+}
+
+.threadingRoleBadge
+{
+    border-radius: 6px;
+    font-size: 9px;
+    letter-spacing: 0.04em;
+    padding: 1px 6px;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+/* Numbered to match ThreadActivityRole's own values, so adding a role means
+   adding one rule here and nothing else. Severity runs red -> orange -> plain
+   -> grey, matching the enum's own order. */
+.threadingRoleBadge0
+{
+    background-color: rgba(53, 163, 83, 0.35);
+}
+
+.threadingRoleBadge1
+{
+    background-color: rgba(224, 82, 82, 0.55);
+    font-weight: bold;
+}
+
+.threadingRoleBadge2
+{
+    background-color: rgba(224, 160, 32, 0.45);
+}
+
+.threadingRoleBadge3,
+.threadingRoleBadge4,
+.threadingRoleBadge5
+{
+    background-color: rgba(128, 128, 128, 0.35);
+}
+
+.threadingRoleLegend
+{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 6px 0 10px 0;
+}
+
+.threadingRoleChip
+{
+    align-items: center;
+    border: 1px solid rgba(128, 128, 128, 0.30);
+    border-radius: 10px;
+    display: inline-flex;
+    gap: 5px;
+    padding: 2px 8px 2px 3px;
+}
+
+.threadingRoleChipBenign
+{
+    opacity: 0.6;
+}
+
+.threadingRoleChipCount
+{
+    font-size: 12px;
+    font-weight: bold;
+}
+
+/* Stated, not styled as an error: a capture without the sample profiler's
+   managed/native flag is a legitimate capture, it just cannot support this
+   classification. */
+.threadingNoSampleTypeNote
+{
+    border-left: 3px solid rgba(224, 160, 32, 0.55);
+    padding-left: 8px;
+}
+
+/* Collapsed by default and openable, because it exists to be checked rather
+   than read - see the comment on excludedSectionHtml in ThreadingRenderer.ts. */
+.threadingExcludedDetails
+{
+    margin-top: 10px;
+}
+
+.threadingExcludedDetails > summary
+{
+    cursor: pointer;
+    font-size: 12px;
+    opacity: 0.75;
+    padding: 4px 0;
+}
+
+/* The roster has eight columns, and the shared `width: 7%` rule above would
+   leave the leftover width to the FIRST column (Role), which needs the least
+   of it. Pinning Role to a percentage and leaving "Sitting In" as the one auto
+   column hands the slack to the method names instead - the same mechanism, and
+   the same trap, as the ranked-table widths documented in CLAUDE.md. Higher
+   specificity than the class-scoped rule because of the id. */
+#threadRosterTable > tbody > tr > th:nth-child(1),
+#threadRosterTable > tbody > tr > td:nth-child(1)
+{
+    width: 10%;
+}
+
+#threadRosterTable > tbody > tr > th:nth-child(3),
+#threadRosterTable > tbody > tr > td:nth-child(3)
+{
+    width: auto;
+}
+
+/* "119 / 4.91 s" does not fit in 7%. */
+#threadRosterTable > tbody > tr > th:nth-child(8),
+#threadRosterTable > tbody > tr > td:nth-child(8)
+{
+    width: 12%;
+}

@@ -14,6 +14,18 @@
 // joining CPU samples to the timestamps of adjustments the runtime made
 // because work stopped progressing. That is the one place this view can say
 // what threads were actually doing.
+//
+// And what closes the OTHER gap - the one that made this view misleading
+// rather than merely incomplete - is the thread roster, from
+// threadingSummary["threadActivity"]. Joining samples to stall windows
+// answers "what stack was this thread in", which on a real service is mostly
+// answered by threads that are parked on purpose: native poll loops, message
+// consumers, watchers, the runtime's own gate and timer threads. They look
+// blocked in every window ever taken, so every table here used to be topped
+// by them. The roster classifies each thread over the WHOLE capture (see
+// nettraceParser/Threading/ThreadActivityProfiler.cs) and every table below
+// reads that classification, so what is left is the part of the picture that
+// actually changed when the pool stalled.
 
 import { renderSortableTableHeader } from './GcDetailTableRenderer';
 
@@ -65,6 +77,7 @@ export function renderThreadingView(threadingSummary: any, threadingMethodNames:
                 <div>Threads Created<span>${Number(threadingSummary["threadCreationCount"]).toLocaleString()}</span></div>
                 <div>Locks Created<span>${Number(threadingSummary["lockCreationCount"]).toLocaleString()}</span></div>
             </div>
+            ${renderThreadRosterTile(threadingSummary["threadActivity"])}
         </div>`;
 
     // Same zoom-status/reset-button idiom every other timeline on this page
@@ -82,16 +95,184 @@ export function renderThreadingView(threadingSummary: any, threadingMethodNames:
         </div>`;
 
     return `${summaryTilesHtml}${timelineHtml}` +
-        `${renderStallCorrelation(threadingSummary["stallCorrelation"], threadingMethodNames)}` +
+        `${renderThreadRoster(threadingSummary["threadActivity"], threadingMethodNames)}` +
+        `${renderStallCorrelation(threadingSummary["stallCorrelation"], threadingSummary["threadActivity"], threadingMethodNames)}` +
         `${renderAdjustmentReasons(threadingSummary["adjustmentReasons"])}` +
         `${renderAdjustmentsTable(threadingSummary)}` +
         `${renderStackedEventTable("threadCreations", "Thread Creations", threadingSummary["threadCreations"], threadingMethodNames, true)}` +
         `${renderStackedEventTable("lockCreations", "Lock Creations", threadingSummary["lockCreations"], threadingMethodNames, false)}`;
 }
 
+function formatPercent(fraction: number): string {
+    const percent = Number(fraction) * 100;
+
+    if (percent > 0 && percent < 0.1) {
+        // "0.0%" for a thread that ran 60 managed samples out of 222,240 is
+        // technically right and reads as "never", which is a different claim
+        // than the one being made.
+        return "&lt;0.1%";
+    }
+
+    return `${percent.toFixed(1)}%`;
+}
+
+// The summary tile, so the headline number is visible without scrolling to
+// the roster: how much of this capture's thread activity the reader can skip.
+function renderThreadRosterTile(threadActivity: any): string {
+    if (!threadActivity || !threadActivity["hasSampleTypeData"]) {
+        return "";
+    }
+
+    const threadCount = Number(threadActivity["threadCount"]);
+    const benignCount = Number(threadActivity["benignThreadCount"]);
+    const sampleCount = Number(threadActivity["sampleCount"]);
+    const benignSampleCount = Number(threadActivity["benignSampleCount"]);
+    const benignSamplePercent = sampleCount > 0 ? (benignSampleCount * 100) / sampleCount : 0;
+
+    return `<div class="total">
+                <div>Threads</div>
+                <div>Total<span>${threadCount.toLocaleString()}</span></div>
+                <div>Worth Reading<span>${(threadCount - benignCount).toLocaleString()}</span></div>
+                <div>Benignly Parked<span>${benignCount.toLocaleString()} (${benignSamplePercent.toFixed(0)}% of samples)</span></div>
+            </div>`;
+}
+
+// One row per thread, classified over the whole capture. This is the
+// supplemental information every other table on this page now leans on, and
+// it is deliberately the first table: deciding which threads to ignore is
+// what makes the rest of the page readable.
+//
+// Every input to a classification is shown next to its verdict, not just the
+// verdict. A label with no numbers behind it gets ignored the first time it
+// looks wrong, and this one WILL look wrong on some thread somebody knows
+// well - at which point the fix is for them to see managedFraction and
+// dominant-stack share and judge for themselves.
+function renderThreadRoster(threadActivity: any, methodNames: string[]): string {
+    if (!threadActivity) {
+        return "";
+    }
+
+    const threads = threadActivity["threads"] || [];
+
+    if (threads.length === 0) {
+        return "";
+    }
+
+    // The classification's own precondition, stated rather than silently
+    // degraded: without the sample profiler's managed/native flag there is no
+    // way to tell a thread parked in a native call from one running native
+    // code, so nothing is called parked (see ThreadActivityProfiler.
+    // ClassifyRole) and this table is just a thread listing.
+    const noSampleTypeNote = threadActivity["hasSampleTypeData"]
+        ? ""
+        : `<div class="threadingNote threadingNoSampleTypeNote">This capture's CPU samples carry no managed/native flag, so no thread
+           can be shown to be parked and every thread below is listed as active. Captures taken with
+           <b>Microsoft-DotNETCore-SampleProfiler</b> enabled (the <b>dotnet-trace collect</b> default) carry it.</div>`;
+
+    var rows = "";
+    for (var index = 0; index < threads.length; ++index) {
+        const thread = threads[index];
+        const topStacks = thread["topStacks"] || [];
+        const topFrames = topStacks.length > 0 ? (topStacks[0]["frames"] || []) : [];
+        const topLeaf = topFrames.length > 0 ? methodNames[topFrames[0]] : "&lt;no stack captured&gt;";
+        const isBenign = thread["isBenign"] === true;
+
+        const contentionCell = Number(thread["contentionCount"]) > 0
+            ? `${Number(thread["contentionCount"]).toLocaleString()} / ${formatMSec(Number(thread["contentionWaitMSec"]))}`
+            : `<span class="threadingNoSnapshot">none</span>`;
+
+        rows += `<tr class="threadingStackRow${isBenign ? ' threadingBenignRow' : ''}" ` +
+            `data-threading-expandable="true" data-threading-target="threadRosterDetail${index}">` +
+            `<td style="text-align:left"><span class="leafMethodToggle">&#9656;</span>` +
+            `<span class="threadingRoleBadge threadingRoleBadge${Number(thread["role"])}" title="${escapeHtmlForThreading(String(thread["explanation"] || ""))}">` +
+            `${escapeHtmlForThreading(String(thread["roleName"]))}</span></td>` +
+            `<td>${Number(thread["threadId"]).toLocaleString()}</td>` +
+            `<td style="text-align:left">${formatMethodNameHtml(topLeaf)}</td>` +
+            `<td>${formatPercent(thread["managedFraction"])}</td>` +
+            `<td title="Share of this thread's samples in its top three stacks together - the concentration the parked test keys on. Its single top stack alone is ${formatPercent(thread["dominantStackShare"])}.">` +
+            `${formatPercent(thread["topStacksShare"] !== undefined ? thread["topStacksShare"] : thread["dominantStackShare"])}</td>` +
+            `<td>${formatMSec(Number(thread["longestContinuousIdleMSec"]))}</td>` +
+            `<td>${Number(thread["wakeCount"]).toLocaleString()}</td>` +
+            `<td style="text-align:left">${contentionCell}</td>` +
+            `</tr>`;
+
+        // Lazy, like the adjustment drill-downs below and for the same
+        // reason: 300 rows x 3 stacks x up to 40 frames is tens of thousands
+        // of table rows built into the initial HTML for a table whose rows are
+        // mostly never opened. Built on first expand by
+        // buildThreadRosterDetailHtml in snapshotGcStats.js.
+        rows += `<tr id="threadRosterDetail${index}" class="callPathsDetail" data-threading-thread-lazy="${index}">` +
+            `<td colspan="8" class="callerTreeCell"></td></tr>`;
+    }
+
+    const header = renderSortableTableHeader([
+        ["Role", "string"],
+        ["Thread", "number"],
+        // Named for what it is rather than "Method": for a parked thread this
+        // is the call it is parked IN, which is the single most useful cell in
+        // the row.
+        ["Sitting In", "string"],
+        // "Managed", not "CPU": the runtime's flag says the thread was running
+        // managed code, which is not the same as it being on a core, and
+        // labelling it CPU% would be a measurement this view does not have.
+        ["Managed %", "number"],
+        // "Same Loop", not "Same Stack": the figure is the top THREE stacks
+        // together, because a parked worker is a small loop with two or three
+        // park sites rather than one frozen stack (see TopStacksShare).
+        ["Same Loop %", "number"],
+        ["Longest Park", "number"],
+        ["Wakes", "number"],
+        ["Contention (n / blocked)", "number"]
+    ]);
+
+    const expandControlsHtml = `<div class="drillDownExpandControls">` +
+        `<button class="drillDownExpandControlButton" type="button" data-threading-expand-target="threadRosterTable" data-threading-expand="true">Expand All</button>` +
+        `<button class="drillDownExpandControlButton" type="button" data-threading-expand-target="threadRosterTable" data-threading-expand="false">Collapse All</button>` +
+        `</div>`;
+
+    const totalCount = Number(threadActivity["threadCount"]);
+    const truncatedNote = totalCount > threads.length
+        ? ` The first <b>${threads.length.toLocaleString()}</b> of <b>${totalCount.toLocaleString()}</b> threads are shown - the list is
+           ordered most-actionable-first, so what is cut is the benign end.`
+        : "";
+
+    return `<div class="threadingSection">
+        <div class="threadingSectionTitle">Threads (<span class="threadingSectionCount">${threads.length.toLocaleString()}</span>)</div>
+        <div class="threadingNote">
+            What each thread did across the <b>whole capture</b>, so the ones that only ever look blocked can be told from
+            the ones that are. A long-running poller, a message consumer or the runtime's own timer thread sits in one
+            unchanging blocking call from start to finish - it appears in every stall window taken and explains none of
+            them. Rows marked benign are dimmed and sorted last; the tables below already exclude them.
+            ${truncatedNote}
+        </div>
+        ${renderThreadRoleLegend(threadActivity["roles"])}
+        ${noSampleTypeNote}
+        ${ZOOM_AGGREGATE_NOTE_HTML}
+        ${expandControlsHtml}
+        <div class="detailTable threadingTable"><table id="threadRosterTable">${header}${rows}</table></div>
+    </div>`;
+}
+
+function renderThreadRoleLegend(roles: any[]): string {
+    if (!roles || roles.length === 0) {
+        return "";
+    }
+
+    var chips = "";
+    for (var index = 0; index < roles.length; ++index) {
+        const role = roles[index];
+
+        chips += `<span class="threadingRoleChip${role["isBenign"] ? " threadingRoleChipBenign" : ""}">` +
+            `<span class="threadingRoleBadge threadingRoleBadge${Number(role["role"])}">${escapeHtmlForThreading(String(role["roleName"]))}</span>` +
+            `<span class="threadingRoleChipCount">${Number(role["threadCount"]).toLocaleString()}</span></span>`;
+    }
+
+    return `<div class="threadingRoleLegend">${chips}</div>`;
+}
+
 // The centerpiece: what threads were actually doing at the moments the pool
 // decided it had to grow because work was not progressing.
-function renderStallCorrelation(stallCorrelation: any, methodNames: string[]): string {
+function renderStallCorrelation(stallCorrelation: any, threadActivity: any, methodNames: string[]): string {
     if (!stallCorrelation) {
         return `<div class="threadingSection">
             <div class="threadingSectionTitle">During pool stalls</div>
@@ -101,6 +282,7 @@ function renderStallCorrelation(stallCorrelation: any, methodNames: string[]): s
     }
 
     const frames = stallCorrelation["frames"] || [];
+    const benignFrames = stallCorrelation["benignFrames"] || [];
     const totalSamples = frames.reduce((sum: number, frame: any) => sum + frame["sampleCount"], 0);
 
     var rows = "";
@@ -121,9 +303,63 @@ function renderStallCorrelation(stallCorrelation: any, methodNames: string[]): s
         ["% of Blocked", "number"]
     ]);
 
-    // The parked-worker count is shown, not hidden: a stall window that is
-    // mostly parked workers means the pool had spare capacity, which changes
-    // how the frames below should be read.
+    const benignSamples = Number(stallCorrelation["benignThreadSamples"] || 0);
+    const benignThreads = Number(stallCorrelation["benignThreadsInWindows"] || 0);
+    // Three states, not two, and they get three different sentences. A payload
+    // with no threadActivity block at all came from a nettraceParser build
+    // that predates the classification (see CLAUDE.md's stale-cache trap) -
+    // telling that reader their CAPTURE is missing a flag would send them to
+    // re-capture something that would not help.
+    const hasThreadActivity = threadActivity !== undefined && threadActivity !== null;
+    const hasClassification = hasThreadActivity && threadActivity["hasSampleTypeData"];
+
+    // Everything the table set aside, ranked the same way and shown under its
+    // own heading. This is the audit trail for the exclusion: without it a
+    // reader who expected to see a frame here has no way to tell "the filter
+    // dropped it" from "it never happened", and a filter that cannot be
+    // checked is one nobody trusts the first time it surprises them.
+    var benignRows = "";
+    for (var benignIndex = 0; benignIndex < benignFrames.length; ++benignIndex) {
+        const benignFrame = benignFrames[benignIndex];
+        const benignPercent = benignSamples > 0 ? ((benignFrame["sampleCount"] * 100) / benignSamples) : 0;
+
+        benignRows += `<tr class="threadingBenignRow">` +
+            `<td style="text-align:left">${formatMethodNameHtml(methodNames[benignFrame["frame"]])}</td>` +
+            `<td>${Number(benignFrame["sampleCount"]).toLocaleString()}</td>` +
+            `<td>${benignPercent.toFixed(1)}</td>` +
+            `</tr>`;
+    }
+
+    const excludedSectionHtml = benignRows === ""
+        ? ""
+        : `<details class="threadingExcludedDetails">
+            <summary>Show the ${Number(benignSamples).toLocaleString()} samples excluded from the table above
+            (${benignThreads.toLocaleString()} benignly parked ${benignThreads === 1 ? "thread" : "threads"})</summary>
+            <div class="threadingNote">These frames are real, and they are excluded anyway: they belong to threads that sit in the
+            same call for the entire capture whether or not the pool is stalling, so their presence in a stall window carries no
+            information about the stall. A frame can legitimately appear in <b>both</b> tables - the same
+            <b>Consume</b> or <b>Read</b> call on a thread that does real work is a finding, and on a thread that does
+            nothing else is not, which is exactly why the exclusion is per thread and not per method name.</div>
+            <div class="detailTable threadingTable"><table id="threadingBenignStallTable">${header}${benignRows}</table></div>
+        </details>`;
+
+    // What the numbers mean is stated before the table rather than after it,
+    // because the parked/benign split is the difference between this table
+    // being useful and it being a list of the process's idle threads.
+    var exclusionNoteHtml: string;
+
+    if (hasClassification) {
+        exclusionNoteHtml = `Samples from <b>${benignThreads.toLocaleString()}</b> benignly parked threads
+           (<b>${Number(benignSamples).toLocaleString()}</b> samples) are excluded below - see the Threads table above for what
+           each of them was and why.`;
+    } else if (hasThreadActivity) {
+        exclusionNoteHtml = `This capture's samples carry no managed/native flag, so parked threads could not be identified and
+           nothing has been excluded below beyond the pool's own idle workers.`;
+    } else {
+        exclusionNoteHtml = `This data was produced by an older <b>nettraceParser</b> that did not classify threads, so nothing
+           has been excluded below beyond the pool's own idle workers.`;
+    }
+
     return `<div class="threadingSection">
         <div class="threadingSectionTitle">During pool stalls</div>
         <div class="threadingNote">
@@ -133,11 +369,12 @@ function renderStallCorrelation(stallCorrelation: any, methodNames: string[]): s
             from after an adjustment show the pool it produced rather than the one that forced it).
             <b>${Number(stallCorrelation["samplesInWindows"]).toLocaleString()}</b> samples across
             <b>${Number(stallCorrelation["threadsInWindows"]).toLocaleString()}</b> threads fell in those windows;
-            ${Number(stallCorrelation["parkedWorkerSamples"]).toLocaleString()} of them were idle parked workers waiting for work
-            (excluded below - they mean spare capacity, not a blockage).
+            ${Number(stallCorrelation["parkedWorkerSamples"]).toLocaleString()} of them were idle pool workers waiting for work.
+            ${exclusionNoteHtml}
         </div>
         ${ZOOM_AGGREGATE_NOTE_HTML}
         <div class="detailTable threadingTable"><table id="threadingStallTable">${header}${rows}</table></div>
+        ${excludedSectionHtml}
     </div>`;
 }
 

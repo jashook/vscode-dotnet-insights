@@ -4786,6 +4786,92 @@ var allocationDatasets = {};
         return '<table class="callerTreeInner">' + THREADING_CALLER_TREE_COLGROUP + frameRows + '</table>';
     }
 
+    function formatThreadingMSec(valueMSec) {
+        if (valueMSec >= 1000) {
+            return (valueMSec / 1000).toFixed(2) + ' s';
+        }
+
+        return valueMSec.toFixed(1) + ' ms';
+    }
+
+    function formatThreadingPercent(fraction) {
+        var percent = Number(fraction) * 100;
+
+        if (percent > 0 && percent < 0.1) {
+            return '&lt;0.1%';
+        }
+
+        return percent.toFixed(1) + '%';
+    }
+
+    // One roster row's drill-down: why this thread was classified the way it
+    // was, and the stacks it actually sat in.
+    //
+    // Lazy for the same reason the adjustment snapshots are: the roster can
+    // hold 300 rows, each with up to 3 stacks of up to 40 frames, which is
+    // tens of thousands of table rows built into the initial HTML for a table
+    // whose rows are mostly never opened.
+    function buildThreadRosterDetailHtml(thread) {
+        if (!thread) {
+            return '<div class="threadingSnapshotNote">No profile was recorded for this thread.</div>';
+        }
+
+        var topStacks = thread["topStacks"] || [];
+        var sampleCount = Number(thread["sampleCount"]);
+        var stacksHtml = '';
+
+        for (var stackIndex = 0; stackIndex < topStacks.length; ++stackIndex) {
+            var stack = topStacks[stackIndex];
+            var stackSampleCount = Number(stack["sampleCount"]);
+            var share = sampleCount > 0 ? (stackSampleCount * 100) / sampleCount : 0;
+
+            stacksHtml += '<div class="threadingSnapshotGroup">' +
+                '<div class="threadingSnapshotGroupHeader">' +
+                '<span class="threadingSnapshotThreadCount">' + stackSampleCount.toLocaleString() + ' samples</span> ' +
+                '<span class="threadingSnapshotThreadIds">' + share.toFixed(1) + '% of this thread</span>' +
+                '</div>' +
+                buildThreadingStackTreeHtml(stack["frames"] || []) +
+                '</div>';
+        }
+
+        var spanMSec = Number(thread["sampledSpanMSec"]);
+        var longestIdleMSec = Number(thread["longestContinuousIdleMSec"]);
+        var parkedShare = spanMSec > 0 ? (longestIdleMSec * 100) / spanMSec : 0;
+        var contentionCount = Number(thread["contentionCount"]);
+        var contentionHtml;
+
+        if (contentionCount > 0) {
+            // The share is what decided the verdict, not the count - 157 rows
+            // sounds decisive until they total 8.3ms of a 300-second thread.
+            var contentionShare = Number(thread["contentionShareOfLife"] || 0) * 100;
+
+            contentionHtml = 'The Contention view has <b>' + contentionCount.toLocaleString() + '</b> rows for this thread, totalling <b>' +
+                formatThreadingMSec(Number(thread["contentionWaitMSec"])) + '</b> blocked (<b>' +
+                (contentionShare > 0 && contentionShare < 0.01 ? '&lt;0.01' : contentionShare.toFixed(2)) + '%</b> of its life)';
+
+            if (Number(thread["contentionOwnerCount"]) > 0) {
+                contentionHtml += ', and it was the thread others waited behind <b>' +
+                    Number(thread["contentionOwnerCount"]).toLocaleString() + '</b> times';
+            }
+
+            contentionHtml += '.';
+        } else {
+            contentionHtml = 'It never appears in the contention data.';
+        }
+
+        return '<div class="threadingSnapshotNote">' +
+            escapeHtmlForThreadingDrillDown(String(thread["explanation"] || '')) +
+            ' Sampled over <b>' + formatThreadingMSec(spanMSec) + '</b> (' + sampleCount.toLocaleString() + ' samples), of which its ' +
+            'longest single unbroken park was <b>' + formatThreadingMSec(longestIdleMSec) + '</b> - <b>' + parkedShare.toFixed(0) +
+            '%</b> of the time it was observed - broken by <b>' + Number(thread["wakeCount"]).toLocaleString() + '</b> wakes. ' +
+            'It ran managed code in <b>' + formatThreadingPercent(thread["managedFraction"]) + '</b> of its samples, and the ' +
+            'stacks below - the loop it went round - account for <b>' +
+            formatThreadingPercent(thread["topStacksShare"] !== undefined ? thread["topStacksShare"] : thread["dominantStackShare"]) +
+            '</b> of them. ' +
+            contentionHtml +
+            '</div>' + stacksHtml;
+    }
+
     function buildAdjustmentThreadSnapshotHtml(adjustment) {
         var snapshot = adjustment ? adjustment["threadSnapshot"] : null;
 
@@ -4798,7 +4884,18 @@ var allocationDatasets = {};
         }
 
         var stacks = snapshot["stacks"] || [];
-        var runningThreads = snapshot["threadsSampled"] - snapshot["parkedThreadCount"];
+        // benignThreadCount is the superset - the pool's own parked workers
+        // plus every dedicated poller, native consumer loop and runtime
+        // infrastructure thread the whole-capture classification recognised
+        // (see ThreadActivityProfiler.cs). Falls back to the parked-worker
+        // count alone when an older parser produced this payload.
+        var benignThreads = snapshot["benignThreadCount"];
+
+        if (benignThreads === undefined) {
+            benignThreads = snapshot["parkedThreadCount"];
+        }
+
+        var actionableThreads = snapshot["threadsSampled"] - benignThreads;
 
         // The staleness is per snapshot, not a fixed window size, because it
         // is what actually qualifies the stacks below: "all within 3ms" and
@@ -4814,9 +4911,11 @@ var allocationDatasets = {};
 
         var html = '<div class="threadingSnapshotNote">' +
             '<b>' + Number(snapshot["threadsSampled"]).toLocaleString() + '</b> threads sampled going into this decision: ' +
-            '<b>' + Number(runningThreads).toLocaleString() + '</b> running, ' +
-            '<b>' + Number(snapshot["parkedThreadCount"]).toLocaleString() + '</b> parked workers waiting for work ' +
-            '(idle - spare capacity, not a blockage). Identical stacks are grouped.' +
+            '<b>' + Number(actionableThreads).toLocaleString() + '</b> worth reading, ' +
+            '<b>' + Number(benignThreads).toLocaleString() + '</b> benignly parked ' +
+            '(' + Number(snapshot["parkedThreadCount"]).toLocaleString() + ' of those are idle pool workers waiting for work). ' +
+            'Parked threads are sorted to the bottom and dimmed rather than hidden - they look blocked at every instant ' +
+            'because waiting is their job, so their stacks say nothing about this decision. Identical stacks are grouped.' +
             provenance +
             '</div>';
 
@@ -4829,11 +4928,30 @@ var allocationDatasets = {};
                 shownThreadIds += ', +' + (group["threadCount"] - threadIds.length) + ' more';
             }
 
-            html += '<div class="threadingSnapshotGroup' + (group["isParkedWorker"] ? ' threadingSnapshotGroupParked' : '') + '">' +
+            var isEntirelyBenign = group["isEntirelyBenign"] === true;
+            var groupBenignCount = group["benignThreadCount"] || 0;
+            var badgeHtml = '';
+
+            if (isEntirelyBenign) {
+                badgeHtml = group["isParkedWorker"]
+                    ? ' <span class="threadingParkedBadge">idle pool worker</span>'
+                    : ' <span class="threadingParkedBadge">benignly parked</span>';
+            } else if (groupBenignCount > 0) {
+                // A mixed group is the case worth being loud about: a thread
+                // that IS worth reading is sharing a stack with threads that
+                // are not, so neither dimming the whole group nor leaving it
+                // unmarked tells the truth.
+                badgeHtml = ' <span class="threadingParkedBadge">' + groupBenignCount + ' of ' +
+                    group["threadCount"] + ' benignly parked</span>';
+            } else if (group["isParkedWorker"]) {
+                badgeHtml = ' <span class="threadingParkedBadge">parked worker</span>';
+            }
+
+            html += '<div class="threadingSnapshotGroup' + (isEntirelyBenign || group["isParkedWorker"] ? ' threadingSnapshotGroupParked' : '') + '">' +
                 '<div class="threadingSnapshotGroupHeader">' +
                 '<span class="threadingSnapshotThreadCount">' + group["threadCount"] +
                 (group["threadCount"] === 1 ? ' thread' : ' threads') + '</span>' +
-                (group["isParkedWorker"] ? ' <span class="threadingParkedBadge">parked worker</span>' : '') +
+                badgeHtml +
                 ' <span class="threadingSnapshotThreadIds">tid ' + escapeHtmlForThreadingDrillDown(shownThreadIds) + '</span>' +
                 '</div>' +
                 buildThreadingStackTreeHtml(group["frames"]) +
@@ -4851,7 +4969,22 @@ var allocationDatasets = {};
     // thread/lock creation tables, whose stacks are small enough to be
     // server-rendered up front.
     function ensureThreadingDetailBuilt(detailRow) {
-        if (!detailRow || !detailRow.hasAttribute('data-threading-adjustment-lazy')) {
+        if (!detailRow) {
+            return;
+        }
+
+        if (detailRow.hasAttribute('data-threading-thread-lazy')) {
+            var threadIndex = parseInt(detailRow.getAttribute('data-threading-thread-lazy'), 10);
+            var threadActivity = threadingSummaryJson ? threadingSummaryJson["threadActivity"] : null;
+            var threads = threadActivity ? threadActivity["threads"] : null;
+
+            detailRow.querySelector('.callerTreeCell').innerHTML =
+                buildThreadRosterDetailHtml(threads ? threads[threadIndex] : null);
+            detailRow.removeAttribute('data-threading-thread-lazy');
+            return;
+        }
+
+        if (!detailRow.hasAttribute('data-threading-adjustment-lazy')) {
             return;
         }
 

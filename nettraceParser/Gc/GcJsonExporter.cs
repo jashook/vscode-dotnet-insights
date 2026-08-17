@@ -55,14 +55,21 @@ public readonly struct ExportTiming
     public readonly long ExceptionMs;
     public readonly long CpuMs;
     public readonly long ContentionMs;
+    // Broken out as of the thread-activity classification: this writer used to
+    // be a rounding error on the line and now makes its own pass over every
+    // CPU sample in the capture (Threading/ThreadActivityProfiler.cs), so
+    // leaving it in the unlabelled remainder would hide the largest single
+    // thing this phase does that nothing else reports.
+    public readonly long ThreadingMs;
     public readonly long GcMs;
 
-    public ExportTiming(long allocationMs, long exceptionMs, long cpuMs, long contentionMs, long gcMs)
+    public ExportTiming(long allocationMs, long exceptionMs, long cpuMs, long contentionMs, long threadingMs, long gcMs)
     {
         this.AllocationMs = allocationMs;
         this.ExceptionMs = exceptionMs;
         this.CpuMs = cpuMs;
         this.ContentionMs = contentionMs;
+        this.ThreadingMs = threadingMs;
         this.GcMs = gcMs;
     }
 }
@@ -96,6 +103,7 @@ public static class GcJsonExporter
         long exceptionMs;
         long cpuMs;
         long contentionMs;
+        long threadingMs;
         long gcMs;
 
         // Splits the jsonExport phase's own global percent range (see
@@ -224,7 +232,11 @@ public static class GcJsonExporter
             writer.WritePropertyName("threadingSummary");
             List<string> threadingMethodNames = new List<string>();
             Dictionary<string, int> threadingMethodNameIndexByName = new Dictionary<string, int>();
-            ThreadingJsonExporter.Write(writer, threadingSummary, sampleEvents, stackTable, symbolTable, threadingMethodNames, threadingMethodNameIndexByName);
+            ProgressReporter.BeginPhase("Classifying threads", subWriterRanges.Threading.Start, subWriterRanges.Threading.End);
+            subStopwatch.Restart();
+            ThreadingJsonExporter.Write(writer, threadingSummary, sampleEvents, contentionEvents, stackTable, symbolTable, threadingMethodNames, threadingMethodNameIndexByName);
+            threadingMs = subStopwatch.ElapsedMilliseconds;
+            ProgressReporter.CompletePhase();
 
             writer.WritePropertyName("threadingMethodNames");
             writer.WriteStartArray();
@@ -371,7 +383,7 @@ public static class GcJsonExporter
             writer.WriteEndObject();
         }
 
-        return new ExportTiming(allocationMs, exceptionMs, cpuMs, contentionMs, gcMs);
+        return new ExportTiming(allocationMs, exceptionMs, cpuMs, contentionMs, threadingMs, gcMs);
     }
 }
 

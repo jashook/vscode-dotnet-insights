@@ -28,6 +28,7 @@ using System;
 using System.Collections.Generic;
 using System.Text.Json;
 
+using DotnetInsights.NetTrace.Contention;
 using DotnetInsights.NetTrace.Cpu;
 using DotnetInsights.NetTrace.Rundown;
 using DotnetInsights.NetTrace.Threading;
@@ -129,7 +130,7 @@ public class ThreadingAdjustmentDrillDownTests
         using System.IO.MemoryStream stream = new System.IO.MemoryStream();
         using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
         {
-            ThreadingJsonExporter.Write(writer, summary, sampleEvents, stacks.Table, MakeSymbolTable(), methodNames, methodNameIndexByName);
+            ThreadingJsonExporter.Write(writer, summary, sampleEvents, new List<ContentionEvent>(), stacks.Table, MakeSymbolTable(), methodNames, methodNameIndexByName);
         }
 
         return JsonDocument.Parse(stream.ToArray());
@@ -143,7 +144,7 @@ public class ThreadingAdjustmentDrillDownTests
         using System.IO.MemoryStream stream = new System.IO.MemoryStream();
         using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
         {
-            ThreadingJsonExporter.Write(writer, summary, sampleEvents, stacks.Table, MakeSymbolTable(), methodNames, methodNameIndexByName);
+            ThreadingJsonExporter.Write(writer, summary, sampleEvents, new List<ContentionEvent>(), stacks.Table, MakeSymbolTable(), methodNames, methodNameIndexByName);
         }
 
         document = JsonDocument.Parse(stream.ToArray());

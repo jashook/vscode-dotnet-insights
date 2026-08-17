@@ -64,7 +64,8 @@ public readonly struct ExportSubWriterRanges
 {
     // Named and ordered to match GcJsonExporter.WriteToFile's own real
     // call order exactly (allocationSummary, exceptionSummary, cpuProfile,
-    // contentionSummary, then the gcData loop) - eventOverview's own tiny
+    // contentionSummary, threadingSummary, then the gcData loop) -
+    // eventOverview's own tiny
     // inline block sits between Exception and Cpu in that call order but
     // gets no dedicated range of its own (see ProgressPlan's own class
     // comment: a phase whose share rounds to under one displayed percent
@@ -73,14 +74,16 @@ public readonly struct ExportSubWriterRanges
     public readonly ProgressRange Exception;
     public readonly ProgressRange Cpu;
     public readonly ProgressRange Contention;
+    public readonly ProgressRange Threading;
     public readonly ProgressRange Gc;
 
-    public ExportSubWriterRanges(ProgressRange allocation, ProgressRange exception, ProgressRange cpu, ProgressRange contention, ProgressRange gc)
+    public ExportSubWriterRanges(ProgressRange allocation, ProgressRange exception, ProgressRange cpu, ProgressRange contention, ProgressRange threading, ProgressRange gc)
     {
         this.Allocation = allocation;
         this.Exception = exception;
         this.Cpu = cpu;
         this.Contention = contention;
+        this.Threading = threading;
         this.Gc = gc;
     }
 }
@@ -165,6 +168,22 @@ public static class ProgressPlan
     private const double SampleRecordWeight = 170.0;
     private const double ContentionRecordWeight = 1292.0;
 
+    // Per CPU SAMPLE, like SampleRecordWeight and against the same count: the
+    // threading writer's cost is dominated by ThreadActivityProfiler's own
+    // pass over every sample in the capture (see that file). It got a range of
+    // its own once that pass existed - before it, this writer was a rounding
+    // error and correctly had none, and leaving it untracked would have frozen
+    // the bar for the ~0.5s it now takes.
+    //
+    // Derived as a RATIO against the CPU writer rather than as an absolute,
+    // because the two share a denominator and the ratio held to within 5% on
+    // all three reference captures where the absolute did not:
+    //
+    //   ads-retrieval    threading 341ms / cpu  641ms = 0.53
+    //   asset-delivery   threading 418ms / cpu  821ms = 0.51
+    //   assets-registry  threading 591ms / cpu 1047ms = 0.56
+    private const double ThreadingRecordWeight = SampleRecordWeight * 0.53;
+
     public static ProgressRange PlanRead()
     {
         return new ProgressRange(0.0, ReadShareOfTotal * 100.0);
@@ -201,15 +220,17 @@ public static class ProgressPlan
         double exceptionWork = exceptionCount * ExceptionRecordWeight;
         double sampleWork = sampleCount * SampleRecordWeight;
         double contentionWork = contentionCount * ContentionRecordWeight;
+        double threadingWork = sampleCount * ThreadingRecordWeight;
         double gcWork = gcCount * GcRecordWeight;
 
-        double totalWork = allocationWork + exceptionWork + sampleWork + contentionWork + gcWork;
+        double totalWork = allocationWork + exceptionWork + sampleWork + contentionWork + threadingWork + gcWork;
 
         double cursor = exportRange.Start;
         ProgressRange allocationRange = AdvanceRange(ref cursor, allocationWork, totalWork, exportWidth);
         ProgressRange exceptionRange = AdvanceRange(ref cursor, exceptionWork, totalWork, exportWidth);
         ProgressRange cpuRange = AdvanceRange(ref cursor, sampleWork, totalWork, exportWidth);
         ProgressRange contentionRange = AdvanceRange(ref cursor, contentionWork, totalWork, exportWidth);
+        ProgressRange threadingRange = AdvanceRange(ref cursor, threadingWork, totalWork, exportWidth);
         ProgressRange gcRange = AdvanceRange(ref cursor, gcWork, totalWork, exportWidth);
 
         // The LAST range dispatched absorbs any floating-point drift
@@ -217,7 +238,7 @@ public static class ProgressPlan
         // order), so the bar ends on exactly 100.
         gcRange = new ProgressRange(gcRange.Start, exportRange.End);
 
-        return new ExportSubWriterRanges(allocationRange, exceptionRange, cpuRange, contentionRange, gcRange);
+        return new ExportSubWriterRanges(allocationRange, exceptionRange, cpuRange, contentionRange, threadingRange, gcRange);
     }
 
     private static ProgressRange AdvanceRange(ref double cursor, double work, double totalWork, double totalWidth)
