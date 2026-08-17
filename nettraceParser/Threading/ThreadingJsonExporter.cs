@@ -35,7 +35,9 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
+using DotnetInsights.NetTrace.Contention;
 using DotnetInsights.NetTrace.Cpu;
+using DotnetInsights.NetTrace.Progress;
 using DotnetInsights.NetTrace.Rundown;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -47,6 +49,12 @@ public static class ThreadingJsonExporter
     private const int MaxStallEvents = 100;
     private const int MaxAdjustmentsEmitted = 500;
     private const int MaxStackFramesPerEvent = 40;
+
+    // Threads emitted in the threadActivity roster. The reference captures
+    // hold 66, 132 and 518 threads; the cap exists for a capture with genuine
+    // thread churn, and drops benign rows first because the roster is sorted
+    // actionable-first.
+    private const int MaxThreadsEmitted = 300;
 
     // How far BACK from an adjustment both sample-correlated views look: the
     // per-adjustment snapshot, and the aggregate "during pool stalls" frames.
@@ -120,7 +128,7 @@ public static class ThreadingJsonExporter
         "System.Threading.PortableThreadPool+WorkerThread.WorkerThreadStart"
     };
 
-    public static void Write(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    public static void Write(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, StackTable stackTable, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         writer.WriteStartObject();
 
@@ -131,6 +139,16 @@ public static class ThreadingJsonExporter
             writer.WriteEndObject();
             return;
         }
+
+        // Every table below now reads this. Built once, up front, because it
+        // is a whole-capture aggregate - the point of the classification is
+        // that a single instant cannot produce it (see ThreadActivityProfiler).
+        // ProgressReporter is called directly rather than through an
+        // onProgress parameter on this method, matching GcJsonExporter's own
+        // reasoning: this runs on the export phase's own single thread, and
+        // the profiler pass is the only part of this writer large enough to
+        // need tracking.
+        ThreadActivityProfileSet threadProfiles = ThreadActivityProfiler.Build(sampleEvents, contentionEvents, stackTable, symbolTable, ProgressReporter.ReportFraction);
 
         writer.WriteNumber("peakActiveWorkerThreads", summary.PeakActiveWorkerThreads);
         writer.WriteNumber("minActiveWorkerThreads", summary.MinActiveWorkerThreads);
@@ -144,9 +162,10 @@ public static class ThreadingJsonExporter
         writer.WriteNumber("adjustmentCount", summary.Adjustments.Count);
 
         WriteTimeline(writer, summary);
+        WriteThreadActivity(writer, threadProfiles, stackTable, symbolTable, methodNames, methodNameIndexByName);
         WriteAdjustmentReasons(writer, summary);
-        WriteAdjustments(writer, summary, sampleEvents, stackTable, symbolTable, methodNames, methodNameIndexByName);
-        WriteStallCorrelation(writer, summary, sampleEvents, stackTable, symbolTable, methodNames, methodNameIndexByName);
+        WriteAdjustments(writer, summary, sampleEvents, threadProfiles, stackTable, symbolTable, methodNames, methodNameIndexByName);
+        WriteStallCorrelation(writer, summary, sampleEvents, threadProfiles, stackTable, symbolTable, methodNames, methodNameIndexByName);
         WriteStackedEvents(writer, "threadCreations", summary.ThreadCreations, summary.Adjustments, stackTable, symbolTable, methodNames, methodNameIndexByName);
         // Lock creations get no attribution: a lock is not created by a
         // thread-pool decision, so pairing one with the nearest adjustment
@@ -171,6 +190,151 @@ public static class ThreadingJsonExporter
         WriteDoubleArray(writer, "throughputByBucket", summary.ThroughputByBucket);
 
         writer.WriteEndObject();
+    }
+
+    // The per-thread roster this whole feature is for: one row per thread,
+    // classified over the WHOLE capture, so the reader can decide what to
+    // ignore before opening a single drill-down.
+    //
+    // Capped, and the cap is why Ranked is sorted actionable-first: truncation
+    // then drops benign rows, which are the ones the reader was going to skip
+    // anyway. A capture with real thread churn can hold hundreds of these -
+    // 518 on the 3.23GB reference capture, of which 238 were benign.
+    private static void WriteThreadActivity(Utf8JsonWriter writer, ThreadActivityProfileSet threadProfiles, StackTable stackTable, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    {
+        writer.WritePropertyName("threadActivity");
+        writer.WriteStartObject();
+
+        // False means the capture's samples carry no managed/native flag, so
+        // no thread could be shown to be parked. The view says that out loud
+        // instead of appearing to have looked and found nothing.
+        writer.WriteBoolean("hasSampleTypeData", threadProfiles.HasSampleTypeData);
+        writer.WriteNumber("threadCount", threadProfiles.Ranked.Count);
+        writer.WriteNumber("benignThreadCount", threadProfiles.BenignlyParkedThreadCount);
+        writer.WriteNumber("sampleCount", threadProfiles.TotalSampleCount);
+        writer.WriteNumber("benignSampleCount", threadProfiles.BenignlyParkedSampleCount);
+
+        WriteThreadRoleTotals(writer, threadProfiles);
+
+        int threadsToEmit = threadProfiles.Ranked.Count < MaxThreadsEmitted ? threadProfiles.Ranked.Count : MaxThreadsEmitted;
+
+        writer.WritePropertyName("threads");
+        writer.WriteStartArray();
+
+        for (int profileIndex = 0; profileIndex < threadsToEmit; ++profileIndex)
+        {
+            ThreadActivityProfile profile = threadProfiles.Ranked[profileIndex];
+
+            writer.WriteStartObject();
+            writer.WriteNumber("threadId", profile.ThreadId);
+            writer.WriteNumber("role", (int)profile.Role);
+            writer.WriteString("roleName", ThreadActivityProfiler.NameForRole(profile.Role));
+            writer.WriteBoolean("isBenign", profile.IsBenignlyParked);
+            writer.WriteString("explanation", ThreadActivityProfiler.ExplanationForRole(profile, threadProfiles.HasSampleTypeData));
+
+            writer.WriteNumber("sampleCount", profile.SampleCount);
+            // Every input to the classification is emitted, not just its
+            // verdict. A reader who disagrees with a row must be able to see
+            // WHY it was called what it was called - a label with no numbers
+            // behind it is exactly the kind of thing that gets ignored the
+            // first time it looks wrong.
+            writer.WriteNumber("managedFraction", profile.ManagedFraction);
+            writer.WriteNumber("waitFraction", profile.WaitFraction);
+            writer.WriteNumber("poolParkFraction", profile.PoolParkFraction);
+            writer.WriteNumber("dominantStackShare", profile.DominantStackShare);
+            // The gate the parked test actually keys on, emitted next to the
+            // top-stack share it is easily confused with - a reader checking a
+            // verdict against these numbers needs the one that decided it.
+            writer.WriteNumber("topStacksShare", profile.TopStacksShare);
+            writer.WriteNumber("contentionShareOfLife", profile.ContentionShareOfLife);
+            writer.WriteBoolean("isPoolWorker", profile.IsPoolWorker);
+            writer.WriteNumber("wakeCount", profile.WakeCount);
+            writer.WriteNumber("longestContinuousIdleMSec", profile.LongestContinuousIdleMSec);
+            writer.WriteNumber("firstSampleMSec", profile.FirstSampleMSec);
+            writer.WriteNumber("lastSampleMSec", profile.LastSampleMSec);
+            writer.WriteNumber("sampledSpanMSec", profile.SampledSpanMSec);
+
+            // The join to the Contention view, by the numbers that view is
+            // itself keyed on - so a row here can be taken straight there.
+            writer.WriteNumber("contentionCount", profile.ContentionCount);
+            writer.WriteNumber("contentionWaitMSec", profile.ContentionWaitMSec);
+            writer.WriteNumber("contentionOwnerCount", profile.ContentionOwnerCount);
+
+            writer.WritePropertyName("topStacks");
+            writer.WriteStartArray();
+
+            for (int stackRank = 0; stackRank < profile.TopStackIndices.Length; ++stackRank)
+            {
+                writer.WriteStartObject();
+                writer.WriteNumber("sampleCount", profile.TopStackSampleCounts[stackRank]);
+
+                writer.WritePropertyName("frames");
+                writer.WriteStartArray();
+
+                long[] stackFrames = stackTable.FramesAt(profile.TopStackIndices[stackRank]);
+                int frameCount = stackFrames.Length < MaxStackFramesPerEvent ? stackFrames.Length : MaxStackFramesPerEvent;
+
+                for (int frameIndex = 0; frameIndex < frameCount; ++frameIndex)
+                {
+                    string frameName = symbolTable.NameForId(symbolTable.ResolveId(stackFrames[frameIndex], profile.FirstSampleMSec));
+                    writer.WriteNumberValue(InternMethodName(frameName, methodNames, methodNameIndexByName));
+                }
+
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
+        writer.WriteEndObject();
+    }
+
+    // Role totals over EVERY thread, including the ones the cap above left
+    // out, so the summary line never disagrees with the table it introduces.
+    private static void WriteThreadRoleTotals(Utf8JsonWriter writer, ThreadActivityProfileSet threadProfiles)
+    {
+        Dictionary<ThreadActivityRole, int> threadCountByRole = new Dictionary<ThreadActivityRole, int>();
+        Dictionary<ThreadActivityRole, long> sampleCountByRole = new Dictionary<ThreadActivityRole, long>();
+
+        for (int profileIndex = 0; profileIndex < threadProfiles.Ranked.Count; ++profileIndex)
+        {
+            ThreadActivityProfile profile = threadProfiles.Ranked[profileIndex];
+
+            threadCountByRole.TryGetValue(profile.Role, out int roleThreadCount);
+            threadCountByRole[profile.Role] = roleThreadCount + 1;
+
+            sampleCountByRole.TryGetValue(profile.Role, out long roleSampleCount);
+            sampleCountByRole[profile.Role] = roleSampleCount + profile.SampleCount;
+        }
+
+        writer.WritePropertyName("roles");
+        writer.WriteStartArray();
+
+        // Emitted in the enum's own order rather than by count, because that
+        // order IS the severity order the view relies on - see
+        // ThreadActivityRole.
+        foreach (ThreadActivityRole role in Enum.GetValues<ThreadActivityRole>())
+        {
+            if (!threadCountByRole.TryGetValue(role, out int roleThreadCount))
+            {
+                continue;
+            }
+
+            writer.WriteStartObject();
+            writer.WriteNumber("role", (int)role);
+            writer.WriteString("roleName", ThreadActivityProfiler.NameForRole(role));
+            writer.WriteBoolean("isBenign", role == ThreadActivityRole.IdlePoolWorker
+                || role == ThreadActivityRole.ParkedThread
+                || role == ThreadActivityRole.RuntimeInfrastructureThread);
+            writer.WriteNumber("threadCount", roleThreadCount);
+            writer.WriteNumber("sampleCount", sampleCountByRole[role]);
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
     }
 
     private static void WriteAdjustmentReasons(Utf8JsonWriter writer, ThreadingSummary summary)
@@ -221,7 +385,16 @@ public static class ThreadingJsonExporter
     {
         public int[] Frames;
         public bool IsParkedWorker;
+        // How many of this group's threads the whole-capture classification
+        // calls benignly parked (see ThreadActivityProfiler). Per thread and
+        // not per group, because a group is threads that happen to share a
+        // stack at one instant: a pool worker caught in the same wait as a
+        // dedicated poller is a real finding sitting inside a group that is
+        // otherwise noise, and collapsing that to one flag would hide it.
+        public int BenignThreadCount;
         public List<long> ThreadIds = new List<long>();
+
+        public bool IsEntirelyBenign => this.ThreadIds.Count > 0 && this.BenignThreadCount == this.ThreadIds.Count;
     }
 
     // For each adjustment, what every thread was doing in the moments BEFORE
@@ -237,7 +410,7 @@ public static class ThreadingJsonExporter
     //
     // Returns one entry per emitted adjustment, parallel to that slice, so a
     // caller can index it by adjustment index.
-    private static List<ThreadStackGroup>[] BuildThreadSnapshots(List<ThreadPoolAdjustmentRecord> adjustments, int emittedCount, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, int[] threadsSampledByAdjustment, int[] parkedThreadsByAdjustment, double[] oldestSampleAgeByAdjustment)
+    private static List<ThreadStackGroup>[] BuildThreadSnapshots(List<ThreadPoolAdjustmentRecord> adjustments, int emittedCount, List<SampleEvent> sampleEvents, ThreadActivityProfileSet threadProfiles, StackTable stackTable, MethodSymbolTable symbolTable, int[] threadsSampledByAdjustment, int[] parkedThreadsByAdjustment, int[] benignThreadsByAdjustment, double[] oldestSampleAgeByAdjustment)
     {
         List<ThreadStackGroup>[] groupsByAdjustment = new List<ThreadStackGroup>[emittedCount];
 
@@ -326,9 +499,10 @@ public static class ThreadingJsonExporter
                 continue;
             }
 
-            groupsByAdjustment[adjustmentIndex] = GroupThreadStacks(closestByThreadId, adjustments[adjustmentIndex].RelativeMSec, stackTable, symbolTable, frameBuffer, out int threadsSampled, out int parkedThreads);
+            groupsByAdjustment[adjustmentIndex] = GroupThreadStacks(closestByThreadId, adjustments[adjustmentIndex].RelativeMSec, threadProfiles, stackTable, symbolTable, frameBuffer, out int threadsSampled, out int parkedThreads, out int benignThreads);
             threadsSampledByAdjustment[adjustmentIndex] = threadsSampled;
             parkedThreadsByAdjustment[adjustmentIndex] = parkedThreads;
+            benignThreadsByAdjustment[adjustmentIndex] = benignThreads;
 
             // The staleness of the WORST stack in this snapshot, so the view
             // can state how old the evidence actually is instead of quoting
@@ -349,7 +523,7 @@ public static class ThreadingJsonExporter
         return groupsByAdjustment;
     }
 
-    private static List<ThreadStackGroup> GroupThreadStacks(Dictionary<long, ThreadStackAtAdjustment> closestByThreadId, double adjustmentTimeMSec, StackTable stackTable, MethodSymbolTable symbolTable, int[] frameBuffer, out int threadsSampled, out int parkedThreads)
+    private static List<ThreadStackGroup> GroupThreadStacks(Dictionary<long, ThreadStackAtAdjustment> closestByThreadId, double adjustmentTimeMSec, ThreadActivityProfileSet threadProfiles, StackTable stackTable, MethodSymbolTable symbolTable, int[] frameBuffer, out int threadsSampled, out int parkedThreads, out int benignThreads)
     {
         List<ThreadStackGroup> groups = new List<ThreadStackGroup>();
         // Hash bucket -> indices into groups. Hashing the resolved frame ids
@@ -361,10 +535,18 @@ public static class ThreadingJsonExporter
 
         threadsSampled = 0;
         parkedThreads = 0;
+        benignThreads = 0;
 
         foreach (KeyValuePair<long, ThreadStackAtAdjustment> threadEntry in closestByThreadId)
         {
             ++threadsSampled;
+
+            bool isBenignThread = threadProfiles.IsBenignlyParked(threadEntry.Key);
+
+            if (isBenignThread)
+            {
+                ++benignThreads;
+            }
 
             long[] stack = stackTable.FramesAt(threadEntry.Value.StackIndex);
             int frameCount = stack.Length < MaxStackFramesPerEvent ? stack.Length : MaxStackFramesPerEvent;
@@ -417,13 +599,18 @@ public static class ThreadingJsonExporter
             }
 
             groups[matchedGroupIndex].ThreadIds.Add(threadEntry.Key);
+
+            if (isBenignThread)
+            {
+                ++groups[matchedGroupIndex].BenignThreadCount;
+            }
         }
 
-        // Running threads first, then by how many threads share the stack.
-        // Parked workers are sorted to the bottom rather than dropped: they
-        // are the pool's idle state, so a snapshot that is mostly parked
-        // threads means the pool had spare capacity - a real answer to "why
-        // did it add a thread", just not the one being looked for.
+        // Actionable groups first, then by how many threads share the stack.
+        // Benign groups are sorted to the bottom rather than dropped: a
+        // snapshot that is mostly parked threads means the pool had spare
+        // capacity - a real answer to "why did it add a thread", just not the
+        // one being looked for.
         groups.Sort(CompareThreadStackGroups);
 
         return groups;
@@ -431,6 +618,17 @@ public static class ThreadingJsonExporter
 
     private static int CompareThreadStackGroups(ThreadStackGroup left, ThreadStackGroup right)
     {
+        // "Every thread in it is benign" comes first, ahead of the older
+        // parked-worker frame test, because it is the stronger statement: the
+        // frame test only recognises the pool's own park, while this one also
+        // covers a group made entirely of dedicated pollers and runtime
+        // infrastructure threads, which look identical to a real blockage from
+        // the frame alone.
+        if (left.IsEntirelyBenign != right.IsEntirelyBenign)
+        {
+            return left.IsEntirelyBenign ? 1 : -1;
+        }
+
         if (left.IsParkedWorker != right.IsParkedWorker)
         {
             return left.IsParkedWorker ? 1 : -1;
@@ -457,14 +655,15 @@ public static class ThreadingJsonExporter
         return true;
     }
 
-    private static void WriteAdjustments(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    private static void WriteAdjustments(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, ThreadActivityProfileSet threadProfiles, StackTable stackTable, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         int emitted = summary.Adjustments.Count < MaxAdjustmentsEmitted ? summary.Adjustments.Count : MaxAdjustmentsEmitted;
 
         int[] threadsSampledByAdjustment = new int[emitted];
         int[] parkedThreadsByAdjustment = new int[emitted];
+        int[] benignThreadsByAdjustment = new int[emitted];
         double[] oldestSampleAgeByAdjustment = new double[emitted];
-        List<ThreadStackGroup>[] groupsByAdjustment = BuildThreadSnapshots(summary.Adjustments, emitted, sampleEvents, stackTable, symbolTable, threadsSampledByAdjustment, parkedThreadsByAdjustment, oldestSampleAgeByAdjustment);
+        List<ThreadStackGroup>[] groupsByAdjustment = BuildThreadSnapshots(summary.Adjustments, emitted, sampleEvents, threadProfiles, stackTable, symbolTable, threadsSampledByAdjustment, parkedThreadsByAdjustment, benignThreadsByAdjustment, oldestSampleAgeByAdjustment);
 
         writer.WritePropertyName("adjustments");
         writer.WriteStartArray();
@@ -487,7 +686,7 @@ public static class ThreadingJsonExporter
             writer.WriteBoolean("isStallDriven", ThreadAdjustmentReason.IsStallDriven(adjustment.Reason));
             writer.WriteNumber("averageThroughput", adjustment.AverageThroughput);
 
-            WriteThreadSnapshot(writer, groupsByAdjustment[adjustmentIndex], threadsSampledByAdjustment[adjustmentIndex], parkedThreadsByAdjustment[adjustmentIndex], oldestSampleAgeByAdjustment[adjustmentIndex], symbolTable, methodNames, methodNameIndexByName);
+            WriteThreadSnapshot(writer, groupsByAdjustment[adjustmentIndex], threadsSampledByAdjustment[adjustmentIndex], parkedThreadsByAdjustment[adjustmentIndex], benignThreadsByAdjustment[adjustmentIndex], oldestSampleAgeByAdjustment[adjustmentIndex], symbolTable, methodNames, methodNameIndexByName);
 
             writer.WriteEndObject();
         }
@@ -495,7 +694,7 @@ public static class ThreadingJsonExporter
         writer.WriteEndArray();
     }
 
-    private static void WriteThreadSnapshot(Utf8JsonWriter writer, List<ThreadStackGroup> groups, int threadsSampled, int parkedThreads, double oldestSampleAgeMSec, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    private static void WriteThreadSnapshot(Utf8JsonWriter writer, List<ThreadStackGroup> groups, int threadsSampled, int parkedThreads, int benignThreads, double oldestSampleAgeMSec, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         writer.WritePropertyName("threadSnapshot");
 
@@ -511,6 +710,12 @@ public static class ThreadingJsonExporter
         writer.WriteStartObject();
         writer.WriteNumber("threadsSampled", threadsSampled);
         writer.WriteNumber("parkedThreadCount", parkedThreads);
+        // The superset of parkedThreadCount: threads the whole-capture
+        // classification says the reader can skip, of which the pool's own
+        // parked workers are only one kind. Emitted alongside rather than
+        // instead of it so the view can still say how much of the snapshot was
+        // specifically the POOL having spare capacity.
+        writer.WriteNumber("benignThreadCount", benignThreads);
         writer.WriteNumber("stackGroupCount", groups.Count);
         // Both emitted so the view can state the provenance of these stacks
         // concretely: they are CPU samples from within lookbackMSec BEFORE the
@@ -531,6 +736,8 @@ public static class ThreadingJsonExporter
             writer.WriteStartObject();
             writer.WriteNumber("threadCount", group.ThreadIds.Count);
             writer.WriteBoolean("isParkedWorker", group.IsParkedWorker);
+            writer.WriteNumber("benignThreadCount", group.BenignThreadCount);
+            writer.WriteBoolean("isEntirelyBenign", group.IsEntirelyBenign);
 
             writer.WritePropertyName("threadIds");
             writer.WriteStartArray();
@@ -562,7 +769,7 @@ public static class ThreadingJsonExporter
 
     // Joins CPU samples to stall-driven adjustments on time - see this file's
     // header for why this exists at all.
-    private static void WriteStallCorrelation(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    private static void WriteStallCorrelation(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, ThreadActivityProfileSet threadProfiles, StackTable stackTable, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
     {
         List<ThreadPoolAdjustmentRecord> stallAdjustments = new List<ThreadPoolAdjustmentRecord>();
 
@@ -590,9 +797,22 @@ public static class ThreadingJsonExporter
         int windowCount = stallAdjustments.Count < MaxStallEvents ? stallAdjustments.Count : MaxStallEvents;
 
         Dictionary<int, int> samplesByFrameId = new Dictionary<int, int>();
+        // The same ranking again over the samples this table sets ASIDE, so
+        // "what was excluded" is answerable instead of being taken on trust.
+        // Without it, a reader who suspects the filter has nothing to check it
+        // against, and a filter that cannot be checked is one nobody will
+        // believe the first time it hides something they expected.
+        Dictionary<int, int> benignSamplesByFrameId = new Dictionary<int, int>();
         HashSet<long> threadsInWindows = new HashSet<long>();
+        HashSet<long> benignThreadsInWindows = new HashSet<long>();
         long totalSamplesInWindows = 0;
         long parkedWorkerSamples = 0;
+        long benignThreadSamples = 0;
+
+        // Memoized per thread id rather than re-probed per sample: the windows
+        // hold millions of samples across a few hundred threads, and this
+        // lookup is otherwise the only dictionary probe on the path.
+        Dictionary<long, bool> isBenignByThreadId = new Dictionary<long, bool>();
 
         // Single ordered pass over the samples rather than one scan per
         // adjustment: 54 adjustments x 19.7M samples would be a billion
@@ -649,14 +869,40 @@ public static class ThreadingJsonExporter
                 continue;
             }
 
+            // The whole-capture classification, applied per SAMPLE here.
+            // Excluding the thread rather than the frame is the entire point:
+            // the frames these threads sit in - a native poll, a consumer
+            // loop, an unrecognised library wait - are indistinguishable from
+            // a real blockage at the instant of a stall, and no list of frame
+            // names can separate them (see ThreadActivityProfiler).
+            if (!isBenignByThreadId.TryGetValue(sampleEvent.ThreadId, out bool isBenignThread))
+            {
+                isBenignThread = threadProfiles.IsBenignlyParked(sampleEvent.ThreadId);
+                isBenignByThreadId[sampleEvent.ThreadId] = isBenignThread;
+            }
+
+            if (isBenignThread)
+            {
+                ++benignThreadSamples;
+                benignThreadsInWindows.Add(sampleEvent.ThreadId);
+
+                benignSamplesByFrameId.TryGetValue(leafFrameId, out int benignFrameCount);
+                benignSamplesByFrameId[leafFrameId] = benignFrameCount + 1;
+                continue;
+            }
+
             samplesByFrameId.TryGetValue(leafFrameId, out int frameCount);
             samplesByFrameId[leafFrameId] = frameCount + 1;
         }
 
         List<KeyValuePair<int, int>> rankedFrames = new List<KeyValuePair<int, int>>(samplesByFrameId);
-        rankedFrames.Sort((KeyValuePair<int, int> left, KeyValuePair<int, int> right) => right.Value.CompareTo(left.Value));
+        rankedFrames.Sort(CompareFrameSampleCounts);
+
+        List<KeyValuePair<int, int>> rankedBenignFrames = new List<KeyValuePair<int, int>>(benignSamplesByFrameId);
+        rankedBenignFrames.Sort(CompareFrameSampleCounts);
 
         int frameCountToEmit = rankedFrames.Count < MaxStallFrames ? rankedFrames.Count : MaxStallFrames;
+        int benignFrameCountToEmit = rankedBenignFrames.Count < MaxStallFrames ? rankedBenignFrames.Count : MaxStallFrames;
 
         writer.WriteStartObject();
         writer.WriteNumber("stallAdjustmentCount", stallAdjustments.Count);
@@ -671,6 +917,13 @@ public static class ThreadingJsonExporter
         // parked workers means the pool had spare capacity, which is itself
         // worth knowing when reading the frames below.
         writer.WriteNumber("parkedWorkerSamples", parkedWorkerSamples);
+        // Samples that fell in a stall window but belong to threads the
+        // whole-capture classification calls benignly parked. Counted, not
+        // hidden - on a real 836MB capture this is half of every sample in the
+        // file, so a table that silently dropped it would be understating its
+        // own denominator by 2x.
+        writer.WriteNumber("benignThreadSamples", benignThreadSamples);
+        writer.WriteNumber("benignThreadsInWindows", benignThreadsInWindows.Count);
 
         writer.WritePropertyName("frames");
         writer.WriteStartArray();
@@ -686,7 +939,40 @@ public static class ThreadingJsonExporter
         }
 
         writer.WriteEndArray();
+
+        // The excluded half, ranked the same way. Everything here is a frame
+        // the old table showed at the top - the whole reason the view was
+        // misleading - so showing it under its own heading is what turns the
+        // filter from something the reader has to trust into something they
+        // can audit.
+        writer.WritePropertyName("benignFrames");
+        writer.WriteStartArray();
+
+        for (int frameIndex = 0; frameIndex < benignFrameCountToEmit; ++frameIndex)
+        {
+            string frameName = symbolTable.NameForId(rankedBenignFrames[frameIndex].Key);
+
+            writer.WriteStartObject();
+            writer.WriteNumber("frame", InternMethodName(frameName, methodNames, methodNameIndexByName));
+            writer.WriteNumber("sampleCount", rankedBenignFrames[frameIndex].Value);
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
         writer.WriteEndObject();
+    }
+
+    // Count descending, then frame id ascending so two frames with the same
+    // count keep the same order between runs of the same capture (the same
+    // tie-break WriteHotMethods needed for the same reason).
+    private static int CompareFrameSampleCounts(KeyValuePair<int, int> left, KeyValuePair<int, int> right)
+    {
+        if (left.Value != right.Value)
+        {
+            return right.Value.CompareTo(left.Value);
+        }
+
+        return left.Key.CompareTo(right.Key);
     }
 
     private static bool IsParkedWorkerFrame(string frameName)

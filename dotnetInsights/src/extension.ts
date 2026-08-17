@@ -344,7 +344,14 @@ export async function activate(context: vscode.ExtensionContext) {
     // version string changes (see CLAUDE.md's "stale-cache trap"), and that
     // binary has no --gcdump mode at all - so every .gcdump would fail to open
     // with a confusing error while the code here looked correct.
-    const latestNettraceParserVersionNumber = "1.9.0";
+    //
+    // Bumped from 1.9.0 for the Threading view's thread classification, and
+    // this one is not optional either: the whole feature lives in a new
+    // "threadActivity" block that only the new binary emits. A cached 1.9.0
+    // would leave the Threading tab silently showing its old, noisier tables
+    // with no error anywhere to explain why - the exact failure mode the
+    // stale-cache trap note in CLAUDE.md was written about.
+    const latestNettraceParserVersionNumber = "1.9.1";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;

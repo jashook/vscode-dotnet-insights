@@ -608,7 +608,7 @@ if (isJsonMode)
     // given run, making cross-run GC-time comparisons via two independent
     // traces unreliable in a way this in-process counter isn't.
     //
-    // export=' own (alloc=..,exc=..,cpu=..,cont=..,gc=..) breakdown is
+    // export='s own (alloc=..,exc=..,cpu=..,cont=..,threading=..,gc=..) breakdown is
     // permanent, not throwaway, instrumentation - added specifically so
     // Progress/ProgressPlan.cs's own export sub-writer weight constants can
     // be recalibrated against a real capture with a single CLI run (read this
@@ -631,7 +631,7 @@ if (isJsonMode)
         $"sampleProject={sampleProjectMs}ms ({sampleEventsForJson.Count} samples) " +
         $"contentionProject={contentionProjectMs}ms ({contentionEventsForJson.Count} contentions) " +
         $"threadingProject={threadingProjectMs}ms ({threadingSummaryForJson.Adjustments.Count} pool adjustments)] " +
-        $"export={exportMs}ms(alloc={exportTiming.AllocationMs}ms,exc={exportTiming.ExceptionMs}ms,cpu={exportTiming.CpuMs}ms,cont={exportTiming.ContentionMs}ms,gc={exportTiming.GcMs}ms) " +
+        $"export={exportMs}ms(alloc={exportTiming.AllocationMs}ms,exc={exportTiming.ExceptionMs}ms,cpu={exportTiming.CpuMs}ms,cont={exportTiming.ContentionMs}ms,threading={exportTiming.ThreadingMs}ms,gc={exportTiming.GcMs}ms) " +
         $"binaryExport={binaryExportMs}ms " +
         $"total={totalMs}ms " +
         $"gcPause={GC.GetTotalPauseDuration().TotalMilliseconds:F1}ms gcCounts=[{GC.CollectionCount(0)},{GC.CollectionCount(1)},{GC.CollectionCount(2)}]");

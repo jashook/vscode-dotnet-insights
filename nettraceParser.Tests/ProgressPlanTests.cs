@@ -53,7 +53,7 @@ public class ProgressPlanTests
     }
 
     [Fact]
-    public void PlanExportSubWriters_FiveRangesAreContiguousAndCoverTheWholeExportRange()
+    public void PlanExportSubWriters_EveryRangeIsContiguousAndTheyCoverTheWholeExportRange()
     {
         ProgressRange exportRange = ProgressPlan.PlanExport();
         ExportSubWriterRanges ranges = ProgressPlan.PlanExportSubWriters(gcCount: 36, allocationCount: 1926758, exceptionCount: 31733, sampleCount: 26132500, contentionCount: 0);
@@ -62,8 +62,23 @@ public class ProgressPlanTests
         Assert.Equal(ranges.Allocation.End, ranges.Exception.Start);
         Assert.Equal(ranges.Exception.End, ranges.Cpu.Start);
         Assert.Equal(ranges.Cpu.End, ranges.Contention.Start);
-        Assert.Equal(ranges.Contention.End, ranges.Gc.Start);
+        Assert.Equal(ranges.Contention.End, ranges.Threading.Start);
+        Assert.Equal(ranges.Threading.End, ranges.Gc.Start);
         Assert.Equal(exportRange.End, ranges.Gc.End);
+    }
+
+    // The threading writer shares the CPU writer's own denominator (both are
+    // driven by the sample count), so a capture with no CPU samples must leave
+    // BOTH at zero width rather than only the one this test was originally
+    // written for.
+    [Fact]
+    public void PlanExportSubWriters_ThreadingGetsZeroWidth_WhenTheCaptureHasNoCpuSamples()
+    {
+        ExportSubWriterRanges ranges = ProgressPlan.PlanExportSubWriters(gcCount: 525, allocationCount: 1926758, exceptionCount: 31733, sampleCount: 0, contentionCount: 0);
+
+        Assert.Equal(ranges.Cpu.Start, ranges.Cpu.End);
+        Assert.Equal(ranges.Threading.Start, ranges.Threading.End);
+        Assert.False(double.IsNaN(ranges.Threading.Start));
     }
 
     // The reference capture this file's own constants were measured
