@@ -16,6 +16,36 @@ import { JitOrder } from "./JitOrder";
 import { PmiCommand } from "./PmiCommand";
 import { ILDasm } from './ILDasm';
 
+/**
+ * The column the realtime disassembly belongs in: the one after the ildasm
+ * document it pairs with, so the layout reads source | ildasm | asm.
+ *
+ * This used to be visibleTextEditors.length + 1, which is a count of open
+ * editors rather than a position. It is only correct while exactly the source
+ * file and the ildasm are open - with anything else visible it walks off to the
+ * right, opening a brand new editor column (measured: 1 -> 2 -> 3 -> 4 over
+ * four generations) every time areDocumentsOpen() fails to recognize the pair.
+ */
+export function columnForDisassembly(ilDasmEditor: vscode.TextEditor | undefined): vscode.ViewColumn {
+    var ilDasmColumn = ilDasmEditor === undefined ? undefined : ilDasmEditor.viewColumn;
+
+    // ViewColumn.Active/Beside are negative, so this also rejects a column that
+    // is not a real position in the grid.
+    if (ilDasmColumn === undefined || ilDasmColumn < vscode.ViewColumn.One) {
+        // Nothing to sit next to. The ildasm document is opened first, so this
+        // only happens if that open has not landed yet; beside whatever is
+        // active is the best guess available.
+        return vscode.ViewColumn.Beside;
+    }
+
+    if (ilDasmColumn >= vscode.ViewColumn.Nine) {
+        // Nine is the last column VS Code addresses by number.
+        return vscode.ViewColumn.Nine;
+    }
+
+    return ilDasmColumn + 1;
+}
+
 export class OnSaveIlDasm {
     ////////////////////////////////////////////////////////////////////////////
     // Member variables
@@ -297,6 +327,12 @@ export class OnSaveIlDasm {
 
         if (!this.hasDocumentsOpen) {
             this.ilShown?.updateForPath(this.roslynHelperIlFile);
+
+            // areDocumentsOpen() is what normally records these editors, and it
+            // did not recognize the pair this time. Record the ildasm editor
+            // anyway - columnForDisassembly needs it to place the .asm next to
+            // this document rather than guessing at a column.
+            this.ilShown?.setWindow(e);
         }
     }
 
@@ -389,13 +425,16 @@ export class OnSaveIlDasm {
                                 return;
                             }
                             
-                            let splitIndex = vscode.window.visibleTextEditors.length + 1;
-
                             if (!boundObject.hasDocumentsOpen) {
                                 boundObject.asmShown?.updateForPath(outputFileName);
 
+                                let asmViewColumn = columnForDisassembly(boundObject.ilShown?.getWindow());
+
                                 vscode.workspace.openTextDocument(outputFileName).then(doc => {
-                                    vscode.window.showTextDocument(doc, splitIndex);
+                                    vscode.window.showTextDocument(doc, {
+                                        viewColumn: asmViewColumn,
+                                        preview: false
+                                    });
                                 });
                             }
                             else {
