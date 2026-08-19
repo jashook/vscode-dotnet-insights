@@ -27,6 +27,46 @@ import { DotnetInsightsJitTreeDataProvider, JitDependency } from './dotnetInsigh
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+/**
+ * Shows a disassembly or JIT dump this extension has just generated.
+ *
+ * preview: false is the load-bearing part. A preview tab gets reused, so
+ * generating a second listing closed the first one's tab - and comparing two
+ * listings (min opts against tier 1, asm against jit dump) is the reason to
+ * generate them in the first place. Same family as issue #99: opening one of
+ * this extension's own outputs must not close an editor the user already had.
+ */
+export function showGeneratedDocument(outputFileName: string): Thenable<vscode.TextEditor> {
+    return vscode.workspace.openTextDocument(outputFileName).then(doc => {
+        return vscode.window.showTextDocument(doc, {
+            viewColumn: vscode.ViewColumn.One,
+            preview: false
+        });
+    });
+}
+
+/**
+ * Shows the counterpart of a listing the user is looking at - the jit dump for
+ * an .asm, or the .asm for a jit dump - in the column that listing occupies.
+ *
+ * The column comes from the editor itself. This used to find the active file's
+ * position in visibleTextEditors and pass that 0-based array index as a 1-based
+ * ViewColumn, which lined up only by accident: index 0 resolves to column One,
+ * so a listing in the FIRST group happened to work, while one in the second
+ * group produced index 1 - column One again - and put the counterpart in the
+ * wrong group. visibleTextEditors is not ordered by column either.
+ */
+export function showCounterpartListing(counterpartFileName: string, sourceEditor: vscode.TextEditor): Thenable<vscode.TextEditor> {
+    var viewColumn = sourceEditor.viewColumn === undefined ? vscode.ViewColumn.Active : sourceEditor.viewColumn;
+
+    return vscode.workspace.openTextDocument(counterpartFileName).then(doc => {
+        return vscode.window.showTextDocument(doc, {
+            viewColumn: viewColumn,
+            preview: false
+        });
+    });
+}
+
 function compile(minOpts: boolean, jitDump: boolean, treeItem: Dependency, insights: DotnetInsights, outputFileName: string, coreRunPath: string, pmiPath: string) {
     var methodName = treeItem.label;
     var methodNameSplit = treeItem.label.split(":");
@@ -552,9 +592,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         compile(true, false, treeItem, insights, outputFileName, insights.coreRunPath, insights.pmiPath).then((succes: any) => {
             if (succes !== undefined && success === true) {
-                vscode.workspace.openTextDocument(outputFileName).then(doc => {
-                    vscode.window.showTextDocument(doc, 1);
-                });
+                showGeneratedDocument(outputFileName);
             }
         });
     });
@@ -565,9 +603,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         compile(false, false, treeItem, insights, outputFileName, insights.coreRunPath, insights.pmiPath).then((succes: any) => {
             if (succes !== undefined && success === true) {
-                vscode.workspace.openTextDocument(outputFileName).then(doc => {
-                    vscode.window.showTextDocument(doc, 1);
-                });
+                showGeneratedDocument(outputFileName);
             }
         });
     });
@@ -578,9 +614,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         compile(true, true, treeItem, insights, outputFileName, insights.coreRunPath, insights.pmiPath).then((succes: any) => {
             if (succes !== undefined && success === true) {
-                vscode.workspace.openTextDocument(outputFileName).then(doc => {
-                    vscode.window.showTextDocument(doc, 1);
-                });
+                showGeneratedDocument(outputFileName);
             }
         });
     });
@@ -591,9 +625,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         compile(false, true, treeItem, insights, outputFileName, insights.coreRunPath, insights.pmiPath).then((succes: any) => {
             if (succes !== undefined && success === true) {
-                vscode.workspace.openTextDocument(outputFileName).then(doc => {
-                    vscode.window.showTextDocument(doc, 1);
-                });
+                showGeneratedDocument(outputFileName);
             }
         });
     });
@@ -605,67 +637,39 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(stopShowIlOnSave);
 
     vscode.commands.registerCommand("dotnetInsights.showJitDump", () => {
-        var activeFile  = vscode.window.activeTextEditor?.document.uri.fsPath;
+        // We have an asm file active, we have generated the jitdump side by
+        // side, just display that file
+        const activeEditor = vscode.window.activeTextEditor;
 
-        if (activeFile === undefined) {
+        if (activeEditor === undefined) {
             return;
         }
 
-        console.log(path.extname(activeFile) === ".asm");
-
-        // We have an asm file active, we have generated the jitdump side by
-        // side, just display that file
-
-        const visibleEditors = vscode.window.visibleTextEditors;
-        var index = 0;
-
-        for (index = 0; index < visibleEditors.length; ++index) {
-            if (visibleEditors[index].document.uri.fsPath === activeFile) {
-                break;
-            }
-        }
-
-        const jitDumpFile = activeFile?.replace(".asm", ".jitDump");
+        const jitDumpFile = activeEditor.document.uri.fsPath.replace(".asm", ".jitDump");
 
         if (!fs.existsSync(jitDumpFile)) {
             return;
         }
 
-        vscode.workspace.openTextDocument(jitDumpFile).then(doc => {
-            vscode.window.showTextDocument(doc, index);
-        });
+        showCounterpartListing(jitDumpFile, activeEditor);
     });
 
     vscode.commands.registerCommand("dotnetInsights.showAsm", () => {
-        var activeFile  = vscode.window.activeTextEditor?.document.uri.fsPath;
+        // We have a jitdump file active, we have generated the asm side by
+        // side, just display that file
+        const activeEditor = vscode.window.activeTextEditor;
 
-        if (activeFile === undefined) {
+        if (activeEditor === undefined) {
             return;
         }
 
-        console.log(path.extname(activeFile) === ".jitdump" || path.extname(activeFile) === ".jitDump");
-
-        // We have an asm file active, we have generated the jitdump side by
-        // side, just display that file
-
-        const visibleEditors = vscode.window.visibleTextEditors;
-        var index = 0;
-
-        for (index = 0; index < visibleEditors.length; ++index) {
-            if (visibleEditors[index].document.uri.fsPath === activeFile) {
-                break;
-            }
-        }
-
-        const asmFile = activeFile?.replace(".jitDump", ".asm");
+        const asmFile = activeEditor.document.uri.fsPath.replace(".jitDump", ".asm");
 
         if (!fs.existsSync(asmFile)) {
             return;
         }
 
-        vscode.workspace.openTextDocument(asmFile).then(doc => {
-            vscode.window.showTextDocument(doc, index);
-        });
+        showCounterpartListing(asmFile, activeEditor);
     });
 
     vscode.commands.registerCommand("dotnetInsights.realtimeIL", (reWriteFile?: boolean) => {
