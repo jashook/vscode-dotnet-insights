@@ -732,6 +732,61 @@ genuinely differ) to capture large fixtures against.
   and headers must stay free to wrap, so a narrow window wraps a header rather
   than forcing its column wider and breaking alignment.
 
+## Editor tabs: opening a view must not close the user's (issue #99, 1.9.2)
+
+`dotnetInsights.edit` (the `*.dll` custom editor) renders nothing into its own
+webview — it runs `ildasm` and shows the generated `.ildasm` text document
+instead — so it has to get rid of its own placeholder tab. It used to do that
+with `workbench.action.closeActiveEditor`, or, whenever more than one editor
+was visible, **`closeEditorsAndGroup`**, which closed the user's entire editor
+group. That second branch is the one real users hit, since it triggers whenever
+anything other than a single editor is open.
+
+- **Dispose the placeholder panel; never run a `workbench.action.close*`
+  command.** `webviewPanel.dispose()` closes exactly one editor — its own.
+  This is also why doing the swap in `resolveCustomEditor` rather than
+  `openCustomDocument` matters: resolve is handed the panel, and it doesn't run
+  at all for a tab restored into the background, so a reloaded window no longer
+  closes editors during startup.
+- **Never dispose that panel synchronously inside `resolveCustomEditor`.**
+  VS Code goes on setting the editor up after that call returns, and disposing
+  underneath it fails the whole open with a modal *"Unable to open '<name>.dll':
+  OverlayWebview has been disposed"* — while the `.ildasm` document itself
+  opens fine behind the dialog, so the symptom looks unrelated to the cause.
+  `showIlDasmInPlaceOfPanel` defers by a `setTimeout(…, 0)` and disposes only
+  once the replacement document is on screen, several async round trips later.
+- **`WebviewPanel.viewColumn` is `undefined` until the panel has been laid
+  out**, so read it *after* the deferral, not at call time. A test asserting a
+  column on a freshly created panel has to poll for one first.
+- **A `ViewColumn` is a position, never a count or an index.** Three separate
+  call sites derived one from `visibleTextEditors`, all wrong in different
+  ways, all fixed in 1.9.2: `visibleTextEditors.length + 1`
+  (`onSaveIlDasm.ts`) walked a fresh editor column further right on every
+  generation (measured 1 → 2 → 3 → 4), and a 0-based index into that array
+  passed as a 1-based column (`showJitDump`/`showAsm`) worked only by accident
+  — index 0 resolves to column One, so a listing in the *first* group looked
+  correct while one in the second group produced index 1, column One again, and
+  put the counterpart in the wrong group. `visibleTextEditors` is not ordered by
+  column either. Take the column from the editor or panel that owns it
+  (`editor.viewColumn`), and derive neighbours arithmetically from that.
+- **`preview: false` on anything this extension generates.** A preview tab is
+  reused, so `showTextDocument(doc, 1)` twice leaves exactly ONE tab — verified
+  in the test host. The min opts / tier 1 / jit dump commands each write a
+  uniquely named listing and comparing two of them is the whole point, so
+  generating the second silently closed the first.
+
+Testing these: `@vscode/test-electron` drives the real API, but a **custom
+editor viewType can only be registered if it is declared in `package.json`'s
+`contributes.customEditors`**, so there is no way to stand up a synthetic
+provider for a test, and driving the real `dotnetInsights.edit` needs the
+downloaded `ildasm` binary. Hence `ilDasmEditorSwap.test.ts` /
+`listingColumnPlacement.test.ts` / `generatedListingTabs.test.ts` exercise the
+extracted helpers plus the disposal *timing* invariant (the panel must still be
+alive at the instant `resolveCustomEditor` returns) rather than an end-to-end
+open. One trap when writing them: **`onDidDispose` fires immediately but
+`vscode.window.tabGroups` catches up a turn later**, so an assertion that a tab
+is gone has to poll rather than read the tab list right after the await.
+
 ## Tool distribution & the stale-cache trap
 
 `DependencySetup.ts` downloads each helper tool's release asset into VS
