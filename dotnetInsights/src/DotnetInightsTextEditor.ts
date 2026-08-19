@@ -49,37 +49,11 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
 
         fs.writeFileSync(outputFilePath, output);
 
-        var openPath = vscode.Uri.file(outputFilePath);
+        // The generated .ildasm file is shown from resolveCustomEditor, which is
+        // where this provider's own placeholder editor can be closed without
+        // touching any of the user's other editors.
 
-        if (vscode.window.visibleTextEditors.length === 1 && !this.insights.isInlineIL) {
-            vscode.commands.executeCommand('workbench.action.closeActiveEditor').then(() => {
-                vscode.workspace.openTextDocument(openPath).then(doc => {
-                    this.insights.isInlineIL = false;
-                    vscode.window.showTextDocument(doc);
-                });
-            });
-        }
-        else {
-            this.insights.outputChannel.appendLine("closeEditorsAndGroup");
-            vscode.commands.executeCommand('workbench.action.closeEditorsAndGroup').then(() => {
-                vscode.workspace.openTextDocument(openPath).then(doc => {
-                    if (this.insights.inlineIlCallback !== undefined) {
-                        vscode.window.showTextDocument(doc, {
-                            viewColumn: vscode.ViewColumn.Beside
-                        }).then(this.insights.inlineIlCallback);
-                    }
-                    else {
-                        vscode.window.showTextDocument(doc, {
-                            viewColumn: vscode.ViewColumn.Beside
-                        });
-                    }
-
-                    this.insights.inlineIlCallback = false;
-                });
-            });
-        }
-
-        // After the text editor has loaded we will want to update the tree view
+        // Update the tree view for the disassembly that was just generated
         if (this.insights.useIldasm && !this.insights.isInlineIL) {
             this.insights.updateForPath(outputFilePath, uri.fsPath, output);
         }
@@ -102,8 +76,73 @@ export class DotnetInsightsTextEditorProvider implements vscode.CustomReadonlyEd
     }
 
     resolveCustomEditor(document: vscode.CustomDocument, webviewPanel: vscode.WebviewPanel, token: vscode.CancellationToken): void | Thenable<void> {
-        // unused
+        // This provider never renders anything into its own webview. It only
+        // exists to hijack opening a *.dll, so the panel it is handed here is a
+        // placeholder that gets swapped for the ildasm text document.
+        var insightsDocument = document as DotnetInsightsDocument;
+
+        var inlineIlCallback = this.insights.inlineIlCallback;
+        this.insights.inlineIlCallback = undefined;
+
+        showIlDasmInPlaceOfPanel(webviewPanel, insightsDocument.fileName).then(editor => {
+            if (inlineIlCallback !== undefined) {
+                inlineIlCallback(editor);
+            }
+        });
     }
+}
+
+/**
+ * Swaps this provider's placeholder editor for the ildasm text document it
+ * generated, in the view column that placeholder occupied.
+ *
+ * Disposing the panel closes exactly that one editor. This used to run
+ * workbench.action.closeActiveEditor (or, with more than one editor visible,
+ * closeEditorsAndGroup), which took whatever else the user had open down with
+ * it - the whole editor group in the second case (issue #99).
+ *
+ * The panel must NOT be disposed while VS Code is still inside
+ * resolveCustomEditor: it goes on setting the editor up after that call
+ * returns, and disposing underneath it fails the whole open with a modal
+ * "Unable to open '<name>.dll': OverlayWebview has been disposed" - even though
+ * the ildasm document itself opened fine. So the swap is deferred by a turn of
+ * the event loop, and the panel goes away only once its replacement is actually
+ * on screen, which is several async round trips later again.
+ *
+ * The inline IL flow opens the .dll with ViewColumn.Beside, so its placeholder
+ * is already beside and the ildasm document still lands there.
+ */
+export function showIlDasmInPlaceOfPanel(webviewPanel: vscode.WebviewPanel, ilDasmFilePath: string): Thenable<vscode.TextEditor> {
+    var panelDisposed = false;
+    var disposeListener = webviewPanel.onDidDispose(() => { panelDisposed = true; });
+
+    return new Promise<vscode.TextEditor>((resolve, reject) => {
+        setTimeout(() => {
+            // Read after the deferral, not before: a panel has no viewColumn
+            // until it has been laid out, which has happened by now.
+            var viewColumn = (panelDisposed || webviewPanel.viewColumn === undefined)
+                             ? vscode.ViewColumn.Active
+                             : webviewPanel.viewColumn;
+
+            vscode.workspace.openTextDocument(vscode.Uri.file(ilDasmFilePath)).then(doc => {
+                // preview: false, so this generated document takes a tab of its
+                // own rather than evicting whatever the user is previewing.
+                return vscode.window.showTextDocument(doc, {
+                    viewColumn: viewColumn,
+                    preview: false
+                });
+            }).then(editor => {
+                webviewPanel.dispose();
+                disposeListener.dispose();
+
+                resolve(editor);
+            }, error => {
+                disposeListener.dispose();
+
+                reject(error);
+            });
+        }, 0);
+    });
 }
 
 export class Method {
