@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { formatHumanDateTime, renderGcDetailTable } from '../../GcDetailTableRenderer';
+import { formatHumanDateTime, renderGcDetailTable, renderRankedTableHeader, renderSortableTableHeader } from '../../GcDetailTableRenderer';
 
 // Builds a minimal synthetic gcData["gcData"] entry with just the fields
 // renderGcDetailTable reads.
@@ -135,6 +135,53 @@ describe('GcDetailTableRenderer', () => {
             assert.ok(html.includes('<tr class="somewhatInterestingGc" data-elapsed-msec="4000" data-gc-index="3"><td class="rowHideColumn"><button class="rowHideBtn" type="button" title="Hide this row">&#10005;</button></td><td>4</td>'));
             assert.ok(html.includes('<tr class="notSomewhatInterestingGc" data-elapsed-msec="5000" data-gc-index="4"><td class="rowHideColumn"><button class="rowHideBtn" type="button" title="Hide this row">&#10005;</button></td><td>5</td>'));
             assert.ok(html.includes('<tr data-elapsed-msec="6000" data-gc-index="5"><td class="rowHideColumn"><button class="rowHideBtn" type="button" title="Hide this row">&#10005;</button></td><td>6</td>'));
+        });
+    });
+
+    // Every ranked table in these webviews - CPU Methods, Contention Sites,
+    // Exception Types, the GC detail table above and the .gcdump census -
+    // is built through this one helper, because snapshot.css's column rules
+    // are POSITIONAL: column 1 narrow and centered, column 2 the left-aligned
+    // wrapping name column, everything after it numeric and right-aligned. A
+    // table that renders its own header without the hide column shifts all of
+    // that by one and gets its name column formatted as a number, which is
+    // exactly the bug the .gcdump view shipped with.
+    describe('renderRankedTableHeader', () => {
+        const columns: ReadonlyArray<[string, string]> = [
+            ["Type", "text"],
+            ["Objects", "number"],
+            ["Bytes", "number"]
+        ];
+
+        it('prepends the hide column ahead of every declared column', () => {
+            const header = renderRankedTableHeader(columns);
+
+            assert.ok(header.indexOf('<tr class="tableHeader"><th class="rowHideColumn"></th>') === 0,
+                `hide column must be the first cell: ${header}`);
+        });
+
+        it('leaves the hide column unsortable so the sort wiring skips it', () => {
+            const header = renderRankedTableHeader(columns);
+            const hideColumnCell = header.substring(header.indexOf('<th class="rowHideColumn"'), header.indexOf('</th>'));
+
+            assert.ok(hideColumnCell.indexOf('data-sort') < 0,
+                'the hide column must carry no data-sort attribute (see wireSortableTableHeaders)');
+        });
+
+        it('is the plain sortable header plus that one cell, nothing else', () => {
+            const plain = renderSortableTableHeader(columns);
+            const ranked = renderRankedTableHeader(columns);
+
+            assert.strictEqual(ranked.replace('<th class="rowHideColumn"></th>', ''), plain);
+        });
+
+        it('puts the name column second, where the shared CSS expects it', () => {
+            const ranked = renderRankedTableHeader(columns);
+            const cells = ranked.split('<th').slice(1);
+
+            assert.ok(cells[0].indexOf('rowHideColumn') >= 0, 'column 1 should be the hide column');
+            assert.ok(cells[1].indexOf('>Type<') >= 0, 'column 2 should be the name column');
+            assert.ok(cells[2].indexOf('data-sort="number"') >= 0, 'column 3 on should be numeric');
         });
     });
 

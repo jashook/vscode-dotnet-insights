@@ -516,7 +516,10 @@ by inspecting a real `roslynHelper-osx-x64.tar.gz`). Upload with
 
 `nettraceParser --gcdump <file.gcdump> [--json <out>]` reads a
 `dotnet-gcdump collect` heap SNAPSHOT (what is on the heap right now and what
-keeps it alive) rather than an event stream. It lives inside nettraceParser
+keeps it alive) rather than an event stream. The webview presents it as three
+ranked tables - Type Census, Retained Size, References - each row expanding
+into the retention/reference tree for that type; see "The ranked table is ONE
+component" below for the shared component all of them are built from. It lives inside nettraceParser
 only because a `.gcdump` is a `!FastSerialization.1` stream - the same
 serializer `FastSerialization.cs` already vendors - so it reuses the
 deserializer, `Progress/`, `pack.py`, `DependencySetup.ts` and the version
@@ -581,6 +584,96 @@ format):
   though the `.nettrace` path has one - there is nothing for it to save.
   Type names are interned into a dense pool for the same reason the `.nettrace`
   path interns method names.
+
+### Core dumps (`nettraceParser/CoreDump/`) — the only source that survives load
+
+`nettraceParser --gcdump-from-dump <core.dmp> [-o out.gcdump] [--json out.json]`
+builds the same `HeapGraph` from a process core dump via **ClrMD**
+(`Microsoft.Diagnostics.Runtime`), so the dominator pass, census, root-path
+trie, `.gcdump` writer and the whole webview are shared with the other two heap
+sources and know nothing about where the graph came from. The extension opens
+`.dmp`/`.core` through the same custom editor as `.gcdump`
+(`isProcessDumpPath` in `DotnetInsightsGcDumpEditor.ts` picks the flag).
+
+**Why this exists.** Both event paths depend on the runtime walking its own heap
+while the process runs on, and that is only trustworthy on a QUIET heap.
+Measured, on a real production ASP.NET service captured with
+`dotnet-trace ... 0x1980001:5`: the dump named **1,798,821 addresses it never
+described** (35.4% of its 10.16M references), **26,006 of 41,919 roots** dangled,
+and **1.5% of the heap was reachable** — so every retained size and every
+retention path in it was worthless, while the type census was fine. Ruled out
+by measurement, not assumption: no dropped events (block sequence numbers ran
+contiguously), not truncation (the dump finished 45s before the capture ended),
+not a decode bug (zero unresolved addresses were interior to a described
+object). Bucketed by 4MB, the heap split cleanly — **147 regions fully
+described, 246 never described at all** — so the runtime enumerated part of the
+heap. Reproduced on a churning test heap, where `dotnet-trace` at level 5,
+level 4 with a 1GB buffer, and `dotnet-gcdump collect` all produced equally
+unusable root sets. There is no capture flag that fixes it; freezing the
+process is the fix.
+
+Hard-won facts:
+
+- **`AddressToIndexMap` never resizes, by design.** Seeding it with a guess does
+  not degrade, it HANGS — a full table under linear probing spins forever on the
+  next insert (cost me a 10-minute 100%-CPU mystery). Hence walk 0, which counts
+  objects and touches no references, purely to size it.
+- **Three walks, exact allocations**: count objects → assign indices and count
+  each object's references into a `ChunkedIntList` (blocks, never doubling) →
+  fill nodes and write each edge straight into its final CSR slot. More than one
+  walk because CSR needs every child count before any child can be written;
+  buffering 8-byte target addresses instead is the 286MB-at-35M-edges cost the
+  trace path already removed.
+- **`ClrObject.IsFree` must be excluded, in all three walks identically.** ClrMD
+  enumerates the GC's free-list placeholders (that is how it walks a segment
+  linearly) and `dotnet-gcdump` does not: on the verification dump they were
+  86,626 objects and 2.8MB of a phantom `Free` type, and if the walks disagree
+  about what an object is, the count that sized the address map no longer
+  matches what gets inserted into it.
+- **Stack roots crash the DAC on a macOS Mach-O core dump.** Verified on a real
+  .NET 10 dump with ClrMD 3.1 AND 4.1: handles, the finalizer queue, objects and
+  references all enumerate fine; `EnumerateStackRoots` SIGSEGVs on the first
+  thread. A native crash is not catchable from managed code, so this has to be
+  decided BEFORE the walk — `ShouldDefaultToSkippingStackRoots` sniffs the
+  Mach-O magic (0xFEEDFACF) off the DUMP, not the host, because a Linux dump
+  read on a Mac still has readable stacks. Losing them costs less than it
+  sounds: handles cover statics and every GC handle, and on the verification
+  dump handle + finalizer roots alone reached 100,003 of 100,003 objects in the
+  retained graph under test. `GcDumpMetadata.StackRootsOmitted` carries the
+  caveat into the JSON and the webview says so, because "some objects are
+  unrooted" and "one whole category of root was unreadable" otherwise look
+  identical.
+- **Root CATEGORIES are rebuilt here** (`[strong handle]`, `[pinned handle]`,
+  `[other handle]`, `[finalizer queue]`, `[thread stack]`), each a size-0 node
+  between `[.NET Roots]` and its roots — the shape real `dotnet-gcdump` output
+  has and the thing the trace path loses entirely. A retention path that ends
+  "held by [.NET Roots]" says nothing. Empty categories are still emitted:
+  "looked, found none" is not the same as "never looked". Module names come from
+  `ClrType.Module` and are likewise unavailable on the trace path.
+- **Weak handles are not roots** — `ClrHandle.IsStrong` filters them, or the UI
+  would report objects as retained by the one thing that explicitly does not
+  keep them alive.
+- **ClrMD is an allowed dependency here, unlike TraceEvent for `.nettrace`.**
+  That refusal is about a documented file format worth hand-rolling; a core dump
+  is read by asking a private, versioned runtime contract questions through the
+  DAC, and there is no hand-rolled version of that worth writing. Only
+  `CoreDump/` touches the package.
+- **The DAC must match the dumped runtime**, so a Linux dump is most easily
+  converted on Linux (`--dac` overrides). Missing-DAC is reported as an error
+  message on the stack, not an exception — the CLI prints one line saying what
+  to do.
+- Verified end to end on a real 402MB macOS core dump (301,160 objects):
+  **0 unresolved references, 0.2% unreachable** (versus 98.5% for the same class
+  of heap through the trace path), retained sizes correct through the dominator
+  tree. Test coverage is `CoreDumpHeapGraphBuilderTests` behind
+  `CORE_DUMP_FIXTURE` (same opt-in shape as the other fixture-gated tests), and
+  it asserts STRUCTURE — every edge lands on a real node, CSR offsets are
+  monotone, nothing is unresolved, no object carries the placeholder type —
+  rather than pinning counts that change with every dump. To produce a dump on a
+  machine where `dotnet-dump collect` cannot attach (macOS refuses
+  `task_for_pid` without entitlements), let the runtime write one itself:
+  `DOTNET_DbgEnableMiniDump=1 DOTNET_DbgMiniDumpType=2 DOTNET_DbgMiniDumpName=…`
+  then crash the app.
 
 #### Memory, and what did and did not help
 
@@ -731,6 +824,72 @@ genuinely differ) to capture large fixtures against.
   clear the widest numeric header's min-content (~115px, "Total Wait (ms)")
   and headers must stay free to wrap, so a narrow window wraps a header rather
   than forcing its column wider and breaking alignment.
+
+### The ranked table is ONE component — use it, don't re-derive it
+
+CPU Hot Methods, Contention Sites, Exception Types, the GC detail table and
+all three `.gcdump` heap views are the same thing: a ranked table whose rows
+expand into an inline stack/retention tree. The pieces:
+
+- **Header**: `renderRankedTableHeader` (`GcDetailTableRenderer.ts`) —
+  `renderSortableTableHeader` plus the row-hide button's own bare, unsortable
+  leading `<th>`. Every one of those five tables goes through it; four of them
+  used to `.replace()` the hide column in by hand, one didn't and broke.
+- **Behaviour**: `media/rankedTable.js` — `setupDetailTableSortHandlers` /
+  `sortDetailTableByColumn` / `wireSortableTableHeaders` /
+  `createRowHideController` / `splitQualifiedName`, all plain globals, loaded
+  before `snapshotGcStats.js` (which used to define the first four *inside its
+  own IIFE*, which is why the `.gcdump` webview — a separate document — shipped
+  with sortable-LOOKING headers that did nothing at all when clicked).
+- **Markup**: a `.detailTable.cpuHotMethodsTable` **div** wrapping a bare
+  `<table>`; rows `<tr class="typeRow …"><td class="rowHideColumn">✕</td><td>▸
+  name</td>` then numeric cells; a paired hidden
+  `<tr class="callPathsDetail"><td colspan=N class="callerTreeCell">` for the
+  tree; each tree level its own `<table class="callerTreeInner">` with a
+  `<colgroup>` whose first `<col>` is a 1.6em spacer and a matching empty
+  leading `<td>` on every row.
+
+**The column positions are the contract.** snapshot.css keys off them:
+column 1 narrow/centered, column 2 the left-aligned, wrapping, `width: auto`
+name column, columns 3+ numeric and right-aligned. The `.gcdump` census table
+emitted its own order (type name as column 1, no hide column) and the failure
+was not subtle — one 567-character generic type name (`System.Func<...>`,
+ordinary on a real heap) blew the unwrapped first column out to thousands of
+pixels and pushed every numeric column off-screen, while `Objects` sat in the
+column sized to hold long names. Its two tree views were worse: bare `<table>`
+elements outside any `.detailTable` wrapper inherited no table styling at all
+and rendered centered, which erased the indentation that WAS the tree.
+
+Two things that are NOT shared, deliberately:
+
+- **Sorting a capped, JS-rendered table sorts the DATA, not the DOM.** The
+  `.gcdump` tables render the first 500 of thousands of rows, so
+  `sortDetailTableByColumn` (which reorders the rows present) would reorder
+  that one page and present it as the top 500 by the newly clicked column.
+  `wireSortableTableHeaders` exists to share the header/indicator wiring while
+  letting the caller decide what "sort" means; `gcDumpView.js` re-sorts its
+  array and re-renders.
+- **Each view owns its own click delegation.** The tree machinery is small
+  (build one level, cache it in the DOM, toggle `expanded` on the row and its
+  detail row); duplicating it costs less than a shared registry keyed by four
+  different `data-*` attribute pairs, which is the shape
+  `cpuDrillDownStats.js` / `exceptionDrillDownStats.js` /
+  `contentionDrillDownStats.js` already settled into.
+
+A tree's numeric columns line up with the ranked table's RIGHTMOST columns
+because both grids span the same box — an alignment, not a shared meaning. The
+`.gcdump` trees therefore label their own columns once, at the top of an
+expansion (`.treeColumnLabelRow`), or "Bytes" reads as whatever header happens
+to sit above it.
+
+Dimmed text (`.methodTypePrefix`, `.unresolvedFrame`, `.calledByLabel`,
+`.pathCount`, `.rowHideBtn`) uses `color: inherit` + `opacity`, not a
+hard-coded `rgba(0,0,0,…)`: these webviews follow the VS Code theme, and a
+near-black glyph on a dark theme is invisible — the ✕ hide column read as an
+empty gutter. On a light theme the inherited foreground IS near-black, so the
+rendering is unchanged. (Plenty of other hard-coded colours remain in
+snapshot.css; these five were converted because the `.gcdump` views now use
+them.)
 
 ## Editor tabs: opening a view must not close the user's (issue #99, 1.9.2)
 

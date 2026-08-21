@@ -14,6 +14,30 @@
 // of the root-path trie, so inlining them would dominate the payload - the
 // same interning this repo already had to add to the .nettrace path after a
 // real capture blew past Node's maximum string length.
+//
+// EVERY VIEW HERE IS ONE COMPONENT. All three tabs are the same ranked table
+// with an inline, lazily-built tree inside each expanded row - the same
+// component the Profile (CPU methods -> callers), Exceptions (type -> throw
+// sites) and Heap Contents (type -> allocating stacks) views already use, with
+// the same markup, the same classes and the same shared helpers from
+// rankedTable.js. Retention paths used to be a fourth tab driven by a <select>;
+// they are now what a type row expands INTO, which is exactly the move the
+// Profile view already made when its separate "Drill Down" tab became inline
+// caller trees in the Methods table.
+//
+// The structural rules that markup has to obey (all of them learned the hard
+// way, all of them enforced by snapshot.css selectors rather than by anything
+// that would fail loudly):
+//
+//   - The ranked table lives in a `.detailTable.cpuHotMethodsTable` DIV
+//     wrapping a bare <table>. The class on the <table> itself matches nothing.
+//   - Column 1 is the row-hide column, column 2 is the name column, 3+ are
+//     numeric. Those positions are what the shared CSS keys off.
+//   - A nested tree level is its own `<table class="callerTreeInner">` with a
+//     <colgroup> whose first <col> is a 1.6em spacer matching the hide column,
+//     and every row starts with a matching empty <td>. Without that spacer the
+//     tree's numeric columns sit one column to the left of the ranked table's,
+//     which reads as "expanding a row broke the alignment".
 
 (function () {
     var payload = JSON.parse(document.getElementById('gcDumpJson').textContent);
@@ -23,6 +47,21 @@
     var census = payload.types || [];
     var summary = payload.summary || {};
     var totalBytes = Number(summary.totalBytes || 0);
+
+    // Rows are capped for RENDERING only. A heap can carry tens of thousands of
+    // distinct types and nobody scrolls past the first few hundred - but the
+    // filter and the sort both run over every row, so a type outside the cap is
+    // still reachable by typing its name or by sorting on another column,
+    // rather than silently absent.
+    var MaxRenderedRows = 500;
+
+    // A reference graph collapsed by type is densely cyclic (String -> Object[]
+    // -> String is entirely normal), so an expandable subtree is infinite by
+    // construction. Expansion is one click per level, so this cap is a
+    // backstop, not the primary guard - that is the cycle check in
+    // renderReferenceRow, which stops a branch the moment it revisits a type
+    // already on its own path.
+    var MaxReferenceDepth = 24;
 
     // ---------------------------------------------------------------------
     // Formatting
@@ -51,7 +90,7 @@
         return value.toFixed(value >= 100 ? 0 : 1) + ' ' + units[unitIndex];
     }
 
-    function percentOfHeap(bytes) {
+    function formatPercentOfHeap(bytes) {
         if (totalBytes <= 0) {
             return '0.0%';
         }
@@ -85,108 +124,40 @@
         return typeNames[poolIndex] || '?';
     }
 
-    function typeCellHtml(poolIndex) {
-        var name = typeLabel(poolIndex);
-        var module = moduleFileName(typeModules[poolIndex]);
-        var moduleHtml = module ? ' <span class="gcDumpModule">[' + escapeHtml(module) + ']</span>' : '';
-        return '<span class="gcDumpTypeName">' + escapeHtml(name) + '</span>' + moduleHtml;
+    // Same presentation as every method name in the Profile/Exceptions tables:
+    // dimmed namespace prefix, emphasized final segment (splitQualifiedName in
+    // rankedTable.js, which knows not to split inside a generic argument), plus
+    // the defining module. The full name goes on `title` because the column
+    // wraps rather than scrolls - a 567-character generic is real, ordinary
+    // input here.
+    function typeNameHtml(poolIndex) {
+        var rawName = typeLabel(poolIndex);
+        var split = splitQualifiedName(rawName);
+        var moduleName = moduleFileName(typeModules[poolIndex]);
+
+        var html = '<span class="gcDumpTypeName" title="' + escapeHtml(rawName) + '">';
+
+        if (split.prefix) {
+            html += '<span class="methodTypePrefix">' + escapeHtml(split.prefix) + '</span>';
+        }
+
+        html += '<span class="methodName">' + escapeHtml(split.name) + '</span></span>';
+
+        if (moduleName) {
+            html += ' <span class="gcDumpModule">[' + escapeHtml(moduleName) + ']</span>';
+        }
+
+        return html;
+    }
+
+    function expandToggleHtml(isExpandable) {
+        return isExpandable
+            ? '<span class="leafMethodToggle">&#9656;</span>'
+            : '<span class="leafMethodToggle leafMethodToggleEmpty"></span>';
     }
 
     // ---------------------------------------------------------------------
-    // Ranked tables (Type Census, Retained Size)
-    // ---------------------------------------------------------------------
-
-    // Both tables render the same rows with different column orders and sort
-    // keys, so they share one renderer rather than two near-identical ones.
-    function renderCensusRows(tbody, rows, columns) {
-        var html = '';
-
-        for (var rowIndex = 0; rowIndex < rows.length; ++rowIndex) {
-            var row = rows[rowIndex];
-            html += '<tr>';
-            html += '<td>' + typeCellHtml(row.t) + '</td>';
-
-            for (var columnIndex = 0; columnIndex < columns.length; ++columnIndex) {
-                html += '<td class="numericCell">' + columns[columnIndex](row) + '</td>';
-            }
-
-            html += '</tr>';
-        }
-
-        tbody.innerHTML = html;
-    }
-
-    var censusColumns = [
-        function (row) { return formatNumber(row.c); },
-        function (row) { return formatBytes(row.b); },
-        function (row) { return percentOfHeap(row.b); },
-        function (row) { return formatBytes(row.r); },
-        function (row) { return formatBytes(row.m); }
-    ];
-
-    var retainedColumns = [
-        function (row) { return formatBytes(row.r); },
-        function (row) { return percentOfHeap(row.r); },
-        function (row) { return formatBytes(row.m); },
-        function (row) { return formatNumber(row.c); },
-        function (row) { return formatBytes(row.b); }
-    ];
-
-    // Rows are capped for rendering only. A heap can carry tens of thousands
-    // of distinct types and nobody scrolls past the first few hundred - but
-    // the FILTER runs over every row, so a type outside the cap is still
-    // reachable by typing its name rather than silently absent.
-    var MaxRenderedRows = 500;
-
-    function applyFilter(rows, filterText) {
-        if (!filterText) {
-            return rows;
-        }
-
-        var needle = filterText.toLowerCase();
-        var filtered = [];
-
-        for (var rowIndex = 0; rowIndex < rows.length; ++rowIndex) {
-            if (typeLabel(rows[rowIndex].t).toLowerCase().indexOf(needle) >= 0) {
-                filtered.push(rows[rowIndex]);
-            }
-        }
-
-        return filtered;
-    }
-
-    function setUpRankedTable(tableId, tbodyId, filterId, countId, columns, sortKey) {
-        var tbody = document.getElementById(tbodyId);
-        var filterInput = document.getElementById(filterId);
-        var countLabel = document.getElementById(countId);
-
-        var sorted = census.slice();
-        sorted.sort(function (left, right) {
-            return sortKey(right) - sortKey(left);
-        });
-
-        function refresh() {
-            var filtered = applyFilter(sorted, filterInput.value);
-            var shown = filtered.slice(0, MaxRenderedRows);
-
-            renderCensusRows(tbody, shown, columns);
-
-            if (filtered.length > shown.length) {
-                countLabel.textContent = 'showing ' + formatNumber(shown.length) + ' of ' + formatNumber(filtered.length) + ' types';
-            } else {
-                countLabel.textContent = formatNumber(filtered.length) + ' types';
-            }
-        }
-
-        filterInput.addEventListener('input', refresh);
-        refresh();
-    }
-
-    setUpRankedTable('censusTable', 'censusTableBody', 'censusFilter', 'censusFilterCount', censusColumns, function (row) { return row.b; });
-    setUpRankedTable('retainedTable', 'retainedTableBody', 'retainedFilter', 'retainedFilterCount', retainedColumns, function (row) { return row.r; });
-
-    // ---------------------------------------------------------------------
-    // Paths to Root
+    // Retention paths (what a census/retained row expands into)
     // ---------------------------------------------------------------------
 
     var rootPaths = payload.rootPaths || [];
@@ -212,111 +183,25 @@
         childrenByPathIndex[parentIndex].push(pathIndex);
     }
 
-    for (var key in childrenByPathIndex) {
-        if (Object.prototype.hasOwnProperty.call(childrenByPathIndex, key)) {
-            childrenByPathIndex[key].sort(function (left, right) {
+    for (var childListKey in childrenByPathIndex) {
+        if (Object.prototype.hasOwnProperty.call(childrenByPathIndex, childListKey)) {
+            childrenByPathIndex[childListKey].sort(function (left, right) {
                 return rootPaths[right].c - rootPaths[left].c;
             });
         }
     }
 
-    var rootTypeSelect = document.getElementById('rootTypeSelect');
-    var rootPathTree = document.getElementById('rootPathTree');
+    // Only the heaviest types by retained size get a trie at all (see
+    // GcDumpAnalysisLimits.InterestingTypeCount) - this is what decides whether
+    // a ranked row gets a real chevron or an invisible placeholder.
+    var rootPathIndexByPoolIndex = {};
 
-    function populateRootTypeSelect() {
-        // Ordered by what each type retains, matching the ranking that made
-        // it "interesting" enough to have a tree computed at all (see
-        // GcDumpAnalysisLimits.InterestingTypeCount).
-        var entries = rootPathIndexByType.slice();
-        var retainedByPoolIndex = {};
-
-        for (var censusIndex = 0; censusIndex < census.length; ++censusIndex) {
-            retainedByPoolIndex[census[censusIndex].t] = census[censusIndex].r;
-        }
-
-        entries.sort(function (left, right) {
-            return (retainedByPoolIndex[right.t] || 0) - (retainedByPoolIndex[left.t] || 0);
-        });
-
-        var html = '';
-
-        for (var entryIndex = 0; entryIndex < entries.length; ++entryIndex) {
-            html += '<option value="' + entries[entryIndex].i + '">' + escapeHtml(typeLabel(entries[entryIndex].t)) + '</option>';
-        }
-
-        rootTypeSelect.innerHTML = html;
-    }
-
-    function renderRootPathTree(rootIndexOfTree) {
-        if (rootIndexOfTree === undefined || rootIndexOfTree === null || !rootPaths[rootIndexOfTree]) {
-            rootPathTree.innerHTML = '<p class="gcDumpEmpty">No retention paths were recorded for this type.</p>';
-            return;
-        }
-
-        var sampledInstances = rootPaths[rootIndexOfTree].c;
-
-        var html = '<table class="cpuHotMethodsTable gcDumpTreeTable">';
-        html += '<thead><tr class="tableHeader">';
-        html += '<th><span class="thLabel">Holder</span></th>';
-        html += '<th data-sort="number"><span class="thLabel">Instances</span></th>';
-        html += '<th data-sort="number"><span class="thLabel">Share</span></th>';
-        html += '</tr></thead><tbody>';
-
-        // Iterative, not recursive: the trie is depth-capped in C# but this
-        // keeps the renderer independent of that cap.
-        var stack = [{ index: rootIndexOfTree, depth: 0 }];
-
-        while (stack.length > 0) {
-            var current = stack.pop();
-            var node = rootPaths[current.index];
-
-            var share = sampledInstances > 0 ? ((node.c / sampledInstances) * 100).toFixed(1) + '%' : '';
-            var indentPx = current.depth * 18;
-
-            html += '<tr>';
-            html += '<td><span class="gcDumpTreeIndent" style="padding-left:' + indentPx + 'px"></span>';
-
-            if (current.depth > 0) {
-                html += '<span class="gcDumpTreeArrow">&#8592;</span> ';
-            }
-
-            html += typeCellHtml(node.t) + '</td>';
-            html += '<td class="numericCell">' + formatNumber(node.c) + '</td>';
-            html += '<td class="numericCell">' + share + '</td>';
-            html += '</tr>';
-
-            var children = childrenByPathIndex[current.index];
-
-            if (children) {
-                // Pushed in reverse so the highest-count branch is popped
-                // (and therefore drawn) first.
-                for (var childIndex = children.length - 1; childIndex >= 0; --childIndex) {
-                    stack.push({ index: children[childIndex], depth: current.depth + 1 });
-                }
-            }
-        }
-
-        html += '</tbody></table>';
-
-        var note = '<p class="gcDumpEmpty">Branches merged across ' + formatNumber(sampledInstances) +
-            ' sampled instances. Each level is one reference closer to a GC root.</p>';
-
-        rootPathTree.innerHTML = note + html;
-    }
-
-    populateRootTypeSelect();
-    rootTypeSelect.addEventListener('change', function () {
-        renderRootPathTree(parseInt(rootTypeSelect.value, 10));
-    });
-
-    if (rootTypeSelect.options.length > 0) {
-        renderRootPathTree(parseInt(rootTypeSelect.value, 10));
-    } else {
-        renderRootPathTree(null);
+    for (var rootTypeIndex = 0; rootTypeIndex < rootPathIndexByType.length; ++rootTypeIndex) {
+        rootPathIndexByPoolIndex[rootPathIndexByType[rootTypeIndex].t] = rootPathIndexByType[rootTypeIndex].i;
     }
 
     // ---------------------------------------------------------------------
-    // References
+    // Reference graph (what a references row expands into)
     // ---------------------------------------------------------------------
 
     var outgoingEdges = payload.outgoingReferences || [];
@@ -339,6 +224,14 @@
             index[key].push(edges[edgeIndex]);
         }
 
+        for (var indexKey in index) {
+            if (Object.prototype.hasOwnProperty.call(index, indexKey)) {
+                index[indexKey].sort(function (left, right) {
+                    return right.b - left.b;
+                });
+            }
+        }
+
         return index;
     }
 
@@ -346,8 +239,6 @@
     var incomingByTo = indexEdgesBy(incomingEdges, 't');
 
     var referenceDirection = document.getElementById('referenceDirection');
-    var referenceFilter = document.getElementById('referenceFilter');
-    var referenceTree = document.getElementById('referenceTree');
 
     function edgesFor(poolIndex) {
         if (referenceDirection.value === 'outgoing') {
@@ -357,138 +248,611 @@
         return { edges: incomingByTo[poolIndex] || [], otherField: 'f' };
     }
 
-    function renderReferenceRoots() {
-        var filterText = referenceFilter.value ? referenceFilter.value.toLowerCase() : '';
+    // ---------------------------------------------------------------------
+    // Lazily-built tree levels
+    //
+    // One level of one tree is built when its row is first expanded and cached
+    // in the DOM from then on - the same lazy-expand discipline
+    // cpuDrillDownStats.js / exceptionDrillDownStats.js use, and for the same
+    // reason: a retention trie has thousands of nodes and a reference graph is
+    // unbounded, so building either eagerly would render a tree nobody asked
+    // to see.
+    // ---------------------------------------------------------------------
 
-        var sorted = census.slice();
-        sorted.sort(function (left, right) {
-            return right.b - left.b;
+    var treeRowIdCounter = 0;
+
+    // rowId -> the description of the level to build when that row is first
+    // expanded. Entries are added as rows are rendered and removed as they are
+    // consumed, so this holds only the frontier of what has been drawn.
+    var pendingSubtrees = new Map();
+
+    // Leading 1.6em spacer <col> matching the ranked table's own hide column,
+    // then the name column (left unset so it absorbs the width), then the
+    // numeric columns - which pick up the ranked table's shared
+    // --rankedNumericColumnWidth through .cpuHotMethodsTable .callerTreeInner
+    // .bytesColumn/.percentColumn, so a tree's numbers land on the same pixels
+    // as the header above it.
+    var RETENTION_COLGROUP = '<colgroup><col style="width: 1.6em"><col><col class="bytesColumn"><col class="bytesColumn"><col class="percentColumn"></colgroup>';
+    var REFERENCE_COLGROUP = '<colgroup><col style="width: 1.6em"><col><col class="bytesColumn"><col class="bytesColumn"></colgroup>';
+
+    // Same values as drillDownStats.js's CALLER_INDENT_EM_PER_LEVEL/
+    // CALLER_INDENT_MAX_EM - a cap, because a deep chain would otherwise indent
+    // its way off the right-hand edge of the column.
+    var TreeIndentEmPerLevel = 0.85;
+    var TreeIndentMaxEm = 17;
+
+    function indentStyleAttribute(depth) {
+        var indentEm = depth * TreeIndentEmPerLevel;
+        return ' style="padding-left: ' + (indentEm < TreeIndentMaxEm ? indentEm : TreeIndentMaxEm) + 'em"';
+    }
+
+    // The hidden row that holds one expanded row's next level. colspan has to
+    // cover the whole tree table or the nested table is confined to one column.
+    // Column labels for a tree's own metrics, emitted once at the top of an
+    // expansion. The nested levels below repeat this table's shape but not this
+    // row - a label per level would be noise, and the alignment carries it.
+    function treeColumnLabelRowHtml(labels) {
+        var html = '<tr class="treeColumnLabelRow"><td></td>';
+
+        for (var labelIndex = 0; labelIndex < labels.length; ++labelIndex) {
+            html += '<td>' + labels[labelIndex] + '</td>';
+        }
+
+        return html + '</tr>';
+    }
+
+    function detailRowHtml(rowId, columnCount) {
+        return '<tr id="' + rowId + '" class="callPathsDetail"><td colspan="' + columnCount + '" class="callerTreeCell"></td></tr>';
+    }
+
+    // Alternates a tint across sibling branches so a long chain reads as
+    // distinct branches rather than one undifferentiated block - assigned once
+    // per branch and inherited down every non-branching continuation, exactly
+    // as drillDownStats.js does it.
+    function branchClassFor(childIndex, isBranch, inheritedBranchClass) {
+        var toggledClass = inheritedBranchClass === 'drillDownAltBranch' ? '' : 'drillDownAltBranch';
+
+        if (!isBranch) {
+            return toggledClass;
+        }
+
+        return childIndex % 2 === 1 ? toggledClass : inheritedBranchClass;
+    }
+
+    // One retention-trie node: "held by <type>", with the sampled instance
+    // count that reached it and that count's share of the type's own sample.
+    function renderRetentionRow(pathIndex, depth, sampledInstances, branchClass) {
+        var node = rootPaths[pathIndex];
+        var children = childrenByPathIndex[pathIndex];
+        var hasChildren = !!(children && children.length > 0);
+        var rowId = hasChildren ? 'gcDumpTreeRow' + (++treeRowIdCounter) : null;
+
+        var share = sampledInstances > 0 ? ((node.c / sampledInstances) * 100).toFixed(1) + '%' : '';
+
+        var rowHtml = '<tr class="callerRow ' + branchClass + '"' +
+            (hasChildren ? ' data-expandable="true" data-gcdump-target="' + rowId + '"' : '') + '>' +
+            '<td></td>' +
+            '<td' + indentStyleAttribute(depth) + '>' + expandToggleHtml(hasChildren) +
+            '<span class="calledByLabel">held by </span>' + typeNameHtml(node.t) + '</td>' +
+            '<td>' + formatNumber(node.c) + '</td>' +
+            '<td>' + formatBytes(node.b) + '</td>' +
+            '<td>' + share + '</td>' +
+            '</tr>';
+
+        if (!hasChildren) {
+            return rowHtml;
+        }
+
+        pendingSubtrees.set(rowId, {
+            kind: 'retention',
+            pathIndex: pathIndex,
+            depth: depth + 1,
+            sampledInstances: sampledInstances,
+            branchClass: branchClass
         });
 
-        var html = '<table class="cpuHotMethodsTable gcDumpTreeTable" id="referenceRootTable">';
-        html += '<thead><tr class="tableHeader">';
-        html += '<th><span class="thLabel">Type</span></th>';
-        html += '<th data-sort="number"><span class="thLabel">References</span></th>';
-        html += '<th data-sort="number"><span class="thLabel">Bytes Pointed At</span></th>';
-        html += '</tr></thead><tbody>';
+        return rowHtml + detailRowHtml(rowId, 5);
+    }
 
-        var rendered = 0;
+    function buildRetentionLevelHtml(pending) {
+        var children = childrenByPathIndex[pending.pathIndex] || [];
+        var isBranch = children.length > 1;
 
-        for (var rowIndex = 0; rowIndex < sorted.length && rendered < MaxRenderedRows; ++rowIndex) {
-            var poolIndex = sorted[rowIndex].t;
+        var rowsHtml = '';
+        for (var childIndex = 0; childIndex < children.length; ++childIndex) {
+            rowsHtml += renderRetentionRow(
+                children[childIndex],
+                pending.depth,
+                pending.sampledInstances,
+                branchClassFor(childIndex, isBranch, pending.branchClass));
+        }
 
-            if (filterText && typeLabel(poolIndex).toLowerCase().indexOf(filterText) < 0) {
-                continue;
+        return '<table class="callerTreeInner">' + RETENTION_COLGROUP + rowsHtml + '</table>';
+    }
+
+    // What a Type Census / Retained Size row expands into: the retention trie
+    // for that type, read downward one reference at a time toward a GC root.
+    function buildRetentionTreeHtml(poolIndex) {
+        var rootIndex = rootPathIndexByPoolIndex[poolIndex];
+
+        if (rootIndex === undefined || !rootPaths[rootIndex]) {
+            return '<p class="gcDumpEmpty">No retention paths were traced for this type.</p>';
+        }
+
+        var rootNode = rootPaths[rootIndex];
+        var children = childrenByPathIndex[rootIndex] || [];
+
+        if (children.length === 0) {
+            return '<p class="gcDumpEmpty">Instances of this type are reachable directly from a GC root.</p>';
+        }
+
+        var isBranch = children.length > 1;
+        var rowsHtml = '';
+
+        for (var childIndex = 0; childIndex < children.length; ++childIndex) {
+            rowsHtml += renderRetentionRow(
+                children[childIndex],
+                0,
+                rootNode.c,
+                branchClassFor(childIndex, isBranch, ''));
+        }
+
+        // Instance counts on the trie are counts of SAMPLED instances (see
+        // RootPathBuilder.cs's own note on why it samples) - presenting them as
+        // exact instance counts would be a lie the data cannot support, so the
+        // sample size is stated rather than implied.
+        var note = '<p class="gcDumpEmpty">Branches merged across ' + formatNumber(rootNode.c) +
+            ' sampled instances. Each level is one reference closer to a GC root.</p>';
+
+        var labelRow = treeColumnLabelRowHtml(['Holder', 'Instances', 'Bytes', 'Share']);
+
+        return note + '<table class="callerTreeInner">' + RETENTION_COLGROUP + labelRow + rowsHtml + '</table>';
+    }
+
+    // One reference-graph edge, rendered as the type on the far end of it.
+    // `ancestors` is the chain of types already on this branch: revisiting one
+    // is a cycle, and this graph is full of them, so such a row is drawn as a
+    // leaf with a marker rather than as another expandable level that would
+    // walk the same loop forever.
+    function renderReferenceRow(edge, otherPoolIndex, depth, ancestors, branchClass) {
+        var isCycle = ancestors.indexOf(otherPoolIndex) >= 0;
+        var hasEdges = edgesFor(otherPoolIndex).edges.length > 0;
+        var hasChildren = hasEdges && !isCycle && depth < MaxReferenceDepth;
+        var rowId = hasChildren ? 'gcDumpTreeRow' + (++treeRowIdCounter) : null;
+
+        var cycleSuffix = isCycle ? ' <span class="pathCount">(already on this path)</span>' : '';
+
+        var rowHtml = '<tr class="callerRow ' + branchClass + '"' +
+            (hasChildren ? ' data-expandable="true" data-gcdump-target="' + rowId + '"' : '') + '>' +
+            '<td></td>' +
+            '<td' + indentStyleAttribute(depth) + '>' + expandToggleHtml(hasChildren) +
+            typeNameHtml(otherPoolIndex) + cycleSuffix + '</td>' +
+            '<td>' + formatNumber(edge.n) + '</td>' +
+            '<td>' + formatBytes(edge.b) + '</td>' +
+            '</tr>';
+
+        if (!hasChildren) {
+            return rowHtml;
+        }
+
+        pendingSubtrees.set(rowId, {
+            kind: 'reference',
+            poolIndex: otherPoolIndex,
+            depth: depth + 1,
+            ancestors: ancestors.concat([otherPoolIndex]),
+            branchClass: branchClass
+        });
+
+        return rowHtml + detailRowHtml(rowId, 4);
+    }
+
+    function buildReferenceLevelHtml(poolIndex, depth, ancestors, inheritedBranchClass) {
+        var group = edgesFor(poolIndex);
+        var isBranch = group.edges.length > 1;
+
+        var rowsHtml = '';
+        for (var edgeIndex = 0; edgeIndex < group.edges.length; ++edgeIndex) {
+            var edge = group.edges[edgeIndex];
+            rowsHtml += renderReferenceRow(
+                edge,
+                edge[group.otherField],
+                depth,
+                ancestors,
+                branchClassFor(edgeIndex, isBranch, inheritedBranchClass));
+        }
+
+        if (rowsHtml.length === 0) {
+            return '<p class="gcDumpEmpty">No references in this direction.</p>';
+        }
+
+        var labelRow = depth === 0
+            ? treeColumnLabelRowHtml(['Type', 'References', 'Bytes'])
+            : '';
+
+        return '<table class="callerTreeInner">' + REFERENCE_COLGROUP + labelRow + rowsHtml + '</table>';
+    }
+
+    function buildPendingSubtreeHtml(rowId) {
+        var pending = pendingSubtrees.get(rowId);
+
+        if (!pending) {
+            return null;
+        }
+
+        pendingSubtrees.delete(rowId);
+
+        if (pending.kind === 'retention') {
+            return buildRetentionLevelHtml(pending);
+        }
+
+        return buildReferenceLevelHtml(pending.poolIndex, pending.depth, pending.ancestors, pending.branchClass);
+    }
+
+    // Expands or collapses one row of a nested tree. Both the row and its
+    // paired detail row carry the state: `expanded` on the row rotates its
+    // chevron, `expanded` on the detail row is what actually shows it (a
+    // .callPathsDetail row is display:none otherwise).
+    function toggleTreeRow(row) {
+        var detailRow = document.getElementById(row.getAttribute('data-gcdump-target'));
+
+        if (!detailRow) {
+            return;
+        }
+
+        if (detailRow.classList.contains('expanded')) {
+            detailRow.classList.remove('expanded');
+            row.classList.remove('expanded');
+            return;
+        }
+
+        var subtreeHtml = buildPendingSubtreeHtml(detailRow.id);
+
+        if (subtreeHtml !== null) {
+            detailRow.getElementsByClassName('callerTreeCell')[0].innerHTML = subtreeHtml;
+        }
+
+        detailRow.classList.add('expanded');
+        row.classList.add('expanded');
+    }
+
+    // One delegated listener per view container rather than one per row: rows
+    // are created and destroyed on every filter, sort, hide and expand, so
+    // per-row handlers would have to be rebound each time.
+    function wireTreeExpansion(container) {
+        container.addEventListener('click', function (event) {
+            var row = event.target.closest('tr.callerRow[data-expandable="true"]');
+
+            if (!row || !container.contains(row)) {
+                return;
             }
 
-            var group = edgesFor(poolIndex);
+            toggleTreeRow(row);
+        });
+    }
 
-            if (group.edges.length === 0) {
+    // ---------------------------------------------------------------------
+    // The ranked table itself - one implementation, three instances
+    // ---------------------------------------------------------------------
+
+    // `columns` describes the columns AFTER the hide column, starting with the
+    // type name column, and must match the header GcDumpRenderer.ts rendered
+    // for this table one-for-one. Each entry carries the sort key and the cell
+    // renderer for that column; the type column's own `key` is what a "text"
+    // sort compares.
+    function createRankedTable(config) {
+        // Every id in one of these views is derived from the view's own name,
+        // exactly as GcDumpRenderer.ts's renderRankedTable emits them - one
+        // name in, a whole table's worth of elements found.
+        var viewId = config.tableId.replace(/Table$/, '');
+        var table = document.getElementById(config.tableId);
+        var tbody = document.getElementById(viewId + 'TableBody');
+        var filterInput = document.getElementById(viewId + 'Filter');
+        var countLabel = document.getElementById(viewId + 'FilterCount');
+
+        assertColumnContract(table, config.columns);
+
+        var rows = config.rows;
+        var sortColumnIndex = config.defaultSortColumnIndex;
+        var sortAscending = false;
+
+        var hider = createRowHideController(viewId + 'HideStatus', viewId + 'HideStatusLabel', function () {
+            render();
+        });
+
+        function compareRows(left, right) {
+            var column = config.columns[sortColumnIndex];
+            var leftValue = column.key(left);
+            var rightValue = column.key(right);
+
+            var comparison = 0;
+            if (leftValue < rightValue) {
+                comparison = -1;
+            } else if (leftValue > rightValue) {
+                comparison = 1;
+            }
+
+            return sortAscending ? comparison : -comparison;
+        }
+
+        function renderRow(row) {
+            var hasDetail = config.hasDetail(row);
+            var detailId = viewId + 'Detail' + row.index;
+
+            var html = '<tr class="typeRow gcDumpTypeRow" data-row-index="' + row.index + '"' +
+                (hasDetail ? ' data-gcdump-expandable="true" data-detail-target="' + detailId + '"' : '') + '>' +
+                '<td class="rowHideColumn"><button class="rowHideBtn" type="button" title="Hide this row">&#10005;</button></td>' +
+                '<td>' + expandToggleHtml(hasDetail) + typeNameHtml(row.t) + '</td>';
+
+            for (var columnIndex = 1; columnIndex < config.columns.length; ++columnIndex) {
+                var column = config.columns[columnIndex];
+                // data-sort-value carries the raw number behind a formatted
+                // cell ("553 MB"), which is what any DOM-level sort of this
+                // table would otherwise have to parse out of the text.
+                html += '<td data-sort-value="' + column.key(row) + '">' + column.render(row) + '</td>';
+            }
+
+            html += '</tr>';
+
+            if (hasDetail) {
+                html += '<tr id="' + detailId + '" class="callPathsDetail" data-gcdump-type="' + row.t + '">' +
+                    '<td colspan="' + (config.columns.length + 1) + '" class="callerTreeCell"></td></tr>';
+            }
+
+            return html;
+        }
+
+        function render() {
+            var filterText = filterInput.value ? filterInput.value.toLowerCase() : '';
+            var matched = [];
+
+            for (var rowIndex = 0; rowIndex < rows.length; ++rowIndex) {
+                var row = rows[rowIndex];
+
+                if (hider.isHidden(row.index)) {
+                    continue;
+                }
+
+                if (filterText && typeLabel(row.t).toLowerCase().indexOf(filterText) < 0) {
+                    continue;
+                }
+
+                matched.push(row);
+            }
+
+            matched.sort(compareRows);
+
+            var shown = matched.length > MaxRenderedRows ? matched.slice(0, MaxRenderedRows) : matched;
+
+            var html = '';
+            for (var shownIndex = 0; shownIndex < shown.length; ++shownIndex) {
+                html += renderRow(shown[shownIndex]);
+            }
+
+            tbody.innerHTML = html;
+
+            if (matched.length > shown.length) {
+                countLabel.textContent = 'showing ' + formatNumber(shown.length) + ' of ' + formatNumber(matched.length) + ' types';
+            } else {
+                countLabel.textContent = formatNumber(matched.length) + ' types';
+            }
+        }
+
+        // Sorting re-sorts the DATA and re-renders rather than reordering the
+        // rows in the DOM (sortDetailTableByColumn's job for a fully-rendered
+        // table): this table shows only the first MaxRenderedRows of thousands,
+        // so a DOM-level sort would reorder that one capped page and present it
+        // as the top N by the newly clicked column, which it is not.
+        wireSortableTableHeaders(table, function (columnIndex, sortType, ascending) {
+            // columnIndex is a DOM column index, so it counts the hide column
+            // at 0; config.columns starts at the type column.
+            sortColumnIndex = columnIndex - 1;
+            sortAscending = ascending;
+            render();
+        });
+
+        showInitialSortIndicator(table, config.defaultSortColumnIndex + 1);
+
+        filterInput.addEventListener('input', render);
+
+        var panel = table.closest('.viewPanel');
+
+        panel.addEventListener('click', function (event) {
+            if (event.target.closest('#' + viewId + 'ShowAllBtn')) {
+                hider.reset();
+                return;
+            }
+
+            // Whole cell is the click target, not just the ✕ glyph itself - a
+            // small icon-only hit target is easy to miss. Checked BEFORE the
+            // expand toggle below, since the hide cell sits inside a row that
+            // is itself expandable.
+            var hideCell = event.target.closest('td.rowHideColumn');
+
+            if (hideCell) {
+                var hideRow = hideCell.closest('[data-row-index]');
+
+                if (hideRow) {
+                    hider.toggle(parseInt(hideRow.getAttribute('data-row-index'), 10));
+                }
+
+                return;
+            }
+
+            var typeRow = event.target.closest('tr[data-gcdump-expandable="true"]');
+
+            if (!typeRow) {
+                return;
+            }
+
+            var detailRow = document.getElementById(typeRow.getAttribute('data-detail-target'));
+
+            if (!detailRow) {
+                return;
+            }
+
+            if (detailRow.classList.contains('expanded')) {
+                detailRow.classList.remove('expanded');
+                typeRow.classList.remove('expanded');
+                return;
+            }
+
+            var detailCell = detailRow.getElementsByClassName('callerTreeCell')[0];
+
+            if (detailCell.innerHTML.length === 0) {
+                detailCell.innerHTML = config.buildDetail(parseInt(detailRow.getAttribute('data-gcdump-type'), 10));
+            }
+
+            detailRow.classList.add('expanded');
+            typeRow.classList.add('expanded');
+        });
+
+        wireTreeExpansion(panel);
+
+        render();
+
+        return { render: render, setRows: function (newRows) { rows = newRows; render(); } };
+    }
+
+    // The header is rendered server-side (GcDumpRenderer.ts) and the sort keys
+    // and cell formatters live here, so the two halves of one table are written
+    // in two files and could drift. They cannot drift silently: a mismatch
+    // means clicking a header sorts by the wrong column, which looks like data
+    // corruption rather than a wiring bug.
+    function assertColumnContract(table, columns) {
+        var headerCellCount = table.rows[0].cells.length;
+
+        if (headerCellCount !== columns.length + 1) {
+            console.error('gcDumpView: ' + table.id + ' has ' + headerCellCount +
+                ' header cells but ' + columns.length + ' column definitions (+1 for the hide column).');
+        }
+    }
+
+    // Every table opens sorted by its own headline column, descending - the
+    // indicator has to say so, or the first click on that same column appears
+    // to do nothing (it sorts ascending, which is a real change, but from a
+    // state the header never claimed).
+    function showInitialSortIndicator(table, domColumnIndex) {
+        var indicator = table.rows[0].cells[domColumnIndex].getElementsByClassName('sortIndicator')[0];
+
+        if (indicator) {
+            indicator.textContent = ' ▼';
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // The three views
+    // ---------------------------------------------------------------------
+
+    // Census rows are the payload's own type entries, given a stable index so
+    // the hide controller can name one independently of the current sort.
+    var censusRows = [];
+
+    for (var censusIndex = 0; censusIndex < census.length; ++censusIndex) {
+        var censusEntry = census[censusIndex];
+        censusRows.push({
+            index: censusIndex,
+            t: censusEntry.t,
+            c: censusEntry.c,
+            b: censusEntry.b,
+            r: censusEntry.r,
+            m: censusEntry.m
+        });
+    }
+
+    function typeSortKey(row) {
+        return typeLabel(row.t).toLowerCase();
+    }
+
+    function hasRetentionPath(row) {
+        return rootPathIndexByPoolIndex[row.t] !== undefined;
+    }
+
+    createRankedTable({
+        tableId: 'censusTable',
+        rows: censusRows,
+        defaultSortColumnIndex: 2,
+        columns: [
+            { key: typeSortKey, render: function (row) { return typeNameHtml(row.t); } },
+            { key: function (row) { return row.c; }, render: function (row) { return formatNumber(row.c); } },
+            { key: function (row) { return row.b; }, render: function (row) { return formatBytes(row.b); } },
+            { key: function (row) { return row.b; }, render: function (row) { return formatPercentOfHeap(row.b); } },
+            { key: function (row) { return row.r; }, render: function (row) { return formatBytes(row.r); } },
+            { key: function (row) { return row.m; }, render: function (row) { return formatBytes(row.m); } }
+        ],
+        hasDetail: hasRetentionPath,
+        buildDetail: buildRetentionTreeHtml
+    });
+
+    createRankedTable({
+        tableId: 'retainedTable',
+        rows: censusRows,
+        defaultSortColumnIndex: 1,
+        columns: [
+            { key: typeSortKey, render: function (row) { return typeNameHtml(row.t); } },
+            { key: function (row) { return row.r; }, render: function (row) { return formatBytes(row.r); } },
+            { key: function (row) { return row.r; }, render: function (row) { return formatPercentOfHeap(row.r); } },
+            { key: function (row) { return row.m; }, render: function (row) { return formatBytes(row.m); } },
+            { key: function (row) { return row.c; }, render: function (row) { return formatNumber(row.c); } },
+            { key: function (row) { return row.b; }, render: function (row) { return formatBytes(row.b); } }
+        ],
+        hasDetail: hasRetentionPath,
+        buildDetail: buildRetentionTreeHtml
+    });
+
+    // The references table's rows are DERIVED, not a slice of the payload: one
+    // row per type that has any edge in the current direction, carrying that
+    // type's totals across those edges. Switching direction rebuilds them.
+    function buildReferenceRows() {
+        var index = referenceDirection.value === 'outgoing' ? outgoingByFrom : incomingByTo;
+        var rows = [];
+
+        for (var censusRowIndex = 0; censusRowIndex < censusRows.length; ++censusRowIndex) {
+            var poolIndex = censusRows[censusRowIndex].t;
+            var edges = index[poolIndex];
+
+            if (!edges || edges.length === 0) {
                 continue;
             }
 
             var totalReferences = 0;
             var totalReferencedBytes = 0;
 
-            for (var edgeIndex = 0; edgeIndex < group.edges.length; ++edgeIndex) {
-                totalReferences += group.edges[edgeIndex].n;
-                totalReferencedBytes += group.edges[edgeIndex].b;
+            for (var edgeIndex = 0; edgeIndex < edges.length; ++edgeIndex) {
+                totalReferences += edges[edgeIndex].n;
+                totalReferencedBytes += edges[edgeIndex].b;
             }
 
-            html += '<tr class="gcDumpExpandable" data-pool-index="' + poolIndex + '" data-depth="0">';
-            html += '<td><span class="gcDumpTreeToggle">&#9654;</span> ' + typeCellHtml(poolIndex) + '</td>';
-            html += '<td class="numericCell">' + formatNumber(totalReferences) + '</td>';
-            html += '<td class="numericCell">' + formatBytes(totalReferencedBytes) + '</td>';
-            html += '</tr>';
-
-            ++rendered;
+            rows.push({
+                index: censusRows[censusRowIndex].index,
+                t: poolIndex,
+                n: totalReferences,
+                b: totalReferencedBytes
+            });
         }
 
-        html += '</tbody></table>';
-
-        if (rendered === 0) {
-            referenceTree.innerHTML = '<p class="gcDumpEmpty">No references match this filter.</p>';
-            return;
-        }
-
-        referenceTree.innerHTML = html;
+        return rows;
     }
 
-    // Expansion inserts child rows directly after the clicked row and marks
-    // them with the parent's depth, so collapsing can remove exactly the rows
-    // that belong to it without tracking a separate tree structure.
-    function toggleExpansion(row) {
-        var depth = parseInt(row.getAttribute('data-depth'), 10);
-        var poolIndex = parseInt(row.getAttribute('data-pool-index'), 10);
-        var toggle = row.querySelector('.gcDumpTreeToggle');
-
-        if (row.getAttribute('data-expanded') === 'true') {
-            var next = row.nextElementSibling;
-
-            while (next && parseInt(next.getAttribute('data-depth'), 10) > depth) {
-                var toRemove = next;
-                next = next.nextElementSibling;
-                toRemove.parentNode.removeChild(toRemove);
-            }
-
-            row.setAttribute('data-expanded', 'false');
-            toggle.innerHTML = '&#9654;';
-            return;
-        }
-
-        var group = edgesFor(poolIndex);
-        var insertAfter = row;
-
-        for (var edgeIndex = 0; edgeIndex < group.edges.length; ++edgeIndex) {
-            var edge = group.edges[edgeIndex];
-            var otherPoolIndex = edge[group.otherField];
-
-            var childRow = document.createElement('tr');
-            childRow.className = 'gcDumpExpandable';
-            childRow.setAttribute('data-pool-index', String(otherPoolIndex));
-            childRow.setAttribute('data-depth', String(depth + 1));
-
-            var hasChildren = edgesFor(otherPoolIndex).edges.length > 0;
-            var toggleHtml = hasChildren ? '<span class="gcDumpTreeToggle">&#9654;</span> ' : '<span class="gcDumpTreeToggle gcDumpTreeToggleLeaf"></span> ';
-
-            childRow.innerHTML =
-                '<td><span class="gcDumpTreeIndent" style="padding-left:' + ((depth + 1) * 18) + 'px"></span>' +
-                toggleHtml + typeCellHtml(otherPoolIndex) + '</td>' +
-                '<td class="numericCell">' + formatNumber(edge.n) + '</td>' +
-                '<td class="numericCell">' + formatBytes(edge.b) + '</td>';
-
-            insertAfter.parentNode.insertBefore(childRow, insertAfter.nextSibling);
-            insertAfter = childRow;
-        }
-
-        row.setAttribute('data-expanded', 'true');
-        toggle.innerHTML = '&#9660;';
-    }
-
-    // One delegated listener on the container rather than one per row: rows
-    // are created and destroyed on every expand/collapse, so per-row handlers
-    // would have to be rebound each time.
-    referenceTree.addEventListener('click', function (event) {
-        var row = event.target.closest('tr.gcDumpExpandable');
-
-        if (!row) {
-            return;
-        }
-
-        // A leaf has no outgoing edges in this direction; clicking it should
-        // do nothing rather than toggling an empty expansion.
-        var poolIndex = parseInt(row.getAttribute('data-pool-index'), 10);
-
-        if (edgesFor(poolIndex).edges.length === 0) {
-            return;
-        }
-
-        toggleExpansion(row);
+    var referenceTable = createRankedTable({
+        tableId: 'referenceTable',
+        rows: buildReferenceRows(),
+        defaultSortColumnIndex: 2,
+        columns: [
+            { key: typeSortKey, render: function (row) { return typeNameHtml(row.t); } },
+            { key: function (row) { return row.n; }, render: function (row) { return formatNumber(row.n); } },
+            { key: function (row) { return row.b; }, render: function (row) { return formatBytes(row.b); } }
+        ],
+        hasDetail: function () { return true; },
+        buildDetail: function (poolIndex) { return buildReferenceLevelHtml(poolIndex, 0, [poolIndex], ''); }
     });
 
-    referenceDirection.addEventListener('change', renderReferenceRoots);
-    referenceFilter.addEventListener('input', renderReferenceRoots);
-    renderReferenceRoots();
+    referenceDirection.addEventListener('change', function () {
+        // Every already-built expansion describes the OLD direction, and the
+        // rows themselves are per-direction totals - so this rebuilds rather
+        // than re-renders, and drops the pending frontier with them.
+        pendingSubtrees.clear();
+        referenceTable.setRows(buildReferenceRows());
+    });
 
     // ---------------------------------------------------------------------
     // View switching

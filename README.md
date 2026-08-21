@@ -12,8 +12,10 @@ See [dotnetInsights](dotnetInsights/README.md) for more information.
 
 ## Capturing a GC heap dump (`.gcdump`) without `dotnet-gcdump`
 
-Open a `.gcdump` in this extension and you get four views over the heap: a type
-census, retained sizes, paths to root, and a type-level reference graph.
+Open a `.gcdump` in this extension and you get three views over the heap: a
+type census, retained sizes, and a type-level reference graph. Expanding a type
+row in the first two shows what holds its instances alive, one reference per
+level, all the way to a GC root.
 
 The usual way to produce one is `dotnet-gcdump collect`. **That tool silently
 truncates large heaps**, so `nettraceParser` can build the `.gcdump` itself,
@@ -52,8 +54,9 @@ whole trigger: the runtime induces a blocking gen2 GC and emits the bulk
 node/edge/type/root events. A normal trace does not contain them.
 
 Pick `--duration` to comfortably cover the heap walk &mdash; it is a
-stop-the-world pause proportional to heap size. If the trace is cut short the
-next step will tell you rather than producing a partial dump.
+stop-the-world pause proportional to heap size. A trace cut short mid-stream is
+detected (see "Dropped events" below); a heap that moved *underneath* the walk
+is not &mdash; see "When the process is under load".
 
 **2. Post-process it into a `.gcdump`:**
 
@@ -98,6 +101,79 @@ presentational differences remain, all of them things `dotnet-gcdump` adds:
 
 Conditional-weak-table (dependent handle) edges are not decoded, so an object
 reachable only through one is reported as unrooted.
+
+### When the process is under load
+
+Both event-based paths - this one and `dotnet-gcdump collect` - are only
+trustworthy against a heap that is holding still. Measured against a real
+production service, and reproduced on a churning test heap:
+
+| | objects described | references naming objects never described | reachable from a root |
+|---|---|---|---|
+| idle heap, `--gcdump-from-trace` | 2,998,612 | 0 | 100% |
+| production service under load, `--gcdump-from-trace` | 4,254,952 | **1,798,821 (35%)** | **1.5%** |
+| churning test heap, `dotnet-gcdump collect` | 27,088 | &mdash; | **13%** |
+
+The type census stays usable in that state - object counts and bytes come from
+the node stream alone. Everything depending on the root set does not: retained
+sizes collapse toward zero and retention paths come back empty. Verbosity level,
+buffer size and `--duration` change none of it, and neither does using
+`dotnet-gcdump` instead.
+
+If you cannot quiesce the process first, read a core dump instead.
+
+## Reading a process core dump
+
+A core dump has no such failure mode by construction: `createdump` suspends the
+process and writes the actual memory image, so the object graph, the types and
+the roots are all one instant.
+
+**1. Collect it:**
+
+```bash
+dotnet-dump collect -p <pid> --type Heap -o heap.dmp
+```
+
+`--type Heap` keeps the file to roughly the heap's own size. The process is
+paused while it is written - on the order of a second per gigabyte, the same
+range as the stop-the-world GC the event path already costs.
+
+**2. Convert it:**
+
+```bash
+nettraceParser --gcdump-from-dump heap.dmp -o heap.gcdump
+```
+
+Or go straight to the analysis the extension reads, which is a few hundred KB
+whatever the heap size - useful when the dump itself is too big to move:
+
+```bash
+nettraceParser --gcdump-from-dump heap.dmp --json heap.json
+```
+
+You can also open `heap.dmp` (or `heap.core`) in VS Code directly; the extension
+runs the same conversion itself.
+
+### What this needs, and where to run it
+
+ClrMD reads the dump through the DAC matching the runtime the dump came from. On
+a host with that runtime installed it is found automatically; otherwise pass
+`--dac <path to libmscordaccore>`. A Linux dump is therefore easiest to convert
+on Linux - and since the `--json` output is small, that is what travels back to
+the machine running VS Code.
+
+Two further notes:
+
+- **Stack roots on macOS.** The DAC's stack unwind crashes on a macOS Mach-O
+  core dump, so those are converted without thread stack roots (detected
+  automatically from the dump's magic; `--skip-stack-roots` forces it). Handles,
+  statics and the finalizer queue are all still read, which is what a leak
+  investigation runs on - but objects held *only* by a running frame are
+  reported unrooted, and both the CLI and the webview say so when it applies.
+- **Root kinds are preserved.** Unlike the trace path, retention paths from a
+  core dump end at a named category - `[strong handle]`, `[pinned handle]`,
+  `[finalizer queue]`, `[thread stack]` - rather than at an undifferentiated
+  `[.NET Roots]`.
 
 ### Reading an existing `.gcdump`
 

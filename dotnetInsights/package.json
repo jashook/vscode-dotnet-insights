@@ -36,6 +36,7 @@
     "onCustomEditor:dotnetInsightsGcSnapshot.edit",
     "onCustomEditor:dotnetInsightsNettrace.edit",
     "onCustomEditor:dotnetInsightsRuntimeEditor.edit",
+    "onCustomEditor:dotnetInsightsGcDump.edit",
     "onCommand:dotnetInsights.loadExtension",
     "onCommand:dotnetInsights.realtimeIl"
   ],
@@ -169,6 +170,12 @@
         "selector": [
           {
             "filenamePattern": "*.gcdump"
+          },
+          {
+            "filenamePattern": "*.dmp"
+          },
+          {
+            "filenamePattern": "*.core"
           }
         ]
       }

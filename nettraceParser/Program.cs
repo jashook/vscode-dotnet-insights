@@ -115,6 +115,28 @@ if (gcDumpFromTraceArgIndex >= 0)
     return;
 }
 
+// --gcdump-from-dump builds the same .gcdump out of a PROCESS CORE DUMP via
+// ClrMD. Unlike both event paths it stays correct on a process under load,
+// because createdump freezes the process and the graph, types and roots all
+// come from one instant - see CoreDump/CoreDumpHeapGraphBuilder.cs for the
+// measurements that made this necessary. Checked before --gcdump for the same
+// reason --gcdump-from-trace is: a command line carrying either flag would
+// otherwise match both.
+int gcDumpFromDumpArgIndex = Array.IndexOf(args, "--gcdump-from-dump");
+
+if (gcDumpFromDumpArgIndex >= 0)
+{
+    if (gcDumpFromDumpArgIndex + 1 >= args.Length)
+    {
+        Console.Error.WriteLine("--gcdump-from-dump requires a dump path: --gcdump-from-dump <core.dmp> [-o <out.gcdump>] [--json <out.json>] [--dac <libmscordaccore>] [--skip-stack-roots]");
+        Environment.ExitCode = 1;
+        return;
+    }
+
+    Environment.ExitCode = DotnetInsights.NetTrace.CoreDump.GcDumpFromDumpCommand.Run(args, args[gcDumpFromDumpArgIndex + 1]);
+    return;
+}
+
 // --gcdump reads a heap SNAPSHOT (`dotnet-gcdump collect` output) rather than
 // an event stream. It shares this tool only because a .gcdump is a
 // FastSerialization stream, which this project already vendors a deserializer

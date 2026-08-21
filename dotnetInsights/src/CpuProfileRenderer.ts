@@ -8,7 +8,7 @@
 // sourceFormat === "nettrace" and cpuProfile.totalSampleCount > 0 (see
 // GcSnapshotRenderer.ts).
 
-import { renderSortableTableHeader } from './GcDetailTableRenderer';
+import { renderRankedTableHeader } from './GcDetailTableRenderer';
 
 // Real .NET type/method names can legitimately contain HTML-significant
 // characters (compiler-generated names like "Program.<Main>$" are common) -
@@ -147,10 +147,11 @@ export function renderCpuProfileView(cpuProfile: any): string {
 // as the Heap Contents and Exceptions drill-down rows. The separate "Drill
 // Down" tab is gone: this is both the ranked list AND the caller viewer.
 //
-// Uses renderSortableTableHeader from GcDetailTableRenderer.ts - the same
-// header shape (data-sort/sortIndicator) the per-GC detail table already uses,
-// so setupDetailTableSortHandlers in snapshotGcStats.js handles both without
-// any table-specific branching.
+// Uses renderRankedTableHeader from GcDetailTableRenderer.ts - the same
+// header shape (data-sort/sortIndicator plus the leading hide column) the
+// per-GC detail table and the .gcdump ranked tables use, so
+// setupDetailTableSortHandlers in media/rankedTable.js handles all of them
+// without any table-specific branching.
 function renderHotMethodsTable(cpuProfile: any): string {
     const hotMethods = cpuProfile["hotMethods"];
     const methodNames = cpuProfile["methodNames"];
@@ -206,15 +207,10 @@ function renderHotMethodsTable(cpuProfile: any): string {
         ["Total Samples", "number"],
     ];
 
-    const header = renderSortableTableHeader(columns);
-
-    // The hide-button column gets its own bare <th> (no data-sort, no
-    // label) prepended directly onto the sortable header row rather than
-    // going through renderSortableTableHeader/its columns array, since it's
-    // neither sortable nor labeled - matches the plain-<th> style
-    // renderSortableTableHeader itself emits, just without a data-sort
-    // attribute to opt out of sortDetailTableByColumn's click handling.
-    const headerWithHideColumn = header.replace('<tr class="tableHeader">', '<tr class="tableHeader"><th class="rowHideColumn"></th>');
+    // renderRankedTableHeader is renderSortableTableHeader plus the hide
+    // button's own bare, unsortable leading <th> - see that function for why
+    // every ranked table in these webviews is built through it.
+    const headerWithHideColumn = renderRankedTableHeader(columns);
 
     return `<div class="detailTable cpuHotMethodsTable"><table id="cpuMethodsTable">${headerWithHideColumn}${rows}</table></div>`;
 }
