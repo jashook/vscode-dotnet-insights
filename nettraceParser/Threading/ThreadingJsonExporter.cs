@@ -209,6 +209,16 @@ public static class ThreadingJsonExporter
         // no thread could be shown to be parked. The view says that out loud
         // instead of appearing to have looked and found nothing.
         writer.WriteBoolean("hasSampleTypeData", threadProfiles.HasSampleTypeData);
+
+        // Where that managed/native flag came from. On a v5 capture the CLR's
+        // own sampler reports it per sample. A v6 (`dotnet-trace
+        // collect-linux`) capture has no such field at all - its samples come
+        // from perf_events - so it is derived from whether each sample's leaf
+        // frame resolved to managed code. The two are not equally trustworthy:
+        // the parked/blocked thresholds in ThreadActivityProfiler were
+        // calibrated against the runtime's own signal, so the view names the
+        // source rather than letting derived data read as reported data.
+        writer.WriteString("sampleTypeSource", symbolTable != null && symbolTable.HasNativeSymbols ? "derived" : "runtime");
         writer.WriteNumber("threadCount", threadProfiles.Ranked.Count);
         writer.WriteNumber("benignThreadCount", threadProfiles.BenignlyParkedThreadCount);
         writer.WriteNumber("sampleCount", threadProfiles.TotalSampleCount);

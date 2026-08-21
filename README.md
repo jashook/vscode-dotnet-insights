@@ -10,6 +10,49 @@ Future work to include Linux arm64. Currently 32-bit support is not expected to 
 
 See [dotnetInsights](dotnetInsights/README.md) for more information.
 
+## Linux traces from `dotnet-trace collect-linux`
+
+`dotnet-trace collect-linux` collects through Linux `perf_events` and the
+kernel's `user_events` mechanism, so one capture carries kernel, native and
+managed activity together. It writes **nettrace v6**, a breaking change from
+the format `dotnet-trace collect` produces — v6 drops the FastSerialization
+framing entirely — so an older build of this extension rejects such a file
+with *"Not a understood file format"*. Extension 1.9.4 and later read both.
+
+Open the `.nettrace` in VS Code as usual. What you get:
+
+- **CPU** — samples come from `perf_events` rather than the CLR sampler, and
+  frames are symbolicated so kernel, native and JIT'd managed code all appear
+  in one stack:
+
+  ```
+   16615  finish_task_switch.isra.0
+   14597  RhpNewFast
+   11595  ObjectNative::Monitor_TryEnter_FastPath
+   10746  SVR::gc_heap::find_first_object
+   10130  System.Uri.CheckCanonical [OptimizedTier1]
+  ```
+
+  A `collect-linux` capture names its modules but ships symbols for only a few
+  of them, so the rest are fetched from Microsoft's public symbol server by
+  ELF build ID and cached locally. Only the first trace from a given runtime
+  build downloads anything (libcoreclr's symbols are ~138MB); every trace after
+  that resolves from the cache. Set
+  `dotnet-insights.downloadNativeSymbols` to `false` to stay offline — cached
+  symbols are still used — and add distribution servers such as
+  `debuginfod:https://debuginfod.ubuntu.com` via
+  `dotnet-insights.symbolServers` to also name `libc` and `openssl` frames,
+  which Microsoft's server does not carry.
+- **GC**, **Exceptions**, **Events** — as usual; the CLR events are present
+  and decoded normally.
+- **Threading** — works, but its parked/blocked classification is *derived*.
+  A perf-sampled capture carries no managed/native flag per sample, so one is
+  inferred from whether each sample's innermost frame is managed code. The
+  view says so; treat the roles as indicative rather than exact.
+
+Whether the Allocation and Contention views have anything to show depends on
+the keywords the capture was taken with, not on the format.
+
 ## Capturing a GC heap dump (`.gcdump`) without `dotnet-gcdump`
 
 Open a `.gcdump` in this extension and you get three views over the heap: a

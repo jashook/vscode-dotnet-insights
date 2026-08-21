@@ -782,6 +782,297 @@ object count (deep chains + shared payloads, so retained size and own size
 genuinely differ) to capture large fixtures against.
 
 
+### NetTrace v6 (`nettraceParser/V6/`) — what `dotnet-trace collect-linux` writes
+
+`dotnet-trace collect-linux` collects through Linux `perf_events` + the
+kernel's `user_events` mechanism, machine-wide by default, and writes
+**nettrace v6** — a BREAKING format change, not a version bump within one
+layout. v6 deletes the FastSerialization layer outright: no per-object type
+names or versions, no object header/footer, no stream-offset alignment
+padding. What is left is a flat sequence of blocks, each introduced by a
+4-byte header (`uint24 BlockSize`, `uint8 BlockKind`), and strings move from
+UTF-16 to UTF-8.
+
+Spec: perfview's `src/TraceEvent/EventPipe/NetTraceFormat.md` (v6) and
+`UniversalProviders.md` (the `Universal.*` event definitions). Fetch them from
+the repo rather than re-deriving — both are short and authoritative.
+
+- **A v6 file fails inside vendored FastSerialization, not in this project's
+  code.** The `Nettrace` magic matches and the very next thing v5 expects —
+  the `"!FastSerialization.1"` signature — is absent, so `Deserializer.
+  Initialize` throws *"Not a understood file format"*. That reads like a
+  corrupt capture rather than an out-of-date reader, which is why the version
+  constant bump matters more here than usual (see the stale-cache trap).
+- **Detection is the format's own rule, not a heuristic**: v6 follows the
+  magic with a `uint32 Reserved` that is always 0, and in a v5 file those same
+  4 bytes are the length prefix of `"!FastSerialization.1"` — the constant 20.
+  `V6Format.ReadMajorVersion` reads exactly that.
+- **`EventBlock.HeaderSize` INCLUDES its own `uint16`; `MetadataBlock`'s
+  EXCLUDES it.** Both are as documented. Getting it backwards does not fail —
+  the compressed event header is self-describing, so the reader happily
+  decodes garbage into complete-looking events. The first version of this
+  reader produced 11,077,123 events with a 46-hour timestamp span instead of
+  the correct 11,274,185 over 299.6s. Pinned by
+  `V6ReaderTests.V6Reader_EventBlockHeaderSizeIncludesItsOwnField`.
+- **`varint` is ZIGZAG encoded** (`(value >> 1) ^ -(value & 1)`), not
+  sign-extended. `varuint` is plain ULEB128.
+- **Three id spaces recycle across sequence points, not one.** v5 had
+  StackId; v6 adds `ThreadIndex` (into a table built by `ThreadBlock` and torn
+  down by `RemoveThreadBlock`) and `LabelListIndex`. All three are resolved
+  EAGERLY at event-parse time, for exactly the reason the v5 StackId bullet
+  above exists — a deferred lookup resolves against whatever last claimed the
+  number.
+- **v6 events carry no thread id, only a `ThreadIndex`.** `EventRecord` keeps
+  its `ThreadId`; the reader resolves it. A pid is NOT added to `EventRecord`
+  (a struct that exists 35M+ times over — 4 more bytes is hundreds of MB);
+  `V6ThreadTable` keeps a `threadId -> processId` map instead, which works
+  because Linux allocates tids from the same namespace-wide space as pids.
+
+#### The metadata is nearly empty, and that silently empties whole views
+
+On a real 764MB reference capture (a containerized ASP.NET service,
+299.6s, 11,274,185 events) **every one of the 33
+`Microsoft-Windows-DotNETRuntime` metadata rows carries a ProviderGuid and
+nothing else** — no Version, no Level, no Keywords, and an empty
+`FieldDescriptions`. That is legal and follows from how the events get there:
+the runtime emits them through `user_events` as opaque payload blobs, so the
+writer knows the numeric event id but has no manifest to describe it with.
+
+This does not matter for payload decoding — the payload bytes are the
+standard CLR ETW layouts and this project already decodes those from raw
+bytes by manifest offset (`GCStart` 26 bytes, `GCEnd` 10, `GCHeapStats` 110,
+all verified). It matters enormously for **Version**, because the decoders are
+version-gated: `ExceptionEventProjector` drops anything below 1,
+`AllocationEventProjector` below 2, `GcEventProjector` decodes
+`GCPerHeapHistory` only at 3+, and `ClrGcEnd`/`ClrGcSuspendEEBegin` read a
+field as int32 at 1 and int16 below it. Taking metadata at face value would
+have silently discarded all 72,674 exceptions in that capture and mis-decoded
+its GC events — no error, just empty views.
+
+`V6ClrEventVersions` resolves it, in order: an explicit `Version` LABEL on the
+event (v6 lets a LabelList override metadata, and the reference capture's
+`GCPerHeapHistory` events really do use this, carrying Version=3), then the
+metadata row's own Version, then a table. **The table was generated, not
+guessed**: a v5 capture's metadata carries BOTH the event id and the version
+the runtime emitted it at, so v5 captures are the authoritative source. Run
+this tool's own plain mode over one — the `== Event schemas ==` section exists
+for this — and take the union across several. Four real captures agreed on
+every id they shared. A payload-length ladder then only ever *lowers* that
+version, for the four events where the version selects a field WIDTH rather
+than appending fields, which is the one case the decoders' own
+`version >= N && Length >= M` guards cannot catch.
+
+- **CLR event names are absent in v5 too**, so this is not a regression: a v5
+  capture's CLR metadata rows have an EMPTY `EventName` (the provider is
+  manifest-based). v6 supplies `"Unknown(57)"`, which is strictly more
+  informative. No id→name table was needed — `Overview/ClrEventNames.cs`
+  already handles display.
+
+#### 40% of the reference capture is one repeated error label
+
+Its LabelList blocks are **305MB of 764MB** — 10,172,583 label entries against
+11,274,185 events — and 10,171,358 of them are one repeated string pair,
+`Error` = `"Expected actual values"`, attached to every event whose field
+layout the writer could not describe. It is the writer saying "here is a raw
+blob instead of fields", consistent with the empty `FieldDescriptions` above,
+and harmless to decoding.
+
+`V6LabelListTable` therefore **walks label strings and skips their bytes
+rather than decoding them**, and stores an entry only when a label list
+actually carries an override — 640 entries instead of 10.2 million on that
+capture. The `Error` labels are still COUNTED (comparing raw UTF-8, no
+allocation) because "40% of your file is a writer-side annotation" is worth
+being able to say out loud.
+
+#### `Universal.System` is the symbol table, and it covers managed code too
+
+A v6 capture's stacks are raw addresses spanning kernel, native and JIT'd
+managed code, and **none of them resolve through `Rundown/MethodSymbolTable`**
+— that table is built from `MethodLoadVerbose`/`MethodDCStartVerbose` (ids
+143/144), which a collect-linux capture does not contain. Before
+`Universal/UniversalSymbolTable.cs`, all 6,019 distinct frames in the CPU view
+rendered as `<unresolved 0x…>`.
+
+- **`ProcessSymbol` addresses are ABSOLUTE virtual addresses**, despite the
+  spec wording ("within the mapping"). Verified by resolving the capture's own
+  hottest frames — `0xFFFFFFFF8C29DFAB` → `finish_task_switch.isra.0`.
+- **`ProcessSymbol` covers MANAGED methods**, published by the runtime in the
+  CLR's perf-map form (`instance void [Asm] Ns.Type::Method(object)
+  [OptimizedTier1]`). That is why this one table is enough.
+- **Only a minority of mappings carry symbols** — 42 of 561. The rest are
+  stripped shared objects and managed assemblies, so the fallback is
+  `module+0xoffset` (`libcoreclr.so+0x433627`), which is a real groupable
+  identity rather than a bare address. Result on the reference capture: **0 of
+  3,432 distinct frames unresolved.**
+- **Binary search must compare UNSIGNED.** Kernel addresses have the top bit
+  set and read as negative `int64`, which sorts them below every user-space
+  address and makes a signed search miss every kernel symbol.
+- **`"contains ::"` does NOT identify a managed name** — C++ symbols are full
+  of it. An earlier `FormatSymbolName` keyed only on `::` and rewrote
+  `icu_78::CollationKeys::writeSortKeyUpToQuaternary` into the mangled hybrid
+  `icu_78.CollationKeys::writeSortKeyUpToQuaternary`, which is neither the
+  real symbol nor a valid managed name. The `[Assembly] ` bracket is what
+  identifies the CLR form; native symbols have none, so requiring it leaves
+  all of them untouched. The signature's `(` must also be searched for AFTER
+  the `::`, since a return type can carry parentheses (`modreq(...)`).
+- **Frame ids must be keyed by NAME, not by address.** A symbol covers an
+  address RANGE, so samples land on many addresses inside one function;
+  `MethodSymbolTable`'s unresolved path minted an id per address, splitting
+  one hot function across rows — `__pthread_mutex_lock` appeared twice at
+  2,944 and 2,433 self samples instead of once at 5,377, and
+  `System.Uri.CheckCanonical` was fragmented out of the top 20 entirely
+  (it is #3 at 10,130 once merged). The resolved path already content-interned
+  names for exactly this reason; the unresolved path now does too.
+
+#### Native symbols: the capture carries a recipe, not the symbols
+
+The frames a collect-linux capture cannot name are not a parsing gap - the
+symbols are not in the file. Only 42 of the reference capture's 561 modules
+ship any, and `libcoreclr.so` - which owns **5.4% of all CPU samples, more
+than any single managed method** - ships none. What every module DOES carry is
+a `ProcessMappingMetadata` record holding its ELF `build_id` and `debug_link`,
+which is exactly the key a symbol server is looked up by. `nettraceParser/
+Symbols/` turns that recipe into names.
+
+- **THE MODULE OFFSET MUST BE THE ELF VIRTUAL ADDRESS, NOT THE MAPPING
+  OFFSET.** `ip - mapping.StartAddress` is wrong and was shipped wrong for a
+  day. A mapping starts at some offset INTO the module file (libcoreclr.so's
+  text maps at file offset 0x1C8000) and the file has its own
+  `p_vaddr - p_offset` bias, so the address anything else can use is:
+
+      elfVirtualAddress = (ip - mapping.Start) + mapping.FileOffset
+                          - p_offset + p_vaddr
+
+  **Verified against ground truth, not derived and hoped for.**
+  `libSystem.IO.Compression.Native.so` is the one module in the reference
+  capture carrying BOTH in-capture `ProcessSymbol` entries and the metadata,
+  so its six known symbol addresses can be run through each candidate formula
+  and checked against the real binary (fetched by build id). The naive form
+  scored **0 of 6**; this one scored **6 of 6**. The naive form does not fail
+  visibly - it lands inside a *different* function, so it answers confidently
+  and wrongly. Pinned by `NativeSymbolResolutionTests`.
+
+- **Microsoft's symbol server has .NET's native modules, keyed by ELF build
+  id**: `https://msdl.microsoft.com/download/symbols/_.debug/elf-buildid-sym-<id>/_.debug`.
+  Verified end to end - the returned `libcoreclr.so.dbg` is 138MB, reports the
+  exact build id the capture recorded, and names 31 of the 32 libcoreclr
+  frames in that capture's top 200. It does NOT have distro libraries; libc,
+  openssl and zlib 404 there and need a **debuginfod** server
+  (`https://debuginfod.ubuntu.com/buildid/<id>/debuginfo`), which is a
+  different URL shape and so is declared with a `debuginfod:` prefix.
+
+- **The cache is keyed by build id, never by filename** - a cached file can
+  then never be the wrong version of the right name, which is the failure mode
+  that makes symbol caches lie. It also needs no invalidation rule: a
+  different build is simply a different key. **Misses are cached too**
+  (a `.miss` marker), and that marker is checked BEFORE the cached file, not
+  after - a 404 page or truncated download saved to disk would otherwise be
+  re-read and re-parsed on every open forever. That ordering bug was caught by
+  a test, not by inspection.
+
+- **Downloads are demand-driven and the SELECTION HAS NO SHARE FLOOR.**
+  Modules are ranked by how many stack frames land in them and capped at 12.
+  There was a 0.1% minimum-share floor and it was removed after it measurably
+  lost symbols: the counts come from a strided sample (below), so a module near
+  the floor lands on either side of it depending on which stacks the stride
+  hit - dropping `libSystem.Native.so`, and 274 real symbols, between two runs
+  over the same file. **A sampled count and a threshold do not belong
+  together**; the cap alone bounds the work and is immune to sampling noise.
+
+- **Ranking the modules cost 4,828ms before it was fixed** - longer than the
+  entire rest of the parse - and the fix was NOT the obvious one. Two changes
+  took it to ~390ms with identical output: walk a strided ~100,000-stack sample
+  instead of all 936,389 (the counts only ever choose modules, and are never
+  displayed), and search the MAPPING ranges first, consulting the 10,187-entry
+  in-capture symbol table only for modules that actually have in-capture
+  symbols - which the dominant module, libcoreclr.so, does not. Loading and
+  parsing the 138MB ELF itself was never the cost: it measures ~14ms.
+
+- **Symbols are demangled, but only a documented subset.** Itanium C++ mangling
+  covers 228 of 3,198 resolved names on the reference capture and includes most
+  of the runtime's GC and locking internals - the rows somebody is reading this
+  view to find. `NativeSymbolDemangler` handles the ordinary shape (linkage/CV
+  prefix, length-prefixed components, dropped parameter list), which decodes
+  226 of those 228, and returns everything else UNCHANGED. A raw mangled name
+  is honest and can be pasted into a real demangler; a half-rewritten one is
+  neither. Same rule `FormatSymbolName` follows for CLR names, and for the same
+  reason.
+
+- **The name is the bare function, with no `+offset`**, matching how an
+  in-capture `ProcessSymbol` resolves - otherwise one hot function splits into
+  a row per sampled instruction, which is the same bug the name-keyed frame ids
+  fixed above.
+
+Cost and controls: `nativeSymbols=` on the `Timing:` line breaks out
+`select=` (the ranking pass) from the fetch, because the two have completely
+different characters - the ranking always costs the same, a fetch is a
+download once and free forever after. Steady state on the reference capture is
+~400ms. `--no-symbol-download` works entirely offline (still using whatever is
+cached), `--symbol-cache <dir>` moves the cache, `--symbol-server <url>` adds
+one. The extension exposes the first two as
+`dotnet-insights.downloadNativeSymbols` and
+`dotnet-insights.symbolServers`, and points the cache at its own
+globalStorage. **The whole feature is a no-op on a v5 capture** - verified
+byte-identical output, with `nativeSymbols=0ms`.
+
+#### CPU samples and the derived `ThreadSampleType`
+
+CPU samples arrive as `Universal.Events/cpu`, not
+`Microsoft-DotNETCore-SampleProfiler`. **Match Universal events by NAME, never
+by id** — `UniversalProviders.md` guarantees stable names and explicitly does
+not guarantee ids ("There are no stable event IDs, but there will be a set of
+stable names"). The reference capture assigns `cpu` id 2; another need not.
+`EventOverview` is keyed by (provider, event id), so the id this capture chose
+is discovered while reading metadata and surfaced as
+`NettraceFile.V6UniversalCpuEventId` purely so the sample list can be presized.
+
+The bigger consequence: **a perf-sampled capture carries no `ThreadSampleType`
+at all**, and the entire Threading view's parked/blocked classification is
+built on it. It is derived instead (`UniversalSampleTypeClassifier`) from
+whether each sample's LEAF frame resolves to managed code — which is the same
+question `ThreadSampleType` answers ("was this thread executing managed
+code"), asked of a real symbol table. This is NOT the leaf-method-name
+heuristic that `ThreadActivityProfiler`'s header warns about; that one guesses
+what a method *does*, this one measures whether the sampled instruction
+pointer was in managed code at all.
+
+It is still labelled as derived all the way out to the webview
+(`threadActivity.sampleTypeSource` = `"derived"` vs `"runtime"`, rendered as a
+note in `ThreadingRenderer.ts`), because the parked/blocked THRESHOLDS were
+calibrated against the runtime's own signal and have **not** been validated
+against a v5 capture of the same process. Two known gaps on the reference
+capture, both in the conservative direction (nothing is hidden that should be
+read):
+
+- `managedFraction` runs ~0.53-0.54 on its busiest threads, nowhere near the
+  0.0-0.021 band CLAUDE.md's v5 captures showed for parked threads.
+- `isPoolWorker` is false for every thread, because perf's unwind does not
+  reliably reach the managed pool entry point (`PortableThreadPool+
+  WorkerThread.WorkerThreadStart`) — the stacks bottom out in
+  `__clone` → `libcoreclr.so+0x…`. Every thread therefore classifies as
+  `Active`, which is a refusal to claim rather than a false "benign".
+
+#### What is and is not in a collect-linux capture
+
+Keyword selection at collect time, not a parsing gap: the reference capture
+has **no `GCAllocationTick` (id 10) and no contention events**, so the
+Allocation and Contention views are empty on it. GC, exceptions, CPU,
+threading and the event overview all populate.
+
+#### Verification
+
+`--json` on the reference capture: 11,274,185 events, 32 GCs (ids
+16363-16394, alternating gen0/gen1 every ~10s, 20 Server GC heaps, ~17.5GB
+heap, 66-113ms pauses), 72,674 exceptions, 1,090,977 CPU samples, 0
+unresolved frames. Event counts and the total match an independent Python
+decode of the same file byte for byte.
+
+**The v5 path is unaffected**, verified by diffing against a build of the
+pre-change tree on a 15.2M-event v5 capture (12,386 GCs, 1.8M allocation
+ticks, 10.6M samples, 1,376 contentions): the JSON's only difference is the
+one deliberately added field (`sampleTypeSource: "runtime"`), and the 21.9MB
+ticks sidecar is byte-identical.
+
 ## Extension rendering (`dotnetInsights/src/`)
 
 - `GcSnapshotRenderer.ts` holds the chart/summary-tile rendering shared by

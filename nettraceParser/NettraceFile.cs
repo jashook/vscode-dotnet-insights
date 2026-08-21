@@ -50,6 +50,35 @@ public class NettraceFile
     public int EventBlockCount { get; private set; }
     public int SkippedBlockCount { get; private set; }
 
+    // The stream's major format version: 5 for a FastSerialization-framed
+    // capture (`dotnet-trace collect`), 6 for the flat block stream
+    // `dotnet-trace collect-linux` writes. See V6/V6Format.cs for how the two
+    // are told apart and why the difference is structural rather than a
+    // version bump within one layout.
+    public int FormatVersion { get; private set; }
+
+    // Populated only for a v6 capture (null otherwise). v6 events reference a
+    // thread by an index into a table the stream builds as it goes, so unlike
+    // v5 - where every event carried its own thread id - the pid/tid/name for
+    // a thread lives here. Consumed by the Universal providers' native
+    // symbolication, which is keyed per process.
+    public V6.V6ThreadTable V6Threads { get; private set; }
+
+    // Populated only for a v6 capture (null otherwise). Carries the counts
+    // behind the writer's own `Error` annotations - see V6/V6LabelListTable.cs.
+    public V6.V6LabelListTable V6Labels { get; private set; }
+
+    // The event id this capture assigned to Universal.Events/cpu, or -1. See
+    // V6Reader.UniversalCpuEventId - Universal ids are per-capture, so any
+    // lookup keyed by event id has to be told this capture's answer.
+    public int V6UniversalCpuEventId { get; private set; } = -1;
+
+    // v6 only: blocks of a known kind that failed to decode. Always 0 on a
+    // healthy capture; see V6Reader.MalformedBlockCount.
+    public int V6MalformedBlockCount { get; private set; }
+
+    public string V6FirstMalformedBlockError { get; private set; }
+
     // onProgress: this phase's own 0.0-1.0 completion fraction, reported
     // from the block-read loop below - null (the default) for every
     // caller except Program.cs's --json mode, so every other caller (the
@@ -117,6 +146,36 @@ public class NettraceFile
         file.Events = new List<EventRecord>(estimatedEventCount);
         file.StackIndexById = new Dictionary<int, int>();
         file.Stacks = new StackTable();
+
+        // v6 (`dotnet-trace collect-linux`) deleted the FastSerialization
+        // framing outright, so it cannot be read by the path below at all -
+        // Deserializer.Initialize fails on it with "Not a understood file
+        // format", because the 'Nettrace' magic matches and the
+        // "!FastSerialization.1" signature it expects next simply is not
+        // there. The two are distinguished by the format's own rule (a
+        // zero Reserved field), not by guessing - see V6/V6Format.cs.
+        //
+        // Both paths produce the same model, so this is the only place in the
+        // project that knows there are two container formats.
+        file.FormatVersion = V6.V6Format.ReadMajorVersion(filePath);
+
+        if (file.FormatVersion >= V6.V6Format.MajorVersion)
+        {
+            V6.V6Reader v6Reader = new V6.V6Reader(file.MetadataById, file.Events, file.StackIndexById, file.Stacks);
+            v6Reader.Read(filePath, fileLength, onProgress);
+
+            file.Header = v6Reader.Header;
+            file.MetadataBlockCount = v6Reader.MetadataBlockCount;
+            file.EventBlockCount = v6Reader.EventBlockCount;
+            file.SkippedBlockCount = v6Reader.SkippedBlockCount;
+            file.V6Threads = v6Reader.Threads;
+            file.V6Labels = v6Reader.Labels;
+            file.V6UniversalCpuEventId = v6Reader.UniversalCpuEventId;
+            file.V6MalformedBlockCount = v6Reader.MalformedBlockCount;
+            file.V6FirstMalformedBlockError = v6Reader.FirstMalformedBlockError;
+
+            return file;
+        }
 
         NettraceHeader header = new NettraceHeader();
 

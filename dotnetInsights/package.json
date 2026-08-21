@@ -115,6 +115,19 @@
           "type": "string",
           "default": null,
           "description": "Change default location for saving .gcinfo files."
+        },
+        "dotnet-insights.downloadNativeSymbols": {
+          "type": "boolean",
+          "default": true,
+          "description": "Download native symbols for traces captured with 'dotnet-trace collect-linux'. Such a capture names its modules and their build IDs but ships symbols for only a few of them, so kernel and runtime frames otherwise render as 'libcoreclr.so+0x5FC627'. Symbols are fetched from Microsoft's public symbol server by build ID and cached, so only the first trace from a given runtime build downloads anything. Turn this off to work entirely offline; already-cached symbols are still used."
+        },
+        "dotnet-insights.symbolServers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional symbol servers to consult for native symbols, tried after Microsoft's. Prefix a debuginfod server with 'debuginfod:' (for example 'debuginfod:https://debuginfod.ubuntu.com'), which is what covers distribution libraries such as libc and openssl - Microsoft's server only has .NET's own native modules."
         }
       }
     },

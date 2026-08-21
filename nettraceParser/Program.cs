@@ -33,7 +33,9 @@ using DotnetInsights.NetTrace.GcDump;
 using DotnetInsights.NetTrace.Overview;
 using DotnetInsights.NetTrace.Progress;
 using DotnetInsights.NetTrace.Rundown;
+using DotnetInsights.NetTrace.Symbols;
 using DotnetInsights.NetTrace.Threading;
+using DotnetInsights.NetTrace.Universal;
 
 if (args.Length < 1)
 {
@@ -232,6 +234,16 @@ static CaptureProfile BuildProfileForDiff(string captureFilePath, double progres
     List<ExceptionEvent> diffExceptionEvents = ExceptionEventProjector.Project(captureFile.Events, capturePointerSize, captureQpcFrequency, captureSyncTimeUtc, captureReferenceQpc);
     EventOverview diffEventOverview = EventOverviewBuilder.Build(captureFile.Events);
     MethodSymbolTable diffSymbolTable = MethodSymbolTable.Build(captureFile.Events, capturePointerSize, captureQpcFrequency, captureReferenceQpc);
+
+    // v6 only. Without this a collect-linux capture's CpuMethods rows would
+    // all read "<unresolved 0x...>", and - worse for a DIFF specifically -
+    // two captures' identical functions would land at different addresses and
+    // so fail to pair up at all, turning every row into an added/removed pair.
+    if (captureFile.FormatVersion >= DotnetInsights.NetTrace.V6.V6Format.MajorVersion)
+    {
+        diffSymbolTable.SetNativeSymbols(UniversalSymbolTable.Build(captureFile.Events, captureFile.V6Threads));
+    }
+
     List<SampleEvent> diffSampleEvents = SampleProfileEventProjector.Project(captureFile.Events, captureQpcFrequency, captureReferenceQpc);
     List<ContentionEvent> diffContentionEvents = ContentionEventProjector.Project(captureFile.Events, capturePointerSize, captureQpcFrequency, captureSyncTimeUtc, captureReferenceQpc);
 
@@ -376,6 +388,43 @@ phaseStopwatch.Restart();
 // inflated every event's QPC by ~2x, not an unreliable SyncTimeQPC field).
 long referenceQpc = file.Header.SyncTimeQPC;
 
+// Captured alongside the header fields above, and for the same reason: the
+// --json path drops `file` before the export phase, so anything read off it
+// has to be pulled into a local first. -1 on a v5 capture.
+int universalCpuEventId = file.V6UniversalCpuEventId;
+
+// Both null on a v5 capture. v6Threads is what maps a Universal.System
+// event's thread back to its process, which is how the symbol table learns
+// which process a module mapping belongs to.
+DotnetInsights.NetTrace.V6.V6ThreadTable v6ThreadTable = file.V6Threads;
+bool universalSymbolsAvailable = file.FormatVersion >= DotnetInsights.NetTrace.V6.V6Format.MajorVersion;
+UniversalSymbolTable universalSymbolTable = null;
+
+// Native symbol resolution. A collect-linux capture names its modules and
+// their build ids but ships symbols for only a minority of them, so the rest
+// are fetched on demand from a symbol server and cached by build id - see
+// Symbols/SymbolStore.cs. Enabled by default for v6 captures because a CPU
+// view full of "libcoreclr.so+0x5FC627" is the thing this exists to fix;
+// --no-symbol-download turns the network off and keeps whatever is already
+// cached, and --symbol-server adds one (prefix with "debuginfod:" for a
+// distro server, whose URL shape differs).
+bool allowSymbolDownload = Array.IndexOf(args, "--no-symbol-download") < 0;
+
+int symbolCacheArgIndex = Array.IndexOf(args, "--symbol-cache");
+string symbolCacheDirectory = symbolCacheArgIndex >= 0 && symbolCacheArgIndex + 1 < args.Length
+    ? args[symbolCacheArgIndex + 1]
+    : SymbolStore.DefaultRootDirectory();
+
+List<SymbolServer> symbolServers = new List<SymbolServer>(SymbolServer.Default);
+
+for (int argIndex = 0; argIndex + 1 < args.Length; ++argIndex)
+{
+    if (args[argIndex] == "--symbol-server")
+    {
+        symbolServers.Add(SymbolServer.Parse(args[argIndex + 1]));
+    }
+}
+
 if (isJsonMode)
 {
     // Computed now (not before Read) since it needs file.Events.Count,
@@ -457,6 +506,20 @@ if (isJsonMode)
     {
         Stopwatch taskStopwatch = Stopwatch.StartNew();
         MethodSymbolTable built = MethodSymbolTable.Build(eventsForProjection, projectionPointerSize, projectionQpcFrequency, referenceQpc, fraction => Volatile.Write(ref projectorFractions[4], fraction));
+
+        // Only a v6 capture carries these, and on that path they are the ONLY
+        // symbol source - it has no MethodLoadVerbose/MethodDCStartVerbose
+        // events for MethodSymbolTable.Build to find, so without this every
+        // frame in the CPU view renders as a bare hex address. Built on this
+        // task rather than its own because it is small (10,187 symbols / 561
+        // mappings on the reference capture) and has to be attached to the
+        // table before anything resolves a frame through it.
+        if (universalSymbolsAvailable)
+        {
+            universalSymbolTable = UniversalSymbolTable.Build(eventsForProjection, v6ThreadTable);
+            built.SetNativeSymbols(universalSymbolTable);
+        }
+
         symbolTableMs = taskStopwatch.ElapsedMilliseconds;
         return built;
     });
@@ -469,7 +532,17 @@ if (isJsonMode)
     Task<List<SampleEvent>> sampleProjectTask = eventOverviewTask.ContinueWith(completedOverview =>
     {
         Stopwatch taskStopwatch = Stopwatch.StartNew();
+        // A capture is either v5 or v6, so exactly one of these is non-zero -
+        // summed rather than branched so this stays a presize hint and never
+        // a behavioural switch. See SampleProfileEventProjector for why the
+        // v6 provider's event id has to come from the capture itself.
         int expectedSampleCount = completedOverview.Result.CountForEvent(SampleProfileEventProjector.ProviderName, SampleProfileEventProjector.EventId);
+
+        if (universalCpuEventId >= 0)
+        {
+            expectedSampleCount += completedOverview.Result.CountForEvent(SampleProfileEventProjector.UniversalProviderName, universalCpuEventId);
+        }
+
         List<SampleEvent> projected = SampleProfileEventProjector.Project(eventsForProjection, projectionQpcFrequency, referenceQpc, fraction => Volatile.Write(ref projectorFractions[5], fraction), expectedSampleCount);
         sampleProjectMs = taskStopwatch.ElapsedMilliseconds;
         return projected;
@@ -514,8 +587,58 @@ if (isJsonMode)
     List<ContentionEvent> contentionEventsForJson = contentionProjectTask.Result;
     ThreadingSummary threadingSummaryForJson = threadingProjectTask.Result;
 
+    // Only a v6 capture reaches this. Its samples come from perf_events and so
+    // carry no ThreadSampleType, which the Threading view's whole
+    // parked/blocked classification is built on - so it is derived here from
+    // whether each sample's leaf frame landed in managed code. Runs after the
+    // projectors rather than inside SampleProfileEventProjector because it
+    // needs the symbol table, which is built by a sibling task; the two are
+    // concurrent and only both exist at this point. See
+    // Universal/UniversalSampleTypeClassifier.cs.
+    // Runs BEFORE the sample classifier and before any export, because both
+    // resolve frames through the symbol table and neither would pick up
+    // symbols attached afterwards.
+    NativeSymbolResolution.Result symbolResolution = default;
+    long nativeSymbolMs = 0;
+    long nativeSymbolSelectMs = 0;
+    Stopwatch nativeSymbolStopwatch = Stopwatch.StartNew();
+
+    if (universalSymbolTable != null && !universalSymbolTable.IsEmpty)
+    {
+        // A zero-width progress phase: the percentage holds while the LABEL
+        // names the module being fetched. A real slice of the bar would have
+        // to be carved out of the export range for a phase that, after the
+        // first capture from a given runtime build, is a pure cache hit and
+        // takes no time at all - whereas a first-time 138MB libcoreclr.so
+        // download needs to say what it is doing, which the label does.
+        ProgressReporter.BeginPhase("Resolving native symbols", projectorRange.End, projectorRange.End);
+
+        SymbolStore symbolStore = new SymbolStore(symbolCacheDirectory, symbolServers, allowSymbolDownload);
+
+        symbolResolution = NativeSymbolResolution.Run(
+            universalSymbolTable,
+            file.Stacks,
+            symbolStore,
+            request => ProgressReporter.BeginPhase(
+                $"Resolving native symbols ({System.IO.Path.GetFileName(request.FileName)})",
+                projectorRange.End,
+                projectorRange.End));
+
+        symbolResolution.DownloadedBytes = symbolStore.DownloadedBytes;
+        nativeSymbolSelectMs = symbolResolution.SelectMs;
+    }
+
+    nativeSymbolMs = nativeSymbolStopwatch.ElapsedMilliseconds;
+
+    UniversalSampleTypeClassifier.ClassificationResult sampleClassification = default;
+
+    if (universalSymbolTable != null)
+    {
+        sampleClassification = UniversalSampleTypeClassifier.Apply(sampleEventsForJson, file.Stacks, universalSymbolTable);
+    }
+
     ProgressReporter.CompletePhase();
-    long projectorsMs = phaseStopwatch.ElapsedMilliseconds;
+    long projectorsMs = phaseStopwatch.ElapsedMilliseconds - nativeSymbolMs;
     phaseStopwatch.Restart();
 
     int totalEventCount = file.Events.Count;
@@ -653,6 +776,7 @@ if (isJsonMode)
         $"sampleProject={sampleProjectMs}ms ({sampleEventsForJson.Count} samples) " +
         $"contentionProject={contentionProjectMs}ms ({contentionEventsForJson.Count} contentions) " +
         $"threadingProject={threadingProjectMs}ms ({threadingSummaryForJson.Adjustments.Count} pool adjustments)] " +
+        $"nativeSymbols={nativeSymbolMs}ms(select={nativeSymbolSelectMs}ms,modules={symbolResolution.ModulesFetched}/{symbolResolution.ModulesConsidered},syms={symbolResolution.SymbolsLoaded},dl={symbolResolution.DownloadedBytes / (1024 * 1024)}MB) " +
         $"export={exportMs}ms(alloc={exportTiming.AllocationMs}ms,exc={exportTiming.ExceptionMs}ms,cpu={exportTiming.CpuMs}ms,cont={exportTiming.ContentionMs}ms,threading={exportTiming.ThreadingMs}ms,gc={exportTiming.GcMs}ms) " +
         $"binaryExport={binaryExportMs}ms " +
         $"total={totalMs}ms " +
@@ -674,6 +798,28 @@ Console.WriteLine($"NumberOfProcessors: {file.Header.NumberOfProcessors}");
 Console.WriteLine($"MetadataBlockCount: {file.MetadataBlockCount}");
 Console.WriteLine($"EventBlockCount: {file.EventBlockCount}");
 Console.WriteLine($"SkippedBlockCount: {file.SkippedBlockCount}");
+Console.WriteLine($"FormatVersion: v{file.FormatVersion}");
+
+if (file.FormatVersion >= DotnetInsights.NetTrace.V6.V6Format.MajorVersion)
+{
+    // Only ever non-zero for a damaged capture (or a reader bug). Printed
+    // unconditionally rather than only when non-zero so "0" is a positive
+    // statement that nothing was lost, not an absence to be interpreted.
+    Console.WriteLine($"MalformedBlockCount: {file.V6MalformedBlockCount}");
+
+    if (file.V6FirstMalformedBlockError != null)
+    {
+        Console.WriteLine($"  first failure: {file.V6FirstMalformedBlockError}");
+    }
+
+    if (file.V6Labels != null && file.V6Labels.WriterErrorLabelCount > 0)
+    {
+        // The writer's own annotation on events it could not describe with a
+        // field layout - see V6/V6LabelListTable.cs. Worth surfacing: on a real
+        // capture this accounted for 40% of the file's bytes.
+        Console.WriteLine($"WriterErrorLabels: {file.V6Labels.WriterErrorLabelCount} (\"{file.V6Labels.FirstWriterErrorMessage}\")");
+    }
+}
 
 Console.WriteLine();
 Console.WriteLine("== Metadata ==");
@@ -689,6 +835,19 @@ foreach (KeyValuePair<int, EventMetadata> entry in file.MetadataById)
 foreach (KeyValuePair<string, int> providerCount in providerCounts)
 {
     Console.WriteLine($"  {providerCount.Key}: {providerCount.Value} event schema(s)");
+}
+
+// The provider/id/name/version tuple, one line per schema. A v5 capture's
+// metadata is the authoritative source for the CLR provider's event-id ->
+// event-name mapping, because it carries both - which a v6 capture written by
+// `dotnet-trace collect-linux` does not (see V6/V6ClrEventNames.cs, whose
+// table is generated from this output).
+Console.WriteLine();
+Console.WriteLine("== Event schemas ==");
+
+foreach (KeyValuePair<int, EventMetadata> entry in file.MetadataById)
+{
+    Console.WriteLine($"  {entry.Value.ProviderName}/{entry.Value.EventName} id={entry.Value.EventId} version={entry.Value.Version} fields={entry.Value.Fields.Count}");
 }
 
 Console.WriteLine();

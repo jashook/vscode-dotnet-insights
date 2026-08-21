@@ -251,7 +251,30 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
             // silently break that), and gives a real, killable process
             // handle back immediately rather than only a completion
             // callback.
-            const proc = child.spawn(this.insights.nettraceParserPath, [nettraceFilePath, "--json", jsonOutputPath, "--binary", binaryOutputPath]);
+            // Native symbol resolution for a v6 (`dotnet-trace collect-linux`)
+            // capture. The cache lives in the extension's own globalStorage
+            // rather than the parser's default so it is cleaned up with the
+            // extension, and it is keyed by build id, so it is shared across
+            // every capture from the same runtime build - a first open pays a
+            // one-time ~138MB download for libcoreclr.so and every open after
+            // that is free. Ignored entirely by a v5 capture, which needs no
+            // symbol server at all.
+            const parserArgs = [nettraceFilePath, "--json", jsonOutputPath, "--binary", binaryOutputPath,
+                                "--symbol-cache", this.insights.nettraceSymbolCachePath];
+
+            const configuration = vscode.workspace.getConfiguration("dotnet-insights");
+
+            if (configuration.get<boolean>("downloadNativeSymbols") === false) {
+                parserArgs.push("--no-symbol-download");
+            }
+
+            const extraSymbolServers = configuration.get<string[]>("symbolServers") || [];
+
+            for (const symbolServer of extraSymbolServers) {
+                parserArgs.push("--symbol-server", symbolServer);
+            }
+
+            const proc = child.spawn(this.insights.nettraceParserPath, parserArgs);
             onProcessSpawned(proc);
             onBinaryWritten(binaryOutputPath);
 
