@@ -38,13 +38,67 @@ function loadFixture(): any {
 }
 
 describe('GcDumpRenderer', () => {
-    it('renders the four heap views', () => {
+    it('renders the three heap views', () => {
         const html = renderGcDumpWebview('heap.gcdump', makeWebviewStub(), makeExtensionUriStub(), loadFixture());
 
         assert.ok(html.indexOf('data-view="census"') >= 0, 'census view missing');
         assert.ok(html.indexOf('data-view="retained"') >= 0, 'retained view missing');
-        assert.ok(html.indexOf('data-view="roots"') >= 0, 'roots view missing');
         assert.ok(html.indexOf('data-view="references"') >= 0, 'references view missing');
+
+        // Retention paths were their own tab driven by a <select>; they are now
+        // what a type row in the two tables above expands INTO, the same move
+        // the Profile view made when its separate Drill Down tab became inline
+        // caller trees. Asserted as an absence because the alternative - both
+        // the tab and the inline tree - is the state this consolidation exists
+        // to avoid.
+        assert.ok(html.indexOf('data-view="roots"') < 0,
+            'the standalone Paths to Root tab should be gone; retention paths expand inline');
+        assert.ok(html.indexOf('rootTypeSelect') < 0, 'the retention-path type picker should be gone with its tab');
+    });
+
+    it('builds every table through the shared ranked-table header', () => {
+        const html = renderGcDumpWebview('heap.gcdump', makeWebviewStub(), makeExtensionUriStub(), loadFixture());
+
+        // snapshot.css's .cpuHotMethodsTable rules are positional: the hide
+        // column first, the name column second (left-aligned, wrapping, and the
+        // one column left auto so it absorbs leftover width), numeric columns
+        // after that. Emitting the type name as column 1 - which this view used
+        // to do - hands the name column's formatting to a number column and
+        // leaves a 567-character generic type name unwrapped and unbounded.
+        const headerCount = html.split('<tr class="tableHeader"><th class="rowHideColumn"></th>').length - 1;
+        assert.strictEqual(headerCount, 3, 'all three tables should use renderRankedTableHeader');
+
+        const firstHeader = html.substring(html.indexOf('<tr class="tableHeader">'));
+        const nameCell = firstHeader.split('<th')[2];
+        assert.ok(nameCell.indexOf('>Type<') >= 0, `the name column must be column 2, got: ${nameCell}`);
+    });
+
+    it('loads the shared ranked-table script the tables depend on', () => {
+        const html = renderGcDumpWebview('heap.gcdump', makeWebviewStub(), makeExtensionUriStub(), loadFixture());
+
+        // gcDumpView.js calls wireSortableTableHeaders/createRowHideController/
+        // splitQualifiedName as globals from rankedTable.js. Without this tag
+        // the page still renders its headers - they just do nothing when
+        // clicked, which is how this view shipped with sortable-looking,
+        // non-sorting columns in the first place.
+        const rankedTableIndex = html.indexOf('rankedTable.js');
+        const viewScriptIndex = html.indexOf('gcDumpView.js"');
+
+        assert.ok(rankedTableIndex >= 0, 'rankedTable.js must be loaded');
+        assert.ok(rankedTableIndex < viewScriptIndex, 'rankedTable.js must load before gcDumpView.js');
+    });
+
+    it('gives each table its own hide-status bar for the shared row-hide controller', () => {
+        const html = renderGcDumpWebview('heap.gcdump', makeWebviewStub(), makeExtensionUriStub(), loadFixture());
+
+        // createRowHideController finds these by id; a missing one silently
+        // hides rows with nothing on screen saying so.
+        for (const viewId of ['census', 'retained', 'reference']) {
+            assert.ok(html.indexOf(`id="${viewId}HideStatus"`) >= 0, `${viewId} hide status bar missing`);
+            assert.ok(html.indexOf(`id="${viewId}HideStatusLabel"`) >= 0, `${viewId} hide status label missing`);
+            assert.ok(html.indexOf(`id="${viewId}ShowAllBtn"`) >= 0, `${viewId} show-all button missing`);
+            assert.ok(html.indexOf(`id="${viewId}TableBody"`) >= 0, `${viewId} table body missing`);
+        }
     });
 
     it('uses the wrapper table structure snapshot.css sizes columns through', () => {
@@ -93,6 +147,13 @@ describe('GcDumpRenderer', () => {
 
         const html = renderGcDumpWebview('heap.gcdump', makeWebviewStub(), makeExtensionUriStub(), fixture);
         assert.ok(html.indexOf('Unrooted') >= 0, 'unrooted-object tile missing');
+
+        // Objects and bytes can diverge enormously (98.5% of objects but 99.2%
+        // of bytes on one real capture), and it is the byte figure that
+        // explains a Retained column not adding up to the heap size.
+        if (fixture.summary.unreachableBytes > 0) {
+            assert.ok(html.indexOf('% of bytes') >= 0, 'unrooted tile should report the byte share too');
+        }
     });
 
     it('falls back to the file name when the dump carries no process name', () => {
@@ -120,11 +181,55 @@ describe('GcDumpRenderer', () => {
         assert.ok(html.indexOf('<title>Dictionary<K,V>') < 0, 'raw angle brackets must not reach the document');
     });
 
+    it('says so when the source could not read stack roots', () => {
+        const fixture = loadFixture();
+
+        // A core dump read on macOS has no stack roots (the DAC's unwind
+        // crashes there), so objects held only by a running frame land in the
+        // Unrooted tile. Unexplained, that reads as "these objects are
+        // garbage" rather than "this tool could not see one kind of root".
+        fixture.metadata.stackRootsOmitted = true;
+
+        const html = renderGcDumpWebview('heap.dmp', makeWebviewStub(), makeExtensionUriStub(), fixture);
+        assert.ok(html.indexOf('stack roots') >= 0, 'missing stack-root caveat');
+    });
+
+    it('stays quiet about stack roots when the source had them', () => {
+        const html = renderGcDumpWebview('heap.gcdump', makeWebviewStub(), makeExtensionUriStub(), loadFixture());
+        assert.ok(html.indexOf('could not be read from this dump') < 0,
+            'a complete dump should carry no caveat');
+    });
+
     it('renders a readable failure page instead of throwing on a null payload', () => {
         const html = renderGcDumpWebview('broken.gcdump', makeWebviewStub(), makeExtensionUriStub(), null);
 
         assert.ok(html.indexOf('Unable to read') >= 0);
         assert.ok(html.indexOf('broken.gcdump') >= 0);
+        assert.ok(html.indexOf('output channel') >= 0, 'with no detail, point at the log');
+    });
+
+    it('puts the parser\'s own explanation on the failure page', () => {
+        // The case this exists for: a valid Linux core dump opened on a Mac.
+        // Nothing about "unable to read this file" suggests the fix is to
+        // convert it on another host, so the reason has to be on screen.
+        const failure = [
+            "Could not read the managed heap in 'service-Full.dmp': Debugging a 'LINUX' crash is not supported on 'OSX'.",
+            "",
+            "  This dump : LINUX / X64",
+            "  This host : OSX / Arm64"
+        ].join("\n");
+
+        const html = renderGcDumpWebview('service-Full.dmp', makeWebviewStub(), makeExtensionUriStub(), null, failure);
+
+        assert.ok(html.indexOf('LINUX / X64') >= 0, 'the detail should be rendered');
+        assert.ok(html.indexOf('<pre') >= 0, 'the detail is a small report, so its alignment has to survive');
+    });
+
+    it('escapes a failure message rather than letting it into the markup', () => {
+        const html = renderGcDumpWebview('x.dmp', makeWebviewStub(), makeExtensionUriStub(), null, "<script>alert(1)</script>");
+
+        assert.ok(html.indexOf('<script>alert(1)</script>') < 0, 'failure text must be escaped');
+        assert.ok(html.indexOf('&lt;script&gt;') >= 0);
     });
 
     it('payload contract: every type reference resolves into the interned pool', () => {

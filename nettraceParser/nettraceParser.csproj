@@ -42,4 +42,19 @@
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
 
+  <ItemGroup>
+    <!--
+      ClrMD is the supported API over the DAC - the same component
+      `dotnet-dump analyze` and SOS read a dump through. This is deliberately
+      NOT the same situation as the .nettrace reader's refusal to depend on
+      TraceEvent: that one decodes a documented file format, which is a
+      reasonable thing to hand-roll and has paid for itself in bugs found.
+      A core dump is read by asking a versioned, private runtime contract
+      questions, and there is no hand-rolled version of that worth writing.
+      Only CoreDump/ touches this package; every other path in this tool still
+      parses its input itself.
+    -->
+    <PackageReference Include="Microsoft.Diagnostics.Runtime" Version="3.1.512801" />
+  </ItemGroup>
+
 </Project>

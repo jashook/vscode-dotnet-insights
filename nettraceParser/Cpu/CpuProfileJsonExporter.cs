@@ -351,7 +351,9 @@ public static class CpuProfileJsonExporter
     // JSON omits "sampleTimeline" too). Returned rather than stashed on a
     // static: xUnit runs test classes in parallel, so a static would be
     // cross-contaminated by any other test exporting a different capture.
-    public static SampleTimeline Write(Utf8JsonWriter writer, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, Action<double> onProgress = null)
+    // nativeSymbols is null for a v5 capture and is used only to tell kernel
+    // frames apart when bucketing by category - see Cpu/CpuCategoryBuilder.cs.
+    public static SampleTimeline Write(Utf8JsonWriter writer, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, Action<double> onProgress = null, DotnetInsights.NetTrace.Universal.UniversalSymbolTable nativeSymbols = null)
     {
         writer.WriteStartObject();
 
@@ -375,6 +377,10 @@ public static class CpuProfileJsonExporter
             writer.WriteStartArray();
             writer.WriteEndArray();
             writer.WritePropertyName("hotMethodDrillDown");
+            writer.WriteStartArray();
+            writer.WriteEndArray();
+            CpuCategoryBuilder.Write(writer, new CpuCategoryBuilder.CategoryTotals[CpuCategoryClassifier.CategoryCount], 0, null);
+            writer.WritePropertyName("categoryDrillDown");
             writer.WriteStartArray();
             writer.WriteEndArray();
             writer.WriteEndObject();
@@ -705,6 +711,14 @@ public static class CpuProfileJsonExporter
         // BuildHotMethodCallerTrees' own comment.
         FrameIdTable<FlameTreeNode> hotMethodTreeRoots = BuildHotMethodCallerTrees(rankedHotMethods, cachedByStackIndex, distinctStackIndices, nodePool);
 
+        // The coarse "where did the CPU go" breakdown. Written here, after the
+        // ranked methods, because it shares their resolved frame ids - every
+        // frame it needs has already been through symbolTable.ResolveId, so
+        // this adds no resolution work of its own.
+        Dictionary<int, CpuCategory> categoryByFrameId;
+        CpuCategoryBuilder.CategoryTotals[] categoryTotals = CpuCategoryBuilder.Build(sampleEvents, stackTable, symbolTable, nativeSymbols, out categoryByFrameId);
+        CpuCategoryBuilder.Write(writer, categoryTotals, sampleEvents.Count, symbolTable);
+
         writer.WritePropertyName("hotMethodDrillDown");
         writer.WriteStartArray();
         for (int rankIndex = 0; rankIndex < rankedHotMethods.Count; ++rankIndex)
@@ -714,6 +728,35 @@ public static class CpuProfileJsonExporter
             MarkIncludedNodes(methodRoot, HotMethodDrillDownNodeBudget, bufferPool);
             methodRoot.Included = true;
             WriteFlameTreeNode(writer, frameId, methodRoot, symbolTable, methodNameInterner, bufferPool);
+        }
+
+        writer.WriteEndArray();
+
+        // One merged caller tree per CATEGORY, so a bucket can be opened into
+        // the actual call paths behind it instead of only a flat list of its
+        // top methods. Built from the same deduplicated distinct stacks the
+        // per-method trees use, grouped by the category of each stack's LEAF -
+        // which is exactly the attribution the bucket's own percentage is
+        // computed from, so the tree and the number can never disagree.
+        //
+        // Emitted in the same node shape as hotMethodDrillDown on purpose: the
+        // webview renders both through one function
+        // (buildInlineCpuMethodCallerTree), so this needed no second renderer.
+        //
+        // Placed HERE, before methodNames is written, for the reason the long
+        // comment below spells out - WriteFlameTreeNode interns names as it
+        // goes, and anything written after methodNames would reference indices
+        // that array never got.
+        FlameTreeNode[] categoryTreeRoots = BuildCategoryCallerTrees(categoryByFrameId, cachedByStackIndex, distinctStackIndices, nodePool);
+
+        writer.WritePropertyName("categoryDrillDown");
+        writer.WriteStartArray();
+        for (int categoryIndex = 0; categoryIndex < categoryTreeRoots.Length; ++categoryIndex)
+        {
+            FlameTreeNode categoryRoot = categoryTreeRoots[categoryIndex];
+            MarkIncludedNodes(categoryRoot, HotMethodDrillDownNodeBudget, bufferPool);
+            categoryRoot.Included = true;
+            WriteFlameTreeNode(writer, NoStackFrameId, categoryRoot, symbolTable, methodNameInterner, bufferPool);
         }
 
         writer.WriteEndArray();
@@ -997,6 +1040,52 @@ public static class CpuProfileJsonExporter
         }
 
         return treeRootByLeafFrameId;
+    }
+
+    // One caller tree per category, grouped by the category of each distinct
+    // stack's leaf frame. Mirrors BuildHotMethodCallerTrees exactly, except
+    // that the grouping key is the leaf's CATEGORY rather than the leaf
+    // itself - so where that produces "who called this method", this produces
+    // "what call paths spent time in this bucket".
+    private static FlameTreeNode[] BuildCategoryCallerTrees(Dictionary<int, CpuCategory> categoryByFrameId, CachedStackFrames[] cachedByStackIndex, List<int> distinctStackIndices, FlameTreeNodePool nodePool)
+    {
+        FlameTreeNode[] rootsByCategory = new FlameTreeNode[CpuCategoryClassifier.CategoryCount];
+
+        for (int categoryIndex = 0; categoryIndex < rootsByCategory.Length; ++categoryIndex)
+        {
+            rootsByCategory[categoryIndex] = nodePool.Rent();
+        }
+
+        for (int distinctIndex = 0; distinctIndex < distinctStackIndices.Count; ++distinctIndex)
+        {
+            CachedStackFrames cached = cachedByStackIndex[distinctStackIndices[distinctIndex]];
+            int[] frameIds = cached.FrameIds;
+
+            if (frameIds.Length == 0)
+            {
+                continue;
+            }
+
+            CpuCategory category;
+
+            if (!categoryByFrameId.TryGetValue(frameIds[0], out category))
+            {
+                continue;
+            }
+
+            FlameTreeNode current = rootsByCategory[(int)category];
+            current.TotalSamples += cached.SampleCount;
+            ++current.DistinctStackCount;
+
+            for (int frameIndex = 0; frameIndex < frameIds.Length; ++frameIndex)
+            {
+                current = current.GetOrAddChild(frameIds[frameIndex], nodePool);
+                current.TotalSamples += cached.SampleCount;
+                ++current.DistinctStackCount;
+            }
+        }
+
+        return rootsByCategory;
     }
 
     // Same global best-first budget approach as

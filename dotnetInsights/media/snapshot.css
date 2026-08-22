@@ -669,9 +669,16 @@
     width: 96%;
 }
 
+/* border-spacing:0 for the same reason .callerTreeInner below already resets
+   it: browsers default every <table> to border-collapse:separate with 2px of
+   spacing, which on a table whose header row has its own background colour
+   shows up as gaps chopping that header band into one rounded rectangle per
+   column. The nested .callerTreeInner trees already reset it for themselves
+   (see that rule below); the outer table they line up inside never did. */
 .detailTable table
 {
     border-radius: 5px;
+    border-spacing: 0;
     width: 100%;
 }
 
@@ -1106,7 +1113,11 @@
 {
     background: none;
     border: none;
-    color: rgba(0, 0, 0, 0.35);
+    /* Dimmed against the theme's own foreground - a hard-coded near-black ✕ is
+       invisible on a dark theme, which is where this column reads as an empty
+       gutter rather than a button (see .methodTypePrefix above). */
+    color: inherit;
+    opacity: 0.4;
     cursor: pointer;
     font-size: 13px;
     line-height: 1;
@@ -1155,8 +1166,13 @@ td.rowHideColumn:hover
    needed; callers just give the bar a new id and reuse these three classes
    directly. */
 
+/* .typeRow covers the .gcdump ranked tables' own expandable type rows, which
+   expand into exactly the same inline tree as the rows above - one rule for
+   every row that owns a chevron, rather than another per-view copy of it (the
+   .cpuHotMethodRow/.exceptionTypeRow pair further down are those copies). */
 .leafMethodRow.expanded .leafMethodToggle,
-.callerRow.expanded .leafMethodToggle
+.callerRow.expanded .leafMethodToggle,
+.typeRow.expanded .leafMethodToggle
 {
     transform: rotate(90deg);
 }
@@ -1213,6 +1229,13 @@ td.rowHideColumn:hover
 .detailTable .callerTreeCell
 {
     padding: 0;
+    /* Anything in this cell that is not the nested table itself - a note above
+       the tree, an "unavailable" message - would otherwise inherit
+       .detailTable td's text-align:center and float in the middle of a
+       full-width row, disconnected from the tree it describes. The nested
+       table's own cells set their alignment themselves, so this only reaches
+       the loose content. */
+    text-align: left;
 }
 
 /* Browsers default border-spacing to 2px (border-collapse: separate) on
@@ -1267,9 +1290,16 @@ td.rowHideColumn:hover
     padding-right: 4px;
 }
 
+/* Dimmed by opacity against the theme's own foreground rather than by a
+   hard-coded near-black: these webviews follow the VS Code theme, and a fixed
+   rgba(0,0,0,0.55) renders this prefix all but invisible on any dark one. On a
+   light theme the result is the same grey it always was, since the inherited
+   foreground there IS near-black. Same reasoning for .unresolvedFrame,
+   .calledByLabel and .pathCount below. */
 .methodTypePrefix
 {
-    color: rgba(0, 0, 0, 0.55);
+    color: inherit;
+    opacity: 0.55;
 }
 
 .methodName
@@ -1279,7 +1309,8 @@ td.rowHideColumn:hover
 
 .unresolvedFrame
 {
-    color: rgba(0, 0, 0, 0.55);
+    color: inherit;
+    opacity: 0.55;
     font-style: italic;
 }
 
@@ -1303,12 +1334,14 @@ td.rowHideColumn:hover
 
 .calledByLabel
 {
-    color: rgba(0, 0, 0, 0.45);
+    color: inherit;
+    opacity: 0.5;
 }
 
 .pathCount
 {
-    color: rgba(0, 0, 0, 0.55);
+    color: inherit;
+    opacity: 0.55;
     font-size: 0.9em;
 }
 
@@ -2782,4 +2815,145 @@ td.rowHideColumn:hover
 #threadRosterTable > tbody > tr > td:nth-child(8)
 {
     width: 12%;
+}
+
+/* Column labels for an inline tree's own metrics, emitted once at the top of an
+   expansion (not on every nested level, which is the same table repeated). The
+   tree's columns line up with the ranked table's rightmost ones because both
+   grids span the same box - an alignment, not a shared meaning, so "Instances"
+   sitting under "Objects" needs saying. Deliberately quiet: this is a caption
+   inside a row, not a second table header competing with the real one. */
+.callerTreeInner .treeColumnLabelRow td
+{
+    border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+    font-size: 0.85em;
+    letter-spacing: 0.03em;
+    opacity: 0.6;
+    padding-bottom: 2px;
+    text-transform: uppercase;
+}
+
+/*
+ * Coarse CPU category summary (CpuProfileRenderer.renderCpuCategoryTable).
+ * The bar sits BEHIND the category name rather than in a column of its own:
+ * the categories span two orders of magnitude and a dedicated bar column
+ * would be mostly empty, while the name cell is already the widest one and is
+ * the only column with room to carry it.
+ */
+.cpuCategorySection {
+    margin-bottom: 1.2em;
+}
+
+.cpuCategoryNameCell {
+    position: relative;
+}
+
+.cpuCategoryBar {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    /*
+     * color: inherit + opacity rather than a hard-coded colour, for the same
+     * reason the dimmed text in these webviews uses it - these views follow
+     * the VS Code theme, and a fixed colour is either invisible or garish on
+     * one of the two.
+     */
+    background-color: currentColor;
+    opacity: 0.16;
+    pointer-events: none;
+}
+
+.cpuCategoryName {
+    position: relative;
+}
+
+.cpuCategoryRow {
+    cursor: pointer;
+}
+
+.cpuCategoryDescription {
+    opacity: 0.75;
+    margin: 0.4em 0 0.6em 1.6em;
+}
+
+.cpuUnresolvedNote {
+    margin-bottom: 0.8em;
+}
+
+.cpuUnresolvedList {
+    margin: 0.4em 0 0.6em 1.4em;
+    padding: 0;
+}
+
+/*
+ * Depth-0 rows of a CPU category's caller tree. That tree is a forest - one
+ * root per leaf method in the bucket - unlike a hot method's tree, which has a
+ * single root chain anchored by the ranked row above it. Without a marker, a
+ * caller indented one level (0.85em) sits almost exactly where the next
+ * sibling ROOT does, so an expanded row reads as another top-level method
+ * rather than as something nested underneath.
+ *
+ * A rule above the row rather than a background: the rows alternate
+ * .drillDownAltBranch shading already, and a second background would fight it.
+ */
+.callerTreeInner tr.cpuCallerForestRoot > td
+{
+    border-top: 1px solid rgba(128, 128, 128, 0.35);
+    padding-top: 3px;
+}
+
+.callerTreeInner tr.cpuCallerForestRoot > td:nth-child(2)
+{
+    font-weight: 600;
+}
+
+/*
+ * Legend for a CPU category's caller tree. Deliberately a block ABOVE the
+ * tree rather than a row inside it: a label row within the table changes that
+ * table's column sizing under table-layout:auto, which inflated the leading
+ * spacer and collapsed the first indent step (see cpuDrillDownStats.js).
+ */
+.cpuCategoryTreeLegend
+{
+    opacity: 0.6;
+    font-size: 0.85em;
+    letter-spacing: 0.03em;
+    margin: 0.2em 0 0.4em 1.6em;
+}
+
+/*
+ * Default width for the CPU caller tree's leading spacer column. Was an inline
+ * style on the <col>; moved here so a view can scope a different value, which
+ * an inline style makes impossible without !important.
+ */
+.callerTreeInner col.callerTreeSpacerCol
+{
+    width: 1.6em;
+}
+
+/*
+ * The CPU category breakdown's expansion sits FLUSH with the row's hide
+ * column rather than a gutter to the right of it. Measured in a browser:
+ * description, legend and the tree's first level all land at the same x as the
+ * row's own hide column, and the tree's per-level nesting is unchanged.
+ *
+ * Scoped to #cpuCategoryTable so the hot-method, exception, contention and
+ * .gcdump trees - which share this markup - keep the 1.6em gutter that lines
+ * their name column up under the ranked table's own.
+ */
+#cpuCategoryTable .callerTreeInner col.callerTreeSpacerCol
+{
+    width: 4px;
+}
+
+#cpuCategoryTable .callerTreeInner tr > td:first-child
+{
+    padding: 0;
+}
+
+#cpuCategoryTable .cpuCategoryDescription,
+#cpuCategoryTable .cpuCategoryTreeLegend
+{
+    margin-left: 4px;
 }

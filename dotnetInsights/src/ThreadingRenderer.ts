@@ -169,6 +169,20 @@ function renderThreadRoster(threadActivity: any, methodNames: string[]): string 
            can be shown to be parked and every thread below is listed as active. Captures taken with
            <b>Microsoft-DotNETCore-SampleProfiler</b> enabled (the <b>dotnet-trace collect</b> default) carry it.</div>`;
 
+    // A dotnet-trace collect-linux capture is sampled by perf_events, which
+    // knows nothing about managed code, so its samples carry no
+    // ThreadSampleType at all - the flag is DERIVED from whether each sample's
+    // leaf frame resolved to managed code. That derivation is reasonable but
+    // the thresholds this table's parked/blocked classification uses were
+    // calibrated against the runtime's own signal, so the difference is
+    // labelled rather than left to look identical to a collect capture.
+    const derivedSampleTypeNote = threadActivity["sampleTypeSource"] === "derived"
+        ? `<div class="threadingNote threadingDerivedSampleTypeNote">This capture was taken with <b>dotnet-trace collect-linux</b>, whose
+           samples come from <b>perf_events</b> and carry no managed/native flag. The classification below derives one from whether each
+           sample's innermost frame resolved to managed code. That is a close stand-in for the runtime's own signal, but the parked
+           and blocked thresholds were tuned against captures that carry it, so treat these roles as indicative rather than exact.</div>`
+        : "";
+
     var rows = "";
     for (var index = 0; index < threads.length; ++index) {
         const thread = threads[index];
@@ -247,6 +261,7 @@ function renderThreadRoster(threadActivity: any, methodNames: string[]): string 
         </div>
         ${renderThreadRoleLegend(threadActivity["roles"])}
         ${noSampleTypeNote}
+        ${derivedSampleTypeNote}
         ${ZOOM_AGGREGATE_NOTE_HTML}
         ${expandControlsHtml}
         <div class="detailTable threadingTable"><table id="threadRosterTable">${header}${rows}</table></div>

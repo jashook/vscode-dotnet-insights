@@ -84,7 +84,13 @@ function formatCpuPercentOfTotal(rowSamples, grandTotalSamples) {
 // of numeric columns above it, even though nothing here is actually
 // broken - it's two independently-sized column systems that used to
 // happen to line up and now don't, one <td> short of doing so again.
-const CPU_CALLER_TREE_COLGROUP = `<colgroup><col style="width: 1.6em"><col><col class="bytesColumn"><col class="percentColumn"><col class="percentColumn"></colgroup>`;
+// The leading spacer's width lives in CSS (.callerTreeSpacerCol), NOT inline
+// here, so a view that wants a different gutter can scope one - an inline
+// style cannot be overridden by a stylesheet without !important. The default
+// stays 1.6em, which is what every tree except the CPU category breakdown
+// uses; that one collapses it so its expansion sits flush with the row's hide
+// column instead of a gutter's width to the right of it.
+const CPU_CALLER_TREE_COLGROUP = `<colgroup><col class="callerTreeSpacerCol"><col><col class="bytesColumn"><col class="percentColumn"><col class="percentColumn"></colgroup>`;
 
 var cpuCallerRowIdCounter = 0;
 
@@ -214,7 +220,7 @@ function initCpuDrillDownMethodNames(methodNames) {
 // standalone heading/summary-div wrapper (the method row itself already
 // identifies the method) and starts callers at depth 0 (not rendering a
 // separate root row for the hot method - it IS the row that was just clicked).
-function buildInlineCpuMethodCallerTree(entry, methodNames, grandTotalSamples) {
+function buildInlineCpuMethodCallerTree(entry, methodNames, grandTotalSamples, rootRowClass) {
     currentCpuMethodNames = methodNames;
 
     if (!entry) {
@@ -243,9 +249,19 @@ function buildInlineCpuMethodCallerTree(entry, methodNames, grandTotalSamples) {
         var branchClass = isBranch
             ? (childIndex % 2 === 1 ? "drillDownAltBranch" : "")
             : "drillDownAltBranch";
-        childRowsHtml += renderCpuCallerRow(children[childIndex], 0, totalSamples, grandTotalSamples, branchClass, totalSamples);
+        var rootClass = rootRowClass ? `${branchClass} ${rootRowClass}`.trim() : branchClass;
+        childRowsHtml += renderCpuCallerRow(children[childIndex], 0, totalSamples, grandTotalSamples, rootClass, totalSamples);
     }
 
+    // NOTHING may be added to this table that is not a caller row. A column
+    // label row was tried here and had to be moved out: under table-layout
+    // auto the leading spacer <col>'s 1.6em is a FLOOR, not a width (the same
+    // trap CLAUDE.md records for the ranked tables), so the extra row's text
+    // gave the top-level table different column pressure from the nested ones
+    // and inflated its spacer from 26px to 30px. Measured in a browser: the
+    // first indent step collapsed to 9px while every later step stayed 13px,
+    // which read as a child sitting at its own parent's level. Labels now live
+    // in a legend above the tree, outside the grid.
     return `<table class="callerTreeInner">${CPU_CALLER_TREE_COLGROUP}${childRowsHtml}</table>`;
 }
 

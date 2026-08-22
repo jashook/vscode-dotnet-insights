@@ -390,6 +390,10 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     // Loaded BEFORE snapshotGcStats.js, which calls into it during its own
     // top-level run - see that file's binary container load.
     const binaryScriptUri = mediaWebviewUri(webview, extensionUri, 'nettraceBinary.js');
+    // Shared ranked-table behaviour (click-to-sort, row hiding, qualified-name
+    // splitting) - loaded before snapshotGcStats.js, which calls into it as
+    // globals, and shared with the .gcdump webview (see GcDumpRenderer.ts).
+    const rankedTableScriptUri = mediaWebviewUri(webview, extensionUri, 'rankedTable.js');
     const chartZoomScriptUri = mediaWebviewUri(webview, extensionUri, 'chartZoomHelper.js');
     const allocationScriptUri = mediaWebviewUri(webview, extensionUri, 'allocationStats.js');
     const drillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'drillDownStats.js');
@@ -742,6 +746,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
                  this HTML - see snapshotGcStats.js's view switcher. -->
             <span style="display:none" id="cpuProfileHtml"><!--${cpuProfileHtml}--></span>` : ``}
 
+            <script nonce="${nonce}" src="${rankedTableScriptUri}"></script>
             <script nonce="${nonce}" src="${chartZoomScriptUri}"></script>
             <script nonce="${nonce}" src="${allocationScriptUri}"></script>
             <script nonce="${nonce}" src="${drillDownScriptUri}"></script>

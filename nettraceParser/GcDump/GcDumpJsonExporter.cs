@@ -129,6 +129,7 @@ public static class GcDumpJsonExporter
         writer.WriteNumber("totalProcessCommit", metadata.TotalProcessCommit);
         writer.WriteNumber("totalProcessWorkingSet", metadata.TotalProcessWorkingSet);
         writer.WriteBoolean("isSampled", metadata.IsSampled);
+        writer.WriteBoolean("stackRootsOmitted", metadata.StackRootsOmitted);
         writer.WriteNumber("countMultiplier", metadata.AverageCountMultiplier);
         writer.WriteNumber("sizeMultiplier", metadata.AverageSizeMultiplier);
 

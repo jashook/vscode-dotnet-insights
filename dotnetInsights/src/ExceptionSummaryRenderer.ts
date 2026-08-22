@@ -19,7 +19,7 @@
 // expanded - there's no second alternate view here to justify a tab bar, the
 // same reasoning Contention's own view already follows.
 
-import { renderSortableTableHeader } from './GcDetailTableRenderer';
+import { renderRankedTableHeader } from './GcDetailTableRenderer';
 
 function escapeHtml(value: string): string {
     return String(value)
@@ -132,8 +132,9 @@ function renderExceptionTypesTable(exceptionSummary: any): string {
         ["Sample Message", "text"],
     ];
 
-    const header = renderSortableTableHeader(columns);
-    const headerWithHideColumn = header.replace('<tr class="tableHeader">', '<tr class="tableHeader"><th class="rowHideColumn"></th>');
+    // renderRankedTableHeader is renderSortableTableHeader plus the hide
+    // button's own bare, unsortable leading <th> - see that function.
+    const headerWithHideColumn = renderRankedTableHeader(columns);
 
     return `<div class="detailTable cpuHotMethodsTable"><table id="exceptionTypeTable">${headerWithHideColumn}${rows}</table></div>`;
 }

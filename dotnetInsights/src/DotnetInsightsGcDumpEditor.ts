@@ -30,6 +30,27 @@ import { NettraceProgressTracker, NettraceProgressUpdate, parseProgressLine, JSO
 // heap produces a payload of a few thousand rows that a plain JSON.parse
 // handles comfortably. The binary container exists to avoid materializing
 // millions of values; here there are never millions of values to materialize.
+// What the parser subprocess came back with: the analysis, or the reason there
+// isn't one, in the parser's own words.
+interface GcDumpParseOutcome {
+    payload: any | null;
+    errorText: string | null;
+}
+
+// A process core dump rather than a .gcdump heap snapshot. Extension-based
+// because that is what the custom editor's own selector matches on
+// (package.json's contributes.customEditors), and because the alternative -
+// sniffing the file's magic - would mean reading the head of a multi-gigabyte
+// file on the extension host's own thread before deciding anything.
+//
+// .dmp is what `dotnet-dump collect` writes on every platform; .core is the
+// conventional name for a dump the runtime writes itself via
+// DOTNET_DbgEnableMiniDump.
+export function isProcessDumpPath(filePath: string): boolean {
+    const lowerCasePath = filePath.toLowerCase();
+    return lowerCasePath.endsWith(".dmp") || lowerCasePath.endsWith(".core");
+}
+
 export class DotnetInsightsGcDumpEditor implements vscode.CustomReadonlyEditorProvider {
     public static register(context: vscode.ExtensionContext, insights: DotnetInsights): vscode.Disposable {
         const provider = new DotnetInsightsGcDumpEditor(context, insights);
@@ -126,14 +147,16 @@ export class DotnetInsightsGcDumpEditor implements vscode.CustomReadonlyEditorPr
         });
 
         this.runGcDumpParser(gcDocument.uri.fsPath, tracker, postProgress, (proc) => { spawnedProcess = proc; })
-            .then(async (gcDumpData: any) => {
+            .then(async (outcome: GcDumpParseOutcome) => {
                 if (disposed) {
                     return;
                 }
 
+                const gcDumpData = outcome.payload;
+
                 if (gcDumpData === null) {
-                    postError('Failed to parse this .gcdump file - see the "Dotnet Insights" output channel for details.');
-                    setHtml(renderGcDumpWebview(gcDocument.fileName, webviewPanel.webview, this.context.extensionUri, null));
+                    postError('Failed to parse this file - see the "Dotnet Insights" output channel for details.');
+                    setHtml(renderGcDumpWebview(gcDocument.fileName, webviewPanel.webview, this.context.extensionUri, null, outcome.errorText));
                     return;
                 }
 
@@ -157,10 +180,17 @@ export class DotnetInsightsGcDumpEditor implements vscode.CustomReadonlyEditorPr
     }
 
     // Resolves to the parsed analysis object, or null on any failure.
-    private runGcDumpParser(gcDumpFilePath: string, tracker: NettraceProgressTracker, postProgress: (update: NettraceProgressUpdate) => void, onProcessSpawned: (proc: child.ChildProcess) => void): Thenable<any> {
+    // Resolves the parsed payload, or the parser's own explanation of why there
+    // isn't one. The explanation matters more here than for any other source in
+    // this extension: a core dump can be perfectly valid and still be
+    // unreadable ON THIS MACHINE (a Linux dump on a Mac), and "unable to read"
+    // alone sends the reader looking for a corrupt file instead of a different
+    // host.
+    private runGcDumpParser(gcDumpFilePath: string, tracker: NettraceProgressTracker, postProgress: (update: NettraceProgressUpdate) => void, onProcessSpawned: (proc: child.ChildProcess) => void): Thenable<GcDumpParseOutcome> {
         if (this.insights.nettraceParserPath === undefined || this.insights.nettraceParserPath === null || this.insights.nettraceParserPath === "") {
-            this.insights.outputChannel.appendLine("nettraceParser is not available; .gcdump files cannot be opened. Set dotnet-insights.nettraceParserPath to a local build, or wait for the tool download to complete.");
-            return Promise.resolve(null);
+            const unavailable = "nettraceParser is not available. Set dotnet-insights.nettraceParserPath to a local build, or wait for the tool download to complete.";
+            this.insights.outputChannel.appendLine(unavailable);
+            return Promise.resolve({ payload: null, errorText: unavailable });
         }
 
         if (!fs.existsSync(this.insights.nettraceParserOutputPath)) {
@@ -170,15 +200,29 @@ export class DotnetInsightsGcDumpEditor implements vscode.CustomReadonlyEditorPr
         const id = crypto.randomBytes(16).toString("hex");
         const jsonOutputPath = path.join(this.insights.nettraceParserOutputPath, `${id}.gcdump.json`);
 
-        this.insights.outputChannel.appendLine(`"${this.insights.nettraceParserPath}" --gcdump "${gcDumpFilePath}" --json "${jsonOutputPath}"`);
+        // Two heap sources land in this one editor, and the only difference is
+        // which flag reads them: `.gcdump` is a heap snapshot file, `.dmp`/
+        // `.core` is a process core dump read through ClrMD (see
+        // nettraceParser/CoreDump/CoreDumpHeapGraphBuilder.cs). Both produce
+        // the same --json payload, so everything downstream - progress, the
+        // renderer, the webview - is shared and needs no branching at all.
+        //
+        // The core-dump path is given no -o, so it writes only the JSON asked
+        // for; a .gcdump the size of the heap appearing next to the user's dump
+        // would be a surprising side effect of opening a file to look at it.
+        const parserArguments = isProcessDumpPath(gcDumpFilePath)
+            ? ["--gcdump-from-dump", gcDumpFilePath, "--json", jsonOutputPath]
+            : ["--gcdump", gcDumpFilePath, "--json", jsonOutputPath];
+
+        this.insights.outputChannel.appendLine(`"${this.insights.nettraceParserPath}" ${parserArguments.join(" ")}`);
 
         const gcDumpFileSizeBytes = fs.statSync(gcDumpFilePath).size;
         const execStartMs = Date.now();
 
-        return new Promise<any>((resolve) => {
+        return new Promise<GcDumpParseOutcome>((resolve) => {
             // spawn with an argument array rather than a shell string, so a
             // path containing quotes or spaces needs no manual escaping.
-            const proc = child.spawn(this.insights.nettraceParserPath, ["--gcdump", gcDumpFilePath, "--json", jsonOutputPath]);
+            const proc = child.spawn(this.insights.nettraceParserPath, parserArguments);
             onProcessSpawned(proc);
 
             let stderrTail = "";
@@ -207,7 +251,7 @@ export class DotnetInsightsGcDumpEditor implements vscode.CustomReadonlyEditorPr
                 this.insights.outputChannel.appendLine(`nettraceParser --gcdump: ${gcDumpFileSizeBytes} bytes in, subprocess took ${Date.now() - execStartMs}ms`);
                 this.insights.outputChannel.appendLine("Failed to execute nettraceParser.");
                 this.insights.outputChannel.appendLine(error.message);
-                resolve(null);
+                resolve({ payload: null, errorText: error.message });
             });
 
             proc.on('close', (exitCode: number | null) => {
@@ -216,7 +260,7 @@ export class DotnetInsightsGcDumpEditor implements vscode.CustomReadonlyEditorPr
                 if (exitCode !== 0) {
                     this.insights.outputChannel.appendLine("Failed to execute nettraceParser.");
                     this.insights.outputChannel.appendLine(stderrTail);
-                    resolve(null);
+                    resolve({ payload: null, errorText: stderrTail.trim() });
                     return;
                 }
 
@@ -225,7 +269,7 @@ export class DotnetInsightsGcDumpEditor implements vscode.CustomReadonlyEditorPr
                 try {
                     const parsed = JSON.parse(fs.readFileSync(jsonOutputPath).toString());
                     this.insights.outputChannel.appendLine(`nettraceParser --gcdump: JSON read took ${Date.now() - readStartMs}ms`);
-                    resolve(parsed);
+                    resolve({ payload: parsed, errorText: null });
                 }
                 catch (e: any) {
                     // Logged in full rather than swallowed - an unreadable
@@ -233,7 +277,7 @@ export class DotnetInsightsGcDumpEditor implements vscode.CustomReadonlyEditorPr
                     // in the UI otherwise.
                     this.insights.outputChannel.appendLine("Failed to read nettraceParser --gcdump output.");
                     this.insights.outputChannel.appendLine(e && e.stack ? e.stack : String(e));
-                    resolve(null);
+                    resolve({ payload: null, errorText: "The analysis could not be read back. See the \"Dotnet Insights\" output channel." });
                 }
                 finally {
                     try {

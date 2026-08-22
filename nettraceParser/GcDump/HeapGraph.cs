@@ -129,6 +129,18 @@ public sealed class GcDumpMetadata
     public long TotalProcessWorkingSet;
     public string CreationTool;
 
+    // Set when the source could not read thread stack roots, so objects held
+    // only by a live stack frame come out unrooted. The core-dump path sets it
+    // on a macOS dump, where the DAC's stack unwind crashes the process (see
+    // CoreDump/CoreDumpHeapGraphBuilder.cs); nothing else does, because the
+    // event sources get stack roots from the runtime rather than by unwinding.
+    //
+    // Carried all the way to the webview deliberately: "some objects are
+    // unrooted" and "the tool could not see one whole category of root" look
+    // identical in the output, and telling them apart afterwards is exactly the
+    // investigation this field exists to make unnecessary.
+    public bool StackRootsOmitted;
+
     // Free-text provenance the format carries. GcDumpReader reads past it (the
     // UI has no place for it); GcDumpWriter uses it to record that a file was
     // built from a .nettrace rather than captured by dotnet-gcdump, which is

@@ -391,7 +391,18 @@ export async function activate(context: vscode.ExtensionContext) {
     // would leave the Threading tab silently showing its old, noisier tables
     // with no error anywhere to explain why - the exact failure mode the
     // stale-cache trap note in CLAUDE.md was written about.
-    const latestNettraceParserVersionNumber = "1.9.1";
+    // 1.9.3 adds --gcdump-from-dump (core dumps via ClrMD - see
+    // nettraceParser/CoreDump/). Opening a .dmp calls a flag an older cached
+    // binary does not have, and the stale-cache trap means every machine that
+    // already downloaded 1.9.1 keeps using it until this constant moves - so
+    // this bump is what makes the feature reachable at all, not housekeeping.
+    // 1.9.4 adds nettrace v6 support - the format `dotnet-trace collect-linux`
+    // writes (see nettraceParser/V6/). This bump is not optional either, and
+    // its failure mode is worse than a missing flag: a v6 capture opened with
+    // a cached 1.9.3 binary dies inside FastSerialization with "Not a
+    // understood file format", which reads like a corrupt file rather than an
+    // out-of-date tool.
+    const latestNettraceParserVersionNumber = "1.9.4";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;

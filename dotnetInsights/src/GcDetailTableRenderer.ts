@@ -147,8 +147,7 @@ export function renderGcDetailTable(gcs: any[]): string {
         ["Promoted Gen2 (mb)", "number"],
     ];
 
-    const header = renderSortableTableHeader(columns);
-    const headerWithHideColumn = header.replace('<tr class="tableHeader">', '<tr class="tableHeader"><th class="rowHideColumn"></th>');
+    const headerWithHideColumn = renderRankedTableHeader(columns);
 
     // Hidden until at least one row is hidden - same allocationZoomStatus
     // idiom as every other hide-status bar on this page.
@@ -161,10 +160,10 @@ export function renderGcDetailTable(gcs: any[]): string {
     return `${hideStatusHtml}<div class="detailTable"><table id="gcDetailTable">${headerWithHideColumn}${rows}</table></div>`;
 }
 
-// Shared header builder for every sortable detail table on this page
-// (GC event table, CPU hot-methods table, etc.) - each column entry is
-// [label, sortType] where sortType is "number", "date", or "text" (see
-// sortDetailTableByColumn in snapshotGcStats.js).
+// Shared header builder for every sortable detail table in these webviews
+// (GC event table, CPU hot-methods table, .gcdump type census, etc.) - each
+// column entry is [label, sortType] where sortType is "number", "date", or
+// "text" (see sortDetailTableByColumn in media/rankedTable.js).
 export function renderSortableTableHeader(columns: ReadonlyArray<[string, string]>): string {
     var headerCells = "";
     for (var columnIndex = 0; columnIndex < columns.length; ++columnIndex) {
@@ -172,4 +171,24 @@ export function renderSortableTableHeader(columns: ReadonlyArray<[string, string
         headerCells += `<th data-sort="${sortType}"><span class="thLabel">${label}</span><span class="sortIndicator"></span></th>`;
     }
     return `<tr class="tableHeader">${headerCells}</tr>`;
+}
+
+// The same header with the row-hide button's own leading column prepended - a
+// bare, unlabeled <th> carrying no data-sort attribute, so
+// wireSortableTableHeaders (media/rankedTable.js) skips it instead of trying to
+// sort by a column that holds a button.
+//
+// Every ranked table in these webviews is built this way (CPU Methods,
+// Contention Sites, Exception Types, the GC detail table, and the .gcdump type
+// census/retained/references tables), and the column POSITIONS this produces
+// are what snapshot.css's .cpuHotMethodsTable rules are written against:
+// column 1 is the narrow hide column, column 2 is the left-aligned, wrapping
+// name column that absorbs leftover width, and every column after it is
+// numeric and right-aligned. A table that skips the hide column shifts all of
+// that by one and gets its name column formatted as a number - which is
+// exactly what the .gcdump census table did before it was built through here.
+export function renderRankedTableHeader(columns: ReadonlyArray<[string, string]>): string {
+    return renderSortableTableHeader(columns).replace(
+        '<tr class="tableHeader">',
+        '<tr class="tableHeader"><th class="rowHideColumn"></th>');
 }

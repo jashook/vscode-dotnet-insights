@@ -11,7 +11,7 @@
 // buildInlineContentionSiteCallerTree in contentionDrillDownStats.js when a
 // row is first expanded.
 
-import { renderSortableTableHeader } from './GcDetailTableRenderer';
+import { renderRankedTableHeader } from './GcDetailTableRenderer';
 
 function escapeHtmlForContention(value: string): string {
     return String(value)
@@ -266,8 +266,9 @@ function renderTopSitesTable(contentionSummary: any): string {
         ["% of Wait", "number"],
     ];
 
-    const header = renderSortableTableHeader(columns);
-    const headerWithHideColumn = header.replace('<tr class="tableHeader">', '<tr class="tableHeader"><th class="rowHideColumn"></th>');
+    // renderRankedTableHeader is renderSortableTableHeader plus the hide
+    // button's own bare, unsortable leading <th> - see that function.
+    const headerWithHideColumn = renderRankedTableHeader(columns);
 
     return `<div class="detailTable cpuHotMethodsTable"><table id="contentionSitesTable">${headerWithHideColumn}${rows}</table></div>`;
 }

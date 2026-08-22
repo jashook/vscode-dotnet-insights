@@ -90,87 +90,13 @@ var allocationDatasets = {};
     var threadingSummaryJson = JSON.parse(document.getElementById("threadingSummaryJson").textContent);
     var threadingMethodNames = JSON.parse(document.getElementById("threadingMethodNamesJson").textContent);
 
-    // Generic "hide this row, recompute everything else" controller shared
-    // by every ranked/percent table on this page (CPU Methods, Contention
-    // Top Sites, Allocation ranked types, Exceptions, GC Detailed) - one
-    // instance per table (not a shared registry) since each table's own
-    // onChange callback does entirely different recompute work (rebuild
-    // rows + maybe a timeline chart vs. rebuild summary-tile blocks).
-    // Hidden state is in-memory only, same as every other piece of
-    // interactive UI state on this page (zoom range, expand/collapse, sort
-    // column) - none of which persist via vscode.getState()/setState()
-    // today, so a webview reload resets it like everything else.
-    function createRowHideController(statusBarId, statusLabelId, onChange) {
-        var hiddenIndices = new Set();
-
-        function updateStatusBarUi() {
-            var statusBar = document.getElementById(statusBarId);
-            var statusLabel = document.getElementById(statusLabelId);
-            if (!statusBar || !statusLabel) {
-                return;
-            }
-
-            if (hiddenIndices.size === 0) {
-                statusBar.style.display = 'none';
-                return;
-            }
-
-            statusBar.style.display = '';
-            statusLabel.textContent = 'Hidden rows (' + hiddenIndices.size + ') — Show all';
-        }
-
-        return {
-            toggle: function (index) {
-                if (hiddenIndices.has(index)) {
-                    hiddenIndices.delete(index);
-                } else {
-                    hiddenIndices.add(index);
-                }
-
-                updateStatusBarUi();
-                onChange();
-            },
-            isHidden: function (index) {
-                return hiddenIndices.has(index);
-            },
-            count: function () {
-                return hiddenIndices.size;
-            },
-            reset: function () {
-                if (hiddenIndices.size === 0) {
-                    return;
-                }
-
-                hiddenIndices.clear();
-                updateStatusBarUi();
-                onChange();
-            },
-            // Bulk-hide, used by "Hide IO-Bound Methods" - adds every index
-            // in one pass and fires onChange (a full table/tile/timeline
-            // rebuild) once at the end, rather than once per row the way a
-            // loop of individual toggle() calls would. Idempotent per index
-            // (already-hidden ones are skipped) and a no-op (never calls
-            // onChange at all) if nothing in the given set was newly hidden -
-            // clicking the bulk button twice in a row shouldn't force a
-            // pointless rebuild the second time.
-            hideMany: function (indices) {
-                var changed = false;
-                for (var hideIndex = 0; hideIndex < indices.length; ++hideIndex) {
-                    if (!hiddenIndices.has(indices[hideIndex])) {
-                        hiddenIndices.add(indices[hideIndex]);
-                        changed = true;
-                    }
-                }
-
-                if (!changed) {
-                    return;
-                }
-
-                updateStatusBarUi();
-                onChange();
-            }
-        };
-    }
+    // Row hiding and click-to-sort both live in media/rankedTable.js, loaded
+    // before this file - createRowHideController, setupDetailTableSortHandlers,
+    // sortDetailTableByColumn and detailTableSortValue are globals from there.
+    // They were defined inside this IIFE, which put them out of reach of the
+    // .gcdump webview (a separate document rendering the same ranked tables),
+    // where the sortable-looking headers consequently did nothing at all when
+    // clicked.
 
     // Full human-readable form for tooltips (space isn't constrained there
     // the way it is on an axis tick) - mirrors GcDetailTableRenderer.ts's
@@ -1693,130 +1619,6 @@ var allocationDatasets = {};
         document.getElementById("generationBreakdownSection").innerHTML = buildAllGenerationBreakdownTables(showAllGenFields);
     }
 
-    // Click-to-sort, shared by every lazily-injected table on this page
-    // (the Detailed tab's per-GC table, and the Profile tab's Hot Methods
-    // table - see CpuProfileRenderer.ts). Each table is only ever built
-    // once per webview session, so this reorders the already-rendered <tr>
-    // elements in place rather than re-deriving values from the original
-    // source array - matching the render-once/mutate-the-DOM approach the
-    // rest of this lazy-inject path already uses.
-    function detailTableSortValue(cell, sortType) {
-        if (sortType === 'date') {
-            // The DateTime cell's own data-raw attribute (an ISO-8601
-            // timestamp or a zero-padded "+elapsed" string - see
-            // GcDetailTableRenderer.ts) sorts correctly as plain text; the
-            // human-formatted display text (e.g. "21-Jul-2026 03:42:13 PM
-            // PDT") does not.
-            return cell.getAttribute('data-raw') || '';
-        }
-
-        if (sortType === 'number') {
-            var parsed = parseFloat(cell.textContent);
-            return isNaN(parsed) ? -Infinity : parsed;
-        }
-
-        return cell.textContent.toLowerCase();
-    }
-
-    function sortDetailTableByColumn(table, columnIndex, sortType, ascending) {
-        var tbody = table.tBodies[0] || table;
-        // Snapshots the live HTMLCollection before any row gets moved -
-        // table.rows[0] is the header row, left untouched. Skip .callPathsDetail
-        // rows: they're paired with their method/data row and moved along
-        // with it below, not sorted independently (they'd sort to a random
-        // position relative to their method row otherwise).
-        var allRows = Array.prototype.slice.call(table.rows, 1);
-        var dataRows = [];
-        for (var filterIndex = 0; filterIndex < allRows.length; ++filterIndex) {
-            if (!allRows[filterIndex].classList.contains('callPathsDetail')) {
-                dataRows.push(allRows[filterIndex]);
-            }
-        }
-
-        dataRows.sort(function (rowA, rowB) {
-            var valueA = detailTableSortValue(rowA.cells[columnIndex], sortType);
-            var valueB = detailTableSortValue(rowB.cells[columnIndex], sortType);
-
-            var comparison = 0;
-            if (valueA < valueB) {
-                comparison = -1;
-            } else if (valueA > valueB) {
-                comparison = 1;
-            }
-
-            return ascending ? comparison : -comparison;
-        });
-
-        // appendChild on a node already in the tree moves it - iterating in
-        // the desired final order and re-appending each row leaves the
-        // header (never touched) first and every data row following in
-        // sorted order. For expandable rows (CPU hot-methods table), the
-        // paired callPathsDetail row is moved immediately after its method row
-        // so it stays correctly associated after the sort.
-        for (var rowIndex = 0; rowIndex < dataRows.length; ++rowIndex) {
-            tbody.appendChild(dataRows[rowIndex]);
-            var pairedDetailId = dataRows[rowIndex].getAttribute('data-cpu-method-target') || dataRows[rowIndex].getAttribute('data-contention-target');
-            if (pairedDetailId) {
-                var pairedDetailRow = document.getElementById(pairedDetailId);
-                if (pairedDetailRow) {
-                    tbody.appendChild(pairedDetailRow);
-                }
-            }
-        }
-    }
-
-    function setupDetailTableSortHandlers(container) {
-        var table = container.querySelector(".detailTable table");
-        if (!table) {
-            return;
-        }
-
-        // Scoped to this one call/table (not module-level) - two distinct
-        // tables (Detailed tab, Profile tab's Hot Methods table) each get
-        // their own independent "which column, which direction" state, so
-        // sorting one table's column 2 doesn't leave a stale ascending/
-        // descending toggle for an unrelated table's own column 2.
-        var currentSortColumnIndex = -1;
-        var currentSortAscending = true;
-
-        var headerCells = table.rows[0].cells;
-        for (var headerIndex = 0; headerIndex < headerCells.length; ++headerIndex) {
-            var headerCell = headerCells[headerIndex];
-
-            // The row-hide button column's own <th> is a bare, unlabeled
-            // cell with no data-sort attribute (see e.g.
-            // CpuProfileRenderer.ts's headerWithHideColumn) - skip it here
-            // rather than wiring a click handler that would call
-            // sortDetailTableByColumn with a null sortType and then throw
-            // reaching for a sortIndicator span this cell doesn't have.
-            if (!headerCell.hasAttribute('data-sort')) {
-                continue;
-            }
-
-            (function (columnIndex, headerCell) {
-                headerCell.addEventListener('click', function () {
-                    var ascending = (currentSortColumnIndex === columnIndex) ? !currentSortAscending : true;
-                    sortDetailTableByColumn(table, columnIndex, headerCell.getAttribute('data-sort'), ascending);
-
-                    // The row-hide column's own blank <th> (skipped above,
-                    // never gets a click listener of its own) has no
-                    // .sortIndicator span at all - guard against it here too,
-                    // since this loop walks every header cell unconditionally
-                    // regardless of which one was actually clicked.
-                    for (var clearIndex = 0; clearIndex < headerCells.length; ++clearIndex) {
-                        var indicatorToClear = headerCells[clearIndex].getElementsByClassName('sortIndicator')[0];
-                        if (indicatorToClear) {
-                            indicatorToClear.textContent = '';
-                        }
-                    }
-                    headerCell.getElementsByClassName('sortIndicator')[0].textContent = ascending ? ' ▲' : ' ▼';
-
-                    currentSortColumnIndex = columnIndex;
-                    currentSortAscending = ascending;
-                });
-            })(headerIndex, headerCell);
-        }
-    }
 
     var genFieldsToggle = document.getElementById("genFieldsToggle");
     genFieldsToggle.addEventListener('click', function () {
@@ -2366,6 +2168,7 @@ var allocationDatasets = {};
                 document.getElementById('view-profile').innerHTML = cpuProfileHtml;
 
                 wireProfileInnerTabs();
+                wireCpuCategoryTable();
                 setupDetailTableSortHandlers(document.getElementById('profile-tab-hotmethods'));
 
                 // Flame Graph is the default-active inner tab (see
@@ -3922,6 +3725,77 @@ var allocationDatasets = {};
                 }
             }
         }
+    }
+
+    // Expand/collapse for the coarse CPU category summary. Its own delegation
+    // rather than a shared registry, matching how every other expandable table
+    // in these webviews owns its handler (see CLAUDE.md's note on the ranked
+    // table component: the markup and header are shared, the click wiring is
+    // not). Nothing is built lazily here - a category carries at most eight
+    // top methods, so the detail row is already in the DOM and this only
+    // toggles a class.
+    function wireCpuCategoryTable() {
+        var categoryTable = document.getElementById('cpuCategoryTable');
+        if (!categoryTable) {
+            return;
+        }
+
+        categoryTable.addEventListener('click', function (clickEvent) {
+            // The hide button lives in the same row and has its own handler;
+            // letting this run too would expand a row on its way out.
+            if (clickEvent.target.closest('.rowHideBtn')) {
+                return;
+            }
+
+            var categoryRow = clickEvent.target.closest('.cpuCategoryRow');
+            if (!categoryRow) {
+                return;
+            }
+
+            var detailRow = document.getElementById('cpuCategoryDetail' + categoryRow.getAttribute('data-cpu-category'));
+            if (!detailRow) {
+                return;
+            }
+
+            var expand = !categoryRow.classList.contains('expanded');
+
+            // Built on first expand only, then left in the DOM - same lazy
+            // discipline the ranked method rows use, and through the SAME
+            // builder, because the C# exporter emits a category's tree in the
+            // identical node shape as a method's (see
+            // Cpu/CpuProfileJsonExporter.cs's categoryDrillDown).
+            var lazyId = detailRow.getAttribute('data-cpu-category-lazy');
+            if (expand && lazyId !== null) {
+                var drillDown = cpuProfileJson["categoryDrillDown"];
+                var entry = drillDown ? drillDown[parseInt(lazyId, 10)] : null;
+
+                if (entry) {
+                    var cell = detailRow.querySelector('.callerTreeCell');
+                    // The legend sits ABOVE the table, not inside it. A row of
+                    // column labels within the grid changes that table's own
+                    // column sizing and broke the indentation - see
+                    // buildInlineCpuMethodCallerTree's own comment.
+                    cell.innerHTML +=
+                        '<div class="cpuCategoryTreeLegend">Columns: <b>Samples</b> &middot; ' +
+                        '<b>% of category</b> &middot; <b>% of capture</b></div>' +
+                        buildInlineCpuMethodCallerTree(
+                            entry,
+                            cpuProfileJson["methodNames"],
+                            cpuProfileJson["totalSampleCount"],
+                            'cpuCallerForestRoot');
+                }
+
+                detailRow.removeAttribute('data-cpu-category-lazy');
+            }
+
+            categoryRow.classList.toggle('expanded', expand);
+            detailRow.classList.toggle('expanded', expand);
+
+            var marker = categoryRow.querySelector('.cpuCategoryName');
+            if (marker) {
+                marker.innerHTML = (expand ? '\u25be ' : '\u25b8 ') + marker.textContent.trim().slice(2);
+            }
+        });
     }
 
     function wireProfileInnerTabs() {

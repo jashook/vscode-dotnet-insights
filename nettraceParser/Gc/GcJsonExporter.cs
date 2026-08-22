@@ -90,7 +90,7 @@ public static class GcJsonExporter
     // back so Binary/CpuBinarySections.cs can encode the SAME values into the
     // binary container in the same run - that shared origin is what lets
     // --json act as an oracle the binary section is diffed against.
-    public static ExportTiming WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, ThreadingSummary threadingSummary, StackTable stackTable, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath, double captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline)
+    public static ExportTiming WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, ThreadingSummary threadingSummary, StackTable stackTable, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath, double captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline, DotnetInsights.NetTrace.Universal.UniversalSymbolTable nativeSymbols = null)
     {
         // Stays null when this capture has no CPU samples at all - the same
         // condition under which the "cpuProfile" JSON key is never written.
@@ -209,7 +209,7 @@ public static class GcJsonExporter
             writer.WritePropertyName("cpuProfile");
             ProgressReporter.BeginPhase("Exporting CPU profile", subWriterRanges.Cpu.Start, subWriterRanges.Cpu.End);
             subStopwatch.Restart();
-            cpuSampleTimeline = CpuProfileJsonExporter.Write(writer, sampleEvents, stackTable, symbolTable, ProgressReporter.ReportFraction);
+            cpuSampleTimeline = CpuProfileJsonExporter.Write(writer, sampleEvents, stackTable, symbolTable, ProgressReporter.ReportFraction, nativeSymbols);
             cpuMs = subStopwatch.ElapsedMilliseconds;
             ProgressReporter.CompletePhase();
 
