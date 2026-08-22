@@ -338,6 +338,14 @@ export class DotnetInsights {
     public nettraceParserPath: string;
     public nettraceParserOutputPath: string;
 
+    // Where native symbol files fetched for a `dotnet-trace collect-linux`
+    // capture are cached, keyed by ELF build id. Separate from
+    // nettraceParserOutputPath because that one holds per-capture JSON that is
+    // disposable, while this is a shared, expensive-to-refill cache - a single
+    // libcoreclr.so.dbg is ~138MB and is reused by every capture taken against
+    // the same runtime build.
+    public nettraceSymbolCachePath: string;
+
     public listener: GcListener | undefined;
 
     public isInlineIL: boolean;
@@ -424,6 +432,7 @@ export class DotnetInsights {
 
         this.nettraceParserPath = "";
         this.nettraceParserOutputPath = "";
+        this.nettraceSymbolCachePath = "";
 
         this.listener = undefined;
 

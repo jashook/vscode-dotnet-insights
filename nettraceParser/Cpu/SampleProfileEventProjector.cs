@@ -108,6 +108,20 @@ public static class SampleProfileEventProjector
     private const string SampleProfilerProviderName = "Microsoft-DotNETCore-SampleProfiler";
     private const int ThreadSampleEventId = 0;
 
+    // The v6/collect-linux equivalent. A `dotnet-trace collect-linux` capture
+    // has no Microsoft-DotNETCore-SampleProfiler events at all - its CPU
+    // samples come from perf_events and arrive as Universal.Events/cpu
+    // (UniversalProviders.md: "cpu - Represents a CPU sample"), one event per
+    // sample with the sample's weight as its payload and the same
+    // already-resolved stack every other event carries.
+    //
+    // Matched by NAME rather than event id on purpose - UniversalProviders.md
+    // guarantees stable names and explicitly does NOT guarantee ids ("There
+    // are no stable event IDs, but there will be a set of stable names"). The
+    // reference capture assigns it id 2; another capture need not.
+    private const string UniversalEventsProviderName = "Universal.Events";
+    private const string UniversalCpuEventName = "cpu";
+
     // Same (events, qpcFrequency, referenceQpc) shape as
     // GcEventProjector.Project/AllocationEventProjector.Project - see those
     // for why referenceQpc (NettraceHeader.SyncTimeQPC) is the correct
@@ -120,6 +134,13 @@ public static class SampleProfileEventProjector
     // count and pass it as expectedSampleCount below.
     public static string ProviderName => SampleProfilerProviderName;
     public static int EventId => ThreadSampleEventId;
+
+    // The v6 counterpart. There is no matching EventId property on purpose:
+    // the id is assigned per capture, so it has to come from the capture's own
+    // metadata (NettraceFile.V6UniversalCpuEventId) rather than from a
+    // constant here.
+    public static string UniversalProviderName => UniversalEventsProviderName;
+    public static string UniversalCpuName => UniversalCpuEventName;
 
     // expectedSampleCount presizes the result list. A real capture can hold
     // 16.24M samples (3.23GB assets-registry capture), and growing there from
@@ -145,12 +166,12 @@ public static class SampleProfileEventProjector
 
             ref readonly EventRecord record = ref eventsSpan[eventIndex];
 
-            if (record.ProviderName != SampleProfilerProviderName)
-            {
-                continue;
-            }
+            bool isClrSample = record.ProviderName == SampleProfilerProviderName && record.EventId == ThreadSampleEventId;
+            bool isUniversalSample = !isClrSample &&
+                record.ProviderName == UniversalEventsProviderName &&
+                record.EventName == UniversalCpuEventName;
 
-            if (record.EventId != ThreadSampleEventId)
+            if (!isClrSample && !isUniversalSample)
             {
                 continue;
             }
@@ -162,7 +183,17 @@ public static class SampleProfileEventProjector
                 relativeMSec = qpcDelta * 1000.0 / qpcFrequency;
             }
 
-            result.Add(new SampleEvent(relativeMSec, record.ThreadId, record.StackIndex, DecodeSampleType(record)));
+            // A Universal cpu sample carries a weight, not a ThreadSampleType
+            // - the CLR's Managed/External answer does not exist on this path
+            // at all, because the sampler is the kernel rather than the
+            // runtime. Reported as Unknown here and derived later from whether
+            // the sample's leaf frame resolves to managed or native code (see
+            // Universal/UniversalSampleTypeClassifier.cs); deliberately NOT
+            // guessed at here, since ThreadSampleType is load-bearing for the
+            // Threading view's parked/blocked classification.
+            ThreadSampleType sampleType = isClrSample ? DecodeSampleType(record) : ThreadSampleType.Unknown;
+
+            result.Add(new SampleEvent(relativeMSec, record.ThreadId, record.StackIndex, sampleType));
         }
 
         return result;

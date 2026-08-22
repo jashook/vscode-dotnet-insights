@@ -1,16 +1,22 @@
 /* Styling specific to the .gcdump heap snapshot view (GcDumpRenderer.ts /
    gcDumpView.js).
 
-   Everything this view could reuse, it reuses: snapshot.css already owns
-   .viewTabBar/.viewNavButton/.viewPanel (the top-level view switcher) and the
-   whole .detailTable/.cpuHotMethodsTable ranked-table grid, including the
-   percentage-based column widths CLAUDE.md documents at length. Nothing here
-   overrides those - the rules below are only for elements this view
-   introduces.
+   Everything this view could reuse, it reuses, and after the consolidation
+   that is nearly everything: snapshot.css owns .viewTabBar/.viewNavButton/
+   .viewPanel (the top-level view switcher), the whole .detailTable/
+   .cpuHotMethodsTable ranked-table grid including its percentage-based column
+   widths, and every part of the inline stack tree (.callerTreeInner,
+   .callerRow, .leafMethodToggle, .callPathsDetail, .drillDownAltBranch,
+   .rowHideColumn). None of it is overridden here.
 
-   The one rule that does touch the shared grid is the numeric-cell alignment
-   at the bottom, and it is scoped to this view's own tables so the CPU/
-   contention/exception tables that share the class are untouched. */
+   What this file used to contain, and why it is gone: alignment and width
+   rules for tables this view built ITSELF, outside the shared grid - a
+   .gcDumpTreeTable width, per-view .numericCell text-align, and a
+   .callerTreeInner rescoped from "the nested table inside a ranked row" to "a
+   top-level container div". Those existed to patch up markup that did not
+   match what the shared CSS expects; the markup matches now, so the patches
+   would only fight it. The rules below are only for elements this view
+   genuinely introduces. */
 
 .summaryTileRow
 {
@@ -115,86 +121,18 @@
 }
 
 /* A module name is secondary to the type name it qualifies - dimmed so a
-   column of long framework paths does not out-shout the types themselves. */
+   column of long framework paths does not out-shout the types themselves.
+   Dimmed by opacity rather than by a fixed grey: this webview follows the VS
+   Code theme, so a hard-coded colour is legible in exactly one of them. */
 .gcDumpModule
 {
     opacity: 0.55;
     font-size: 0.9em;
 }
 
+/* Type names are code, so they get the editor's own font - but only the name
+   itself, not the module suffix or the row's numbers. */
 .gcDumpTypeName
 {
     font-family: var(--vscode-editor-font-family, monospace);
-}
-
-/* Indentation is an inline padding-left on this span (set per row from JS,
-   since depth is data), not a CSS class per level - a reference tree has no
-   fixed maximum depth, so a class-per-level scheme would either cap the tree
-   or need generated CSS. */
-.gcDumpTreeIndent
-{
-    display: inline-block;
-}
-
-.gcDumpTreeToggle
-{
-    display: inline-block;
-    width: 1em;
-    opacity: 0.8;
-    cursor: pointer;
-    user-select: none;
-}
-
-/* Leaves keep the toggle's width but show nothing, so their type names stay
-   aligned with their expandable siblings' rather than shifting left by a
-   character. */
-.gcDumpTreeToggleLeaf
-{
-    cursor: default;
-}
-
-.gcDumpTreeArrow
-{
-    opacity: 0.5;
-}
-
-.gcDumpExpandable
-{
-    cursor: pointer;
-}
-
-.gcDumpExpandable:hover
-{
-    background-color: var(--vscode-list-hoverBackground);
-}
-
-/* Numeric columns right-align so magnitudes line up digit-for-digit down the
-   column, which is the entire point of a ranked table. Scoped to this view's
-   own tables - the class is shared with the CPU/contention/exception tables,
-   which have their own alignment already. */
-#view-census .cpuHotMethodsTable .numericCell,
-#view-retained .cpuHotMethodsTable .numericCell,
-#view-roots .numericCell,
-#view-references .numericCell
-{
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-}
-
-/* The two tree views build their own tables inside a .callerTreeInner, which
-   snapshot.css sizes for the drill-down trees nested inside ranked-table rows.
-   Here it is a top-level container instead, so it needs its own width and the
-   em-based font sizing that made CLAUDE.md's "an em inside .callerTreeInner
-   resolves against ~26.5px" trap bite does not apply - these widths are
-   percentages for the same reason the ranked tables' are. */
-.gcDumpTreeTable
-{
-    width: 100%;
-}
-
-#view-roots .callerTreeInner,
-#view-references .callerTreeInner
-{
-    width: 100%;
-    font-size: 1em;
 }

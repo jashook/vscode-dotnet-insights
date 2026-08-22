@@ -163,6 +163,14 @@ export class DependencySetup {
 
         this.insights.nettraceParserOutputPath = nettraceParserOutputPath;
 
+        var nettraceSymbolCachePath = path.join(outputPath, "nettraceParser-symbols");
+
+        if (!fs.existsSync(nettraceSymbolCachePath)) {
+            fs.mkdirSync(nettraceSymbolCachePath);
+        }
+
+        this.insights.nettraceSymbolCachePath = nettraceSymbolCachePath;
+
         var osVer = "osx";
         if (os.platform() === 'win32') {
             osVer = "win";

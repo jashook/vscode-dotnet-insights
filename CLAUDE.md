@@ -317,7 +317,7 @@ Hard-won facts, all measured against three real service captures
   nothing in between. An earlier 0.02 split the parked cluster itself.
 - **A parked worker is a small LOOP, not one frozen stack** - the
   concentration gate is over the top THREE stacks, not the top one. A real
-  `Roblox.Coordination.BackgroundWorker.Run` drain worker parks on an empty
+  `Contoso.Coordination.BackgroundWorker.Run` drain worker parks on an empty
   `BlockingCollection` 90.9% of the time, sleeps out its poll interval a
   further 6.4%, and spends 1.0% in the blocking call that ships the batch:
   98.2% across three stacks, 90.9% in the top one. Judging it on the top stack
@@ -516,7 +516,10 @@ by inspecting a real `roslynHelper-osx-x64.tar.gz`). Upload with
 
 `nettraceParser --gcdump <file.gcdump> [--json <out>]` reads a
 `dotnet-gcdump collect` heap SNAPSHOT (what is on the heap right now and what
-keeps it alive) rather than an event stream. It lives inside nettraceParser
+keeps it alive) rather than an event stream. The webview presents it as three
+ranked tables - Type Census, Retained Size, References - each row expanding
+into the retention/reference tree for that type; see "The ranked table is ONE
+component" below for the shared component all of them are built from. It lives inside nettraceParser
 only because a `.gcdump` is a `!FastSerialization.1` stream - the same
 serializer `FastSerialization.cs` already vendors - so it reuses the
 deserializer, `Progress/`, `pack.py`, `DependencySetup.ts` and the version
@@ -581,6 +584,96 @@ format):
   though the `.nettrace` path has one - there is nothing for it to save.
   Type names are interned into a dense pool for the same reason the `.nettrace`
   path interns method names.
+
+### Core dumps (`nettraceParser/CoreDump/`) — the only source that survives load
+
+`nettraceParser --gcdump-from-dump <core.dmp> [-o out.gcdump] [--json out.json]`
+builds the same `HeapGraph` from a process core dump via **ClrMD**
+(`Microsoft.Diagnostics.Runtime`), so the dominator pass, census, root-path
+trie, `.gcdump` writer and the whole webview are shared with the other two heap
+sources and know nothing about where the graph came from. The extension opens
+`.dmp`/`.core` through the same custom editor as `.gcdump`
+(`isProcessDumpPath` in `DotnetInsightsGcDumpEditor.ts` picks the flag).
+
+**Why this exists.** Both event paths depend on the runtime walking its own heap
+while the process runs on, and that is only trustworthy on a QUIET heap.
+Measured, on a real production ASP.NET service captured with
+`dotnet-trace ... 0x1980001:5`: the dump named **1,798,821 addresses it never
+described** (35.4% of its 10.16M references), **26,006 of 41,919 roots** dangled,
+and **1.5% of the heap was reachable** — so every retained size and every
+retention path in it was worthless, while the type census was fine. Ruled out
+by measurement, not assumption: no dropped events (block sequence numbers ran
+contiguously), not truncation (the dump finished 45s before the capture ended),
+not a decode bug (zero unresolved addresses were interior to a described
+object). Bucketed by 4MB, the heap split cleanly — **147 regions fully
+described, 246 never described at all** — so the runtime enumerated part of the
+heap. Reproduced on a churning test heap, where `dotnet-trace` at level 5,
+level 4 with a 1GB buffer, and `dotnet-gcdump collect` all produced equally
+unusable root sets. There is no capture flag that fixes it; freezing the
+process is the fix.
+
+Hard-won facts:
+
+- **`AddressToIndexMap` never resizes, by design.** Seeding it with a guess does
+  not degrade, it HANGS — a full table under linear probing spins forever on the
+  next insert (cost me a 10-minute 100%-CPU mystery). Hence walk 0, which counts
+  objects and touches no references, purely to size it.
+- **Three walks, exact allocations**: count objects → assign indices and count
+  each object's references into a `ChunkedIntList` (blocks, never doubling) →
+  fill nodes and write each edge straight into its final CSR slot. More than one
+  walk because CSR needs every child count before any child can be written;
+  buffering 8-byte target addresses instead is the 286MB-at-35M-edges cost the
+  trace path already removed.
+- **`ClrObject.IsFree` must be excluded, in all three walks identically.** ClrMD
+  enumerates the GC's free-list placeholders (that is how it walks a segment
+  linearly) and `dotnet-gcdump` does not: on the verification dump they were
+  86,626 objects and 2.8MB of a phantom `Free` type, and if the walks disagree
+  about what an object is, the count that sized the address map no longer
+  matches what gets inserted into it.
+- **Stack roots crash the DAC on a macOS Mach-O core dump.** Verified on a real
+  .NET 10 dump with ClrMD 3.1 AND 4.1: handles, the finalizer queue, objects and
+  references all enumerate fine; `EnumerateStackRoots` SIGSEGVs on the first
+  thread. A native crash is not catchable from managed code, so this has to be
+  decided BEFORE the walk — `ShouldDefaultToSkippingStackRoots` sniffs the
+  Mach-O magic (0xFEEDFACF) off the DUMP, not the host, because a Linux dump
+  read on a Mac still has readable stacks. Losing them costs less than it
+  sounds: handles cover statics and every GC handle, and on the verification
+  dump handle + finalizer roots alone reached 100,003 of 100,003 objects in the
+  retained graph under test. `GcDumpMetadata.StackRootsOmitted` carries the
+  caveat into the JSON and the webview says so, because "some objects are
+  unrooted" and "one whole category of root was unreadable" otherwise look
+  identical.
+- **Root CATEGORIES are rebuilt here** (`[strong handle]`, `[pinned handle]`,
+  `[other handle]`, `[finalizer queue]`, `[thread stack]`), each a size-0 node
+  between `[.NET Roots]` and its roots — the shape real `dotnet-gcdump` output
+  has and the thing the trace path loses entirely. A retention path that ends
+  "held by [.NET Roots]" says nothing. Empty categories are still emitted:
+  "looked, found none" is not the same as "never looked". Module names come from
+  `ClrType.Module` and are likewise unavailable on the trace path.
+- **Weak handles are not roots** — `ClrHandle.IsStrong` filters them, or the UI
+  would report objects as retained by the one thing that explicitly does not
+  keep them alive.
+- **ClrMD is an allowed dependency here, unlike TraceEvent for `.nettrace`.**
+  That refusal is about a documented file format worth hand-rolling; a core dump
+  is read by asking a private, versioned runtime contract questions through the
+  DAC, and there is no hand-rolled version of that worth writing. Only
+  `CoreDump/` touches the package.
+- **The DAC must match the dumped runtime**, so a Linux dump is most easily
+  converted on Linux (`--dac` overrides). Missing-DAC is reported as an error
+  message on the stack, not an exception — the CLI prints one line saying what
+  to do.
+- Verified end to end on a real 402MB macOS core dump (301,160 objects):
+  **0 unresolved references, 0.2% unreachable** (versus 98.5% for the same class
+  of heap through the trace path), retained sizes correct through the dominator
+  tree. Test coverage is `CoreDumpHeapGraphBuilderTests` behind
+  `CORE_DUMP_FIXTURE` (same opt-in shape as the other fixture-gated tests), and
+  it asserts STRUCTURE — every edge lands on a real node, CSR offsets are
+  monotone, nothing is unresolved, no object carries the placeholder type —
+  rather than pinning counts that change with every dump. To produce a dump on a
+  machine where `dotnet-dump collect` cannot attach (macOS refuses
+  `task_for_pid` without entitlements), let the runtime write one itself:
+  `DOTNET_DbgEnableMiniDump=1 DOTNET_DbgMiniDumpType=2 DOTNET_DbgMiniDumpName=…`
+  then crash the app.
 
 #### Memory, and what did and did not help
 
@@ -689,6 +782,572 @@ object count (deep chains + shared payloads, so retained size and own size
 genuinely differ) to capture large fixtures against.
 
 
+### NetTrace v6 (`nettraceParser/V6/`) — what `dotnet-trace collect-linux` writes
+
+`dotnet-trace collect-linux` collects through Linux `perf_events` + the
+kernel's `user_events` mechanism, machine-wide by default, and writes
+**nettrace v6** — a BREAKING format change, not a version bump within one
+layout. v6 deletes the FastSerialization layer outright: no per-object type
+names or versions, no object header/footer, no stream-offset alignment
+padding. What is left is a flat sequence of blocks, each introduced by a
+4-byte header (`uint24 BlockSize`, `uint8 BlockKind`), and strings move from
+UTF-16 to UTF-8.
+
+Spec: perfview's `src/TraceEvent/EventPipe/NetTraceFormat.md` (v6) and
+`UniversalProviders.md` (the `Universal.*` event definitions). Fetch them from
+the repo rather than re-deriving — both are short and authoritative.
+
+- **A v6 file fails inside vendored FastSerialization, not in this project's
+  code.** The `Nettrace` magic matches and the very next thing v5 expects —
+  the `"!FastSerialization.1"` signature — is absent, so `Deserializer.
+  Initialize` throws *"Not a understood file format"*. That reads like a
+  corrupt capture rather than an out-of-date reader, which is why the version
+  constant bump matters more here than usual (see the stale-cache trap).
+- **Detection is the format's own rule, not a heuristic**: v6 follows the
+  magic with a `uint32 Reserved` that is always 0, and in a v5 file those same
+  4 bytes are the length prefix of `"!FastSerialization.1"` — the constant 20.
+  `V6Format.ReadMajorVersion` reads exactly that.
+- **`EventBlock.HeaderSize` INCLUDES its own `uint16`; `MetadataBlock`'s
+  EXCLUDES it.** Both are as documented. Getting it backwards does not fail —
+  the compressed event header is self-describing, so the reader happily
+  decodes garbage into complete-looking events. The first version of this
+  reader produced 11,077,123 events with a 46-hour timestamp span instead of
+  the correct 11,274,185 over 299.6s. Pinned by
+  `V6ReaderTests.V6Reader_EventBlockHeaderSizeIncludesItsOwnField`.
+- **`varint` is ZIGZAG encoded** (`(value >> 1) ^ -(value & 1)`), not
+  sign-extended. `varuint` is plain ULEB128.
+- **Three id spaces recycle across sequence points, not one.** v5 had
+  StackId; v6 adds `ThreadIndex` (into a table built by `ThreadBlock` and torn
+  down by `RemoveThreadBlock`) and `LabelListIndex`. All three are resolved
+  EAGERLY at event-parse time, for exactly the reason the v5 StackId bullet
+  above exists — a deferred lookup resolves against whatever last claimed the
+  number.
+- **v6 events carry no thread id, only a `ThreadIndex`.** `EventRecord` keeps
+  its `ThreadId`; the reader resolves it. A pid is NOT added to `EventRecord`
+  (a struct that exists 35M+ times over — 4 more bytes is hundreds of MB);
+  `V6ThreadTable` keeps a `threadId -> processId` map instead, which works
+  because Linux allocates tids from the same namespace-wide space as pids.
+
+#### The metadata is nearly empty, and that silently empties whole views
+
+On a real 764MB reference capture (a containerized ASP.NET service,
+299.6s, 11,274,185 events) **every one of the 33
+`Microsoft-Windows-DotNETRuntime` metadata rows carries a ProviderGuid and
+nothing else** — no Version, no Level, no Keywords, and an empty
+`FieldDescriptions`. That is legal and follows from how the events get there:
+the runtime emits them through `user_events` as opaque payload blobs, so the
+writer knows the numeric event id but has no manifest to describe it with.
+
+This does not matter for payload decoding — the payload bytes are the
+standard CLR ETW layouts and this project already decodes those from raw
+bytes by manifest offset (`GCStart` 26 bytes, `GCEnd` 10, `GCHeapStats` 110,
+all verified). It matters enormously for **Version**, because the decoders are
+version-gated: `ExceptionEventProjector` drops anything below 1,
+`AllocationEventProjector` below 2, `GcEventProjector` decodes
+`GCPerHeapHistory` only at 3+, and `ClrGcEnd`/`ClrGcSuspendEEBegin` read a
+field as int32 at 1 and int16 below it. Taking metadata at face value would
+have silently discarded all 72,674 exceptions in that capture and mis-decoded
+its GC events — no error, just empty views.
+
+`V6ClrEventVersions` resolves it, in order: an explicit `Version` LABEL on the
+event (v6 lets a LabelList override metadata, and the reference capture's
+`GCPerHeapHistory` events really do use this, carrying Version=3), then the
+metadata row's own Version, then a table. **The table was generated, not
+guessed**: a v5 capture's metadata carries BOTH the event id and the version
+the runtime emitted it at, so v5 captures are the authoritative source. Run
+this tool's own plain mode over one — the `== Event schemas ==` section exists
+for this — and take the union across several. Four real captures agreed on
+every id they shared. A payload-length ladder then only ever *lowers* that
+version, for the four events where the version selects a field WIDTH rather
+than appending fields, which is the one case the decoders' own
+`version >= N && Length >= M` guards cannot catch.
+
+- **CLR event names are absent in v5 too**, so this is not a regression: a v5
+  capture's CLR metadata rows have an EMPTY `EventName` (the provider is
+  manifest-based). v6 supplies `"Unknown(57)"`, which is strictly more
+  informative. No id→name table was needed — `Overview/ClrEventNames.cs`
+  already handles display.
+
+#### 40% of the reference capture is one repeated error label
+
+Its LabelList blocks are **305MB of 764MB** — 10,172,583 label entries against
+11,274,185 events — and 10,171,358 of them are one repeated string pair,
+`Error` = `"Expected actual values"`, attached to every event whose field
+layout the writer could not describe. It is the writer saying "here is a raw
+blob instead of fields", consistent with the empty `FieldDescriptions` above,
+and harmless to decoding.
+
+`V6LabelListTable` therefore **walks label strings and skips their bytes
+rather than decoding them**, and stores an entry only when a label list
+actually carries an override — 640 entries instead of 10.2 million on that
+capture. The `Error` labels are still COUNTED (comparing raw UTF-8, no
+allocation) because "40% of your file is a writer-side annotation" is worth
+being able to say out loud.
+
+#### `Universal.System` is the symbol table, and it covers managed code too
+
+A v6 capture's stacks are raw addresses spanning kernel, native and JIT'd
+managed code, and **none of them resolve through `Rundown/MethodSymbolTable`**
+— that table is built from `MethodLoadVerbose`/`MethodDCStartVerbose` (ids
+143/144), which a collect-linux capture does not contain. Before
+`Universal/UniversalSymbolTable.cs`, all 6,019 distinct frames in the CPU view
+rendered as `<unresolved 0x…>`.
+
+- **`ProcessSymbol` addresses are ABSOLUTE virtual addresses**, despite the
+  spec wording ("within the mapping"). Verified by resolving the capture's own
+  hottest frames — `0xFFFFFFFF8C29DFAB` → `finish_task_switch.isra.0`.
+- **`ProcessSymbol` covers MANAGED methods**, published by the runtime in the
+  CLR's perf-map form (`instance void [Asm] Ns.Type::Method(object)
+  [OptimizedTier1]`). That is why this one table is enough.
+- **Only a minority of mappings carry symbols** — 42 of 561. The rest are
+  stripped shared objects and managed assemblies, so the fallback is
+  `module+0xoffset` (`libcoreclr.so+0x433627`), which is a real groupable
+  identity rather than a bare address. Result on the reference capture: **0 of
+  3,432 distinct frames unresolved.**
+- **Binary search must compare UNSIGNED.** Kernel addresses have the top bit
+  set and read as negative `int64`, which sorts them below every user-space
+  address and makes a signed search miss every kernel symbol.
+- **`"contains ::"` does NOT identify a managed name** — C++ symbols are full
+  of it. An earlier `FormatSymbolName` keyed only on `::` and rewrote
+  `icu_78::CollationKeys::writeSortKeyUpToQuaternary` into the mangled hybrid
+  `icu_78.CollationKeys::writeSortKeyUpToQuaternary`, which is neither the
+  real symbol nor a valid managed name. The `[Assembly] ` bracket is what
+  identifies the CLR form; native symbols have none, so requiring it leaves
+  all of them untouched. The signature's `(` must also be searched for AFTER
+  the `::`, since a return type can carry parentheses (`modreq(...)`).
+- **Frame ids must be keyed by NAME, not by address.** A symbol covers an
+  address RANGE, so samples land on many addresses inside one function;
+  `MethodSymbolTable`'s unresolved path minted an id per address, splitting
+  one hot function across rows — `__pthread_mutex_lock` appeared twice at
+  2,944 and 2,433 self samples instead of once at 5,377, and
+  `System.Uri.CheckCanonical` was fragmented out of the top 20 entirely
+  (it is #3 at 10,130 once merged). The resolved path already content-interned
+  names for exactly this reason; the unresolved path now does too.
+
+#### Native symbols: the capture carries a recipe, not the symbols
+
+The frames a collect-linux capture cannot name are not a parsing gap - the
+symbols are not in the file. Only 42 of the reference capture's 561 modules
+ship any, and `libcoreclr.so` - which owns **5.4% of all CPU samples, more
+than any single managed method** - ships none. What every module DOES carry is
+a `ProcessMappingMetadata` record holding its ELF `build_id` and `debug_link`,
+which is exactly the key a symbol server is looked up by. `nettraceParser/
+Symbols/` turns that recipe into names.
+
+- **THE MODULE OFFSET MUST BE THE ELF VIRTUAL ADDRESS, NOT THE MAPPING
+  OFFSET.** `ip - mapping.StartAddress` is wrong and was shipped wrong for a
+  day. A mapping starts at some offset INTO the module file (libcoreclr.so's
+  text maps at file offset 0x1C8000) and the file has its own
+  `p_vaddr - p_offset` bias, so the address anything else can use is:
+
+      elfVirtualAddress = (ip - mapping.Start) + mapping.FileOffset
+                          - p_offset + p_vaddr
+
+  **Verified against ground truth, not derived and hoped for.**
+  `libSystem.IO.Compression.Native.so` is the one module in the reference
+  capture carrying BOTH in-capture `ProcessSymbol` entries and the metadata,
+  so its six known symbol addresses can be run through each candidate formula
+  and checked against the real binary (fetched by build id). The naive form
+  scored **0 of 6**; this one scored **6 of 6**. The naive form does not fail
+  visibly - it lands inside a *different* function, so it answers confidently
+  and wrongly. Pinned by `NativeSymbolResolutionTests`.
+
+- **Microsoft's symbol server has .NET's native modules, keyed by ELF build
+  id**: `https://msdl.microsoft.com/download/symbols/_.debug/elf-buildid-sym-<id>/_.debug`.
+  Verified end to end - the returned `libcoreclr.so.dbg` is 138MB, reports the
+  exact build id the capture recorded, and names 31 of the 32 libcoreclr
+  frames in that capture's top 200. It does NOT have distro libraries; libc,
+  openssl and zlib 404 there and need a **debuginfod** server
+  (`https://debuginfod.ubuntu.com/buildid/<id>/debuginfo`), which is a
+  different URL shape and so is declared with a `debuginfod:` prefix.
+
+- **The cache is keyed by build id, never by filename** - a cached file can
+  then never be the wrong version of the right name, which is the failure mode
+  that makes symbol caches lie. It also needs no invalidation rule: a
+  different build is simply a different key. **Misses are cached too**
+  (a `.miss` marker), and that marker is checked BEFORE the cached file, not
+  after - a 404 page or truncated download saved to disk would otherwise be
+  re-read and re-parsed on every open forever. That ordering bug was caught by
+  a test, not by inspection.
+
+- **Downloads are demand-driven and the SELECTION HAS NO SHARE FLOOR.**
+  Modules are ranked by how many stack frames land in them and capped at 12.
+  There was a 0.1% minimum-share floor and it was removed after it measurably
+  lost symbols: the counts come from a strided sample (below), so a module near
+  the floor lands on either side of it depending on which stacks the stride
+  hit - dropping `libSystem.Native.so`, and 274 real symbols, between two runs
+  over the same file. **A sampled count and a threshold do not belong
+  together**; the cap alone bounds the work and is immune to sampling noise.
+
+- **Ranking the modules cost 4,828ms before it was fixed** - longer than the
+  entire rest of the parse - and the fix was NOT the obvious one. Two changes
+  took it to ~390ms with identical output: walk a strided ~100,000-stack sample
+  instead of all 936,389 (the counts only ever choose modules, and are never
+  displayed), and search the MAPPING ranges first, consulting the 10,187-entry
+  in-capture symbol table only for modules that actually have in-capture
+  symbols - which the dominant module, libcoreclr.so, does not. Loading and
+  parsing the 138MB ELF itself was never the cost: it measures ~14ms.
+
+- **Symbols are demangled, but only a documented subset.** Itanium C++ mangling
+  covers 228 of 3,198 resolved names on the reference capture and includes most
+  of the runtime's GC and locking internals - the rows somebody is reading this
+  view to find. `NativeSymbolDemangler` handles the ordinary shape (linkage/CV
+  prefix, length-prefixed components, dropped parameter list), which decodes
+  226 of those 228, and returns everything else UNCHANGED. A raw mangled name
+  is honest and can be pasted into a real demangler; a half-rewritten one is
+  neither. Same rule `FormatSymbolName` follows for CLR names, and for the same
+  reason.
+
+- **The name is the bare function, with no `+offset`**, matching how an
+  in-capture `ProcessSymbol` resolves - otherwise one hot function splits into
+  a row per sampled instruction, which is the same bug the name-keyed frame ids
+  fixed above.
+
+Cost and controls: `nativeSymbols=` on the `Timing:` line breaks out
+`select=` (the ranking pass) from the fetch, because the two have completely
+different characters - the ranking always costs the same, a fetch is a
+download once and free forever after. Steady state on the reference capture is
+~400ms. `--no-symbol-download` works entirely offline (still using whatever is
+cached), `--symbol-cache <dir>` moves the cache, `--symbol-server <url>` adds
+one. The extension exposes the first two as
+`dotnet-insights.downloadNativeSymbols` and
+`dotnet-insights.symbolServers`, and points the cache at its own
+globalStorage. **The whole feature is a no-op on a v5 capture** - verified
+byte-identical output, with `nativeSymbols=0ms`.
+
+
+Two later corrections to the symbol store, both found by running it rather
+than by reading it:
+
+- **A per-request timeout is not enough; there must be a CONNECT deadline and
+  a circuit breaker.** The 10-minute request timeout is sized for a 138MB
+  download and applied to connection failures too, so pointing at a symbol
+  server the network cannot reach made every module wait it out - a capture
+  with 8 unresolved modules would have hung for over an hour. `ConnectTimeout`
+  alone did not fix it either: on a route that blackholes rather than refuses,
+  the request still hung past it, so the bound that actually holds is an
+  explicit `CancellationToken` on the response-headers wait. A server that
+  fails to connect is then marked unreachable and not asked again for the rest
+  of the capture, because re-learning it per module is how a 20-second timeout
+  becomes minutes. Measured: unbounded hang -> 21s once, then 392ms on every
+  later open from the cached misses.
+- **The distro comes from the CAPTURE, not the host.** `ProcessMappingMetadata`
+  carries `VersionMetadata` like `{"type":"deb","os":"ubuntu",...}`, so the
+  matching debuginfod server is added automatically. This must never be
+  inferred from the machine running the parser - a Linux capture is routinely
+  read on a Mac. Microsoft's server has .NET's own native modules and nothing
+  else, so libc/openssl/libstdc++ need the distro server; that is 268 of the
+  312 frames still showing as an offset on the reference capture.
+
+#### CPU samples and the derived `ThreadSampleType`
+
+CPU samples arrive as `Universal.Events/cpu`, not
+`Microsoft-DotNETCore-SampleProfiler`. **Match Universal events by NAME, never
+by id** — `UniversalProviders.md` guarantees stable names and explicitly does
+not guarantee ids ("There are no stable event IDs, but there will be a set of
+stable names"). The reference capture assigns `cpu` id 2; another need not.
+`EventOverview` is keyed by (provider, event id), so the id this capture chose
+is discovered while reading metadata and surfaced as
+`NettraceFile.V6UniversalCpuEventId` purely so the sample list can be presized.
+
+The bigger consequence: **a perf-sampled capture carries no `ThreadSampleType`
+at all**, and the entire Threading view's parked/blocked classification is
+built on it. It is derived instead (`UniversalSampleTypeClassifier`) from
+whether each sample's LEAF frame resolves to managed code — which is the same
+question `ThreadSampleType` answers ("was this thread executing managed
+code"), asked of a real symbol table. This is NOT the leaf-method-name
+heuristic that `ThreadActivityProfiler`'s header warns about; that one guesses
+what a method *does*, this one measures whether the sampled instruction
+pointer was in managed code at all.
+
+It is still labelled as derived all the way out to the webview
+(`threadActivity.sampleTypeSource` = `"derived"` vs `"runtime"`, rendered as a
+note in `ThreadingRenderer.ts`), because the parked/blocked THRESHOLDS were
+calibrated against the runtime's own signal and have **not** been validated
+against a v5 capture of the same process. Two known gaps on the reference
+capture, both in the conservative direction (nothing is hidden that should be
+read):
+
+- `managedFraction` runs ~0.53-0.54 on its busiest threads, nowhere near the
+  0.0-0.021 band CLAUDE.md's v5 captures showed for parked threads.
+- `isPoolWorker` is false for every thread, because perf's unwind does not
+  reliably reach the managed pool entry point (`PortableThreadPool+
+  WorkerThread.WorkerThreadStart`) — the stacks bottom out in
+  `__clone` → `libcoreclr.so+0x…`. Every thread therefore classifies as
+  `Active`, which is a refusal to claim rather than a false "benign".
+
+
+
+
+
+#### Opening a bucket into its call paths
+
+Each CPU category row expands into a merged caller tree built from the same
+deduplicated distinct stacks the per-method drill-down uses, grouped by the
+category of each stack's LEAF - which is exactly the attribution the bucket's
+percentage is computed from, so the tree total and the bucket number can never
+disagree (verified: the GC bucket's tree totals 65,167, its bucket says
+65,167).
+
+- Emitted in the IDENTICAL node shape as `hotMethodDrillDown`, so the webview
+  renders both through one function (`buildInlineCpuMethodCallerTree`) and this
+  needed no second renderer.
+- Written BEFORE `methodNames`, for the reason that array's own comment gives:
+  `WriteFlameTreeNode` interns names as it walks, and anything written after
+  `methodNames` references indices that array never received.
+- Paired to its row by the category's own `id`, never by row position - the
+  rows are re-sorted for display, and a positional index would open one
+  bucket's row onto another bucket's call paths.
+- The flat "top methods" list was dropped from the UI once the tree landed: the
+  tree's FIRST LEVEL is that same self-time ranking, so showing both said the
+  same thing twice. It stays in the JSON for the CLI.
+
+
+**A `<col>` width set inline cannot be scoped.** The CPU caller tree's leading
+spacer used to carry `style="width: 1.6em"`, and a scoped stylesheet rule to
+collapse it for one view silently did nothing - an inline style beats a
+stylesheet without `!important`. The width now comes from
+`.callerTreeSpacerCol`, defaulting to the same 1.6em, so
+`#cpuCategoryTable .callerTreeInner col.callerTreeSpacerCol { width: 4px }`
+can put that one view's expansion flush with its row's hide column while the
+hot-method, exception, contention and .gcdump trees keep their gutter.
+Verified by rendering the same page twice, once with the id and once without:
+27/40/54 against 49/62/75.
+
+**Nothing may be added to a `.callerTreeInner` table but caller rows.** A row of
+column labels was put inside one and had to be taken back out: under
+`table-layout: auto` the leading spacer `<col>`'s `1.6em` is a FLOOR, not a
+width - the same trap this file already records for the ranked tables - so the
+label row's text gave the TOP-LEVEL tree different column pressure from the
+nested ones and inflated its spacer from 26px to 30px while every nested table
+stayed at 26px. The first indent step collapsed from 13px to 9px and a caller
+rendered at visually the same level as its own parent. The labels now live in a
+legend div above the tree, outside the grid.
+
+Worth noting HOW that was found, because reasoning from the source got it wrong
+three times in a row: the fix only became obvious after rendering the composed
+HTML in headless Edge and reading `getBoundingClientRect()` per row. Two
+measuring mistakes on the way - reading the CELL's left edge (which never moves;
+the indent is `padding-left` ON the cell, so the CONTENT moves) and then trying
+`width: 0` on the label cells (which inflated the spacer to 399px). Measure the
+laid-out geometry, not the markup.
+
+A category's caller tree is a FOREST, and that broke an assumption the shared
+renderer had never had to state. A hot method's tree has ONE root chain, whose
+depth-0 row is anchored directly under the ranked row that was just clicked, so
+rendering depth 0 flush left reads unambiguously. A category's tree has one
+root per leaf method in the bucket - hundreds on a real capture - all flush
+left, so a caller indented one level (0.85em) lands almost exactly where the
+NEXT SIBLING ROOT does and an expanded row reads as another top-level method
+rather than as nested underneath. Depth-0 rows of a forest are therefore marked
+(`cpuCallerForestRoot`, a rule above the row rather than a background, since
+these rows already alternate .drillDownAltBranch shading). Indenting harder
+would only have moved the ambiguity down a level.
+
+#### Local symbols, for when a distribution's server is simply down
+
+`--symbol-path <dir>` searches the conventional build-id layout
+(`<dir>/<first 2 hex>/<remaining 38>.debug`) BEFORE any network, and before
+even the negative markers - symbols appearing on disk should take effect
+immediately rather than waiting out a retry window. This is what
+`apt install libc6-dbgsym` populates under /usr/lib/debug/.build-id, which is
+searched by default.
+
+It exists because a symbol SERVER is not the only way to have symbols and is
+not currently a reliable one: debuginfod.ubuntu.com was observed completing a
+TLS handshake and then never answering, on every path, hours apart - which
+leaves a capture's glibc and OpenSSL frames unresolvable through any amount of
+retrying. Verified end to end by staging libcoreclr's symbols into that layout
+and resolving 17,423 of them with `--no-symbol-download`, zero network.
+
+#### Which symbol server to ask (`nettraceParser/Symbols/ModuleSymbolSourceMap.cs`)
+
+Microsoft's symbol server has .NET's own native modules and nothing else; a
+distribution's debuginfod has glibc and OpenSSL and has never heard of
+libcoreclr. Walking one fixed list therefore spends guaranteed 404s on every
+lookup - and gets it backwards for exactly the modules that are hardest to
+resolve, since a glibc lookup reached the only server that could answer LAST.
+
+A module is classified from its path and name, and the server list is
+reordered - never filtered - so the kind most likely to hold it goes first:
+
+- `/usr/share/dotnet/`, `/usr/lib/dotnet/`, `/dotnet/shared/` -> Microsoft.
+- `libcoreclr.so`, `libclrjit.so`, `libhostfxr.so`, `libSystem.*.Native.so`
+  and friends -> Microsoft **by NAME, checked before any path**, because a
+  self-contained app ships the runtime beside its own binary where the path
+  says nothing at all.
+- `/usr/lib/x86_64-linux-gnu/` and the soname families (`libc.so*`,
+  `libcrypto.so*`, `libssl.so*`, `libstdc++.so*`, `libicu*`, `ld-linux*`, ...)
+  -> that distribution's debuginfod. Matched on the LEADING portion of the
+  name: the soname version moves with every package update.
+- `vmlinux` -> distribution (they ship kernel debuginfo through debuginfod).
+- `[vdso]`, `[vsyscall]`, `memfd:doublemapper` and any `.dll` -> **NotFetchable**,
+  skipped before a request is made. No server has runtime-generated code or a
+  managed assembly, so asking is pure latency - and on a hung server, a pure
+  wasted timeout.
+- **Anything else -> Unknown, which means the configured order exactly as
+  before.** The map is only ever allowed to reorder servers it is confident
+  about. A real capture is full of modules nothing well-known covers - a
+  third-party profiler's .so under /usr/bin, an app's own library under
+  /app/lib - and those must keep behaving as they did.
+
+Explicit `--symbol-server` entries are always tried first regardless of module:
+naming a server by hand outranks anything inferred.
+
+Both lists were built from the 180 module mappings of a real capture, not from
+memory, and the awkward real cases are pinned as tests. Measured on that
+capture: cold symbol phase 21.5s -> 7.4s, with identical output.
+
+#### A 404 and a hang are not the same answer
+
+Chasing the last unresolved modules turned up a cache-poisoning bug, and the
+diagnosis is worth keeping because "the symbol server is down" and "the symbol
+server says no" look identical from a single failed request.
+
+Measured, from a machine that reaches Microsoft's server fine:
+
+- `debuginfod.elfutils.org` answers a **404 in 0.25s**. Healthy server,
+  definitive "I do not index that build".
+- `debuginfod.ubuntu.com` resolves (Canonical, 91.189.92.252), accepts TCP on
+  443 AND 80, completes a TLS handshake in 2.1s against a genuine Let's
+  Encrypt certificate for its own hostname (verification OK, so no proxy
+  interception) - and then **never sends a byte**. 180 seconds, zero response,
+  identically on HTTP/2, forced HTTP/1.1, plain port 80, `/`, `/metrics` and
+  `/buildid/...`, with and without debuginfod client headers. That is a
+  server-side hang, not a network block and not a client bug.
+
+The bug this exposed: the store wrote a permanent "no symbols for this build"
+marker on ANY failed download, so an outage cached a wrong answer forever and
+the build was never retried once the server came back. Two rules now:
+
+- **A negative is definitive only when EVERY server answered.** One 404 from
+  Microsoft's server proves nothing about a glibc build - and that is exactly
+  the observed shape, with msdl and the federation both answering 404 while
+  the only server that would have Ubuntu's glibc never responded. Requiring
+  merely "some server answered" still cached the wrong answer for the three
+  modules most worth resolving; it was measured writing 8 permanent markers
+  where the correct number is 0.
+- **Inconclusive results get their own marker with a retry window**
+  (`.unavailable`, 6 hours) rather than either a permanent verdict or no
+  memory at all. Without it a wedged server costs the 20s header timeout on
+  every capture; with a permanent marker it costs correctness. Measured: cold
+  run 27s, second run 6s, and the retry happens once the window passes.
+- The permanent marker was renamed `.miss` -> `.notfound` specifically so
+  every marker written under the old conflated rule is ignored, and a cache
+  already poisoned by an outage heals itself with no user action.
+
+Practical consequence for reading the reference capture's numbers: libcrypto
+(4.20%), libc (1.96%) and libssl (0.82%) are unresolved because Canonical's
+debuginfod was not answering, NOT because those symbols are unavailable. That
+7% should resolve on its own once the service is up.
+
+#### Not every unnamed frame is a missing symbol
+
+The Unresolved bucket started at 12.05% on the reference capture and is now
+7.51%, without downloading anything more. The difference was two populations
+that are unnamed for PERMANENT reasons and were being reported as if fetching
+symbols would fix them:
+
+- **Runtime-generated code, 4.25%** - the single largest unresolved module,
+  larger than libcrypto. These are addresses in the runtime's W^X JIT code
+  heap (`/memfd:doublemapper`) that no perf-map entry covers: precode,
+  call-counting stubs, jump stubs, delegate thunks. Confirmed from the data
+  rather than assumed - that module holds 5,114 ProcessSymbols and every one
+  of them is managed. The heap is carved into many mappings and **the hottest
+  single one is a 4KB page with zero symbols in it**, so a module counts as
+  JIT code when ANY mapping sharing its file name holds a managed symbol;
+  matching only mappings that directly contain one would have missed exactly
+  the region that mattered. Labelled with a `[jit] ` PREFIX, not a suffix -
+  the `module+0xADDR` shape is what marks an unresolved frame everywhere else,
+  and appending would break that test rather than override it.
+- **The vDSO, 0.29%** - kernel code mapped into every process, counted as
+  Kernel.
+
+What remains is genuinely fetchable and is now reported per module
+(`categories.unresolvedModules`, surfaced in the CPU view): libcrypto.so.3
+4.20%, libc.so.6 1.96%, libssl.so.3 0.82% - three Ubuntu packages, 6.98% of
+the 7.51%. "12% of this profile has no symbols" is a complaint; "4.2% of it is
+libcrypto.so.3" names the package to install.
+
+**REGRESSION WORTH REMEMBERING, because it is the same mistake twice.**
+Deciding which modules hold managed code with `name.Contains("::")` flagged
+ICU as a JIT code heap - `icu_78::CollationKeys::writeSortKeyUpToQuaternary`
+matches - which re-labelled its frames as runtime stubs and, far more quietly,
+counted every ICU sample as **Managed** in the derived `ThreadSampleType`,
+inflating the managed fraction the Threading view classifies threads on.
+`FormatSymbolName` had already learned this exact lesson and the naive test was
+reintroduced next to it. The assembly bracket (`] ` before the `::`) is what
+identifies the CLR's perf-map form; native C++ has no bracket.
+
+Reachability, measured from a network that blocks part of this: msdl and
+`debuginfod.elfutils.org` are reachable, `debuginfod.ubuntu.com` is not. The
+federation returned 404 for all five Ubuntu build ids tried, so it does NOT
+substitute for the distro's own server - it is in the default list as a
+fallback for other distributions, not as a fix for Ubuntu.
+
+#### Coarse CPU categories (`nettraceParser/Cpu/CpuCategoryClassifier.cs`)
+
+A ranked list of 3,200 functions says what is hot; it does not say that
+garbage collection is 6% of the process. The CPU view therefore leads with a
+bucketed breakdown - GC, allocation, TLS/crypto, compression, locking,
+scheduling, kernel, managed framework, application code, and so on.
+
+- **Two numbers per category, because one answers the wrong question half the
+  time.** `selfPercent` attributes a sample to its INNERMOST frame and sums to
+  exactly 100%; `onStackPercent` counts a sample toward every category
+  anywhere in its stack and deliberately sums to more. A stack that runs
+  app -> SslStream -> libcrypto -> kernel is self=Kernel but on-stack
+  {Kernel, TLS/crypto, Application}. Reporting only self files real crypto
+  work under "kernel"; reporting only on-stack produces columns adding to
+  300% with no explanation. The view says which is which out loud.
+- **Whether a frame is KERNEL comes from the module it resolved out of, never
+  from its name.** GCC decorates kernel symbols (`.isra.0`, `.constprop.0`),
+  so `finish_task_switch.isra.0` has dots, no `::`, and is textually
+  indistinguishable from a managed `Namespace.Type.Method`. That misfiled the
+  single hottest frame in the reference capture - 16,615 samples, 1.5% of the
+  process - as application code. `UniversalSymbolTable.IsKernelSymbol` records
+  names that resolved from the kernel image and the flag is passed in.
+- **Unresolved is tested FIRST.** `libcrypto.so.3+0x1234` would otherwise
+  match the TLS rule on its own module name and report symbol-less time as if
+  it had been attributed, which is the one thing this breakdown must never do.
+- **Allocation is not folded into GC.** The allocation helper is the hottest
+  runtime function on an allocation-heavy service (14,597 samples), and
+  merging it makes "GC" read as collection cost when most of it is the mutator.
+  Likewise `JIT_`-prefixed symbols are runtime HELPERS, not the compiler -
+  filing them under JIT invents compilation time that never happened.
+- **Cost is kept off the per-sample path by memoizing twice**: category per
+  distinct FRAME (~3,200 against 1.09M samples), then (self category, category
+  set) per distinct STACK. A stack's category set is a bitmask in an int, not
+  a per-stack HashSet.
+
+Tuning is empirical and the residue is the feedback signal: `Uncategorized`
+went 8.41% -> 4.27% -> 2.97% -> 2.45% by reading its own `topMethods` and
+adding rules for what showed up (zlib internals, OpenSSL's C prefixes,
+`__libc_malloc`, ICU collation - which earned its own Globalization bucket).
+Every category emits its top methods for exactly this reason: a bucket nobody
+can audit is a bucket nobody believes.
+
+#### What is and is not in a collect-linux capture
+
+Keyword selection at collect time, not a parsing gap: the reference capture
+has **no `GCAllocationTick` (id 10) and no contention events**, so the
+Allocation and Contention views are empty on it. GC, exceptions, CPU,
+threading and the event overview all populate.
+
+#### Verification
+
+`--json` on the reference capture: 11,274,185 events, 32 GCs (ids
+16363-16394, alternating gen0/gen1 every ~10s, 20 Server GC heaps, ~17.5GB
+heap, 66-113ms pauses), 72,674 exceptions, 1,090,977 CPU samples, 0
+unresolved frames. Event counts and the total match an independent Python
+decode of the same file byte for byte.
+
+**The v5 path is unaffected**, verified by diffing against a build of the
+pre-change tree on a 15.2M-event v5 capture (12,386 GCs, 1.8M allocation
+ticks, 10.6M samples, 1,376 contentions): the JSON's only difference is the
+one deliberately added field (`sampleTypeSource: "runtime"`), and the 21.9MB
+ticks sidecar is byte-identical.
+
 ## Extension rendering (`dotnetInsights/src/`)
 
 - `GcSnapshotRenderer.ts` holds the chart/summary-tile rendering shared by
@@ -731,6 +1390,72 @@ genuinely differ) to capture large fixtures against.
   clear the widest numeric header's min-content (~115px, "Total Wait (ms)")
   and headers must stay free to wrap, so a narrow window wraps a header rather
   than forcing its column wider and breaking alignment.
+
+### The ranked table is ONE component — use it, don't re-derive it
+
+CPU Hot Methods, Contention Sites, Exception Types, the GC detail table and
+all three `.gcdump` heap views are the same thing: a ranked table whose rows
+expand into an inline stack/retention tree. The pieces:
+
+- **Header**: `renderRankedTableHeader` (`GcDetailTableRenderer.ts`) —
+  `renderSortableTableHeader` plus the row-hide button's own bare, unsortable
+  leading `<th>`. Every one of those five tables goes through it; four of them
+  used to `.replace()` the hide column in by hand, one didn't and broke.
+- **Behaviour**: `media/rankedTable.js` — `setupDetailTableSortHandlers` /
+  `sortDetailTableByColumn` / `wireSortableTableHeaders` /
+  `createRowHideController` / `splitQualifiedName`, all plain globals, loaded
+  before `snapshotGcStats.js` (which used to define the first four *inside its
+  own IIFE*, which is why the `.gcdump` webview — a separate document — shipped
+  with sortable-LOOKING headers that did nothing at all when clicked).
+- **Markup**: a `.detailTable.cpuHotMethodsTable` **div** wrapping a bare
+  `<table>`; rows `<tr class="typeRow …"><td class="rowHideColumn">✕</td><td>▸
+  name</td>` then numeric cells; a paired hidden
+  `<tr class="callPathsDetail"><td colspan=N class="callerTreeCell">` for the
+  tree; each tree level its own `<table class="callerTreeInner">` with a
+  `<colgroup>` whose first `<col>` is a 1.6em spacer and a matching empty
+  leading `<td>` on every row.
+
+**The column positions are the contract.** snapshot.css keys off them:
+column 1 narrow/centered, column 2 the left-aligned, wrapping, `width: auto`
+name column, columns 3+ numeric and right-aligned. The `.gcdump` census table
+emitted its own order (type name as column 1, no hide column) and the failure
+was not subtle — one 567-character generic type name (`System.Func<...>`,
+ordinary on a real heap) blew the unwrapped first column out to thousands of
+pixels and pushed every numeric column off-screen, while `Objects` sat in the
+column sized to hold long names. Its two tree views were worse: bare `<table>`
+elements outside any `.detailTable` wrapper inherited no table styling at all
+and rendered centered, which erased the indentation that WAS the tree.
+
+Two things that are NOT shared, deliberately:
+
+- **Sorting a capped, JS-rendered table sorts the DATA, not the DOM.** The
+  `.gcdump` tables render the first 500 of thousands of rows, so
+  `sortDetailTableByColumn` (which reorders the rows present) would reorder
+  that one page and present it as the top 500 by the newly clicked column.
+  `wireSortableTableHeaders` exists to share the header/indicator wiring while
+  letting the caller decide what "sort" means; `gcDumpView.js` re-sorts its
+  array and re-renders.
+- **Each view owns its own click delegation.** The tree machinery is small
+  (build one level, cache it in the DOM, toggle `expanded` on the row and its
+  detail row); duplicating it costs less than a shared registry keyed by four
+  different `data-*` attribute pairs, which is the shape
+  `cpuDrillDownStats.js` / `exceptionDrillDownStats.js` /
+  `contentionDrillDownStats.js` already settled into.
+
+A tree's numeric columns line up with the ranked table's RIGHTMOST columns
+because both grids span the same box — an alignment, not a shared meaning. The
+`.gcdump` trees therefore label their own columns once, at the top of an
+expansion (`.treeColumnLabelRow`), or "Bytes" reads as whatever header happens
+to sit above it.
+
+Dimmed text (`.methodTypePrefix`, `.unresolvedFrame`, `.calledByLabel`,
+`.pathCount`, `.rowHideBtn`) uses `color: inherit` + `opacity`, not a
+hard-coded `rgba(0,0,0,…)`: these webviews follow the VS Code theme, and a
+near-black glyph on a dark theme is invisible — the ✕ hide column read as an
+empty gutter. On a light theme the inherited foreground IS near-black, so the
+rendering is unchanged. (Plenty of other hard-coded colours remain in
+snapshot.css; these five were converted because the `.gcdump` views now use
+them.)
 
 ## Editor tabs: opening a view must not close the user's (issue #99, 1.9.2)
 

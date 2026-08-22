@@ -119,6 +119,32 @@ public class MethodSymbolTable
     // the overwhelmingly common case (most methods aren't reused at all).
     private readonly Dictionary<long, MethodRange> lastMatchedRangeByAddress = new Dictionary<long, MethodRange>();
 
+    // Consulted only when no MethodLoad/rundown range claims an address, and
+    // null for a v5 capture. A v6 (`dotnet-trace collect-linux`) capture has
+    // no MethodLoadVerbose/MethodDCStartVerbose events at all, so on that path
+    // EVERY frame arrives here - kernel, native and JIT'd managed alike - and
+    // this is what turns them into names. Ordered after the rundown ranges
+    // rather than before because those carry a real [load, unload) validity
+    // window and so stay correct across address reuse, which a flat symbol
+    // range cannot express. See Universal/UniversalSymbolTable.cs.
+    private Universal.UniversalSymbolTable nativeSymbols;
+
+    public void SetNativeSymbols(Universal.UniversalSymbolTable symbols)
+    {
+        this.nativeSymbols = symbols;
+    }
+
+    // True only on the v6/collect-linux path, where the Universal.System
+    // provider describes the address space. Doubles as the answer to "were
+    // this capture's sample types derived rather than reported by the
+    // runtime", because the two go together: a capture has native symbols
+    // exactly when its samples came from perf_events and so carried no
+    // ThreadSampleType of their own (see
+    // Universal/UniversalSampleTypeClassifier.cs). Read by
+    // Threading/ThreadingJsonExporter.cs so the view can name its source
+    // instead of presenting derived data as the runtime's own.
+    public bool HasNativeSymbols => this.nativeSymbols != null;
+
     // namesById[range.Id] == range.DisplayName, in the same insertion order
     // ids were assigned - NOT at Build time anymore (see EnsureResolved),
     // but this list is still append-only and a range's own Id, once
@@ -169,6 +195,20 @@ public class MethodSymbolTable
     // address.
     private readonly Dictionary<long, int> unresolvedIdByAddress = new Dictionary<long, int>();
     private readonly List<string> unresolvedNames = new List<string>();
+
+    // Name -> id, so two addresses that resolve to the SAME name share one id.
+    // This mirrors the guarantee the resolved path already makes through
+    // namesById (see this class's own comment there: callers key data
+    // structures by the id and expect equal names to merge), and it is
+    // load-bearing once native symbols are in play: a symbol covers a whole
+    // address RANGE, so samples land on many distinct addresses inside one
+    // function. Without this, one hot native function splits into a separate
+    // row per sampled instruction - the CPU view's reference capture showed
+    // __pthread_mutex_lock twice at 2,944 and 2,433 self samples instead of
+    // once at 5,377, which also ranks it wrongly against everything else.
+    // For a v5 capture this changes nothing: every "<unresolved 0xADDR>" name
+    // embeds its own address and so is already unique per address.
+    private readonly Dictionary<string, int> unresolvedIdByName = new Dictionary<string, int>(StringComparer.Ordinal);
 
     private MethodSymbolTable(List<MethodRange> sortedRanges, long maxRangeSize, List<string> namesById, int pointerSize)
     {
@@ -446,12 +486,39 @@ public class MethodSymbolTable
         int unresolvedId;
         if (!this.unresolvedIdByAddress.TryGetValue(instructionPointer, out unresolvedId))
         {
-            unresolvedId = UnresolvedIdBase + this.unresolvedNames.Count;
-            this.unresolvedNames.Add($"<unresolved 0x{instructionPointer:X}>");
+            string unmatchedName = this.NameForUnmatchedAddress(instructionPointer);
+
+            if (!this.unresolvedIdByName.TryGetValue(unmatchedName, out unresolvedId))
+            {
+                unresolvedId = UnresolvedIdBase + this.unresolvedNames.Count;
+                this.unresolvedNames.Add(unmatchedName);
+                this.unresolvedIdByName[unmatchedName] = unresolvedId;
+            }
+
             this.unresolvedIdByAddress[instructionPointer] = unresolvedId;
         }
 
         return unresolvedId;
+    }
+
+    // The name for an address no rundown range claims. Falls back through the
+    // Universal.System symbol/mapping tables when the capture carries them
+    // (v6 only) before giving up on the raw address - the ids these names are
+    // stored under still live in the UnresolvedIdBase range, which is a
+    // numbering detail rather than a claim that the frame is unresolved.
+    private string NameForUnmatchedAddress(long instructionPointer)
+    {
+        if (this.nativeSymbols != null)
+        {
+            string nativeName;
+
+            if (this.nativeSymbols.TryResolve(instructionPointer, out nativeName))
+            {
+                return nativeName;
+            }
+        }
+
+        return $"<unresolved 0x{instructionPointer:X}>";
     }
 
     // Decodes and content-interns range's DisplayName the first time it's
