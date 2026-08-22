@@ -48,6 +48,7 @@ public sealed class ElfSymbolFile
     private const int SectionHeaderOffsetOffset = 0x28;
     private const int SectionHeaderEntrySizeOffset = 0x3A;
     private const int SectionHeaderCountOffset = 0x3C;
+    private const int SectionNameStringTableIndexOffset = 0x3E;
     private const int ElfHeaderBytes = 64;
 
     private const int SectionHeaderBytes = 64;
@@ -70,11 +71,48 @@ public sealed class ElfSymbolFile
     // runtime address into a module offset.
     private readonly FunctionSymbol[] symbols;
 
+    // Address ranges of the procedure linkage table sections. PLT entries are
+    // the stubs a module calls imported functions through, and they carry NO
+    // symbol of their own - so an address inside one resolves to nothing even
+    // when the module's symbols loaded perfectly. On the reference capture
+    // that is where every unresolved libcoreclr.so sample lands.
+    //
+    // Their NAMES cannot be recovered from a .dbg file: naming a PLT slot
+    // needs .rela.plt and .dynsym, and in a separate debug file both are
+    // SHT_NOBITS - the headers are present but the content was stripped out
+    // and lives only in the real binary. Identifying the address as a PLT stub
+    // is therefore the most this can honestly say, and it is enough to stop
+    // reporting a fully-symbolicated module as if its symbols were missing.
+    private readonly AddressRange[] stubRanges;
+
+    private struct AddressRange
+    {
+        public long StartAddress;
+        public long EndAddress;
+    }
+
     public int SymbolCount => this.symbols.Length;
 
-    private ElfSymbolFile(FunctionSymbol[] symbols)
+    private ElfSymbolFile(FunctionSymbol[] symbols, AddressRange[] stubRanges)
     {
         this.symbols = symbols;
+        this.stubRanges = stubRanges;
+    }
+
+    // True when the address is inside a procedure linkage table - a real,
+    // named part of the module that simply has no symbol, as opposed to an
+    // address the symbols failed to cover.
+    public bool IsProcedureLinkageStub(long elfVirtualAddress)
+    {
+        for (int rangeIndex = 0; rangeIndex < this.stubRanges.Length; ++rangeIndex)
+        {
+            if (this.stubRanges[rangeIndex].StartAddress <= elfVirtualAddress && elfVirtualAddress < this.stubRanges[rangeIndex].EndAddress)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     // Returns null and sets `error` rather than throwing: a symbol file is
@@ -258,7 +296,76 @@ public sealed class ElfSymbolFile
         FunctionSymbol[] sorted = functions.ToArray();
         Array.Sort(sorted, CompareByStartAddress);
 
-        return new ElfSymbolFile(sorted);
+        return new ElfSymbolFile(sorted, ReadStubRanges(stream, sectionHeaders, sectionCount, sectionHeaderEntrySize, header));
+    }
+
+    // The .plt family, located by NAME because nothing about their type or
+    // flags distinguishes them from ordinary code. Reading section names needs
+    // the section-header string table, which - unlike .dynsym and .rela.plt -
+    // does still carry its content in a .dbg file.
+    private static AddressRange[] ReadStubRanges(Stream stream, byte[] sectionHeaders, int sectionCount, int entrySize, byte[] elfHeader)
+    {
+        int stringTableIndex = BinaryPrimitives.ReadUInt16LittleEndian(elfHeader.AsSpan(SectionNameStringTableIndexOffset));
+
+        if (stringTableIndex <= 0 || stringTableIndex >= sectionCount)
+        {
+            return Array.Empty<AddressRange>();
+        }
+
+        int stringSectionStart = stringTableIndex * entrySize;
+        long namesOffset = BinaryPrimitives.ReadInt64LittleEndian(sectionHeaders.AsSpan(stringSectionStart + 0x18));
+        long namesSize = BinaryPrimitives.ReadInt64LittleEndian(sectionHeaders.AsSpan(stringSectionStart + 0x20));
+
+        if (namesSize <= 0 || namesSize > int.MaxValue)
+        {
+            return Array.Empty<AddressRange>();
+        }
+
+        byte[] names = new byte[(int)namesSize];
+
+        if (!ReadExactlyAt(stream, namesOffset, names, names.Length))
+        {
+            return Array.Empty<AddressRange>();
+        }
+
+        List<AddressRange> stubs = new List<AddressRange>();
+
+        for (int sectionIndex = 0; sectionIndex < sectionCount; ++sectionIndex)
+        {
+            int sectionStart = sectionIndex * entrySize;
+            uint nameOffset = BinaryPrimitives.ReadUInt32LittleEndian(sectionHeaders.AsSpan(sectionStart));
+
+            string sectionName = ReadNullTerminated(names, nameOffset);
+
+            if (sectionName == null || !IsStubSectionName(sectionName))
+            {
+                continue;
+            }
+
+            long address = BinaryPrimitives.ReadInt64LittleEndian(sectionHeaders.AsSpan(sectionStart + 0x10));
+            long size = BinaryPrimitives.ReadInt64LittleEndian(sectionHeaders.AsSpan(sectionStart + 0x20));
+
+            if (address <= 0 || size <= 0)
+            {
+                continue;
+            }
+
+            AddressRange range = new AddressRange();
+            range.StartAddress = address;
+            range.EndAddress = address + size;
+            stubs.Add(range);
+        }
+
+        return stubs.ToArray();
+    }
+
+    private static bool IsStubSectionName(string sectionName)
+    {
+        return sectionName == ".plt" ||
+            sectionName == ".plt.sec" ||
+            sectionName == ".plt.got" ||
+            sectionName == ".iplt" ||
+            sectionName == ".rela.plt";
     }
 
     private static int FindSection(byte[] sectionHeaders, int sectionCount, int entrySize, uint sectionType)

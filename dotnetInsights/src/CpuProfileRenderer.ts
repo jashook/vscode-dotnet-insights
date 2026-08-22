@@ -40,6 +40,124 @@ function formatMethodNameHtml(rawFrameName: string): string {
     return `<span class="methodTypePrefix">${escapeHtmlForCpuProfile(typePrefix)}</span><span class="methodName">${escapeHtmlForCpuProfile(methodName)}</span>`;
 }
 
+// The coarse "where did the CPU go" breakdown, from
+// nettraceParser/Cpu/CpuCategoryBuilder.cs. Rendered ABOVE the ranked method
+// list on purpose: a list of 3,200 functions says what is hot, this says that
+// garbage collection is 6% of the process, and the second question is the one
+// somebody opening a profile usually has first.
+//
+// Both columns are shown because they answer different questions and neither
+// alone is enough. "CPU %" is the sample's innermost frame and sums to 100%;
+// "On stack %" counts a sample toward every category its stack passes through,
+// so it does NOT sum to 100% - which the note under the table says out loud,
+// because a column of percentages adding to 300% otherwise reads as a bug.
+//
+// Each row opens into the real call paths behind that bucket, not a summary of
+// them - see the drill-down wiring in snapshotGcStats.js.
+function renderCpuCategoryTable(categories: any): string {
+    if (!categories) {
+        return "";
+    }
+
+    const rows = (categories["rows"] || []).filter((row: any) => Number(row["selfSamples"]) > 0 || Number(row["onStackSamples"]) > 0);
+
+    if (rows.length === 0) {
+        return "";
+    }
+
+    rows.sort((left: any, right: any) => Number(right["selfPercent"]) - Number(left["selfPercent"]));
+
+    var tableRows = "";
+
+    for (var index = 0; index < rows.length; ++index) {
+        const row = rows[index];
+
+        // A bar drawn behind the name cell, so the shape of the breakdown is
+        // readable without comparing numbers - the categories span two orders
+        // of magnitude and the eye is much better at bars than at decimals.
+        const barWidth = Math.max(0, Math.min(100, Number(row["selfPercent"])));
+
+        tableRows +=
+            `<tr class="typeRow cpuCategoryRow" data-cpu-category="${index}">` +
+            `<td class="rowHideColumn"><span class="rowHideBtn" title="Hide this row">&#10005;</span></td>` +
+            `<td class="cpuCategoryNameCell">` +
+                `<span class="cpuCategoryBar" style="width:${barWidth.toFixed(2)}%"></span>` +
+                `<span class="cpuCategoryName">&#9656; ${escapeHtmlForCpuProfile(row["name"])}</span>` +
+            `</td>` +
+            // Samples FIRST, then the two percentages, because the caller tree
+            // each row opens into emits (samples, percent, percent) in that
+            // order and both grids span the same box. With the percentage
+            // first, every expanded row put a sample count under a "%" header
+            // and a percentage under "Samples".
+            `<td>${Number(row["selfSamples"]).toLocaleString()}</td>` +
+            `<td>${Number(row["selfPercent"]).toFixed(2)}%</td>` +
+            `<td>${Number(row["onStackPercent"]).toFixed(2)}%</td>` +
+            `</tr>` +
+            // The caller tree is built lazily on first expand (see
+            // wireCpuCategoryTable). A category's tree can be thousands of
+            // nodes and there are sixteen of them, so building all of them up
+            // front would cost far more than anyone opens. data-cpu-category-lazy
+            // carries the category's own id, not its row position - the rows
+            // are re-sorted for display, so a positional index would pair a
+            // bucket with another bucket's call paths.
+            `<tr id="cpuCategoryDetail${index}" class="callPathsDetail" data-cpu-category-lazy="${row["id"]}">` +
+            `<td colspan="5" class="callerTreeCell">` +
+                `<div class="cpuCategoryDescription">${escapeHtmlForCpuProfile(row["description"])}</div>` +
+            `</td>` +
+            `</tr>`;
+    }
+
+    const columns: ReadonlyArray<[string, string]> = [
+        ["Category", "text"],
+        ["Samples", "number"],
+        ["CPU %", "number"],
+        ["On stack %", "number"],
+    ];
+
+    return `<div class="cpuCategorySection">` +
+        renderUnresolvedModules(categories["unresolvedModules"]) +
+        `<div class="threadingChartHint">Where the CPU went, by category. <b>CPU %</b> is the sample's innermost frame and sums to 100%. ` +
+        `<b>On stack %</b> counts a sample toward every category anywhere in its stack, so those deliberately sum to more than 100% ` +
+        `&mdash; that is what answers "how much time is spent under TLS at all". Click a row to open the call paths behind it.</div>` +
+        `<div class="detailTable cpuHotMethodsTable"><table id="cpuCategoryTable">${renderRankedTableHeader(columns)}${tableRows}</table></div>` +
+        `</div>`;
+}
+
+// The actionable form of the Unresolved bucket. "7.5% of this profile has no
+// symbols" is a complaint; "4.2% of it is libcrypto.so.3" names the package
+// whose debug symbols would fix most of it. Only shown when it is worth acting
+// on - a fraction of a percent scattered across a dozen modules is noise, not
+// a task.
+function renderUnresolvedModules(unresolvedModules: any[]): string {
+    if (!unresolvedModules || unresolvedModules.length === 0) {
+        return "";
+    }
+
+    const worthReporting = unresolvedModules.filter((entry: any) => Number(entry["selfPercent"]) >= 0.25);
+
+    if (worthReporting.length === 0) {
+        return "";
+    }
+
+    var items = "";
+
+    for (var index = 0; index < worthReporting.length; ++index) {
+        items += `<li><b>${Number(worthReporting[index]["selfPercent"]).toFixed(2)}%</b> ` +
+            `${escapeHtmlForCpuProfile(String(worthReporting[index]["module"]))}</li>`;
+    }
+
+    const total = unresolvedModules.reduce((sum: number, entry: any) => sum + Number(entry["selfPercent"]), 0);
+
+    return `<div class="threadingNote cpuUnresolvedNote">` +
+        `<b>${total.toFixed(2)}% of samples have no symbol</b>, concentrated in:` +
+        `<ul class="cpuUnresolvedList">${items}</ul>` +
+        `Symbols for .NET's own native modules come from Microsoft's symbol server automatically. Distribution libraries such as ` +
+        `<b>libc</b> and <b>openssl</b> come from that distribution's debuginfod, which is added automatically when the capture ` +
+        `identifies its distribution &mdash; if that server is unreachable, point <code>--symbol-path</code> at an extracted ` +
+        `dbgsym tree instead. Runtime-generated stubs and the vDSO are counted separately; no symbols exist for those anywhere.` +
+        `</div>`;
+}
+
 export function renderCpuProfileView(cpuProfile: any): string {
     const totalSampleCount = cpuProfile["totalSampleCount"];
 
@@ -212,5 +330,7 @@ function renderHotMethodsTable(cpuProfile: any): string {
     // every ranked table in these webviews is built through it.
     const headerWithHideColumn = renderRankedTableHeader(columns);
 
-    return `<div class="detailTable cpuHotMethodsTable"><table id="cpuMethodsTable">${headerWithHideColumn}${rows}</table></div>`;
+    const categoryHtml = renderCpuCategoryTable(cpuProfile["categories"]);
+
+    return `${categoryHtml}<div class="detailTable cpuHotMethodsTable"><table id="cpuMethodsTable">${headerWithHideColumn}${rows}</table></div>`;
 }

@@ -317,7 +317,7 @@ Hard-won facts, all measured against three real service captures
   nothing in between. An earlier 0.02 split the parked cluster itself.
 - **A parked worker is a small LOOP, not one frozen stack** - the
   concentration gate is over the top THREE stacks, not the top one. A real
-  `Roblox.Coordination.BackgroundWorker.Run` drain worker parks on an empty
+  `Contoso.Coordination.BackgroundWorker.Run` drain worker parks on an empty
   `BlockingCollection` 90.9% of the time, sleeps out its poll interval a
   further 6.4%, and spends 1.0% in the blocking call that ships the batch:
   98.2% across three stacks, 90.9% in the top one. Judging it on the top stack
@@ -1015,6 +1015,30 @@ one. The extension exposes the first two as
 globalStorage. **The whole feature is a no-op on a v5 capture** - verified
 byte-identical output, with `nativeSymbols=0ms`.
 
+
+Two later corrections to the symbol store, both found by running it rather
+than by reading it:
+
+- **A per-request timeout is not enough; there must be a CONNECT deadline and
+  a circuit breaker.** The 10-minute request timeout is sized for a 138MB
+  download and applied to connection failures too, so pointing at a symbol
+  server the network cannot reach made every module wait it out - a capture
+  with 8 unresolved modules would have hung for over an hour. `ConnectTimeout`
+  alone did not fix it either: on a route that blackholes rather than refuses,
+  the request still hung past it, so the bound that actually holds is an
+  explicit `CancellationToken` on the response-headers wait. A server that
+  fails to connect is then marked unreachable and not asked again for the rest
+  of the capture, because re-learning it per module is how a 20-second timeout
+  becomes minutes. Measured: unbounded hang -> 21s once, then 392ms on every
+  later open from the cached misses.
+- **The distro comes from the CAPTURE, not the host.** `ProcessMappingMetadata`
+  carries `VersionMetadata` like `{"type":"deb","os":"ubuntu",...}`, so the
+  matching debuginfod server is added automatically. This must never be
+  inferred from the machine running the parser - a Linux capture is routinely
+  read on a Mac. Microsoft's server has .NET's own native modules and nothing
+  else, so libc/openssl/libstdc++ need the distro server; that is 268 of the
+  312 frames still showing as an offset on the reference capture.
+
 #### CPU samples and the derived `ThreadSampleType`
 
 CPU samples arrive as `Universal.Events/cpu`, not
@@ -1051,6 +1075,257 @@ read):
   WorkerThread.WorkerThreadStart`) — the stacks bottom out in
   `__clone` → `libcoreclr.so+0x…`. Every thread therefore classifies as
   `Active`, which is a refusal to claim rather than a false "benign".
+
+
+
+
+
+#### Opening a bucket into its call paths
+
+Each CPU category row expands into a merged caller tree built from the same
+deduplicated distinct stacks the per-method drill-down uses, grouped by the
+category of each stack's LEAF - which is exactly the attribution the bucket's
+percentage is computed from, so the tree total and the bucket number can never
+disagree (verified: the GC bucket's tree totals 65,167, its bucket says
+65,167).
+
+- Emitted in the IDENTICAL node shape as `hotMethodDrillDown`, so the webview
+  renders both through one function (`buildInlineCpuMethodCallerTree`) and this
+  needed no second renderer.
+- Written BEFORE `methodNames`, for the reason that array's own comment gives:
+  `WriteFlameTreeNode` interns names as it walks, and anything written after
+  `methodNames` references indices that array never received.
+- Paired to its row by the category's own `id`, never by row position - the
+  rows are re-sorted for display, and a positional index would open one
+  bucket's row onto another bucket's call paths.
+- The flat "top methods" list was dropped from the UI once the tree landed: the
+  tree's FIRST LEVEL is that same self-time ranking, so showing both said the
+  same thing twice. It stays in the JSON for the CLI.
+
+
+**A `<col>` width set inline cannot be scoped.** The CPU caller tree's leading
+spacer used to carry `style="width: 1.6em"`, and a scoped stylesheet rule to
+collapse it for one view silently did nothing - an inline style beats a
+stylesheet without `!important`. The width now comes from
+`.callerTreeSpacerCol`, defaulting to the same 1.6em, so
+`#cpuCategoryTable .callerTreeInner col.callerTreeSpacerCol { width: 4px }`
+can put that one view's expansion flush with its row's hide column while the
+hot-method, exception, contention and .gcdump trees keep their gutter.
+Verified by rendering the same page twice, once with the id and once without:
+27/40/54 against 49/62/75.
+
+**Nothing may be added to a `.callerTreeInner` table but caller rows.** A row of
+column labels was put inside one and had to be taken back out: under
+`table-layout: auto` the leading spacer `<col>`'s `1.6em` is a FLOOR, not a
+width - the same trap this file already records for the ranked tables - so the
+label row's text gave the TOP-LEVEL tree different column pressure from the
+nested ones and inflated its spacer from 26px to 30px while every nested table
+stayed at 26px. The first indent step collapsed from 13px to 9px and a caller
+rendered at visually the same level as its own parent. The labels now live in a
+legend div above the tree, outside the grid.
+
+Worth noting HOW that was found, because reasoning from the source got it wrong
+three times in a row: the fix only became obvious after rendering the composed
+HTML in headless Edge and reading `getBoundingClientRect()` per row. Two
+measuring mistakes on the way - reading the CELL's left edge (which never moves;
+the indent is `padding-left` ON the cell, so the CONTENT moves) and then trying
+`width: 0` on the label cells (which inflated the spacer to 399px). Measure the
+laid-out geometry, not the markup.
+
+A category's caller tree is a FOREST, and that broke an assumption the shared
+renderer had never had to state. A hot method's tree has ONE root chain, whose
+depth-0 row is anchored directly under the ranked row that was just clicked, so
+rendering depth 0 flush left reads unambiguously. A category's tree has one
+root per leaf method in the bucket - hundreds on a real capture - all flush
+left, so a caller indented one level (0.85em) lands almost exactly where the
+NEXT SIBLING ROOT does and an expanded row reads as another top-level method
+rather than as nested underneath. Depth-0 rows of a forest are therefore marked
+(`cpuCallerForestRoot`, a rule above the row rather than a background, since
+these rows already alternate .drillDownAltBranch shading). Indenting harder
+would only have moved the ambiguity down a level.
+
+#### Local symbols, for when a distribution's server is simply down
+
+`--symbol-path <dir>` searches the conventional build-id layout
+(`<dir>/<first 2 hex>/<remaining 38>.debug`) BEFORE any network, and before
+even the negative markers - symbols appearing on disk should take effect
+immediately rather than waiting out a retry window. This is what
+`apt install libc6-dbgsym` populates under /usr/lib/debug/.build-id, which is
+searched by default.
+
+It exists because a symbol SERVER is not the only way to have symbols and is
+not currently a reliable one: debuginfod.ubuntu.com was observed completing a
+TLS handshake and then never answering, on every path, hours apart - which
+leaves a capture's glibc and OpenSSL frames unresolvable through any amount of
+retrying. Verified end to end by staging libcoreclr's symbols into that layout
+and resolving 17,423 of them with `--no-symbol-download`, zero network.
+
+#### Which symbol server to ask (`nettraceParser/Symbols/ModuleSymbolSourceMap.cs`)
+
+Microsoft's symbol server has .NET's own native modules and nothing else; a
+distribution's debuginfod has glibc and OpenSSL and has never heard of
+libcoreclr. Walking one fixed list therefore spends guaranteed 404s on every
+lookup - and gets it backwards for exactly the modules that are hardest to
+resolve, since a glibc lookup reached the only server that could answer LAST.
+
+A module is classified from its path and name, and the server list is
+reordered - never filtered - so the kind most likely to hold it goes first:
+
+- `/usr/share/dotnet/`, `/usr/lib/dotnet/`, `/dotnet/shared/` -> Microsoft.
+- `libcoreclr.so`, `libclrjit.so`, `libhostfxr.so`, `libSystem.*.Native.so`
+  and friends -> Microsoft **by NAME, checked before any path**, because a
+  self-contained app ships the runtime beside its own binary where the path
+  says nothing at all.
+- `/usr/lib/x86_64-linux-gnu/` and the soname families (`libc.so*`,
+  `libcrypto.so*`, `libssl.so*`, `libstdc++.so*`, `libicu*`, `ld-linux*`, ...)
+  -> that distribution's debuginfod. Matched on the LEADING portion of the
+  name: the soname version moves with every package update.
+- `vmlinux` -> distribution (they ship kernel debuginfo through debuginfod).
+- `[vdso]`, `[vsyscall]`, `memfd:doublemapper` and any `.dll` -> **NotFetchable**,
+  skipped before a request is made. No server has runtime-generated code or a
+  managed assembly, so asking is pure latency - and on a hung server, a pure
+  wasted timeout.
+- **Anything else -> Unknown, which means the configured order exactly as
+  before.** The map is only ever allowed to reorder servers it is confident
+  about. A real capture is full of modules nothing well-known covers - a
+  third-party profiler's .so under /usr/bin, an app's own library under
+  /app/lib - and those must keep behaving as they did.
+
+Explicit `--symbol-server` entries are always tried first regardless of module:
+naming a server by hand outranks anything inferred.
+
+Both lists were built from the 180 module mappings of a real capture, not from
+memory, and the awkward real cases are pinned as tests. Measured on that
+capture: cold symbol phase 21.5s -> 7.4s, with identical output.
+
+#### A 404 and a hang are not the same answer
+
+Chasing the last unresolved modules turned up a cache-poisoning bug, and the
+diagnosis is worth keeping because "the symbol server is down" and "the symbol
+server says no" look identical from a single failed request.
+
+Measured, from a machine that reaches Microsoft's server fine:
+
+- `debuginfod.elfutils.org` answers a **404 in 0.25s**. Healthy server,
+  definitive "I do not index that build".
+- `debuginfod.ubuntu.com` resolves (Canonical, 91.189.92.252), accepts TCP on
+  443 AND 80, completes a TLS handshake in 2.1s against a genuine Let's
+  Encrypt certificate for its own hostname (verification OK, so no proxy
+  interception) - and then **never sends a byte**. 180 seconds, zero response,
+  identically on HTTP/2, forced HTTP/1.1, plain port 80, `/`, `/metrics` and
+  `/buildid/...`, with and without debuginfod client headers. That is a
+  server-side hang, not a network block and not a client bug.
+
+The bug this exposed: the store wrote a permanent "no symbols for this build"
+marker on ANY failed download, so an outage cached a wrong answer forever and
+the build was never retried once the server came back. Two rules now:
+
+- **A negative is definitive only when EVERY server answered.** One 404 from
+  Microsoft's server proves nothing about a glibc build - and that is exactly
+  the observed shape, with msdl and the federation both answering 404 while
+  the only server that would have Ubuntu's glibc never responded. Requiring
+  merely "some server answered" still cached the wrong answer for the three
+  modules most worth resolving; it was measured writing 8 permanent markers
+  where the correct number is 0.
+- **Inconclusive results get their own marker with a retry window**
+  (`.unavailable`, 6 hours) rather than either a permanent verdict or no
+  memory at all. Without it a wedged server costs the 20s header timeout on
+  every capture; with a permanent marker it costs correctness. Measured: cold
+  run 27s, second run 6s, and the retry happens once the window passes.
+- The permanent marker was renamed `.miss` -> `.notfound` specifically so
+  every marker written under the old conflated rule is ignored, and a cache
+  already poisoned by an outage heals itself with no user action.
+
+Practical consequence for reading the reference capture's numbers: libcrypto
+(4.20%), libc (1.96%) and libssl (0.82%) are unresolved because Canonical's
+debuginfod was not answering, NOT because those symbols are unavailable. That
+7% should resolve on its own once the service is up.
+
+#### Not every unnamed frame is a missing symbol
+
+The Unresolved bucket started at 12.05% on the reference capture and is now
+7.51%, without downloading anything more. The difference was two populations
+that are unnamed for PERMANENT reasons and were being reported as if fetching
+symbols would fix them:
+
+- **Runtime-generated code, 4.25%** - the single largest unresolved module,
+  larger than libcrypto. These are addresses in the runtime's W^X JIT code
+  heap (`/memfd:doublemapper`) that no perf-map entry covers: precode,
+  call-counting stubs, jump stubs, delegate thunks. Confirmed from the data
+  rather than assumed - that module holds 5,114 ProcessSymbols and every one
+  of them is managed. The heap is carved into many mappings and **the hottest
+  single one is a 4KB page with zero symbols in it**, so a module counts as
+  JIT code when ANY mapping sharing its file name holds a managed symbol;
+  matching only mappings that directly contain one would have missed exactly
+  the region that mattered. Labelled with a `[jit] ` PREFIX, not a suffix -
+  the `module+0xADDR` shape is what marks an unresolved frame everywhere else,
+  and appending would break that test rather than override it.
+- **The vDSO, 0.29%** - kernel code mapped into every process, counted as
+  Kernel.
+
+What remains is genuinely fetchable and is now reported per module
+(`categories.unresolvedModules`, surfaced in the CPU view): libcrypto.so.3
+4.20%, libc.so.6 1.96%, libssl.so.3 0.82% - three Ubuntu packages, 6.98% of
+the 7.51%. "12% of this profile has no symbols" is a complaint; "4.2% of it is
+libcrypto.so.3" names the package to install.
+
+**REGRESSION WORTH REMEMBERING, because it is the same mistake twice.**
+Deciding which modules hold managed code with `name.Contains("::")` flagged
+ICU as a JIT code heap - `icu_78::CollationKeys::writeSortKeyUpToQuaternary`
+matches - which re-labelled its frames as runtime stubs and, far more quietly,
+counted every ICU sample as **Managed** in the derived `ThreadSampleType`,
+inflating the managed fraction the Threading view classifies threads on.
+`FormatSymbolName` had already learned this exact lesson and the naive test was
+reintroduced next to it. The assembly bracket (`] ` before the `::`) is what
+identifies the CLR's perf-map form; native C++ has no bracket.
+
+Reachability, measured from a network that blocks part of this: msdl and
+`debuginfod.elfutils.org` are reachable, `debuginfod.ubuntu.com` is not. The
+federation returned 404 for all five Ubuntu build ids tried, so it does NOT
+substitute for the distro's own server - it is in the default list as a
+fallback for other distributions, not as a fix for Ubuntu.
+
+#### Coarse CPU categories (`nettraceParser/Cpu/CpuCategoryClassifier.cs`)
+
+A ranked list of 3,200 functions says what is hot; it does not say that
+garbage collection is 6% of the process. The CPU view therefore leads with a
+bucketed breakdown - GC, allocation, TLS/crypto, compression, locking,
+scheduling, kernel, managed framework, application code, and so on.
+
+- **Two numbers per category, because one answers the wrong question half the
+  time.** `selfPercent` attributes a sample to its INNERMOST frame and sums to
+  exactly 100%; `onStackPercent` counts a sample toward every category
+  anywhere in its stack and deliberately sums to more. A stack that runs
+  app -> SslStream -> libcrypto -> kernel is self=Kernel but on-stack
+  {Kernel, TLS/crypto, Application}. Reporting only self files real crypto
+  work under "kernel"; reporting only on-stack produces columns adding to
+  300% with no explanation. The view says which is which out loud.
+- **Whether a frame is KERNEL comes from the module it resolved out of, never
+  from its name.** GCC decorates kernel symbols (`.isra.0`, `.constprop.0`),
+  so `finish_task_switch.isra.0` has dots, no `::`, and is textually
+  indistinguishable from a managed `Namespace.Type.Method`. That misfiled the
+  single hottest frame in the reference capture - 16,615 samples, 1.5% of the
+  process - as application code. `UniversalSymbolTable.IsKernelSymbol` records
+  names that resolved from the kernel image and the flag is passed in.
+- **Unresolved is tested FIRST.** `libcrypto.so.3+0x1234` would otherwise
+  match the TLS rule on its own module name and report symbol-less time as if
+  it had been attributed, which is the one thing this breakdown must never do.
+- **Allocation is not folded into GC.** The allocation helper is the hottest
+  runtime function on an allocation-heavy service (14,597 samples), and
+  merging it makes "GC" read as collection cost when most of it is the mutator.
+  Likewise `JIT_`-prefixed symbols are runtime HELPERS, not the compiler -
+  filing them under JIT invents compilation time that never happened.
+- **Cost is kept off the per-sample path by memoizing twice**: category per
+  distinct FRAME (~3,200 against 1.09M samples), then (self category, category
+  set) per distinct STACK. A stack's category set is a bitmask in an int, not
+  a per-stack HashSet.
+
+Tuning is empirical and the residue is the feedback signal: `Uncategorized`
+went 8.41% -> 4.27% -> 2.97% -> 2.45% by reading its own `topMethods` and
+adding rules for what showed up (zlib internals, OpenSSL's C prefixes,
+`__libc_malloc`, ICU collation - which earned its own Globalization bucket).
+Every category emits its top methods for exactly this reason: a bucket nobody
+can audit is a bucket nobody believes.
 
 #### What is and is not in a collect-linux capture
 

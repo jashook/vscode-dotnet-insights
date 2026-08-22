@@ -43,6 +43,23 @@ Open the `.nettrace` in VS Code as usual. What you get:
   `debuginfod:https://debuginfod.ubuntu.com` via
   `dotnet-insights.symbolServers` to also name `libc` and `openssl` frames,
   which Microsoft's server does not carry.
+  The CPU view also leads with a coarse **category breakdown** — where the time
+  actually went, before you read a single method name:
+
+  ```
+  Managed framework    16.88% self   61.42% on stack
+  Application code     16.10% self   51.23% on stack
+  Kernel               10.33% self   14.71% on stack
+  Networking            9.90% self   39.97% on stack
+  Garbage collection    5.97% self    8.10% on stack
+  ...
+  ```
+
+  **self** is the sample's innermost frame and sums to 100%; **on stack**
+  counts a sample toward every category anywhere in its stack, so it sums to
+  more — that is the number that answers "how much time is spent under TLS at
+  all". Click a category for its top methods.
+
 - **GC**, **Exceptions**, **Events** — as usual; the CLR events are present
   and decoded normally.
 - **Threading** — works, but its parked/blocked classification is *derived*.

@@ -119,6 +119,15 @@ public static class NativeSymbolResolution
                 continue;
             }
 
+            // Nothing serves symbols for runtime-generated code, kernel-
+            // provided mappings or managed assemblies, so a lookup could only
+            // ever be a wasted round trip - and on a slow server, a wasted
+            // timeout.
+            if (ModuleSymbolSourceMap.Classify(info.FileName) == ModuleSymbolSource.NotFetchable)
+            {
+                continue;
+            }
+
             ModuleRequest request = new ModuleRequest();
             request.MetadataId = entry.Key;
             request.FileName = info.FileName;

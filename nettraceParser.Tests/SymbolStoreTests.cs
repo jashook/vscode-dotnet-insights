@@ -19,7 +19,11 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 using DotnetInsights.NetTrace.Symbols;
 
@@ -568,6 +572,205 @@ public class SymbolStoreTests
         }
     }
 
+    // A server that cannot be reached must be asked ONCE, not once per module.
+    // Without this, a capture with a dozen unresolved modules multiplies the
+    // per-attempt timeout by twelve - which is how opening a trace on a
+    // network that blackholes the symbol server went from seconds to over an
+    // hour before the timeouts and this breaker were added.
+    //
+    // 127.0.0.1:1 refuses instantly and leaves this machine, so the test stays
+    // hermetic and fast while still exercising the real failure path.
+    [Fact]
+    public void TryGetSymbols_StopsAskingAServerItCouldNotReach()
+    {
+        string cache = NewCacheDirectory();
+
+        try
+        {
+            SymbolServer unreachable = new SymbolServer("http://127.0.0.1:1", false);
+            SymbolStore store = new SymbolStore(cache, new SymbolServer[] { unreachable }, true);
+
+            Assert.Null(store.TryGetSymbols("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "a.so", out _));
+            Assert.Equal(1, store.UnreachableServerCount);
+
+            // A second module must not re-attempt the dead server, and must
+            // still report a miss rather than hanging or throwing.
+            Assert.Null(store.TryGetSymbols("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "b.so", out _));
+            Assert.Equal(1, store.UnreachableServerCount);
+            Assert.Equal(2, store.MissCount);
+        }
+        finally
+        {
+            Directory.Delete(cache, true);
+        }
+    }
+
+    // A server that could not be reached has said NOTHING about whether these
+    // symbols exist, so its failure must not be cached as a permanent miss.
+    // This is not hypothetical: debuginfod.ubuntu.com was observed completing
+    // a TLS handshake and then never sending a byte, on every path, for 180
+    // seconds. Caching that as "no symbols for this build" would mean the
+    // build is never retried once the server recovers.
+    [Fact]
+    public void TryGetSymbols_DoesNotCacheAMissWhenTheServerNeverAnswered()
+    {
+        string cache = NewCacheDirectory();
+
+        try
+        {
+            SymbolServer unreachable = new SymbolServer("http://127.0.0.1:1", false);
+            SymbolStore first = new SymbolStore(cache, new SymbolServer[] { unreachable }, true);
+            first.TryGetSymbols(BuildId, "libcoreclr.so", out _);
+
+            // The result is recorded as RETRYABLE, not as a permanent "no such
+            // symbols" - the distinction being the whole point. A later run
+            // inside the retry window is answered from the marker (so an
+            // outage does not cost the timeout on every capture), and once the
+            // window passes it goes back to the network.
+            string permanentMarker = Path.Combine(cache, BuildId, ".notfound");
+            string retryableMarker = Path.Combine(cache, BuildId, ".unavailable");
+
+            Assert.False(File.Exists(permanentMarker));
+            Assert.True(File.Exists(retryableMarker));
+
+            SymbolStore second = new SymbolStore(cache, new SymbolServer[] { unreachable }, true);
+            Assert.Null(second.TryGetSymbols(BuildId, "libcoreclr.so", out string status));
+            Assert.Contains("retry", status);
+
+            // Aging the marker past the retry window sends the next run back
+            // to the server rather than trusting a verdict never reached.
+            File.SetLastWriteTimeUtc(retryableMarker, DateTime.UtcNow.AddDays(-1));
+
+            SymbolStore third = new SymbolStore(cache, new SymbolServer[] { unreachable }, true);
+            Assert.Null(third.TryGetSymbols(BuildId, "libcoreclr.so", out _));
+            Assert.Equal(1, third.UnreachableServerCount);
+        }
+        finally
+        {
+            Directory.Delete(cache, true);
+        }
+    }
+
+    // A real 404 IS evidence, and is cached so the next open does no network.
+    // Served from a loopback listener so the test stays hermetic while still
+    // exercising a genuine HTTP response rather than a stubbed one.
+    [Fact]
+    public void TryGetSymbols_CachesADefinitiveNotFoundSoTheNextOpenSkipsTheNetwork()
+    {
+        string cache = NewCacheDirectory();
+        HttpListener listener = new HttpListener();
+        int port = GetFreeLoopbackPort();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+
+        int requestCount = 0;
+
+        Task serverTask = Task.Run(() =>
+        {
+            while (listener.IsListening)
+            {
+                HttpListenerContext context;
+
+                try
+                {
+                    context = listener.GetContext();
+                }
+                catch (HttpListenerException)
+                {
+                    return;
+                }
+                catch (ObjectDisposedException)
+                {
+                    return;
+                }
+
+                Interlocked.Increment(ref requestCount);
+                context.Response.StatusCode = 404;
+                context.Response.Close();
+            }
+        });
+
+        try
+        {
+            SymbolServer notFoundServer = new SymbolServer($"http://127.0.0.1:{port}", false);
+
+            SymbolStore first = new SymbolStore(cache, new SymbolServer[] { notFoundServer }, true);
+            Assert.Null(first.TryGetSymbols(BuildId, "libcoreclr.so", out _));
+            Assert.Equal(0, first.UnreachableServerCount);
+            Assert.Equal(1, Volatile.Read(ref requestCount));
+
+            SymbolStore second = new SymbolStore(cache, new SymbolServer[] { notFoundServer }, true);
+            Assert.Null(second.TryGetSymbols(BuildId, "libcoreclr.so", out string status));
+
+            Assert.Contains("cached", status);
+            Assert.Equal(1, Volatile.Read(ref requestCount));
+        }
+        finally
+        {
+            listener.Stop();
+            listener.Close();
+            Directory.Delete(cache, true);
+        }
+    }
+
+    // One server answering 404 while another never answers is NOT a definitive
+    // negative. This is the exact shape of the real failure: Microsoft's server
+    // and the elfutils federation both answered 404 for glibc while
+    // debuginfod.ubuntu.com - the only one that would actually have it - never
+    // responded. Recording that as permanent cached a wrong answer for the
+    // three modules most worth resolving.
+    [Fact]
+    public void TryGetSymbols_DoesNotTreatA404AsDefinitiveWhenAnotherServerNeverAnswered()
+    {
+        string cache = NewCacheDirectory();
+        HttpListener listener = new HttpListener();
+        int port = GetFreeLoopbackPort();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Start();
+
+        Task serverTask = Task.Run(() =>
+        {
+            while (listener.IsListening)
+            {
+                try
+                {
+                    HttpListenerContext context = listener.GetContext();
+                    context.Response.StatusCode = 404;
+                    context.Response.Close();
+                }
+                catch (HttpListenerException) { return; }
+                catch (ObjectDisposedException) { return; }
+            }
+        });
+
+        try
+        {
+            SymbolServer answering = new SymbolServer($"http://127.0.0.1:{port}", false);
+            SymbolServer silent = new SymbolServer("http://127.0.0.1:1", false);
+
+            SymbolStore store = new SymbolStore(cache, new SymbolServer[] { answering, silent }, true);
+            Assert.Null(store.TryGetSymbols(BuildId, "libc.so.6", out _));
+
+            Assert.False(File.Exists(Path.Combine(cache, BuildId, ".notfound")));
+            Assert.True(File.Exists(Path.Combine(cache, BuildId, ".unavailable")));
+        }
+        finally
+        {
+            listener.Stop();
+            listener.Close();
+            Directory.Delete(cache, true);
+        }
+    }
+
+    private static int GetFreeLoopbackPort()
+    {
+        TcpListener probe = new TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        return port;
+    }
+
     // The cache is keyed by build id, so two different builds of the same
     // filename can never collide - the failure mode that makes symbol caches
     // produce confidently wrong answers.
@@ -636,11 +839,48 @@ public class SymbolServerTests
         Assert.Equal("https://symbols.example.com", server.BaseUrl);
     }
 
-    [Fact]
-    public void Default_ConsultsMicrosoftsServer()
+    // The capture names the distribution its modules came from, and that is
+    // the ONLY thing that can say where a distro library's symbols live -
+    // Microsoft's server has .NET's own modules and nothing else. Never
+    // inferred from the machine running the parser, which is routinely a
+    // different OS from the one traced.
+    [Theory]
+    [InlineData("ubuntu", "https://debuginfod.ubuntu.com")]
+    [InlineData("Ubuntu", "https://debuginfod.ubuntu.com")]
+    [InlineData("debian", "https://debuginfod.debian.net")]
+    [InlineData("fedora", "https://debuginfod.fedoraproject.org")]
+    [InlineData("alpine", "https://debuginfod.alpinelinux.org")]
+    public void ForDistribution_MapsAKnownDistributionToItsDebuginfodServer(string distribution, string expectedUrl)
     {
-        Assert.Single(SymbolServer.Default);
+        SymbolServer server = SymbolServer.ForDistribution(distribution);
+
+        Assert.NotNull(server);
+        Assert.True(server.IsDebuginfod);
+        Assert.Equal(expectedUrl, server.BaseUrl);
+    }
+
+    [Fact]
+    public void ForDistribution_ReturnsNothingForADistributionWithNoKnownServer()
+    {
+        Assert.Null(SymbolServer.ForDistribution("some-unknown-distro"));
+    }
+
+    // Microsoft's server FIRST - it is the one that covers .NET's own native
+    // modules, which is where a .NET capture's unresolved native time
+    // overwhelmingly is - then the elfutils federation as a fallback for
+    // distribution libraries the capture did not identify. A capture that DOES
+    // name its distribution gets that distribution's own server appended on
+    // top (see ForDistribution).
+    [Fact]
+    public void Default_ConsultsMicrosoftsServerFirstThenTheFederation()
+    {
+        Assert.Equal(2, SymbolServer.Default.Count);
+
         Assert.Equal(SymbolServer.MicrosoftSymbolServerUrl, SymbolServer.Default[0].BaseUrl);
+        Assert.False(SymbolServer.Default[0].IsDebuginfod);
+
+        Assert.Equal(SymbolServer.FederatedDebuginfodUrl, SymbolServer.Default[1].BaseUrl);
+        Assert.True(SymbolServer.Default[1].IsDebuginfod);
     }
 }
 

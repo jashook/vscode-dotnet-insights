@@ -2168,6 +2168,7 @@ var allocationDatasets = {};
                 document.getElementById('view-profile').innerHTML = cpuProfileHtml;
 
                 wireProfileInnerTabs();
+                wireCpuCategoryTable();
                 setupDetailTableSortHandlers(document.getElementById('profile-tab-hotmethods'));
 
                 // Flame Graph is the default-active inner tab (see
@@ -3724,6 +3725,77 @@ var allocationDatasets = {};
                 }
             }
         }
+    }
+
+    // Expand/collapse for the coarse CPU category summary. Its own delegation
+    // rather than a shared registry, matching how every other expandable table
+    // in these webviews owns its handler (see CLAUDE.md's note on the ranked
+    // table component: the markup and header are shared, the click wiring is
+    // not). Nothing is built lazily here - a category carries at most eight
+    // top methods, so the detail row is already in the DOM and this only
+    // toggles a class.
+    function wireCpuCategoryTable() {
+        var categoryTable = document.getElementById('cpuCategoryTable');
+        if (!categoryTable) {
+            return;
+        }
+
+        categoryTable.addEventListener('click', function (clickEvent) {
+            // The hide button lives in the same row and has its own handler;
+            // letting this run too would expand a row on its way out.
+            if (clickEvent.target.closest('.rowHideBtn')) {
+                return;
+            }
+
+            var categoryRow = clickEvent.target.closest('.cpuCategoryRow');
+            if (!categoryRow) {
+                return;
+            }
+
+            var detailRow = document.getElementById('cpuCategoryDetail' + categoryRow.getAttribute('data-cpu-category'));
+            if (!detailRow) {
+                return;
+            }
+
+            var expand = !categoryRow.classList.contains('expanded');
+
+            // Built on first expand only, then left in the DOM - same lazy
+            // discipline the ranked method rows use, and through the SAME
+            // builder, because the C# exporter emits a category's tree in the
+            // identical node shape as a method's (see
+            // Cpu/CpuProfileJsonExporter.cs's categoryDrillDown).
+            var lazyId = detailRow.getAttribute('data-cpu-category-lazy');
+            if (expand && lazyId !== null) {
+                var drillDown = cpuProfileJson["categoryDrillDown"];
+                var entry = drillDown ? drillDown[parseInt(lazyId, 10)] : null;
+
+                if (entry) {
+                    var cell = detailRow.querySelector('.callerTreeCell');
+                    // The legend sits ABOVE the table, not inside it. A row of
+                    // column labels within the grid changes that table's own
+                    // column sizing and broke the indentation - see
+                    // buildInlineCpuMethodCallerTree's own comment.
+                    cell.innerHTML +=
+                        '<div class="cpuCategoryTreeLegend">Columns: <b>Samples</b> &middot; ' +
+                        '<b>% of category</b> &middot; <b>% of capture</b></div>' +
+                        buildInlineCpuMethodCallerTree(
+                            entry,
+                            cpuProfileJson["methodNames"],
+                            cpuProfileJson["totalSampleCount"],
+                            'cpuCallerForestRoot');
+                }
+
+                detailRow.removeAttribute('data-cpu-category-lazy');
+            }
+
+            categoryRow.classList.toggle('expanded', expand);
+            detailRow.classList.toggle('expanded', expand);
+
+            var marker = categoryRow.querySelector('.cpuCategoryName');
+            if (marker) {
+                marker.innerHTML = (expand ? '\u25be ' : '\u25b8 ') + marker.textContent.trim().slice(2);
+            }
+        });
     }
 
     function wireProfileInnerTabs() {

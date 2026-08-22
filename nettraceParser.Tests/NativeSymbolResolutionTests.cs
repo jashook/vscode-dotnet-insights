@@ -265,6 +265,59 @@ public class NativeSymbolResolutionTests
         Assert.Equal("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", missing[0].BuildId);
     }
 
+    // The runtime's JIT code heap is identified from the DATA - a mapping that
+    // holds managed symbols - and every mapping sharing that file name counts,
+    // because the heap is carved into many mappings and the hottest one on the
+    // reference capture is a stub page with no symbols in it at all.
+    [Fact]
+    public void Build_MarksTheJitCodeHeapAndLabelsItsUnnamedFramesAsStubs()
+    {
+        UniversalSymbolTable table = BuildTable(
+            Mapping(0, 0x1000, 0x2000, "/memfd:doublemapper"),
+            Symbol(0, 0x1100, 0x1200, "instance void [Some.Asm] Ns.Type::Method(object)[OptimizedTier1]"),
+            // A second mapping of the same memfd holding no symbols at all.
+            Mapping(1, 0x5000, 0x6000, "/memfd:doublemapper"));
+
+        Assert.True(table.IsJitCodeModule("/memfd:doublemapper"));
+
+        Assert.True(table.TryResolve(0x5040, out string stubName));
+        Assert.StartsWith(UniversalSymbolTable.JitStubPrefix, stubName);
+        Assert.Contains("doublemapper+0x", stubName);
+    }
+
+    // REGRESSION. "contains ::" does not mean managed - C++ symbols are full
+    // of it. Using that test to decide which modules hold managed code flagged
+    // ICU as a JIT code heap (its symbols look like
+    // icu_78::CollationKeys::writeSortKey...), which re-labelled its
+    // unresolved frames as runtime stubs and, more quietly, counted every ICU
+    // sample as Managed in the derived ThreadSampleType. The assembly bracket
+    // is what identifies the CLR's perf-map form.
+    [Fact]
+    public void Build_DoesNotMistakeNativeCppModulesForJitCodeHeaps()
+    {
+        UniversalSymbolTable table = BuildTable(
+            Mapping(0, 0x1000, 0x9000, "/usr/lib/libicui18n.so.78.2"),
+            Symbol(0, 0x2000, 0x2100, "icu_78::CollationKeys::writeSortKeyUpToQuaternary(icu_78::CollationIterator&)"));
+
+        Assert.False(table.IsJitCodeModule("/usr/lib/libicui18n.so.78.2"));
+
+        // And an address with no symbol stays a plain module offset, so it is
+        // still reported as something whose symbols could be fetched.
+        Assert.True(table.TryResolve(0x5000, out string name));
+        Assert.DoesNotContain(UniversalSymbolTable.JitStubPrefix, name);
+    }
+
+    [Fact]
+    public void TryClassifyManaged_DoesNotCountNativeCppAsManaged()
+    {
+        UniversalSymbolTable table = BuildTable(
+            Mapping(0, 0x1000, 0x9000, "/usr/lib/libicui18n.so.78.2"),
+            Symbol(0, 0x2000, 0x2100, "icu_78::CollationKeys::writeSortKeyUpToQuaternary(icu_78::CollationIterator&)"));
+
+        Assert.True(table.TryClassifyManaged(0x2050, out bool isManaged));
+        Assert.False(isManaged);
+    }
+
     [Fact]
     public void Build_CountsNoCrossProcessOverlapForASingleProcessCapture()
     {

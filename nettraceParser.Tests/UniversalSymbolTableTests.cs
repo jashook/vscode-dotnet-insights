@@ -30,9 +30,9 @@ public class UniversalSymbolNameFormatterTests
     public void FormatSymbolName_RewritesTheClrPerfMapFormIntoNamespaceTypeMethod()
     {
         string formatted = UniversalSymbolTable.FormatSymbolName(
-            "instance void [Roblox.AssetsCore.ClientSideCaching] Roblox.AssetsCore.ClientSideCaching.ExpirableDictionary::TraverseAndPurge(object)[OptimizedTier1]");
+            "instance void [Contoso.Caching] Contoso.Caching.ExpirableDictionary::TraverseAndPurge(object)[OptimizedTier1]");
 
-        Assert.Equal("Roblox.AssetsCore.ClientSideCaching.ExpirableDictionary.TraverseAndPurge [OptimizedTier1]", formatted);
+        Assert.Equal("Contoso.Caching.ExpirableDictionary.TraverseAndPurge [OptimizedTier1]", formatted);
     }
 
     [Fact]
@@ -72,9 +72,9 @@ public class UniversalSymbolNameFormatterTests
     public void FormatSymbolName_IgnoresParenthesesInsideTheReturnType()
     {
         string formatted = UniversalSymbolTable.FormatSymbolName(
-            "instance void modreq([System.Runtime]System.Runtime.CompilerServices.IsExternalInit) [Roblox.AssetDelivery.Api] Roblox.Web.Assets.TokenCacheEntry::set_Token(string)[OptimizedTier1]");
+            "instance void modreq([System.Runtime]System.Runtime.CompilerServices.IsExternalInit) [Contoso.Api] Contoso.Web.TokenCacheEntry::set_Token(string)[OptimizedTier1]");
 
-        Assert.Equal("Roblox.Web.Assets.TokenCacheEntry.set_Token [OptimizedTier1]", formatted);
+        Assert.Equal("Contoso.Web.TokenCacheEntry.set_Token [OptimizedTier1]", formatted);
     }
 
     // REGRESSION. "contains ::" is not enough to identify a managed name -

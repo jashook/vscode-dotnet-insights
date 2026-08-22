@@ -134,6 +134,46 @@ public sealed class UniversalSymbolTable
 
     public int DownloadedModuleSymbolCount => this.downloadedSymbolsByMetadataId.Count;
 
+    // Lower-cased `os` values seen in any module's VersionMetadata ("ubuntu",
+    // "debian", ...). Usually exactly one; a container image built on one
+    // distro running on another can legitimately produce more.
+    private readonly HashSet<string> detectedDistributions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    public IReadOnlyCollection<string> DetectedDistributions => this.detectedDistributions;
+
+    // Names that resolved out of the kernel image. Kernel symbols are plain
+    // lowercase C identifiers with nothing in the NAME that marks them as
+    // kernel - `finish_task_switch` and a libc helper are indistinguishable as
+    // text - so the only reliable signal is the module the address came from,
+    // which only this table knows. Populated as addresses resolve and read by
+    // Cpu/CpuCategoryBuilder to attribute kernel time.
+    private readonly HashSet<string> kernelSymbolNames = new HashSet<string>(StringComparer.Ordinal);
+
+    public bool IsKernelSymbol(string name)
+    {
+        return name != null && this.kernelSymbolNames.Contains(name);
+    }
+
+    // File names of mappings that hold JIT-compiled managed code. Identified
+    // from the DATA rather than by matching a name: a mapping counts if any
+    // managed symbol falls inside it, and then every mapping sharing that file
+    // name counts too. On the reference capture that identifies
+    // /memfd:doublemapper - the runtime's W^X double-mapped code heap, which
+    // holds 5,114 managed symbols, all of them managed.
+    //
+    // Why the "every mapping sharing the name" part matters: the code heap is
+    // carved into many separate mappings and some hold no named method at all.
+    // The hottest single one on the reference capture is a 4KB page with zero
+    // symbols and 46,351 samples in it, which is a stub page - matching only
+    // mappings that directly contain a symbol would have missed exactly the
+    // region that mattered most.
+    private readonly HashSet<string> jitCodeModuleNames = new HashSet<string>(StringComparer.Ordinal);
+
+    public bool IsJitCodeModule(string moduleName)
+    {
+        return moduleName != null && this.jitCodeModuleNames.Contains(moduleName);
+    }
+
     // How many distinct stacks CountFramesByModule aims to examine. See its
     // own comment for why sampling is legitimate there and what the exact
     // version cost.
@@ -242,7 +282,7 @@ public sealed class UniversalSymbolTable
                 }
 
                 range.Name = symbolName;
-                range.IsManagedCode = symbolName.IndexOf("::", StringComparison.Ordinal) >= 0;
+                range.IsManagedCode = IsClrPerfMapName(symbolName);
                 table.symbolRanges.Add(range);
             }
         }
@@ -258,6 +298,7 @@ public sealed class UniversalSymbolTable
         table.mappingRanges.Sort(CompareByStartAddress);
 
         table.OverlappingProcessRangeCount = CountCrossProcessOverlaps(table.mappingRanges);
+        table.IdentifyJitCodeModules();
 
         return table;
     }
@@ -308,7 +349,16 @@ public sealed class UniversalSymbolTable
 
         if (symbolIndex >= 0)
         {
-            return FormatSymbolName(this.symbolRanges[symbolIndex].Name);
+            string resolvedName = FormatSymbolName(this.symbolRanges[symbolIndex].Name);
+
+            int containingMapping = FindContainingRange(this.mappingRanges, instructionPointer);
+
+            if (containingMapping >= 0 && IsKernelModule(this.mappingRanges[containingMapping].Name))
+            {
+                this.kernelSymbolNames.Add(resolvedName);
+            }
+
+            return resolvedName;
         }
 
         int mappingIndex = FindContainingRange(this.mappingRanges, instructionPointer);
@@ -328,6 +378,11 @@ public sealed class UniversalSymbolTable
                 if (moduleSymbols.TryResolve(elfVirtualAddress, out symbolName, out offsetIntoFunction))
                 {
                     symbolName = FormatSymbolName(symbolName);
+
+                    if (IsKernelModule(mapping.Name))
+                    {
+                        this.kernelSymbolNames.Add(symbolName);
+                    }
 
                     // The bare function name, not name+offset - matching how
                     // an in-capture ProcessSymbol resolves, so the two sources
@@ -424,10 +479,30 @@ public sealed class UniversalSymbolTable
     // which makes this the module-file offset. That is correct whenever
     // p_vaddr == p_offset (common) and still a stable, groupable identity when
     // it is not.
-    private static string FormatModuleOffset(AddressRange mapping, long instructionPointer)
+    private string FormatModuleOffset(AddressRange mapping, long instructionPointer)
     {
-        return $"{GetFileNameOnly(mapping.Name)}+0x{ToElfVirtualAddress(mapping, instructionPointer):X}";
+        string moduleOffset = $"{GetFileNameOnly(mapping.Name)}+0x{ToElfVirtualAddress(mapping, instructionPointer):X}";
+
+        // An address in the JIT code heap that no perf-map entry covers is a
+        // runtime-generated stub - precode, a call-counting stub, a jump stub,
+        // a delegate thunk. It is unnamed for a permanent reason, not for a
+        // fixable one: this code is generated at runtime and no symbol file
+        // anywhere describes it. Marking it keeps it out of the "download
+        // symbols and this goes away" bucket, which on the reference capture
+        // is the difference between telling somebody 12% of their profile is
+        // missing symbols and telling them 7% is.
+        if (this.IsJitCodeModule(mapping.Name))
+        {
+            return JitStubPrefix + moduleOffset;
+        }
+
+        return moduleOffset;
     }
+
+    // Deliberately a prefix rather than a suffix: the "module+0xADDR" shape is
+    // what marks an unresolved frame everywhere else, and appending to it
+    // would break that test rather than override it.
+    public const string JitStubPrefix = "[jit] ";
 
     private static long ToElfVirtualAddress(AddressRange mapping, long instructionPointer)
     {
@@ -560,6 +635,26 @@ public sealed class UniversalSymbolTable
         info.BuildId = ExtractJsonString(symbolMetadata, "build_id");
         info.ProgramHeaderVirtualAddress = ParseHex(ExtractJsonString(symbolMetadata, "p_vaddr"));
         info.ProgramHeaderFileOffset = ParseHex(ExtractJsonString(symbolMetadata, "p_offset"));
+
+        // VersionMetadata names the DISTRIBUTION a module came from, e.g.
+        // {"type":"deb","os":"ubuntu","name":"openssl","version":"3.5.5-1ubuntu3.2",...}.
+        // That is the one thing that says where a distro library's symbols can
+        // be found - Microsoft's symbol server has .NET's own modules and
+        // nothing else, so libc, openssl and friends need that distro's own
+        // debuginfod server. Recording it here means the capture answers the
+        // question itself instead of the user having to know which distro the
+        // traced machine ran.
+        string versionMetadata;
+
+        if (TryGetString(record.Fields, "VersionMetadata", out versionMetadata) && versionMetadata != null && versionMetadata.Length > 0)
+        {
+            string operatingSystem = ExtractJsonString(versionMetadata, "os");
+
+            if (operatingSystem != null && operatingSystem.Length > 0)
+            {
+                this.detectedDistributions.Add(operatingSystem.ToLowerInvariant());
+            }
+        }
 
         this.debugInfoByMetadataId[metadataId] = info;
     }
@@ -730,6 +825,58 @@ public sealed class UniversalSymbolTable
         }
 
         return overlapCount;
+    }
+
+    // Whether a symbol name is the CLR's perf-map form for a JIT'd managed
+    // method - "instance void [Some.Assembly] Ns.Type::Method(...)".
+    //
+    // The test is the ASSEMBLY BRACKET, not the presence of "::". This file
+    // already learned that once, in FormatSymbolName, and the naive version
+    // was reintroduced here and caused a second, quieter failure: ICU's C++
+    // symbols (icu_78::CollationKeys::writeSortKeyUpToQuaternary) matched, so
+    // libicui18n was flagged as a module full of managed code. That made it a
+    // "JIT code heap" and re-labelled its unresolved frames as runtime stubs,
+    // and - worse, because it is silent - it made every ICU sample count as
+    // Managed in the derived ThreadSampleType, inflating the managed fraction
+    // the Threading view classifies threads on.
+    private static bool IsClrPerfMapName(string symbolName)
+    {
+        int scopeIndex = symbolName.IndexOf("::", StringComparison.Ordinal);
+
+        if (scopeIndex < 0)
+        {
+            return false;
+        }
+
+        return symbolName.LastIndexOf("] ", scopeIndex, StringComparison.Ordinal) >= 0;
+    }
+
+    // The kernel image, as `dotnet-trace collect-linux` names it. Its mapping
+    // covers the whole upper half of the address space, so every kernel frame
+    // in the capture falls inside it.
+    private static bool IsKernelModule(string moduleName)
+    {
+        return moduleName != null &&
+            (moduleName.EndsWith("vmlinux", StringComparison.Ordinal) ||
+             moduleName.StartsWith("[kernel", StringComparison.Ordinal));
+    }
+
+    private void IdentifyJitCodeModules()
+    {
+        for (int symbolIndex = 0; symbolIndex < this.symbolRanges.Count; ++symbolIndex)
+        {
+            if (!this.symbolRanges[symbolIndex].IsManagedCode)
+            {
+                continue;
+            }
+
+            int mappingIndex = FindContainingRange(this.mappingRanges, this.symbolRanges[symbolIndex].StartAddress);
+
+            if (mappingIndex >= 0)
+            {
+                this.jitCodeModuleNames.Add(this.mappingRanges[mappingIndex].Name);
+            }
+        }
     }
 
     private static string GetFileNameOnly(string path)

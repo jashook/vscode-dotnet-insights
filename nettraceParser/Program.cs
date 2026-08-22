@@ -415,6 +415,20 @@ string symbolCacheDirectory = symbolCacheArgIndex >= 0 && symbolCacheArgIndex + 
     ? args[symbolCacheArgIndex + 1]
     : SymbolStore.DefaultRootDirectory();
 
+// --symbol-path <dir> adds a local build-id directory, searched before any
+// network. The way out when a distribution's debuginfod is unreachable: point
+// this at an extracted dbgsym package tree and the symbols resolve with no
+// server involved at all.
+List<string> localSymbolPaths = new List<string>(SymbolStore.DefaultLocalSearchPaths);
+
+for (int argIndex = 0; argIndex + 1 < args.Length; ++argIndex)
+{
+    if (args[argIndex] == "--symbol-path")
+    {
+        localSymbolPaths.Add(args[argIndex + 1]);
+    }
+}
+
 List<SymbolServer> symbolServers = new List<SymbolServer>(SymbolServer.Default);
 
 for (int argIndex = 0; argIndex + 1 < args.Length; ++argIndex)
@@ -613,7 +627,24 @@ if (isJsonMode)
         // download needs to say what it is doing, which the label does.
         ProgressReporter.BeginPhase("Resolving native symbols", projectorRange.End, projectorRange.End);
 
-        SymbolStore symbolStore = new SymbolStore(symbolCacheDirectory, symbolServers, allowSymbolDownload);
+        // The capture names the distribution its modules came from, so the
+        // matching debuginfod server is added automatically rather than left
+        // for the user to discover - see SymbolServer.ForDistribution. Added
+        // AFTER the configured servers so an explicit --symbol-server still
+        // wins the race for any build id both could serve.
+        List<SymbolServer> serversForThisCapture = new List<SymbolServer>(symbolServers);
+
+        foreach (string distribution in universalSymbolTable.DetectedDistributions)
+        {
+            SymbolServer distributionServer = SymbolServer.ForDistribution(distribution);
+
+            if (distributionServer != null)
+            {
+                serversForThisCapture.Add(distributionServer);
+            }
+        }
+
+        SymbolStore symbolStore = new SymbolStore(symbolCacheDirectory, serversForThisCapture, allowSymbolDownload, localSymbolPaths);
 
         symbolResolution = NativeSymbolResolution.Run(
             universalSymbolTable,
@@ -711,7 +742,7 @@ if (isJsonMode)
     // entirely from inside GcJsonExporter.WriteToFile itself - see that
     // method's own comment for why it calls ProgressReporter directly
     // rather than taking an onProgress parameter like every phase above.
-    ExportTiming exportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, threadingSummaryForJson, stackTable, symbolTable, processName, ticksBinaryPath, captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline);
+    ExportTiming exportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, threadingSummaryForJson, stackTable, symbolTable, processName, ticksBinaryPath, captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline, universalSymbolTable);
     long exportMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 
