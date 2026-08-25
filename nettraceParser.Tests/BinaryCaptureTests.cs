@@ -159,7 +159,7 @@ public class BinaryCaptureTests
         {
             using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
             {
-                timeline = CpuProfileJsonExporter.Write(writer, sampleEvents, stacks.Table, MakeSymbolTable());
+                timeline = CpuProfileJsonExporter.Write(writer, sampleEvents, stacks.Table, MakeSymbolTable(), out _);
             }
 
             document = JsonDocument.Parse(stream.ToArray());

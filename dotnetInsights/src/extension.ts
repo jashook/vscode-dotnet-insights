@@ -402,7 +402,14 @@ export async function activate(context: vscode.ExtensionContext) {
     // a cached 1.9.3 binary dies inside FastSerialization with "Not a
     // understood file format", which reads like a corrupt file rather than an
     // out-of-date tool.
-    const latestNettraceParserVersionNumber = "1.9.4";
+    // Bumped for the Insights feature. NON-OPTIONAL, not housekeeping:
+    // DependencySetup.ts only re-downloads a tool when this string changes, so
+    // without a bump every machine that already has a nettraceParser keeps it
+    // forever, writes no insights sidecar, and the Insights tab renders
+    // permanently disabled - the feature would silently not exist for exactly
+    // the users who already use the extension. See CLAUDE.md's stale-cache
+    // trap, which this repo has already been caught by once.
+    const latestNettraceParserVersionNumber = "1.10.0";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;

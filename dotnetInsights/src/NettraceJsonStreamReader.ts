@@ -53,6 +53,36 @@ export function ticksBinaryPathFor(jsonFilePath: string): string {
     return `${withoutExtension}.ticks.bin`;
 }
 
+// Same derive-don't-embed convention as ticksBinaryPathFor above. The
+// insights report is a sidecar rather than a section of the main JSON so that
+// JSON stays byte-identical to what it was before insights existed - see
+// Program.cs, and the worktree diff that verifies it.
+export function insightsJsonPathFor(jsonFilePath: string): string {
+    const lastDot = jsonFilePath.lastIndexOf(".");
+    const withoutExtension = lastDot === -1 ? jsonFilePath : jsonFilePath.substring(0, lastDot);
+    return `${withoutExtension}.insights.json`;
+}
+
+// Returns null rather than throwing when the sidecar is absent or unreadable.
+// That is not defensive padding: a nettraceParser binary downloaded before
+// this feature shipped writes no sidecar at all, and every machine that
+// already has one keeps it until the version constant forces a redownload
+// (see DependencySetup.ts and CLAUDE.md's stale-cache trap). A missing report
+// has to degrade to "no Insights tab" rather than to a failed open.
+export function readInsightsJson(insightsJsonPath: string, outputChannel?: { appendLine(value: string): void }): any {
+    try {
+        if (!fs.existsSync(insightsJsonPath)) {
+            return null;
+        }
+
+        return JSON.parse(fs.readFileSync(insightsJsonPath).toString());
+    }
+    catch (readError: any) {
+        outputChannel?.appendLine(`nettraceParser: could not read insights sidecar: ${readError && readError.message ? readError.message : String(readError)}`);
+        return null;
+    }
+}
+
 function readTicksBinary(ticksBinaryPath: string, recordCount: number, bytesPerRecord: number): Array<{ RelativeMSec: number; AllocationAmount: number }> {
     const buffer = fs.readFileSync(ticksBinaryPath);
     const ticks: Array<{ RelativeMSec: number; AllocationAmount: number }> = new Array(recordCount);

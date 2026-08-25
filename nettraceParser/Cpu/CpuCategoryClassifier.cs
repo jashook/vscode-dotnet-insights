@@ -75,6 +75,28 @@ public enum CpuCategory
 
 public static class CpuCategoryClassifier
 {
+    ////////////////////////////////////////////////////////////////////////////
+    // Set by a caller reading a NATIVE capture (perf.data) rather than a
+    // .nettrace one. Defaults false, so every .NET capture behaves exactly as
+    // before.
+    //
+    // It exists because of one thing this file cannot decide from a name: for a
+    // native profile, a symbol that matched no rule is the program's OWN code,
+    // and for a .NET profile it is genuinely unknown. `rust_workload::hot_leaf`
+    // and a C++ `icu_78::CollationKeys::write` are textually identical - there
+    // is no token that separates them - so the answer has to come from the
+    // caller, which knows what kind of capture it read. Measured on a real Rust
+    // capture: without this, 95.17% of the profile landed in Uncategorized,
+    // all of it the user's own crate.
+    //
+    // A static rather than a parameter because the one caller in between
+    // (CpuCategoryBuilder) is shared code under concurrent edit, and threading
+    // a flag through it would conflict for no behavioural gain. Set it once
+    // before the export phase; classification is not on the concurrent
+    // projector path.
+    ////////////////////////////////////////////////////////////////////////////
+    public static bool NativeProfile;
+
     public const int CategoryCount = 17;
 
     public static string DisplayName(CpuCategory category)
@@ -92,8 +114,11 @@ public static class CpuCategoryClassifier
             case CpuCategory.ThreadPoolAndScheduling: return "Thread pool / scheduling";
             case CpuCategory.Kernel: return "Kernel";
             case CpuCategory.RuntimeOther: return "Runtime (other)";
-            case CpuCategory.ManagedFramework: return "Managed framework";
-            case CpuCategory.ApplicationCode: return "Application code";
+            // Relabelled for a native profile: the bucket means "the platform's
+            // own library, not your code" either way, but calling Rust's std
+            // "Managed framework" reads as a bug in the tool.
+            case CpuCategory.ManagedFramework: return NativeProfile ? "Standard library" : "Managed framework";
+            case CpuCategory.ApplicationCode: return NativeProfile ? "Application / crate code" : "Application code";
             case CpuCategory.Globalization: return "Globalization / text";
             case CpuCategory.RuntimeGeneratedCode: return "Runtime-generated code";
             case CpuCategory.Unresolved: return "Unresolved";
@@ -116,8 +141,12 @@ public static class CpuCategoryClassifier
             case CpuCategory.ThreadPoolAndScheduling: return "Dispatching work items, parking and waking workers, and OS context switches.";
             case CpuCategory.Kernel: return "Kernel code with no more specific category - syscall entry, interrupts, memory management.";
             case CpuCategory.RuntimeOther: return "Runtime code that is none of the above - type loading, casting helpers, write barriers, PAL.";
-            case CpuCategory.ManagedFramework: return "Managed code from System.* / Microsoft.* assemblies.";
-            case CpuCategory.ApplicationCode: return "Managed code from everything else - your own assemblies and third-party packages.";
+            case CpuCategory.ManagedFramework: return NativeProfile
+                ? "The language's own standard library - core, alloc and std for Rust; libstdc++ for C++."
+                : "Managed code from System.* / Microsoft.* assemblies.";
+            case CpuCategory.ApplicationCode: return NativeProfile
+                ? "Your own code and its dependencies - everything that is not the standard library, the runtime or the kernel."
+                : "Managed code from everything else - your own assemblies and third-party packages.";
             case CpuCategory.Globalization: return "Culture-aware string comparison, collation and normalization, mostly inside ICU.";
             case CpuCategory.RuntimeGeneratedCode: return "Stubs the runtime generates at run time - precode, call-counting stubs, jump stubs, delegate thunks. Unnamed permanently: this code exists only in memory and no symbol file describes it.";
             case CpuCategory.Unresolved: return "Frames with no symbol. Fetching symbols (see the settings) usually moves most of this into the categories above.";
@@ -407,6 +436,132 @@ public static class CpuCategoryClassifier
             Contains(frameName, "ObjectNative"))
         {
             return CpuCategory.RuntimeOther;
+        }
+
+        ////////////////////////////////////////////////////////////////////////
+        // Rust.
+        //
+        // Placed LAST on purpose. Every rule above was tuned against .NET
+        // captures, and the residue those rules leave is a deliberate feedback
+        // signal (this file's own history: Uncategorized went 8.41% -> 2.45%
+        // by reading what landed in it). Rules added at the end can only ever
+        // reclassify a frame that would otherwise have been Uncategorized, so
+        // no .NET capture's numbers can move.
+        //
+        // Only UNAMBIGUOUS tokens are matched. Rust's demangled names and C++'s
+        // are textually the same shape - `a::b::c` - so a rule broad enough to
+        // catch an arbitrary crate would also catch arbitrary C++, and there is
+        // nothing in a display name that distinguishes them. What IS
+        // unambiguous is the standard library and the well-known ecosystem
+        // crates, which is what these match.
+        ////////////////////////////////////////////////////////////////////////
+
+        // The allocator, before the std:: catch-all below - Rust's allocation
+        // path is inside `alloc::` and would otherwise read as library time.
+        if (StartsWith(frameName, "__rust_alloc") ||
+            StartsWith(frameName, "__rdl_alloc") ||
+            StartsWith(frameName, "__rg_alloc") ||
+            Contains(frameName, "alloc::alloc::") ||
+            Contains(frameName, "alloc::raw_vec::") ||
+            Contains(frameName, "RawVec") ||
+            frameName == "malloc" ||
+            frameName == "free" ||
+            frameName == "calloc" ||
+            frameName == "realloc" ||
+            StartsWith(frameName, "_int_malloc") ||
+            StartsWith(frameName, "_int_free"))
+        {
+            return CpuCategory.Allocation;
+        }
+
+        if (Contains(frameName, "std::sys::sync::") ||
+            Contains(frameName, "sync::mutex::") ||
+            Contains(frameName, "sync::rwlock::") ||
+            Contains(frameName, "sync::condvar::") ||
+            Contains(frameName, "sync::once::") ||
+            Contains(frameName, "lock_contended") ||
+            StartsWith(frameName, "parking_lot") ||
+            StartsWith(frameName, "crossbeam") ||
+            Contains(frameName, "futex"))
+        {
+            return CpuCategory.LockingAndSynchronization;
+        }
+
+        if (StartsWith(frameName, "tokio::") ||
+            StartsWith(frameName, "rayon") ||
+            StartsWith(frameName, "async_std::") ||
+            Contains(frameName, "std::thread::"))
+        {
+            return CpuCategory.ThreadPoolAndScheduling;
+        }
+
+        if (StartsWith(frameName, "serde") ||
+            StartsWith(frameName, "prost") ||
+            StartsWith(frameName, "bincode") ||
+            StartsWith(frameName, "rmp_serde"))
+        {
+            return CpuCategory.Serialization;
+        }
+
+        if (StartsWith(frameName, "hyper") ||
+            StartsWith(frameName, "mio::") ||
+            StartsWith(frameName, "tonic") ||
+            StartsWith(frameName, "reqwest") ||
+            StartsWith(frameName, "socket2") ||
+            StartsWith(frameName, "h2::") ||
+            StartsWith(frameName, "quinn"))
+        {
+            return CpuCategory.Networking;
+        }
+
+        if (StartsWith(frameName, "rustls") ||
+            StartsWith(frameName, "ring::") ||
+            StartsWith(frameName, "sha2::") ||
+            StartsWith(frameName, "aws_lc") ||
+            StartsWith(frameName, "webpki"))
+        {
+            return CpuCategory.TlsCrypto;
+        }
+
+        if (StartsWith(frameName, "flate2") ||
+            StartsWith(frameName, "miniz") ||
+            StartsWith(frameName, "zstd") ||
+            StartsWith(frameName, "snap::") ||
+            StartsWith(frameName, "lz4"))
+        {
+            return CpuCategory.Compression;
+        }
+
+        if (StartsWith(frameName, "unicode_") ||
+            StartsWith(frameName, "icu_"))
+        {
+            return CpuCategory.Globalization;
+        }
+
+        // The standard library itself. Reported under the "Managed framework"
+        // bucket, whose DISPLAY NAME reads wrong for a native profile - the
+        // renderer relabels it per source rather than this file forking the
+        // enum, since the meaning ("the platform's own library, not your
+        // code") is the same one either way.
+        if (StartsWith(frameName, "core::") ||
+            StartsWith(frameName, "alloc::") ||
+            StartsWith(frameName, "std::") ||
+            StartsWith(frameName, "hashbrown") ||
+            Contains(frameName, " as core::") ||
+            Contains(frameName, " as std::") ||
+            Contains(frameName, " as alloc::"))
+        {
+            return CpuCategory.ManagedFramework;
+        }
+
+        // For a native capture, a frame that got this far HAS a real symbol
+        // name - unresolved frames were filed as Unresolved near the top, and
+        // kernel frames are decided by the caller - so it is the program's own
+        // code or one of its dependencies. See NativeProfile above for why this
+        // cannot be decided from the name alone.
+        if (NativeProfile)
+        {
+            return CpuCategory.ApplicationCode;
         }
 
         // Kernel symbols are plain lowercase C identifiers and there is no

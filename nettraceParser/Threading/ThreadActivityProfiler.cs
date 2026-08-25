@@ -288,6 +288,17 @@ public static class ThreadActivityProfiler
         "System.Threading.PortableThreadPool+WorkerThread.WorkerThreadStart"
     };
 
+    // Exposed so a consumer ranking a blocked worker's stacks can skip the
+    // pool's own park. A worker classified as BLOCKED can still have the park
+    // as its single most-sampled stack - it parks between the blocking calls,
+    // and only fails the park-share gate on the balance - so naming its top
+    // stack would point the reader at the one frame in the process that is
+    // definitionally not the problem. See Insights/Rules/ThreadingRules.cs.
+    public static bool IsPoolParkFrame(string frameName)
+    {
+        return frameName != null && StartsWithAny(frameName, PoolParkFramePrefixes);
+    }
+
     // Threads the RUNTIME creates and parks by design. Each entry is a thread
     // ENTRY POINT, so matching it anywhere in a stack identifies the whole
     // thread, not a passing call.

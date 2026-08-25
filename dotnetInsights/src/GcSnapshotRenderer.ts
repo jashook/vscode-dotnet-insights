@@ -4,6 +4,7 @@ import * as vscode from 'vscode';
 import { renderAllocationSummaryTable } from "./AllocationSummaryRenderer";
 import { adaptivelyBucketTicks } from "./AllocationTicksBucketer";
 import { renderContentionView } from "./ContentionRenderer";
+import { renderInsightsView } from "./InsightsRenderer";
 import { renderCpuProfileView } from "./CpuProfileRenderer";
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
 import { renderEventOverviewTable } from "./EventOverviewRenderer";
@@ -186,6 +187,21 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     // renderAdjustmentsTable), and resolving a frame index there needs the
     // same pool the server-rendered rows used.
     const threadingMethodNamesJson = escapeJsonForInlineScript(hasThreading ? JSON.stringify(threadingMethodNames) : "[]");
+
+    // "Insights" - the ranked findings from nettraceParser's rule engine (see
+    // InsightsRenderer.ts). Rendered server-side rather than lazily injected
+    // like Heap Contents: the whole report is tens of KB even on a 3GB
+    // capture, so there is nothing here worth deferring.
+    //
+    // Absent whenever the sidecar could not be read, which is specifically
+    // what a nettraceParser binary predating this feature produces - the tab
+    // is then rendered DISABLED with a reason rather than omitted, so a stale
+    // cached binary reads as "this build cannot do that yet" instead of the
+    // feature silently not existing. See CLAUDE.md's stale-cache trap and the
+    // version-constant bump that ships with this.
+    const insightsReport = gcData["insights"];
+    const hasInsights = isNettrace && insightsReport !== null && insightsReport !== undefined;
+    const insightsHtml = hasInsights ? renderInsightsView(insightsReport) : "";
 
     const eventOverview = gcData["eventOverview"];
     const hasOverview = isNettrace && eventOverview !== null && eventOverview !== undefined;
@@ -394,6 +410,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     // splitting) - loaded before snapshotGcStats.js, which calls into it as
     // globals, and shared with the .gcdump webview (see GcDumpRenderer.ts).
     const rankedTableScriptUri = mediaWebviewUri(webview, extensionUri, 'rankedTable.js');
+    const insightsViewScriptUri = mediaWebviewUri(webview, extensionUri, 'insightsView.js');
     const chartZoomScriptUri = mediaWebviewUri(webview, extensionUri, 'chartZoomHelper.js');
     const allocationScriptUri = mediaWebviewUri(webview, extensionUri, 'allocationStats.js');
     const drillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'drillDownStats.js');
@@ -522,7 +539,8 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
                  unconditionally enabled and default-active, exactly as
                  before. -->
             <div class="viewTabBar">
-                ${isNettrace ? `<button class="viewNavButton active" data-view="overview">Overview</button>` : ``}
+                ${isNettrace ? `<button class="viewNavButton${hasInsights ? ` active` : ``}" data-view="insights"${hasInsights ? `` : ` disabled title="This capture was parsed by a nettraceParser build that predates the Insights feature"`}>Insights</button>` : ``}
+                ${isNettrace ? `<button class="viewNavButton${hasInsights ? `` : ` active`}" data-view="overview">Overview</button>` : ``}
                 ${isNettrace ? `<button class="viewNavButton" data-view="profile"${hasCpuProfile ? `` : ` disabled title="No CPU samples in this capture"`}>Profile</button>` : ``}
                 <button class="viewNavButton${isNettrace ? `` : ` active`}" data-view="gc"${isNettrace && !hasGc ? ` disabled title="No GC events in this capture"` : ``}>GC</button>
                 ${isNettrace ? `<button class="viewNavButton" data-view="heapContents"${hasHeapContents ? `` : ` disabled title="No allocation events in this capture"`}>Heap Contents</button>` : ``}
@@ -533,7 +551,9 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
 
             <h2 class="divider">${gcData["processName"]}</h2>
 
-            ${isNettrace ? `<div id="view-overview" class="viewPanel active">${eventOverviewHtml}</div>` : ``}
+            ${isNettrace ? `<div id="view-insights" class="viewPanel${hasInsights ? ` active` : ``}">${insightsHtml}</div>` : ``}
+
+            ${isNettrace ? `<div id="view-overview" class="viewPanel${hasInsights ? `` : ` active`}">${eventOverviewHtml}</div>` : ``}
 
             <div id="view-gc" class="viewPanel${isNettrace ? `` : ` active`}">
 
@@ -747,6 +767,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <span style="display:none" id="cpuProfileHtml"><!--${cpuProfileHtml}--></span>` : ``}
 
             <script nonce="${nonce}" src="${rankedTableScriptUri}"></script>
+            <script nonce="${nonce}" src="${insightsViewScriptUri}"></script>
             <script nonce="${nonce}" src="${chartZoomScriptUri}"></script>
             <script nonce="${nonce}" src="${allocationScriptUri}"></script>
             <script nonce="${nonce}" src="${drillDownScriptUri}"></script>

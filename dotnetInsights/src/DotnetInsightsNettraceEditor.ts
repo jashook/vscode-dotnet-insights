@@ -9,7 +9,7 @@ import * as vscode from 'vscode';
 import { DotnetInsights } from "./dotnetInsights";
 import { DotnetInsightsGcDocument } from "./DotnetInsightsGcEditor";
 import { renderGcSnapshotWebview } from "./GcSnapshotRenderer";
-import { readNettraceJson, ticksBinaryPathFor } from "./NettraceJsonStreamReader";
+import { insightsJsonPathFor, readInsightsJson, readNettraceJson, ticksBinaryPathFor } from "./NettraceJsonStreamReader";
 import { renderNettraceLoadingHtml } from "./NettraceLoadingRenderer";
 import { JSON_READ_RANGE, NettraceProgressTracker, NettraceProgressUpdate, parseProgressLine, RENDER_RANGE, SWAP_RANGE } from "./NettraceProgress";
 
@@ -259,7 +259,18 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
             // one-time ~138MB download for libcoreclr.so and every open after
             // that is free. Ignored entirely by a v5 capture, which needs no
             // symbol server at all.
+            // --insights-json writes the ranked findings report as a SIDECAR
+            // rather than as a section of the main --json output, which keeps
+            // that output byte-identical to what it was before insights
+            // existed (verified by diff against a pre-change build). It also
+            // prints nothing to stdout - see Program.cs. The rules and their
+            // thresholds live entirely in nettraceParser; this side renders
+            // what it is given and never re-derives a finding, so the webview
+            // and the CLI can never disagree about a capture.
+            const insightsJsonOutputPath = insightsJsonPathFor(jsonOutputPath);
+
             const parserArgs = [nettraceFilePath, "--json", jsonOutputPath, "--binary", binaryOutputPath,
+                                "--insights-json", insightsJsonOutputPath,
                                 "--symbol-cache", this.insights.nettraceSymbolCachePath];
 
             const configuration = vscode.workspace.getConfiguration("dotnet-insights");
@@ -340,6 +351,19 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
 
                 readNettraceJson(jsonOutputPath).then((parsed) => {
                     this.insights.outputChannel.appendLine(`nettraceParser: JSON + ticks binary read took ${Date.now() - readStartMs}ms`);
+
+                    // Attached onto the same object the renderer already
+                    // receives, so nothing downstream needs a second
+                    // parameter threaded through it. Absent (null) whenever
+                    // the sidecar could not be read - a cached nettraceParser
+                    // binary predating this feature writes no sidecar at all,
+                    // and that has to degrade to "no Insights tab" rather
+                    // than to a failed open. See DependencySetup.ts's
+                    // version-marker scheme and CLAUDE.md's stale-cache trap.
+                    if (parsed !== null && parsed !== undefined) {
+                        parsed["insights"] = readInsightsJson(insightsJsonOutputPath, this.insights.outputChannel);
+                    }
+
                     resolve(parsed);
                 }).catch((e: any) => {
                     // Logged in full this time - the previous approach
@@ -355,6 +379,13 @@ export class DotnetInsightsNettraceEditor implements vscode.CustomReadonlyEditor
                     }
                     catch (e) {
                         // Best effort cleanup.
+                    }
+
+                    try {
+                        fs.unlinkSync(insightsJsonOutputPath);
+                    }
+                    catch (e) {
+                        // Best effort cleanup - see below.
                     }
 
                     try {

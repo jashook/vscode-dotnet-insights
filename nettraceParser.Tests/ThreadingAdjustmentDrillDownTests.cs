@@ -130,7 +130,7 @@ public class ThreadingAdjustmentDrillDownTests
         using System.IO.MemoryStream stream = new System.IO.MemoryStream();
         using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
         {
-            ThreadingJsonExporter.Write(writer, summary, sampleEvents, new List<ContentionEvent>(), stacks.Table, MakeSymbolTable(), methodNames, methodNameIndexByName);
+            ThreadingJsonExporter.Write(writer, summary, sampleEvents, new List<ContentionEvent>(), stacks.Table, MakeSymbolTable(), methodNames, methodNameIndexByName, out _);
         }
 
         return JsonDocument.Parse(stream.ToArray());
@@ -144,7 +144,7 @@ public class ThreadingAdjustmentDrillDownTests
         using System.IO.MemoryStream stream = new System.IO.MemoryStream();
         using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
         {
-            ThreadingJsonExporter.Write(writer, summary, sampleEvents, new List<ContentionEvent>(), stacks.Table, MakeSymbolTable(), methodNames, methodNameIndexByName);
+            ThreadingJsonExporter.Write(writer, summary, sampleEvents, new List<ContentionEvent>(), stacks.Table, MakeSymbolTable(), methodNames, methodNameIndexByName, out _);
         }
 
         document = JsonDocument.Parse(stream.ToArray());

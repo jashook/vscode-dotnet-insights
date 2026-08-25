@@ -353,8 +353,13 @@ public static class CpuProfileJsonExporter
     // cross-contaminated by any other test exporting a different capture.
     // nativeSymbols is null for a v5 capture and is used only to tell kernel
     // frames apart when bucketing by category - see Cpu/CpuCategoryBuilder.cs.
-    public static SampleTimeline Write(Utf8JsonWriter writer, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, Action<double> onProgress = null, DotnetInsights.NetTrace.Universal.UniversalSymbolTable nativeSymbols = null)
+    // categoryTotals is handed back rather than recomputed by the caller - see
+    // Analysis/CaptureExportArtifacts.cs for why this goes outward instead of
+    // the computation being hoisted upward.
+    public static SampleTimeline Write(Utf8JsonWriter writer, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, out CpuCategoryBuilder.CategoryTotals[] categoryTotals, Action<double> onProgress = null, DotnetInsights.NetTrace.Universal.UniversalSymbolTable nativeSymbols = null)
     {
+        categoryTotals = null;
+
         writer.WriteStartObject();
 
         if (sampleEvents.Count == 0)
@@ -379,7 +384,11 @@ public static class CpuProfileJsonExporter
             writer.WritePropertyName("hotMethodDrillDown");
             writer.WriteStartArray();
             writer.WriteEndArray();
-            CpuCategoryBuilder.Write(writer, new CpuCategoryBuilder.CategoryTotals[CpuCategoryClassifier.CategoryCount], 0, null);
+            // The zeroed shape, and the same array is handed back - a capture
+            // with no samples has categories that are all zero, which is a
+            // real answer and not a missing one.
+            categoryTotals = new CpuCategoryBuilder.CategoryTotals[CpuCategoryClassifier.CategoryCount];
+            CpuCategoryBuilder.Write(writer, categoryTotals, 0, null);
             writer.WritePropertyName("categoryDrillDown");
             writer.WriteStartArray();
             writer.WriteEndArray();
@@ -716,7 +725,7 @@ public static class CpuProfileJsonExporter
         // frame it needs has already been through symbolTable.ResolveId, so
         // this adds no resolution work of its own.
         Dictionary<int, CpuCategory> categoryByFrameId;
-        CpuCategoryBuilder.CategoryTotals[] categoryTotals = CpuCategoryBuilder.Build(sampleEvents, stackTable, symbolTable, nativeSymbols, out categoryByFrameId);
+        categoryTotals = CpuCategoryBuilder.Build(sampleEvents, stackTable, symbolTable, nativeSymbols, out categoryByFrameId);
         CpuCategoryBuilder.Write(writer, categoryTotals, sampleEvents.Count, symbolTable);
 
         writer.WritePropertyName("hotMethodDrillDown");

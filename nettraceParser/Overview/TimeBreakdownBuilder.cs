@@ -41,6 +41,7 @@ namespace DotnetInsights.NetTrace.Overview {
 
 using System;
 using System.Collections.Generic;
+using System.Text.Json.Serialization;
 using System.Runtime.InteropServices;
 
 using DotnetInsights.NetTrace.Contention;
@@ -88,6 +89,12 @@ public readonly struct TimeBreakdown
     public readonly double IdlePercent;
     public readonly double CpuBoundPercent;
 
+    // Tells System.Text.Json how to rebuild this from the MCP cache - every
+    // field is readonly, so there is nothing for it to set afterwards. The
+    // parameter names match the field names case-insensitively, which is what
+    // the binding relies on; renaming one without the other breaks the cache
+    // read rather than the compile.
+    [JsonConstructor]
     public TimeBreakdown(bool hasCaptureDuration, double captureDurationMSec, double gcPercent, double gcPauseMSec, double contentionPercent, double contentionWaitMSec, double averageThreadsBlocked, bool hasCpuSampleBreakdown, double idlePercent, double cpuBoundPercent)
     {
         this.HasCaptureDuration = hasCaptureDuration;

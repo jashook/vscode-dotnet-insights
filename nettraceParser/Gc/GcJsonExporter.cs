@@ -29,6 +29,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Text.Json;
 
+using DotnetInsights.NetTrace.Analysis;
 using DotnetInsights.NetTrace.Contention;
 using DotnetInsights.NetTrace.Cpu;
 using DotnetInsights.NetTrace.Exceptions;
@@ -90,11 +91,16 @@ public static class GcJsonExporter
     // back so Binary/CpuBinarySections.cs can encode the SAME values into the
     // binary container in the same run - that shared origin is what lets
     // --json act as an oracle the binary section is diffed against.
-    public static ExportTiming WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, ThreadingSummary threadingSummary, StackTable stackTable, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath, double captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline, DotnetInsights.NetTrace.Universal.UniversalSymbolTable nativeSymbols = null)
+    public static ExportTiming WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, ThreadingSummary threadingSummary, StackTable stackTable, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath, double captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline, out CaptureExportArtifacts exportArtifacts, DotnetInsights.NetTrace.Universal.UniversalSymbolTable nativeSymbols = null)
     {
         // Stays null when this capture has no CPU samples at all - the same
         // condition under which the "cpuProfile" JSON key is never written.
         cpuSampleTimeline = null;
+
+        // The three whole-capture aggregates computed below, handed back so
+        // the insight rules and the MCP surface can read them without a second
+        // pass over every CPU sample - see Analysis/CaptureExportArtifacts.cs.
+        exportArtifacts = new CaptureExportArtifacts();
 
         // Permanent (not throwaway) per-sub-writer timing - see
         // ExportTiming's own comment on why.
@@ -188,6 +194,7 @@ public static class GcJsonExporter
             // phase - a single pass over already-in-memory lists, negligible
             // next to any real sub-writer phase either side of it.
             TimeBreakdown timeBreakdown = TimeBreakdownBuilder.Build(gcEvents, contentionEvents, sampleEvents, stackTable, symbolTable, captureDurationMSec);
+            exportArtifacts.TimeBreakdown = timeBreakdown;
 
             writer.WritePropertyName("timeBreakdown");
             writer.WriteStartObject();
@@ -209,7 +216,8 @@ public static class GcJsonExporter
             writer.WritePropertyName("cpuProfile");
             ProgressReporter.BeginPhase("Exporting CPU profile", subWriterRanges.Cpu.Start, subWriterRanges.Cpu.End);
             subStopwatch.Restart();
-            cpuSampleTimeline = CpuProfileJsonExporter.Write(writer, sampleEvents, stackTable, symbolTable, ProgressReporter.ReportFraction, nativeSymbols);
+            cpuSampleTimeline = CpuProfileJsonExporter.Write(writer, sampleEvents, stackTable, symbolTable, out CpuCategoryBuilder.CategoryTotals[] categoryTotals, ProgressReporter.ReportFraction, nativeSymbols);
+            exportArtifacts.CategoryTotals = categoryTotals;
             cpuMs = subStopwatch.ElapsedMilliseconds;
             ProgressReporter.CompletePhase();
 
@@ -234,7 +242,8 @@ public static class GcJsonExporter
             Dictionary<string, int> threadingMethodNameIndexByName = new Dictionary<string, int>();
             ProgressReporter.BeginPhase("Classifying threads", subWriterRanges.Threading.Start, subWriterRanges.Threading.End);
             subStopwatch.Restart();
-            ThreadingJsonExporter.Write(writer, threadingSummary, sampleEvents, contentionEvents, stackTable, symbolTable, threadingMethodNames, threadingMethodNameIndexByName);
+            ThreadingJsonExporter.Write(writer, threadingSummary, sampleEvents, contentionEvents, stackTable, symbolTable, threadingMethodNames, threadingMethodNameIndexByName, out ThreadActivityProfileSet threadProfiles);
+            exportArtifacts.ThreadProfiles = threadProfiles;
             threadingMs = subStopwatch.ElapsedMilliseconds;
             ProgressReporter.CompletePhase();
 

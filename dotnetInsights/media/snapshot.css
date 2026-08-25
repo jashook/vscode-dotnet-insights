@@ -2957,3 +2957,140 @@ td.rowHideColumn:hover
 {
     margin-left: 4px;
 }
+
+/*
+ * Insights view (src/InsightsRenderer.ts).
+ *
+ * Colour comes from `color: inherit` plus opacity and a left border rather
+ * than hard-coded rgba, for the reason already recorded above for
+ * .methodTypePrefix and friends: these webviews follow the VS Code theme, and
+ * a near-black glyph on a dark theme is invisible. Severity is carried by a
+ * border and an uppercase badge, both of which read on either theme.
+ */
+
+.insightsView {
+    padding: 0 0.5em;
+}
+
+.insightCard {
+    margin: 0.9em 0;
+    padding: 0.7em 0.9em;
+    border-left: 3px solid currentColor;
+    background: rgba(127, 127, 127, 0.07);
+}
+
+/*
+ * Severity is a border-left weight/opacity, not a hue, so it survives a theme
+ * that inverts the foreground. The three are visually ordered: critical is a
+ * full-strength rule, info a faint one.
+ */
+.insightCard.insightSeverity-critical { border-left-width: 5px; opacity: 1; }
+.insightCard.insightSeverity-warning { border-left-width: 3px; opacity: 1; }
+.insightCard.insightSeverity-info { border-left-width: 2px; }
+.insightCard.insightSeverity-none { border-left-style: dashed; }
+
+.insightHeader {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6em;
+}
+
+.insightSeverityBadge {
+    text-transform: uppercase;
+    font-size: 0.72em;
+    letter-spacing: 0.08em;
+    opacity: 0.75;
+    flex: 0 0 auto;
+    min-width: 5.2em;
+}
+
+.insightHeadline {
+    font-weight: 600;
+    font-size: 1.02em;
+}
+
+.insightMeta {
+    display: flex;
+    gap: 1.2em;
+    font-size: 0.82em;
+    opacity: 0.6;
+    margin: 0.25em 0 0.6em 0;
+}
+
+.insightEvidenceTable {
+    border-collapse: collapse;
+    margin: 0.4em 0 0.7em 0;
+    width: auto;
+}
+
+.insightEvidenceTable td {
+    padding: 0.12em 1.2em 0.12em 0;
+    vertical-align: top;
+    border: none;
+    text-align: left;
+}
+
+.insightEvidenceLabel { opacity: 0.7; white-space: nowrap; }
+.insightEvidenceValue { font-variant-numeric: tabular-nums; }
+.insightEvidenceNested .insightEvidenceLabel { padding-left: 1.4em; opacity: 0.55; }
+
+.insightDetail {
+    margin: 0.5em 0;
+    max-width: 62em;
+    line-height: 1.45;
+    opacity: 0.9;
+}
+
+/*
+ * The firing condition, verbatim from the rule. Present so a reader can argue
+ * with the rule rather than only with its conclusion - see Insights/Insight.cs.
+ */
+.insightThreshold {
+    font-size: 0.85em;
+    opacity: 0.6;
+    margin: 0.4em 0;
+}
+
+.insightActions {
+    margin: 0.4em 0 0.5em 0;
+    padding-left: 1.3em;
+    max-width: 62em;
+    line-height: 1.4;
+}
+
+.insightLinks { margin-top: 0.5em; }
+
+.insightLink {
+    margin-right: 0.5em;
+    cursor: pointer;
+}
+
+.insightAuditSection { margin: 1.5em 0 1em 0; }
+
+.insightAuditToggle { cursor: pointer; }
+
+.insightAuditNote {
+    font-size: 0.85em;
+    opacity: 0.7;
+    max-width: 62em;
+    margin: 0.7em 0;
+}
+
+.insightAuditTable {
+    border-collapse: collapse;
+    width: 100%;
+}
+
+.insightAuditTable td {
+    padding: 0.15em 1em 0.15em 0;
+    vertical-align: top;
+    border: none;
+    text-align: left;
+    font-size: 0.88em;
+}
+
+.insightAuditOutcome { white-space: nowrap; opacity: 0.65; width: 1%; }
+.insightAuditId { white-space: nowrap; opacity: 0.85; width: 1%; }
+.insightAuditDetail { opacity: 0.7; }
+
+.insightAuditOutcome-fired .insightAuditOutcome { opacity: 1; font-weight: 600; }

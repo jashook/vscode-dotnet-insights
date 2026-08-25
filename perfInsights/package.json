@@ -1,0 +1,73 @@
+{
+  "name": "perf-insights",
+  "displayName": "Perf Insights",
+  "description": "Inspect Linux perf.data captures - CPU hot methods, call trees and thread activity - for native code (Rust, C, C++).",
+  "version": "0.1.0",
+  "publisher": "jashoo",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Debuggers",
+    "Visualization"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "perfInsights.edit",
+        "displayName": "Perf Insights",
+        "selector": [
+          {
+            "filenamePattern": "perf.data"
+          },
+          {
+            "filenamePattern": "*.perf"
+          },
+          {
+            "filenamePattern": "*.perfdata"
+          },
+          {
+            "filenamePattern": "*.perf.data"
+          },
+          {
+            "filenamePattern": "perf.stacks"
+          },
+          {
+            "filenamePattern": "*.stacks"
+          },
+          {
+            "filenamePattern": "*.perf.stacks"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "configuration": {
+      "title": "Perf Insights",
+      "properties": {
+        "perf-insights.perfParserPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to a local perfParser binary. Leave empty to use the bundled one."
+        },
+        "perf-insights.symbolPath": {
+          "type": "string",
+          "default": "",
+          "description": "Extra directory to search for debug symbols, in the conventional build-id layout (<dir>/<first 2 hex>/<remaining 38>.debug). Searched before ~/.debug/.build-id and /usr/lib/debug/.build-id."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "sync-shared": "node scripts/sync-shared.js",
+    "compile": "npm run sync-shared && tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.4.0"
+  }
+}

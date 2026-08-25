@@ -23,6 +23,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using DotnetInsights.NetTrace;
+using DotnetInsights.NetTrace.Analysis;
 using DotnetInsights.NetTrace.Binary;
 using DotnetInsights.NetTrace.Contention;
 using DotnetInsights.NetTrace.Cpu;
@@ -30,6 +31,8 @@ using DotnetInsights.NetTrace.Diff;
 using DotnetInsights.NetTrace.Exceptions;
 using DotnetInsights.NetTrace.Gc;
 using DotnetInsights.NetTrace.GcDump;
+using DotnetInsights.NetTrace.Insights;
+using DotnetInsights.NetTrace.Mcp;
 using DotnetInsights.NetTrace.Overview;
 using DotnetInsights.NetTrace.Progress;
 using DotnetInsights.NetTrace.Rundown;
@@ -40,7 +43,9 @@ using DotnetInsights.NetTrace.Universal;
 if (args.Length < 1)
 {
     Console.WriteLine("Usage: nettraceParser <file.nettrace> [--json <output.json>] [--dump-fields <EventName>]");
+    Console.WriteLine("       nettraceParser <file.nettrace> --insights [--insights-all] [--insights-json <out.json>] [--fail-on <info|warning|critical>]");
     Console.WriteLine("       nettraceParser --diff <baseline.nettrace> <comparison.nettrace> --json <output.json>");
+    Console.WriteLine("       nettraceParser --mcp [--cache <dir>]   (Model Context Protocol server over stdio)");
     return;
 }
 
@@ -160,6 +165,33 @@ if (gcDumpArgIndex >= 0)
     // value-returning one here would change the inferred entry point's
     // return type and break all of them.
     Environment.ExitCode = GcDumpCommand.Run(args, args[gcDumpArgIndex + 1]);
+    return;
+}
+
+// --mcp speaks the Model Context Protocol over stdio, so an agent can query a
+// parsed capture directly instead of being handed a 53MB JSON export. Purely
+// additive: without this flag the binary behaves exactly as it did before, and
+// nothing below this block runs differently because the flag exists.
+//
+// Dispatched here, ahead of every capture-reading path, because it takes no
+// capture path of its own - captures arrive through the open_capture tool.
+if (Array.IndexOf(args, "--mcp") >= 0)
+{
+    // STDOUT IS THE PROTOCOL from this point on. ProgressReporter is never
+    // enabled on this path (it writes to stderr, but the phases it would
+    // report belong to a tool call nobody is watching), and every diagnostic
+    // goes to stderr explicitly.
+    int mcpCacheArgIndex = Array.IndexOf(args, "--cache");
+    string mcpCacheDirectory = mcpCacheArgIndex >= 0 && mcpCacheArgIndex + 1 < args.Length
+        ? args[mcpCacheArgIndex + 1]
+        : CaptureAnalysisCache.DefaultCacheDirectory();
+
+    McpServer mcpServer = new McpServer(BuildAnalysisForPath, mcpCacheDirectory, Console.Error);
+
+    Console.Error.WriteLine($"nettraceParser MCP server ready (cache: {mcpCacheDirectory})");
+
+    mcpServer.Run(Console.In, Console.Out);
+
     return;
 }
 
@@ -285,6 +317,107 @@ static CaptureProfile BuildProfileForDiff(string captureFilePath, double progres
     return profile;
 }
 
+// Builds the CaptureAnalysis model for one capture, for the MCP server (see
+// Mcp/McpServer.cs). Modelled on BuildProfileForDiff above and for the same
+// reason: the --json path's own pipeline is inlined into the top-level
+// statements around its concurrent projector tasks and its export, none of
+// which applies here.
+//
+// SEQUENTIAL, not the eight concurrent tasks the --json path uses. This runs
+// inside a tool call on a server that may be answering about several captures,
+// so predictable memory and a predictable single core matter more than the
+// ~1.2s the concurrency saves - and unlike an interactive file open, nobody is
+// watching a progress bar. ProgressReporter is left disabled throughout,
+// which also keeps stdout clean: in MCP mode stdout IS the protocol.
+static CaptureAnalysis BuildAnalysisForPath(string captureFilePath)
+{
+    long noGcBudget = ReadPhaseGcSuppression.ComputeBudgetBytes(new FileInfo(captureFilePath).Length, GC.GetGCMemoryInfo().TotalAvailableMemoryBytes);
+    bool suppressedGc = ReadPhaseGcSuppression.TryStart(noGcBudget);
+
+    NettraceFile captureFile = NettraceFile.Read(captureFilePath);
+
+    if (suppressedGc)
+    {
+        ReadPhaseGcSuppression.End();
+    }
+
+    long analysisReferenceQpc = captureFile.Header.SyncTimeQPC;
+    int analysisPointerSize = captureFile.Header.PointerSize;
+    long analysisQpcFrequency = captureFile.Header.QPCFrequency;
+    DateTime analysisSyncTimeUtc = captureFile.Header.SyncTimeUtc;
+    int analysisFormatVersion = captureFile.FormatVersion;
+    int analysisProcessorCount = captureFile.Header.NumberOfProcessors;
+    int analysisProcessId = captureFile.Header.ProcessId;
+
+    List<GcEvent> analysisGcEvents = GcEventProjector.Project(captureFile.Events, analysisPointerSize, analysisQpcFrequency, analysisSyncTimeUtc, analysisReferenceQpc);
+    List<AllocationEvent> analysisAllocationEvents = AllocationEventProjector.Project(captureFile.Events, analysisPointerSize, analysisQpcFrequency, analysisSyncTimeUtc, analysisReferenceQpc);
+    List<ExceptionEvent> analysisExceptionEvents = ExceptionEventProjector.Project(captureFile.Events, analysisPointerSize, analysisQpcFrequency, analysisSyncTimeUtc, analysisReferenceQpc);
+    MethodSymbolTable analysisSymbolTable = MethodSymbolTable.Build(captureFile.Events, analysisPointerSize, analysisQpcFrequency, analysisReferenceQpc);
+
+    // v6 only, and the sole symbol source on that path - without it every
+    // frame resolves to a bare hex address. Same reasoning as the diff path's
+    // own copy of this.
+    UniversalSymbolTable analysisNativeSymbols = null;
+
+    if (analysisFormatVersion >= DotnetInsights.NetTrace.V6.V6Format.MajorVersion)
+    {
+        analysisNativeSymbols = UniversalSymbolTable.Build(captureFile.Events, captureFile.V6Threads);
+        analysisSymbolTable.SetNativeSymbols(analysisNativeSymbols);
+    }
+
+    List<SampleEvent> analysisSampleEvents = SampleProfileEventProjector.Project(captureFile.Events, analysisQpcFrequency, analysisReferenceQpc);
+    List<ContentionEvent> analysisContentionEvents = ContentionEventProjector.Project(captureFile.Events, analysisPointerSize, analysisQpcFrequency, analysisSyncTimeUtc, analysisReferenceQpc);
+    ThreadingSummary analysisThreadingSummary = ThreadingEventProjector.Project(captureFile.Events, analysisPointerSize, analysisQpcFrequency, analysisReferenceQpc);
+
+    int analysisTotalEventCount = captureFile.Events.Count;
+    double analysisCaptureDurationMSec = ComputeCaptureDurationMSec(captureFile.Events, analysisQpcFrequency);
+
+    // Only a v6 capture reaches this - its samples carry no ThreadSampleType,
+    // so one is derived from whether each leaf landed in managed code. Must
+    // run before the thread classification below, which reads it.
+    if (analysisNativeSymbols != null)
+    {
+        UniversalSampleTypeClassifier.Apply(analysisSampleEvents, captureFile.Stacks, analysisNativeSymbols);
+    }
+
+    StackTable analysisStackTable = captureFile.Stacks;
+    captureFile = null;
+
+    CpuCategoryBuilder.CategoryTotals[] analysisCategoryTotals = null;
+    ThreadActivityProfileSet analysisThreadProfiles = null;
+
+    if (analysisSampleEvents.Count > 0)
+    {
+        analysisCategoryTotals = CpuCategoryBuilder.Build(analysisSampleEvents, analysisStackTable, analysisSymbolTable, analysisNativeSymbols, out _);
+        analysisThreadProfiles = ThreadActivityProfiler.Build(analysisSampleEvents, analysisContentionEvents, analysisStackTable, analysisSymbolTable);
+    }
+
+    TimeBreakdown analysisTimeBreakdown = TimeBreakdownBuilder.Build(analysisGcEvents, analysisContentionEvents, analysisSampleEvents, analysisStackTable, analysisSymbolTable, analysisCaptureDurationMSec);
+
+    return CaptureAnalysisBuilder.Build(
+        captureFilePath,
+        Path.GetFileNameWithoutExtension(captureFilePath),
+        analysisFormatVersion,
+        analysisSyncTimeUtc,
+        analysisProcessorCount,
+        analysisProcessId,
+        analysisTotalEventCount,
+        analysisCaptureDurationMSec > 0,
+        analysisCaptureDurationMSec,
+        analysisGcEvents,
+        analysisAllocationEvents,
+        analysisExceptionEvents,
+        analysisContentionEvents,
+        analysisSampleEvents,
+        analysisThreadingSummary,
+        analysisThreadProfiles,
+        analysisCategoryTotals,
+        analysisTimeBreakdown,
+        analysisStackTable,
+        analysisSymbolTable,
+        analysisNativeSymbols != null ? "derived" : "runtime");
+}
+
 // Whole-capture wall-clock span on the same axis the projectors use - the
 // same min/max scan the --json path performs inline.
 static double ComputeCaptureDurationMSec(List<EventRecord> events, long qpcFrequency)
@@ -349,8 +482,50 @@ string ticksBinaryPath = isJsonMode ? Path.ChangeExtension(jsonOutputPath, ".tic
 int binaryArgIndex = Array.IndexOf(args, "--binary");
 string binaryOutputPath = binaryArgIndex >= 0 && binaryArgIndex + 1 < args.Length ? args[binaryArgIndex + 1] : null;
 
+// --insights runs the same pipeline as --json but writes a ranked, human
+// readable findings report to STDOUT and skips the export entirely. It is a
+// first-class standalone mode, not a side effect of --json: this is the
+// surface thresholds get calibrated against (a run over the capture corpus,
+// no VS Code anywhere in the loop) and the one anybody scripting this tool
+// will read. --insights-all additionally prints the audit list of every rule
+// that did NOT fire, with what it measured - see Insights/Insight.cs for why
+// that list exists at all.
+bool showInsightsAuditList = Array.IndexOf(args, "--insights-all") >= 0;
+bool printInsightsReport = Array.IndexOf(args, "--insights") >= 0 || showInsightsAuditList;
+bool isInsightsMode = printInsightsReport;
+
+// The same report, machine readable, without needing --json's full export.
+int insightsJsonArgIndex = Array.IndexOf(args, "--insights-json");
+string insightsJsonOutputPath = insightsJsonArgIndex >= 0 && insightsJsonArgIndex + 1 < args.Length ? args[insightsJsonArgIndex + 1] : null;
+
+// --insights-json on its own computes the report and writes the file without
+// printing anything. That is the form the VS Code extension uses: it already
+// drains this process's stdout, and a text report there would be pure waste.
+// The report is a SIDECAR rather than a section of --json's own output, which
+// keeps that output byte-identical to what it was before insights existed -
+// the same convention the allocation ticks sidecar already follows.
+if (insightsJsonOutputPath != null)
+{
+    isInsightsMode = true;
+}
+
+// --fail-on <info|warning|critical> sets a non-zero exit code when an insight
+// at or above that severity fires, so a capture can gate a CI job. Absent the
+// flag the exit code is unchanged, which is what keeps every existing caller
+// of this tool behaving exactly as it did.
+int failOnArgIndex = Array.IndexOf(args, "--fail-on");
+string failOnSeverity = failOnArgIndex >= 0 && failOnArgIndex + 1 < args.Length ? args[failOnArgIndex + 1] : null;
+
+// Both --json and --insights need the full projector pipeline; only --json
+// needs the export that follows it.
+bool isPipelineMode = isJsonMode || isInsightsMode;
+
 if (isJsonMode)
 {
+    // Deliberately gated on --json alone, not on isPipelineMode. PROGRESS
+    // lines exist for the extension's progress bar to read off stderr; on a
+    // plain CLI run they are noise in front of the report, and `--insights
+    // 2>/dev/null` should not be the way to get clean output.
     ProgressReporter.Enable();
 }
 
@@ -439,7 +614,7 @@ for (int argIndex = 0; argIndex + 1 < args.Length; ++argIndex)
     }
 }
 
-if (isJsonMode)
+if (isPipelineMode)
 {
     // Computed now (not before Read) since it needs file.Events.Count,
     // known only once the read phase actually finishes - see
@@ -716,6 +891,15 @@ if (isJsonMode)
     // EventRecord/SampleEvent's own long[] field anyway.
     StackTable stackTable = file.Stacks;
 
+    // Header fields the insight report identifies the capture by. Pulled into
+    // locals here for the same reason stackTable is: `file` is dropped a few
+    // lines below, and reading anything off it after that is an immediate
+    // NullReferenceException.
+    int fileFormatVersion = file.FormatVersion;
+    DateTime captureSyncTimeUtc = file.Header.SyncTimeUtc;
+    int captureNumberOfProcessors = file.Header.NumberOfProcessors;
+    int captureProcessId = file.Header.ProcessId;
+
     // Nothing past this point ever reads file/file.Events again -
     // GcEventProjector.Project, AllocationEventProjector.Project,
     // ExceptionEventProjector.Project, EventOverviewBuilder.Build,
@@ -738,12 +922,25 @@ if (isJsonMode)
 
     string processName = Path.GetFileNameWithoutExtension(filePath);
 
-    // The export phase's own progress reporting (5 sub-writer phases) is driven
-    // entirely from inside GcJsonExporter.WriteToFile itself - see that
-    // method's own comment for why it calls ProgressReporter directly
-    // rather than taking an onProgress parameter like every phase above.
-    ExportTiming exportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, threadingSummaryForJson, stackTable, symbolTable, processName, ticksBinaryPath, captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline, universalSymbolTable);
-    long exportMs = phaseStopwatch.ElapsedMilliseconds;
+    // Conditional on --json, not on isPipelineMode: an --insights run needs
+    // the projections above but nothing this writes, and making it pay for a
+    // 54MB export it then deletes would put the calibration loop's turnaround
+    // in the wrong place entirely.
+    ExportTiming exportTiming = default;
+    long exportMs = 0;
+    CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline = null;
+    CaptureExportArtifacts exportArtifacts = null;
+
+    if (isJsonMode)
+    {
+        // The export phase's own progress reporting (5 sub-writer phases) is driven
+        // entirely from inside GcJsonExporter.WriteToFile itself - see that
+        // method's own comment for why it calls ProgressReporter directly
+        // rather than taking an onProgress parameter like every phase above.
+        exportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, threadingSummaryForJson, stackTable, symbolTable, processName, ticksBinaryPath, captureDurationMSec, out cpuSampleTimeline, out exportArtifacts, universalSymbolTable);
+        exportMs = phaseStopwatch.ElapsedMilliseconds;
+    }
+
     phaseStopwatch.Restart();
 
     // The binary container the extension will consume instead of the JSON -
@@ -770,6 +967,84 @@ if (isJsonMode)
     // keeping them apart is what makes that trade visible run to run. Reads
     // 0ms without --binary, which is the extension's current path.
     long binaryExportMs = phaseStopwatch.ElapsedMilliseconds;
+    phaseStopwatch.Restart();
+
+    // Insights. Builds the compact CaptureAnalysis model (see
+    // Analysis/CaptureAnalysis.cs) and runs every rule over it.
+    //
+    // On a --json run the three whole-capture aggregates the model needs were
+    // already computed by the export and handed back in exportArtifacts, so
+    // nothing here re-walks the CPU samples. On an --insights-only run there
+    // was no export, so they are built here - once. Either path computes each
+    // exactly once, which is the entire reason CaptureExportArtifacts exists.
+    long insightsMs = 0;
+    InsightReport insightReport = null;
+
+    if (isInsightsMode)
+    {
+        if (exportArtifacts == null)
+        {
+            exportArtifacts = new CaptureExportArtifacts();
+            exportArtifacts.TimeBreakdown = TimeBreakdownBuilder.Build(gcEventsForJson, contentionEventsForJson, sampleEventsForJson, stackTable, symbolTable, captureDurationMSec);
+
+            if (sampleEventsForJson.Count > 0)
+            {
+                exportArtifacts.CategoryTotals = CpuCategoryBuilder.Build(sampleEventsForJson, stackTable, symbolTable, universalSymbolTable, out _);
+                exportArtifacts.ThreadProfiles = ThreadActivityProfiler.Build(sampleEventsForJson, contentionEventsForJson, stackTable, symbolTable);
+            }
+        }
+
+        // "derived" only ever applies to a v6 capture, whose samples carry no
+        // ThreadSampleType and had one inferred - see
+        // Universal/UniversalSampleTypeClassifier.cs. Reported all the way out
+        // to the report and the webview because the threading thresholds were
+        // calibrated against the runtime's own signal, not this one.
+        string sampleTypeSource = universalSymbolTable != null ? "derived" : "runtime";
+
+        CaptureAnalysis captureAnalysis = CaptureAnalysisBuilder.Build(
+            filePath,
+            processName,
+            fileFormatVersion,
+            captureSyncTimeUtc,
+            captureNumberOfProcessors,
+            captureProcessId,
+            totalEventCount,
+            captureDurationMSec > 0,
+            captureDurationMSec,
+            gcEventsForJson,
+            allocationEventsForJson,
+            exceptionEventsForJson,
+            contentionEventsForJson,
+            sampleEventsForJson,
+            threadingSummaryForJson,
+            exportArtifacts.ThreadProfiles,
+            exportArtifacts.CategoryTotals,
+            exportArtifacts.TimeBreakdown,
+            stackTable,
+            symbolTable,
+            sampleTypeSource);
+
+        insightReport = InsightEngine.Run(captureAnalysis);
+        insightsMs = phaseStopwatch.ElapsedMilliseconds;
+
+        if (printInsightsReport)
+        {
+            // stdout, deliberately - progress and the Timing: line below stay
+            // on stderr, which is what keeps `--insights | less` and
+            // `--insights > report.txt` behaving.
+            InsightReportText.Write(Console.Out, insightReport, showInsightsAuditList);
+        }
+
+        if (insightsJsonOutputPath != null)
+        {
+            InsightReportJson.WriteToFile(insightsJsonOutputPath, insightReport);
+        }
+
+        if (failOnSeverity != null)
+        {
+            Environment.ExitCode = InsightExitCode.For(insightReport, failOnSeverity);
+        }
+    }
 
     long totalMs = totalStopwatch.ElapsedMilliseconds;
 
@@ -810,6 +1085,7 @@ if (isJsonMode)
         $"nativeSymbols={nativeSymbolMs}ms(select={nativeSymbolSelectMs}ms,modules={symbolResolution.ModulesFetched}/{symbolResolution.ModulesConsidered},syms={symbolResolution.SymbolsLoaded},dl={symbolResolution.DownloadedBytes / (1024 * 1024)}MB) " +
         $"export={exportMs}ms(alloc={exportTiming.AllocationMs}ms,exc={exportTiming.ExceptionMs}ms,cpu={exportTiming.CpuMs}ms,cont={exportTiming.ContentionMs}ms,threading={exportTiming.ThreadingMs}ms,gc={exportTiming.GcMs}ms) " +
         $"binaryExport={binaryExportMs}ms " +
+        $"insights={insightsMs}ms " +
         $"total={totalMs}ms " +
         $"gcPause={GC.GetTotalPauseDuration().TotalMilliseconds:F1}ms gcCounts=[{GC.CollectionCount(0)},{GC.CollectionCount(1)},{GC.CollectionCount(2)}]");
 

@@ -250,33 +250,47 @@ public static class CpuCategoryBuilder
         writer.WritePropertyName("unresolvedModules");
         writer.WriteStartArray();
 
-        if (selfSamplesByFrameId != null && symbolTable != null)
+        List<KeyValuePair<string, long>> ranked = RankUnresolvedModules(selfSamplesByFrameId, symbolTable);
+
+        for (int rankIndex = 0; rankIndex < ranked.Count; ++rankIndex)
         {
-            Dictionary<string, long> samplesByModule = new Dictionary<string, long>(StringComparer.Ordinal);
-
-            foreach (KeyValuePair<int, long> entry in selfSamplesByFrameId)
-            {
-                string frameName = symbolTable.NameForId(entry.Key);
-                string moduleName = ModuleNameOf(frameName);
-
-                samplesByModule.TryGetValue(moduleName, out long existing);
-                samplesByModule[moduleName] = existing + entry.Value;
-            }
-
-            List<KeyValuePair<string, long>> ranked = new List<KeyValuePair<string, long>>(samplesByModule);
-            ranked.Sort(CompareModulesBySamplesDescending);
-
-            for (int rankIndex = 0; rankIndex < ranked.Count; ++rankIndex)
-            {
-                writer.WriteStartObject();
-                writer.WriteString("module", ranked[rankIndex].Key);
-                writer.WriteNumber("selfSamples", ranked[rankIndex].Value);
-                writer.WriteNumber("selfPercent", totalSampleCount > 0 ? (ranked[rankIndex].Value * 100.0) / totalSampleCount : 0.0);
-                writer.WriteEndObject();
-            }
+            writer.WriteStartObject();
+            writer.WriteString("module", ranked[rankIndex].Key);
+            writer.WriteNumber("selfSamples", ranked[rankIndex].Value);
+            writer.WriteNumber("selfPercent", totalSampleCount > 0 ? (ranked[rankIndex].Value * 100.0) / totalSampleCount : 0.0);
+            writer.WriteEndObject();
         }
 
         writer.WriteEndArray();
+    }
+
+    // Split out of WriteUnresolvedModules so Analysis/CaptureAnalysisBuilder.cs
+    // can rank the same modules the same way rather than reimplementing the
+    // "module+0xADDR" split. The insight that names a package to install and
+    // the CPU view's own unresolved-module table have to agree, and the only
+    // way to guarantee that is for there to be one implementation.
+    public static List<KeyValuePair<string, long>> RankUnresolvedModules(Dictionary<int, long> selfSamplesByFrameId, MethodSymbolTable symbolTable)
+    {
+        if (selfSamplesByFrameId == null || symbolTable == null)
+        {
+            return new List<KeyValuePair<string, long>>();
+        }
+
+        Dictionary<string, long> samplesByModule = new Dictionary<string, long>(StringComparer.Ordinal);
+
+        foreach (KeyValuePair<int, long> entry in selfSamplesByFrameId)
+        {
+            string frameName = symbolTable.NameForId(entry.Key);
+            string moduleName = ModuleNameOf(frameName);
+
+            samplesByModule.TryGetValue(moduleName, out long existing);
+            samplesByModule[moduleName] = existing + entry.Value;
+        }
+
+        List<KeyValuePair<string, long>> ranked = new List<KeyValuePair<string, long>>(samplesByModule);
+        ranked.Sort(CompareModulesBySamplesDescending);
+
+        return ranked;
     }
 
     private static string ModuleNameOf(string frameName)

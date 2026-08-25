@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <WarningLevel>3</WarningLevel>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>perfParser</AssemblyName>
+    <RootNamespace>DotnetInsights.Perf</RootNamespace>
+    <!--
+      Same reasoning as nettraceParser.csproj's own GC settings, for the same
+      shape of workload: a whole capture is read into one byte[] up front and
+      a single large List<SampleEvent> is held alive across every projection
+      pass. See that file for the measurements.
+    -->
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      The shared analysis half: StackTable, the CPU/Threading/Contention
+      exporters, Symbols/ and the JSON schema the VS Code webviews render.
+
+      Referencing it rather than reimplementing it is the whole point of this
+      project's design. A perf.data capture is turned into exactly the inputs
+      that pipeline already takes - a StackTable of raw instruction pointers, a
+      List<SampleEvent>, and a symbol table - so the CPU view, the caller
+      trees, the flame graph and the category breakdown all work with no
+      source-specific branching, and both extensions render the same JSON.
+
+      This reference was deliberately absent while the reader was being built:
+      nettraceParser was mid-edit and did not compile, and there was nothing
+      to gain from coupling to it before there were samples to export.
+    -->
+    <ProjectReference Include="../nettraceParser/nettraceParser.csproj" />
+  </ItemGroup>
+
+</Project>

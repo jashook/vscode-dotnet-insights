@@ -1,0 +1,7 @@
+node_modules/
+out/
+
+# Written by scripts/sync-shared.js from dotnetInsights. Generated, never
+# edited here - see that script's header.
+src/shared/
+media/shared/

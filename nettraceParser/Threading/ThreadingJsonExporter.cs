@@ -128,8 +128,14 @@ public static class ThreadingJsonExporter
         "System.Threading.PortableThreadPool+WorkerThread.WorkerThreadStart"
     };
 
-    public static void Write(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, StackTable stackTable, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName)
+    // threadProfiles is handed back rather than recomputed by the caller - see
+    // Analysis/CaptureExportArtifacts.cs. It stays null on the early return
+    // below, which is correct: a capture with no thread-pool data never builds
+    // one, and a null there means "not built", not "no threads".
+    public static void Write(Utf8JsonWriter writer, ThreadingSummary summary, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, StackTable stackTable, MethodSymbolTable symbolTable, List<string> methodNames, Dictionary<string, int> methodNameIndexByName, out ThreadActivityProfileSet threadProfiles)
     {
+        threadProfiles = null;
+
         writer.WriteStartObject();
 
         writer.WriteBoolean("hasThreadPoolData", summary.HasThreadPoolData);
@@ -148,7 +154,7 @@ public static class ThreadingJsonExporter
         // reasoning: this runs on the export phase's own single thread, and
         // the profiler pass is the only part of this writer large enough to
         // need tracking.
-        ThreadActivityProfileSet threadProfiles = ThreadActivityProfiler.Build(sampleEvents, contentionEvents, stackTable, symbolTable, ProgressReporter.ReportFraction);
+        threadProfiles = ThreadActivityProfiler.Build(sampleEvents, contentionEvents, stackTable, symbolTable, ProgressReporter.ReportFraction);
 
         writer.WriteNumber("peakActiveWorkerThreads", summary.PeakActiveWorkerThreads);
         writer.WriteNumber("minActiveWorkerThreads", summary.MinActiveWorkerThreads);

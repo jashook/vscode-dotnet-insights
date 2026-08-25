@@ -75,7 +75,7 @@ public class CpuProfileJsonExporterTests
         using System.IO.MemoryStream stream = new System.IO.MemoryStream();
         using (Utf8JsonWriter writer = new Utf8JsonWriter(stream))
         {
-            CpuProfileJsonExporter.Write(writer, sampleEvents, stacks.Table, symbolTable);
+            CpuProfileJsonExporter.Write(writer, sampleEvents, stacks.Table, symbolTable, out _);
         }
 
         return JsonDocument.Parse(stream.ToArray());

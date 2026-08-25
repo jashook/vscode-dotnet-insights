@@ -48,7 +48,18 @@ public static class NativeSymbolDemangler
 
     public static bool IsMangled(string name)
     {
-        return name != null && name.Length >= MinimumMangledLength && name[0] == '_' && name[1] == 'Z';
+        if (name == null || name.Length < MinimumMangledLength || name[0] != '_')
+        {
+            return false;
+        }
+
+        // `_R` is Rust's v0 scheme, a different grammar entirely (see
+        // RustDemangler). It is claimed here rather than by a separate call
+        // site because every native name in this project already flows through
+        // this one entry point - UniversalSymbolTable.FormatSymbolName - so
+        // this is what makes Rust frames readable in the CPU view without any
+        // caller knowing which language a module was written in.
+        return name[1] == 'Z' || name[1] == 'R';
     }
 
     // Returns the demangled qualified name, or the input unchanged when this
@@ -57,6 +68,26 @@ public static class NativeSymbolDemangler
     {
         if (!IsMangled(mangledName))
         {
+            return mangledName;
+        }
+
+        // Rust first, and it handles BOTH Rust schemes: v0 (`_R`) has its own
+        // grammar, and Rust's legacy scheme is Itanium mangling carrying a
+        // trailing `17h<16 hex>` hash. The legacy form would decode through
+        // the C++ path below into a name with that hash still attached, which
+        // splits one function's rows and reads as noise - RustDemangler
+        // recognises and strips it. A `_Z` name that is not Rust's is returned
+        // unchanged by it and falls through to the C++ decode below.
+        string rustName = RustDemangler.Demangle(mangledName);
+        if (rustName != mangledName)
+        {
+            return rustName;
+        }
+
+        if (mangledName[1] != 'Z')
+        {
+            // A `_R` name RustDemangler declined. Nothing else understands v0,
+            // and a raw mangled name is honest where a half-decoded one is not.
             return mangledName;
         }
 

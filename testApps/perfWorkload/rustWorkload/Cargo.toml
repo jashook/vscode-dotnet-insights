@@ -1,0 +1,16 @@
+[package]
+name = "rust_workload"
+version = "0.1.0"
+edition = "2021"
+
+# debug = true in a RELEASE profile is the combination that matters: optimized
+# code (what anyone actually profiles) that still carries DWARF and a full
+# symbol table. A debug build profiles nothing anyone ships, and a release
+# build without this resolves to almost nothing.
+[profile.release]
+debug = true
+# Left ON deliberately. Rust's default release build inlines hard, and that is
+# exactly the condition a native profiler has to be honest about: a
+# frame-pointer callchain simply cannot show an inlined frame, so the fixture
+# must contain inlining rather than be built to avoid it.
+opt-level = 3

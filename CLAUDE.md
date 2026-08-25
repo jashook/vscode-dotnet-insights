@@ -1348,6 +1348,245 @@ ticks, 10.6M samples, 1,376 contentions): the JSON's only difference is the
 one deliberately added field (`sampleTypeSource: "runtime"`), and the 21.9MB
 ticks sidecar is byte-identical.
 
+### Insights (`nettraceParser/Analysis/`, `nettraceParser/Insights/`)
+
+A rule engine that reads a parsed capture and emits ranked, evidence-carrying
+findings. Surfaced three ways from one implementation: `nettraceParser
+<capture> --insights` (text on stdout, the primary surface),
+`--insights-json <path>` (machine readable), and an **Insights** webview tab
+which is default-active for `.nettrace`.
+
+Every rule lives in C#. `dotnetInsights/src/InsightsRenderer.ts` renders the
+emitted objects **verbatim and computes nothing** — the same report is printed
+by the CLI and drawn by the webview, and if the two could disagree about a
+capture there would be no way to tell which was right.
+
+**The house rule**: every insight states the MEASUREMENT, the THRESHOLD it
+fired on, and the numbers. `threshold` is emitted verbatim so a reader can
+disagree with the RULE rather than only with its conclusion. A suggestion
+engine that says "consider reducing allocations" is worse than none, because
+it teaches people to skip the panel — and the one finding that mattered goes
+with it.
+
+- **`CaptureAnalysis` is the model, and it is not the `--json` export.** That
+  export is 53MB on a real 3.0GB capture, mostly drill-down trees nobody asks
+  a yes/no question of; this is the derived summary a rule (or, later, an
+  agent) actually reasons over — per-GC records, per-thread roles, category
+  totals, top-N tables — and lands at **32KB** for the same capture.
+- **Three whole-capture aggregates are computed ONCE and shared**, not hoisted.
+  `TimeBreakdownBuilder`, `ThreadActivityProfiler` and `CpuCategoryBuilder` are
+  each a full pass over every CPU sample (16.24M on a 3.23GB capture;
+  `ThreadActivityProfiler` alone is 341-591ms). A `--json` run computes them
+  inside the export and hands them back through
+  `Analysis/CaptureExportArtifacts.cs`; an `--insights`-only run builds them
+  directly and skips the export. **Hoisting them up into Program.cs and passing
+  them down was rejected on risk**: the exporters' output must stay
+  byte-identical, and moving computation across three call layers is a far
+  better way to perturb it than adding an `out` parameter that changes no
+  ordering and no arithmetic. Hot methods are merged out of
+  `CategoryTotals.SelfSamplesByFrameId` rather than being a fourth pass.
+- **Three verdicts, not two.** A rule fired, or measured and came in under, or
+  had NO DATA. That third one is the whole point: a `collect-linux` capture has
+  no allocation ticks and no contention events, and a rule reporting "no
+  allocation pressure" there is stating something it cannot know.
+  `capture/missing-providers` says so out loud, and fires on 29 of 33 corpus
+  captures — almost every real capture omits something.
+- **The audit list is not optional.** Every rule's verdict is emitted whatever
+  the outcome, and `InsightEngineTests` asserts the report has exactly one row
+  per registered rule. Same principle as the Threading view's excluded-samples
+  table: a filter that cannot be audited is one nobody believes the first time
+  it hides something they expected. It is also the only feedback signal
+  threshold calibration has.
+- **A throwing rule costs its own row, not the report.** Caught, reported as a
+  distinct outcome, run continues.
+- Ranking is severity → confidence → magnitude → **id**. The last term is not
+  decoration: without it, ties order by registration accident and the same
+  capture ranks differently between runs — the trap `WriteHotMethods` already
+  had to fix.
+
+#### The CLI stays a CLI
+
+`--insights`, `--insights-all`, `--insights-json` and `--fail-on` are purely
+additive. Verified by worktree diff against the pre-change commit on both a v5
+and a v6 capture: **plain mode stdout, `--dump-fields`, `--json` (53MB and
+4.6MB), the `--binary` container, the `.ticks.bin` sidecar, `--diff` and
+`--gcdump` are all byte-identical.** The insights report is a **sidecar**
+(`<json>.insights.json`), never a section of `--json`'s own output, precisely
+so that stays true. `--insights-json` on its own prints nothing — that is the
+form the extension uses, since it already drains stdout. Report on stdout,
+progress and `Timing:` on stderr, so piping and redirection work.
+`--fail-on <severity>` exits **2** (not 1 — 1 already means "could not do the
+job", and CI has to tell those apart) and **64** for an unrecognized severity,
+so a typo in a CI config cannot silently mean "never fail".
+
+#### Calibration, against the 33-capture corpus in `~/projects/Investigations`
+
+Thresholds are measured, not guessed, and the run is one command
+(`--insights-all` over each capture, bucket the audit lines). Result: a median
+capture surfaces **5** insights, range 1-12, with 31 of 33 between 3 and 7.
+What the corpus actually decided:
+
+- **`gc/server-heap-imbalance` was CONFIRMED, not chosen.** The per-heap
+  promotion spread splits cleanly in two with an **empty band**: 13 captures at
+  0.00-0.25, 17 at 1.28-1.73, nothing between. The 0.50 threshold sits inside
+  that gap and cannot be moved anywhere within it and change a verdict — the
+  strongest form this kind of number comes in, and the same property the
+  thread-classification thresholds were chosen for.
+- **`cpu/category-outlier` could not fire at all** on its original round
+  10-15% thresholds. Measured baseline across 20 captures: GC median 0.01%,
+  JIT 0.00%, TLS/crypto p90 0.34%, Locking p90 5.22%, Serialization max 6.85%.
+  On real captures the CPU goes to application, framework and kernel code —
+  which are deliberately absent from the table, because there is no share of
+  application code that is "too high". Each threshold now sits just ABOVE its
+  category's observed maximum.
+- **`alloc/rate` at 200 MB/s was measuring the baseline** (51% fire rate).
+  Corpus: p25 447 MB/s, median 618, p75 707, max 774. Now graded — Info from
+  250 (the rate is useful context on any capture), Warning above p75 at 750,
+  Critical at 2000.
+- **`gc/gen2-pause-concentration`'s count>=3 gate was doing the wrong job.** It
+  existed to exclude tiny captures whose single GC is trivially 100% of their
+  own pause, but a count cannot tell those from a real 2-GC concentration. An
+  absolute pause floor can: count>=2 plus **total pause >= 500ms**. The
+  excluded cases measure 1.5-2.4ms of total pause; the real ones measure
+  seconds.
+- `gc/heap-growth` fires on nothing in the corpus and that is correct — every
+  capture's R² is 0.00-0.03. These are steady-state services; a straight line
+  does not fit, which is exactly what the R² gate is for.
+
+#### Three things found by running it that reasoning would not have caught
+
+All three produced confident, arithmetically correct, completely wrong
+findings. Each is now a rule or a guard, with a regression test.
+
+- **`gc/fragmentation` reported 937%.** Free space was summed across ALL
+  generations and divided by a gen2+LOH denominator. Gen0/gen1 free space is
+  also not what anyone means by fragmentation — those are compacted every
+  collection, so their free space is budget, not damage. Fixed to generations
+  2 and 3 only; fire rate 45% → 27%.
+- **Stack attribution can collapse onto one frame.** A `collect-linux` capture
+  reported `user_events_write_core.isra.0` — the KERNEL's own event-writing
+  function — as **100% of CPU self time** and **100% of lock wait across 181
+  threads**. Every sample and every contention event carried the stack of the
+  writer that recorded it rather than of the thing recorded. Both numbers were
+  real; what they measured was the tracing machinery.
+  `capture/collapsed-leaf-attribution` (>= 95% on one leaf) now reports it and
+  `cpu/single-method` / `contention/hot-lock` **decline outright** rather than
+  presenting it as a finding.
+- **The hottest method was the thread pool's park.** The sample profiler
+  samples parked threads too, so on a 518-thread service
+  `LowLevelLifoSemaphore.WaitForSignal` topped the ranking at **68.11%** — 68%
+  of samples representing no work at all. `cpu/single-method` now skips
+  blocking primitives (via `CpuIdleWaitClassifier`, the same list the CPU
+  view's own idle/CPU-bound split uses, so the two agree) and names the hottest
+  RUNNING method, stating the parked share alongside it: on that capture,
+  `StackExchange.Redis.PhysicalBridge.ProcessBacklog` at 6.29%, with 84.94% of
+  samples parked.
+- Relatedly, **`threading/pool-starvation` must name the dominant NON-PARK
+  stack.** A blocked worker still parks between its blocking calls, and that
+  park is frequently its single most-sampled stack even though it failed the
+  park-share gate on the balance — four of six blocked workers on a real
+  capture. Naming it points the reader at the one frame that is definitionally
+  not the problem. `ThreadActivityProfiler.IsPoolParkFrame` is public for this.
+
+#### Rules that read a name
+
+Exactly one rule matches on method names — `threading/sync-over-async`, which
+looks for the BCL's own blocking-on-a-Task entry points (`Task.Wait`,
+`TaskAwaiter.GetResult`, `Task.get_Result`, ...). `ThreadActivityProfiler`'s
+header exists to warn against this technique, so the reasons it is acceptable
+here are narrow and all three must hold: it is scoped **per thread, never per
+frame**; it can only fire on a thread the non-name-based classification
+ALREADY called a blocked pool worker, so it explains an existing finding
+rather than inventing one; and it ships at `confidence: medium` saying in its
+own text that it is name-based. The markers are a closed set the framework
+controls, unlike the open-ended library calls that make leaf-name
+classification unworkable in general.
+
+Role matching is on the **enum ordinal** (`RoleId`), never on
+`NameForRole`'s display string — a rule matching display text stops firing
+silently the first time someone rewords it, which surfaces months later as
+"the tool stopped finding starvation".
+
+#### Cost
+
+`insights=` on the `Timing:` line. On the 3.0GB/35M-event capture: **~65ms**
+in `--json` mode (the three aggregates come free from the export) and ~1.4s in
+`--insights`-only mode (where it builds them itself and skips a 53MB export
+that would have cost more).
+
+### Agent access (`nettraceParser/Mcp/`)
+
+`nettraceParser --mcp [--cache <dir>]` is a Model Context Protocol server over
+stdio, so an agent can query a parsed capture directly instead of being handed
+a 53MB JSON export. Register it with
+`claude mcp add dotnet-insights -- <abs path>/nettraceParser --mcp`; verified
+connecting to Claude Code, and it is client-agnostic (nothing about it is
+VS Code specific).
+
+Thirteen tools, all reading the same `CaptureAnalysis` the insight rules read —
+`open_capture`, `list_open_captures`, `get_capture_summary`, `get_insights`,
+`get_time_breakdown`, `query_gcs`, `get_gc_summary`, `get_cpu_categories`,
+`get_hot_methods`, `get_threads`, `get_allocation_types`,
+`get_contention_sites`, `get_exception_types`.
+
+- **Purely additive.** Without `--mcp` on the command line the binary behaves
+  exactly as before; re-verified byte-identical on plain mode, `--json` (v5 and
+  v6), `--binary`, `.ticks.bin` and `--gcdump` after this landed.
+- **A question the analysis cannot answer gets no tool.** There is deliberately
+  no `get_method_callers`, no `get_type_call_paths` and no "what was thread X
+  doing at time T": those live in the `--json` export's drill-down trees, not
+  in this model. An agent that finds no tool says so; an agent handed a tool
+  that returns a confident wrong answer does not, and the person reading its
+  output cannot tell.
+- **Hand-rolled, no NuGet package.** MCP's stdio transport is
+  newline-delimited JSON-RPC 2.0 with five methods. The official
+  `ModelContextProtocol` package drags `Microsoft.Extensions.Hosting` behind
+  it, which is real download weight in a self-contained per-OS release asset.
+  Same trade `nettraceParser.csproj` already reasons about for its one
+  dependency: take the package for a private versioned contract (ClrMD over
+  the DAC), hand-roll a documented format.
+- **Framing is newline-delimited, NOT `Content-Length`.** That is the
+  difference between MCP's stdio transport and LSP's, and getting it backwards
+  produces a server that connects and then hangs forever with no error on
+  either side.
+- **Notifications are never answered.** Replying to
+  `notifications/initialized` is a violation strict clients drop the connection
+  over, and it is invisible in casual testing — pinned by a test.
+- **A capture-level failure is a successful `tools/call` carrying `isError`,
+  not a JSON-RPC error.** A missing file or a decoder exception comes back as
+  readable text the model can act on; only a malformed message or an unknown
+  method produces a protocol error.
+- **stdout IS the protocol.** `ProgressReporter` is never enabled on this path
+  and every diagnostic goes to stderr.
+- **Numbers and booleans sent as JSON strings are accepted.** Models routinely
+  emit `{"limit": "10"}`; refusing that is a protocol-lawyer's answer to a
+  clearly expressed request.
+- `get_hot_methods` excludes blocking primitives by default and **always
+  reports their share anyway** — the same parked-thread trap the CPU insight
+  rule hit. 12% of all samples is a much larger share of the *running* ones
+  when 85% of threads were parked.
+
+#### The cache, and why its key is what it is
+
+`Mcp/CaptureAnalysisCache.cs` persists the analysis keyed by
+**path + size + mtime + parser version**. Measured on a 3.0GB/35M-event
+capture: **5.8s cold, 0.11s warm**, with a **728KB** cache entry. Verified that
+a cached answer is byte-identical to a freshly parsed one — the cache must
+never change what a tool says.
+
+Not a content hash (hashing 3GB to avoid reading 3GB defeats the point) and
+never the filename alone — that is the failure mode that makes caches lie, and
+this project already has the rule written down for the native symbol store
+("keyed by build id, never by filename"). The parser-version component means a
+new build simply misses rather than needing an invalidation rule. A corrupt or
+unreadable entry is a MISS, never an error: the cache is an optimization, and
+parsing again is always correct.
+
+`CaptureAnalysis` round-trips through `System.Text.Json` with
+`IncludeFields = true`, since it is deliberately a plain field-bearing model;
+its computed properties carry `[JsonIgnore]` and `TimeBreakdown` carries a
+`[JsonConstructor]` because every one of its fields is readonly.
+
 ## Extension rendering (`dotnetInsights/src/`)
 
 - `GcSnapshotRenderer.ts` holds the chart/summary-tile rendering shared by
@@ -1598,3 +1837,7 @@ match what this code already computes."
 - Tool version constants in `extension.ts` are not bumped on every binary
   re-upload (see "stale-cache trap" above) — several `nettraceParser` fixes
   shipped this way during initial development.
+- A VS Code-native agent surface (chat participant / `languageModelTools`) on
+  top of the MCP tools is not built — it needs `engines.vscode` raised from
+  `^1.54.0` to `^1.95`, which drops old VS Code, and would be a second front
+  end over the same tools. `--mcp` already works from any MCP client.
