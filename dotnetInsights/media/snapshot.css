@@ -540,7 +540,64 @@
 }
 
 
-#timeSummary
+/* The correlation note carries several paragraphs and a table rather than the
+   single sentence .lockTimelineNote was sized for, so it needs real spacing
+   between blocks; the bias column is secondary text and is dimmed by opacity
+   (not a hard-coded colour) so it stays readable on both VS Code themes. */
+.correlationNote p
+{
+    margin: 0.6em 0;
+}
+
+.cpuSeriesTable
+{
+    margin: 0.8em 0;
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.95em;
+}
+
+.cpuSeriesTable th,
+.cpuSeriesTable td
+{
+    padding: 0.3em 0.6em;
+    text-align: right;
+    border-bottom: 1px solid rgba(128, 128, 128, 0.3);
+}
+
+/* The definition name and its bias note are prose; everything between them is
+   a number. Same left/right split the ranked tables use, without borrowing
+   their column contract. */
+.cpuSeriesTable th:first-child,
+.cpuSeriesTable td:first-child
+{
+    text-align: left;
+    width: auto;
+}
+
+.cpuSeriesTable th
+{
+    color: inherit;
+    opacity: 0.85;
+    font-weight: bold;
+    white-space: normal;
+}
+
+/* Needs the table in the selector: `.cpuSeriesTable td` (0,1,1) otherwise
+   outranks a bare `.cpuSeriesBias` (0,1,0) and right-aligns this prose. */
+.cpuSeriesTable td.cpuSeriesBias
+{
+    color: inherit;
+    opacity: 0.7;
+    text-align: left;
+}
+
+/* .sectionHeading is the class form of #timeSummary. The id predates it and
+   is still worn by the GC view's own section headings; new markup uses the
+   class, since a heading appears several times per view and duplicated ids -
+   while they do style correctly - are invalid. */
+#timeSummary,
+.sectionHeading
 {
     margin-top: 1em;
     font-size: 16px;
@@ -1453,7 +1510,45 @@ td.rowHideColumn:hover
     --rankedNumericColumnWidth: 8.5%;
 }
 
-.cpuHotMethodsTable > table > tbody > tr > th[data-sort="number"]
+/* The two CPU tables carry far more numeric columns than the other tables
+   sharing this class (the methods table has seven), so 8.5% each spent 59.5%
+   of the table on columns holding ~50px of digits and squeezed the method
+   name. Narrowed and de-padded for these two only: Contention's own
+   "Total Wait (ms)" header needs the wider default to sit on one line, and it
+   has four numeric columns to spend it on.
+
+   Overridden on the TABLE rather than the wrapper so the custom property
+   inherits down to the header cells that read it. */
+#cpuMethodsTable,
+#cpuCategoryTable
+{
+    --rankedNumericColumnWidth: 6.2%;
+}
+
+/* Vertical padding unchanged - row height is what makes a long table
+   scannable; only the horizontal gap is spent on nothing here. */
+#cpuMethodsTable th,
+#cpuCategoryTable th
+{
+    padding: 8px 3px;
+}
+
+#cpuMethodsTable td,
+#cpuCategoryTable td
+{
+    padding: 4px 3px;
+}
+
+/* th.unsortableColumn is in here because a column being unsortable says
+   nothing about whether it holds a number. Coverage % is deliberately not
+   sortable (see renderSortableTableHeader's "none" type) and so carries no
+   data-sort attribute - which silently dropped it out of this rule, left it
+   with no width at all, and set it competing with the auto name column for the
+   leftover. The right-alignment beside this is positional
+   (:not(:first-child):not(:nth-child(2))) and was never affected, which is why
+   the symptom was spacing rather than alignment. */
+.cpuHotMethodsTable > table > tbody > tr > th[data-sort="number"],
+.cpuHotMethodsTable > table > tbody > tr > th.unsortableColumn
 {
     width: var(--rankedNumericColumnWidth);
 }

@@ -309,3 +309,82 @@ describe('CPU category caller tree', () => {
             'the call paths under a category do not add up to the category');
     });
 });
+
+// The category rows are FILTERED (zero-sample categories dropped) and RE-SORTED
+// before rendering, so a row's position in the table is not its position in
+// cpuProfile.categories.rows. Anything that looks a row up in that array must
+// key off the category's own stable id.
+//
+// Getting this wrong is not a crash and not obviously wrong on screen: the
+// zoom rescoping wrote each row's recomputed numbers into whichever category
+// happened to sit at the same index, which showed up only as correct-looking
+// counts under the wrong names after un-zooming. data-cpu-category-lazy
+// already existed for exactly this reason on the detail row; the data row
+// needed the same treatment.
+describe('CPU category row identity', () => {
+    it('carries the stable category id alongside the positional index', () => {
+        const html = renderCpuProfileView(loadFixture()["cpuProfile"]);
+
+        const rowPattern = /<tr class="typeRow cpuCategoryRow" data-cpu-category="(\d+)" data-cpu-category-id="([^"]+)"/g;
+        const seen: Array<[string, string]> = [];
+        let match: RegExpExecArray | null;
+
+        while ((match = rowPattern.exec(html)) !== null) {
+            seen.push([match[1], match[2]]);
+        }
+
+        assert.ok(seen.length > 1, 'no category rows carried both attributes');
+
+        // The two must actually be distinct concepts on a real payload -
+        // if every id equalled its row position the test would pass while
+        // proving nothing.
+        const anyDiffer = seen.some(([position, id]) => position !== id);
+        assert.ok(anyDiffer, 'row position and category id never differed, so this fixture cannot detect the bug');
+
+        // Ids must be unique - they are the lookup key.
+        const ids = seen.map(([, id]) => id);
+        assert.strictEqual(new Set(ids).size, ids.length, 'category ids were not unique');
+    });
+
+    // The SHARED sorter (rankedTable.js's pairedDetailRowIdFor) pairs a row
+    // with its tree by data-detail-target. This table paired by the
+    // cpuCategoryDetail<N> id convention alone, so the sorter could not see
+    // its detail rows: sorting re-appended every data row and left all 16
+    // trees stranded at the top of the table. Verified in a browser before the
+    // fix - after one zoom the row order read D0,D1,D2,... with 16 of 16 rows
+    // detached, so expanding a category drew its tree somewhere else and
+    // clicking again appeared to do nothing.
+    it('carries the generic detail-target attribute the shared sorter pairs by', () => {
+        const html = renderCpuProfileView(loadFixture()["cpuProfile"]);
+
+        const rowPattern = /data-cpu-category="(\d+)" data-cpu-category-id="[^"]+" data-detail-target="([^"]+)"/g;
+        const seen: Array<[string, string]> = [];
+        let match: RegExpExecArray | null;
+
+        while ((match = rowPattern.exec(html)) !== null) {
+            seen.push([match[1], match[2]]);
+        }
+
+        assert.ok(seen.length > 1, 'category rows do not carry data-detail-target');
+
+        // It has to name the row's OWN detail element, or the sorter pairs a
+        // row with someone else's tree - worse than not pairing at all.
+        for (const [position, target] of seen) {
+            assert.strictEqual(target, `cpuCategoryDetail${position}`,
+                `row at position ${position} points at ${target}`);
+        }
+    });
+
+    it('pairs every row with a detail element named by its POSITION, not its id', () => {
+        const html = renderCpuProfileView(loadFixture()["cpuProfile"]);
+
+        const rowPattern = /data-cpu-category="(\d+)" data-cpu-category-id="[^"]+"/g;
+        let match: RegExpExecArray | null;
+
+        while ((match = rowPattern.exec(html)) !== null) {
+            assert.ok(
+                html.indexOf(`id="cpuCategoryDetail${match[1]}"`) !== -1,
+                `row at position ${match[1]} has no paired detail element`);
+        }
+    });
+});

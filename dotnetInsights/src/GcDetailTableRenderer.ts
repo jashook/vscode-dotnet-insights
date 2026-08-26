@@ -168,6 +168,19 @@ export function renderSortableTableHeader(columns: ReadonlyArray<[string, string
     var headerCells = "";
     for (var columnIndex = 0; columnIndex < columns.length; ++columnIndex) {
         const [label, sortType] = columns[columnIndex];
+
+        // sortType "none" makes a column deliberately UNSORTABLE: no
+        // data-sort (so wireSortableTableHeaders skips it, exactly as it skips
+        // the row-hide column) and no sort indicator, so it does not present
+        // itself as clickable. Used for a column whose value is a property of
+        // the table's ORDER rather than of the row - sorting by it is
+        // meaningless, and letting someone try would reorder the table by a
+        // number that only existed because of the previous order.
+        if (sortType === "none") {
+            headerCells += `<th class="unsortableColumn"><span class="thLabel">${label}</span></th>`;
+            continue;
+        }
+
         headerCells += `<th data-sort="${sortType}"><span class="thLabel">${label}</span><span class="sortIndicator"></span></th>`;
     }
     return `<tr class="tableHeader">${headerCells}</tr>`;

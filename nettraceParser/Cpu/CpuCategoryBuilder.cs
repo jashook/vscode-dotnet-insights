@@ -52,6 +52,16 @@ public static class CpuCategoryBuilder
     {
         public long SelfSamples;
         public long OnStackSamples;
+        // Per-timeline-bucket breakdowns, on the SAME grid as
+        // sampleTimeline.samplesByBucket, so the Profile view can rescope the
+        // whole category table to a drag-zoom instead of leaving a
+        // capture-wide breakdown sitting under a zoomed methods table. Both
+        // are accumulated in the existing per-sample loop - the self one is a
+        // single array increment, and the on-stack one rides the bitmask walk
+        // that loop already performs, so neither adds a pass or a branch per
+        // frame. 20 categories x 100 buckets x 2 arrays is ~16KB.
+        public int[] SelfSamplesByBucket;
+        public int[] OnStackSamplesByBucket;
 
         // frameId -> self samples, for this category only. Reduced to the top
         // few names at write time.
@@ -62,12 +72,18 @@ public static class CpuCategoryBuilder
     // category without redoing the per-frame classification - see
     // CpuProfileJsonExporter's category caller trees, which is what lets a
     // bucket be opened into real call paths rather than a flat method list.
+    // bucketCount/bucketDurationMSec/minRelativeMSec describe the timeline grid
+    // the per-bucket breakdowns are accumulated on. Pass bucketCount = 0 to
+    // skip them entirely (the arrays stay null and nothing else changes).
     public static CategoryTotals[] Build(
         List<SampleEvent> sampleEvents,
         StackTable stackTable,
         MethodSymbolTable symbolTable,
         UniversalSymbolTable nativeSymbols,
-        out Dictionary<int, CpuCategory> categoryByFrameId)
+        out Dictionary<int, CpuCategory> categoryByFrameId,
+        int bucketCount = 0,
+        double bucketDurationMSec = 0,
+        double minRelativeMSec = 0)
     {
         CategoryTotals[] totals = new CategoryTotals[CpuCategoryClassifier.CategoryCount];
         categoryByFrameId = new Dictionary<int, CpuCategory>();
@@ -75,6 +91,17 @@ public static class CpuCategoryBuilder
         if (sampleEvents == null || stackTable == null || symbolTable == null)
         {
             return totals;
+        }
+
+        bool trackBuckets = bucketCount > 0 && bucketDurationMSec > 0;
+
+        if (trackBuckets)
+        {
+            for (int categoryIndex = 0; categoryIndex < totals.Length; ++categoryIndex)
+            {
+                totals[categoryIndex].SelfSamplesByBucket = new int[bucketCount];
+                totals[categoryIndex].OnStackSamplesByBucket = new int[bucketCount];
+            }
         }
 
         // -1 marks "not computed yet" for the per-stack memo. A stack index is
@@ -91,11 +118,33 @@ public static class CpuCategoryBuilder
         {
             SampleEvent sample = sampleEvents[sampleIndex];
 
+            int sampleBucketIndex = -1;
+
+            if (trackBuckets)
+            {
+                sampleBucketIndex = (int)((sample.RelativeMSec - minRelativeMSec) / bucketDurationMSec);
+
+                if (sampleBucketIndex < 0)
+                {
+                    sampleBucketIndex = 0;
+                }
+                else if (sampleBucketIndex >= bucketCount)
+                {
+                    sampleBucketIndex = bucketCount - 1;
+                }
+            }
+
             int stackIndex = sample.StackIndex;
 
             if (stackIndex < 0 || stackIndex >= selfCategoryByStack.Length)
             {
                 ++totals[(int)CpuCategory.Uncategorized].SelfSamples;
+
+                if (sampleBucketIndex >= 0)
+                {
+                    ++totals[(int)CpuCategory.Uncategorized].SelfSamplesByBucket[sampleBucketIndex];
+                }
+
                 continue;
             }
 
@@ -116,6 +165,11 @@ public static class CpuCategoryBuilder
 
             int selfCategoryIndex = selfCategoryByStack[stackIndex];
             ++totals[selfCategoryIndex].SelfSamples;
+
+            if (sampleBucketIndex >= 0)
+            {
+                ++totals[selfCategoryIndex].SelfSamplesByBucket[sampleBucketIndex];
+            }
 
             // Attributed to the LEAF frame, matching what SelfSamples counts.
             long[] leafFrames = stackTable.FramesAt(stackIndex);
@@ -139,6 +193,12 @@ public static class CpuCategoryBuilder
             {
                 int categoryIndex = System.Numerics.BitOperations.TrailingZeroCount(mask);
                 ++totals[categoryIndex].OnStackSamples;
+
+                if (sampleBucketIndex >= 0)
+                {
+                    ++totals[categoryIndex].OnStackSamplesByBucket[sampleBucketIndex];
+                }
+
                 mask &= mask - 1;
             }
         }
@@ -226,6 +286,9 @@ public static class CpuCategoryBuilder
             writer.WriteNumber("onStackSamples", totals[categoryIndex].OnStackSamples);
             writer.WriteNumber("selfPercent", totalSampleCount > 0 ? (totals[categoryIndex].SelfSamples * 100.0) / totalSampleCount : 0.0);
             writer.WriteNumber("onStackPercent", totalSampleCount > 0 ? (totals[categoryIndex].OnStackSamples * 100.0) / totalSampleCount : 0.0);
+
+            WriteBucketArray(writer, "selfSamplesByBucket", totals[categoryIndex].SelfSamplesByBucket);
+            WriteBucketArray(writer, "onStackSamplesByBucket", totals[categoryIndex].OnStackSamplesByBucket);
 
             WriteTopMethods(writer, totals[categoryIndex].SelfSamplesByFrameId, symbolTable);
 
@@ -328,6 +391,30 @@ public static class CpuCategoryBuilder
                 writer.WriteNumber("selfSamples", ranked[rankIndex].Value);
                 writer.WriteEndObject();
             }
+        }
+
+        writer.WriteEndArray();
+    }
+
+    // Omitted as null rather than an empty array when the caller did not ask
+    // for bucketing, so the view can tell "not tracked" from "tracked and
+    // zero" and fall back to a capture-wide category table instead of
+    // rendering one that reads as scoped and is empty.
+    private static void WriteBucketArray(Utf8JsonWriter writer, string propertyName, int[] values)
+    {
+        writer.WritePropertyName(propertyName);
+
+        if (values == null)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+
+        writer.WriteStartArray();
+
+        for (int bucketIndex = 0; bucketIndex < values.Length; ++bucketIndex)
+        {
+            writer.WriteNumberValue(values[bucketIndex]);
         }
 
         writer.WriteEndArray();

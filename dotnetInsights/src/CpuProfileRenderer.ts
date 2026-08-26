@@ -54,10 +54,45 @@ function formatMethodNameHtml(rawFrameName: string): string {
 //
 // Each row opens into the real call paths behind that bucket, not a summary of
 // them - see the drill-down wiring in snapshotGcStats.js.
-function renderCpuCategoryTable(categories: any): string {
+// Approximate CPU cost of one row, as a percentage of ONE core.
+//
+// samples x the capture's per-sample CPU quantum = milliseconds of CPU; over
+// the window's own wall-clock duration that is cores busy, and x100 makes it
+// the "% of a core" people actually quote. 100% is one core saturated; a row
+// can legitimately exceed 100% (it ran on several cores at once), which is why
+// this is not clamped.
+//
+// APPROXIMATE, and labelled so, for two reasons that have nothing to do with
+// arithmetic: the per-sample period is itself recovered from the capture (see
+// Cpu/SamplePeriodEstimator.cs), and sampling means a row's true cost is a
+// distribution, not a point. Only ever rendered when the capture is CPU-time
+// sampled - on a wall-clock capture there is no quantum and the column is
+// absent entirely rather than filled with a thread-time figure.
+export function formatCorePercent(samples: number, samplePeriodMSec: number, windowDurationMSec: number): string {
+    if (!(samples >= 0) || !(samplePeriodMSec > 0) || !(windowDurationMSec > 0)) {
+        return "\u2014";
+    }
+
+    const corePercent = (samples * samplePeriodMSec * 100.0) / windowDurationMSec;
+
+    // Sub-0.01% rows would all render as "0.00%" and read as "free"; a
+    // less-than marker keeps them honestly distinct from a true zero.
+    if (corePercent > 0 && corePercent < 0.01) {
+        return "<0.01%";
+    }
+
+    return corePercent.toFixed(2) + "%";
+}
+
+function renderCpuCategoryTable(categories: any, cpuTime: any): string {
     if (!categories) {
         return "";
     }
+
+    // The core-% column only exists when the capture is CPU-time sampled.
+    const hasCoreColumn = !!(cpuTime && cpuTime["hasCpuTime"]);
+    const samplePeriodMSec = hasCoreColumn ? Number(cpuTime["samplePeriodMSec"]) : 0;
+    const windowDurationMSec = hasCoreColumn ? Number(cpuTime["totalCpuMSec"]) / Number(cpuTime["averageCoresBusy"]) : 0;
 
     const rows = (categories["rows"] || []).filter((row: any) => Number(row["selfSamples"]) > 0 || Number(row["onStackSamples"]) > 0);
 
@@ -78,7 +113,23 @@ function renderCpuCategoryTable(categories: any): string {
         const barWidth = Math.max(0, Math.min(100, Number(row["selfPercent"])));
 
         tableRows +=
-            `<tr class="typeRow cpuCategoryRow" data-cpu-category="${index}">` +
+            // data-cpu-category is the ROW POSITION (it pairs the row with its
+            // own cpuCategoryDetail<N> element); data-cpu-category-id is the
+            // category's own stable id, which is what anything looking the row
+            // up in cpuProfile.categories.rows must use. The two differ
+            // because this list is filtered and re-sorted just above, and
+            // conflating them pairs a row with another category's numbers -
+            // the same trap data-cpu-category-lazy already exists to avoid.
+            // data-detail-target is what the SHARED sorter pairs rows by
+            // (rankedTable.js's pairedDetailRowIdFor). Without it this table's
+            // detail rows do not travel with their own row through a sort:
+            // every data row gets re-appended and the detail rows are left
+            // stranded at the top, so expanding a category renders its tree
+            // somewhere else entirely and clicking again appears to do
+            // nothing. This table paired by the cpuCategoryDetail<N> id
+            // convention alone and so was the one table the sorter could not
+            // see.
+            `<tr class="typeRow cpuCategoryRow" data-cpu-category="${index}" data-cpu-category-id="${row["id"]}" data-detail-target="cpuCategoryDetail${index}">` +
             `<td class="rowHideColumn"><span class="rowHideBtn" title="Hide this row">&#10005;</span></td>` +
             `<td class="cpuCategoryNameCell">` +
                 `<span class="cpuCategoryBar" style="width:${barWidth.toFixed(2)}%"></span>` +
@@ -92,6 +143,10 @@ function renderCpuCategoryTable(categories: any): string {
             `<td>${Number(row["selfSamples"]).toLocaleString()}</td>` +
             `<td>${Number(row["selfPercent"]).toFixed(2)}%</td>` +
             `<td>${Number(row["onStackPercent"]).toFixed(2)}%</td>` +
+            // Appended at the far RIGHT deliberately: several places index
+            // these rows' cells by number, and adding a column anywhere else
+            // silently shifts every one of them.
+            (hasCoreColumn ? `<td>${formatCorePercent(Number(row["selfSamples"]), samplePeriodMSec, windowDurationMSec)}</td>` : ``) +
             `</tr>` +
             // The caller tree is built lazily on first expand (see
             // wireCpuCategoryTable). A category's tree can be thousands of
@@ -101,13 +156,19 @@ function renderCpuCategoryTable(categories: any): string {
             // are re-sorted for display, so a positional index would pair a
             // bucket with another bucket's call paths.
             `<tr id="cpuCategoryDetail${index}" class="callPathsDetail" data-cpu-category-lazy="${row["id"]}">` +
-            `<td colspan="5" class="callerTreeCell">` +
+            `<td colspan="${hasCoreColumn ? 6 : 5}" class="callerTreeCell">` +
                 `<div class="cpuCategoryDescription">${escapeHtmlForCpuProfile(row["description"])}</div>` +
             `</td>` +
             `</tr>`;
     }
 
-    const columns: ReadonlyArray<[string, string]> = [
+    const columns: ReadonlyArray<[string, string]> = hasCoreColumn ? [
+        ["Category", "text"],
+        ["Samples", "number"],
+        ["CPU %", "number"],
+        ["On stack %", "number"],
+        ["\u2248 Core %", "number"],
+    ] : [
         ["Category", "text"],
         ["Samples", "number"],
         ["CPU %", "number"],
@@ -119,7 +180,21 @@ function renderCpuCategoryTable(categories: any): string {
         `<div class="threadingChartHint">Where the CPU went, by category. <b>CPU %</b> is the sample's innermost frame and sums to 100%. ` +
         `<b>On stack %</b> counts a sample toward every category anywhere in its stack, so those deliberately sum to more than 100% ` +
         `&mdash; that is what answers "how much time is spent under TLS at all". Click a row to open the call paths behind it.</div>` +
-        `<div class="detailTable cpuHotMethodsTable"><table id="cpuCategoryTable">${renderRankedTableHeader(columns)}${tableRows}</table></div>` +
+        // Shown only while the timeline is zoomed (toggled by
+        // rescopeCpuCategoryTable). The category NUMBERS do rescope - the
+        // export carries per-bucket self/on-stack counts per category - but
+        // each row's expandable call-path tree does not, so the note names
+        // that one exception rather than disclaiming the whole table.
+        // Same allocationZoomStatus idiom as the methods table's own hide bar.
+        // Hidden until something is actually hidden.
+        `<div class="allocationZoomStatus" id="cpuCategoryHideStatus" style="display:none">` +
+            `<span class="allocationZoomStatusLabel" id="cpuCategoryHideStatusLabel"></span>` +
+            `<button class="resetZoomButton" id="cpuCategoryShowAllBtn">Show all</button>` +
+        `</div>` +
+        `<div class="lockTimelineNote" id="cpuCategoryScopeNote" style="display:none">` +
+        `Scoped to the zoomed range. The call paths behind each row are <strong>not</strong> &mdash; those are folded over the whole capture and have no per-bucket form.` +
+        `</div>` +
+        `<div class="detailTable cpuHotMethodsTable"><table id="cpuCategoryTable" data-has-core-percent="${hasCoreColumn ? 'true' : 'false'}">${renderRankedTableHeader(columns)}${tableRows}</table></div>` +
         `</div>`;
 }
 
@@ -185,7 +260,35 @@ export function renderCpuProfileView(cpuProfile: any): string {
     // is shown (same lazy-build discipline the flame graph uses for its own
     // container). Only emitted when the C# exporter included sampleTimeline
     // data (requires at least one sample with a valid RelativeMSec).
+    // The cores-busy overlay only exists on a capture whose sampler is driven
+    // by CPU time (see nettraceParser/Cpu/SamplePeriodEstimator.cs). When it
+    // is present the note says how the number was derived - including that the
+    // per-sample period was MEASURED from this capture rather than assumed -
+    // because "3.64 cores" is the kind of figure people quote onward, and the
+    // assumptions behind it should travel with it. When it is absent the note
+    // says why, and names the capture mode that would provide it: a reader
+    // looking for CPU utilisation should not have to guess whether the tool
+    // cannot show it or this capture cannot support it.
+    const cpuTime = cpuProfile["cpuTime"];
+    const hasCoresSeries = !!(cpuTime && cpuTime["hasCpuTime"]);
+
+    const cpuTimeNoteHtml = hasSampleTimeline ? (hasCoresSeries ? `
+        <div class="lockTimelineNote">
+            <strong>CPU cores busy</strong> (right axis) is real CPU time: this capture was sampled on perf <code>cpu-clock</code>, which only fires on a thread that actually holds a core.
+            One sample is <strong>${(cpuTime["samplePeriodMSec"] as number).toFixed(3)} ms</strong> of CPU, measured from this capture's own inter-sample gaps rather than assumed,
+            so a bucket's core count is its samples &times; that period &divide; the bucket's own duration.
+            Over the whole capture: <strong>${((cpuTime["totalCpuMSec"] as number) / 1000).toFixed(1)} CPU-seconds</strong>, averaging
+            <strong>${(cpuTime["averageCoresBusy"] as number).toFixed(2)} cores</strong>${cpuTime["processorCount"] ? ` of ${cpuTime["processorCount"]}` : ``}.
+            The samples line beside it excludes known blocking primitives and any rows you hide; the cores line deliberately does not, because on a cpu-clock capture every sample is already on-CPU time.
+        </div>` : `
+        <div class="lockTimelineNote">
+            This chart shows sample <em>counts</em>, not CPU utilisation. The .NET runtime's sampler is wall-clock per thread &mdash; it samples every thread whether or not it holds a core &mdash;
+            so no multiple of these counts is CPU time. Capture with <code>dotnet-trace collect-linux</code> (and without <code>--profile</code>/<code>--providers</code>/<code>--clrevents</code>/<code>--perf-events</code>,
+            which silently disable perf CPU sampling) to get a cores-busy series here.
+        </div>`) : ``;
+
     const timelineHtml = hasSampleTimeline ? `
+        ${cpuTimeNoteHtml}
         <div class="cpuTimelineSection">
             <div class="allocationZoomStatus" id="cpuTimelineZoomStatus" style="display:none">
                 <span class="allocationZoomStatusLabel" id="cpuTimelineZoomLabel"></span>
@@ -270,23 +373,118 @@ export function renderCpuProfileView(cpuProfile: any): string {
 // per-GC detail table and the .gcdump ranked tables use, so
 // setupDetailTableSortHandlers in media/rankedTable.js handles all of them
 // without any table-specific branching.
+// "The top N methods are X% of CPU" - the question a ranked list cannot answer
+// about itself, and the one that decides whether optimising the top of it can
+// matter at all.
+//
+// DELIBERATELY JUST THE NUMBERS, with no flat/peaked verdict attached. A
+// threshold looked obvious and did not survive measurement: across real
+// captures the top-10 share ran 9.8% on a collect-linux capture and 95.9% on
+// two v5 ones - not because those services differ, but because v5 symbolicates
+// only MANAGED leaves, collapsing thousands of native and kernel frames into a
+// handful of rows. The same process reads "flat" or "peaked" purely by capture
+// mode, so any verdict would be a statement about the profiler rather than the
+// program. The reader gets the figures and their own judgement.
+// Absolute CPU time for a row, in seconds. Same information as Self % and
+// Core % - all three are selfSamples times a constant - but it is the form a
+// finding is written down in ("this method costs 16.6 CPU-seconds"), which the
+// other two are not.
+export function formatCpuSeconds(samples: number, samplePeriodMSec: number): string {
+    if (!(samples >= 0) || !(samplePeriodMSec > 0)) {
+        return "\u2014";
+    }
+
+    const seconds = (samples * samplePeriodMSec) / 1000.0;
+
+    if (seconds > 0 && seconds < 0.01) {
+        return "<0.01";
+    }
+
+    return seconds.toFixed(2);
+}
+
+export function renderCoverageLine(hotMethods: any, totalSampleCount: number): string {
+    if (!hotMethods || hotMethods.length === 0 || !(totalSampleCount > 0)) {
+        return ``;
+    }
+
+    const marks = [10, 50, 200];
+    const parts: string[] = [];
+    var running = 0;
+    var markIndex = 0;
+
+    for (var index = 0; index < hotMethods.length && markIndex < marks.length; ++index) {
+        running += Number(hotMethods[index]["selfSamples"]);
+
+        if (index + 1 === marks[markIndex]) {
+            parts.push(`top ${marks[markIndex]} = <strong>${(running * 100.0 / totalSampleCount).toFixed(1)}%</strong>`);
+            ++markIndex;
+        }
+    }
+
+    if (parts.length === 0) {
+        return ``;
+    }
+
+    return `<div class="lockTimelineNote" id="cpuCoverageLine">` +
+        `Share of the capture's <em>total</em> CPU covered by the rows above: ${parts.join(', ')}. ` +
+        `The <em>Self %</em> and <em>Coverage %</em> columns are shares of the rows shown and sum to 100%; these figures are not, ` +
+        `so a low one means the cost is spread far beyond this table.` +
+        `</div>`;
+}
+
 function renderHotMethodsTable(cpuProfile: any): string {
     const hotMethods = cpuProfile["hotMethods"];
     const methodNames = cpuProfile["methodNames"];
     const totalSampleCount = cpuProfile["totalSampleCount"];
 
+    // Same gate as the category table: no CPU-time quantum, no core column.
+    const methodCpuTime = cpuProfile["cpuTime"];
+    const hasMethodCoreColumn = !!(methodCpuTime && methodCpuTime["hasCpuTime"]);
+    const methodSamplePeriodMSec = hasMethodCoreColumn ? Number(methodCpuTime["samplePeriodMSec"]) : 0;
+    // The capture's own wall-clock span, recovered from the two figures the
+    // export already publishes rather than added as a third that could drift
+    // out of step with them.
+    const methodWindowDurationMSec = hasMethodCoreColumn
+        ? Number(methodCpuTime["totalCpuMSec"]) / Number(methodCpuTime["averageCoresBusy"])
+        : 0;
+
+    // Cells per row: hide + Method + Self%/Self Samples + Total%/Total Samples
+    // + Coverage%, plus Core%/CPU(s) when the capture has a CPU-time quantum.
+    // Must equal the header's column count + 1; the detail row's colspan reads
+    // this rather than a literal, since two of the columns are conditional.
+    const methodColumnCount = hasMethodCoreColumn ? 9 : 7;
+
     if (!hotMethods || hotMethods.length === 0) {
         return `<div class="detailTable"><p>No ranked methods to display.</p></div>`;
     }
 
+    // Denominator for Self %/Total %: the ranked rows' own self samples, so
+    // the visible Self % column sums to 100%. Total % must share it - it is
+    // inclusive, so total >= self per row, and mixing bases would print rows
+    // whose Self % exceeded their Total %.
+    var rankedSelfSamples = 0;
+    for (var sumIndex = 0; sumIndex < hotMethods.length; ++sumIndex) {
+        rankedSelfSamples += Number(hotMethods[sumIndex]["selfSamples"]);
+    }
+
+    if (rankedSelfSamples <= 0) {
+        rankedSelfSamples = 1;
+    }
+
     var rows = "";
+    var cumulativeSelfPercent = 0;
     for (var index = 0; index < hotMethods.length; ++index) {
         const method = hotMethods[index];
         const rawName = methodNames[method["frame"]];
         const selfSamples = method["selfSamples"];
         const totalSamples = method["totalSamples"];
-        const selfPercent = (selfSamples * 100.0) / totalSampleCount;
-        const totalPercent = (totalSamples * 100.0) / totalSampleCount;
+        // Share of the ROWS SHOWN, not of the whole capture - see
+        // rebuildHotMethodsTable's own comment. visibleSelfSamples is every
+        // ranked row's self time, since nothing is hidden at first render.
+        const selfPercent = (selfSamples * 100.0) / rankedSelfSamples;
+        cumulativeSelfPercent += selfPercent;
+        const totalPercent = (totalSamples * 100.0) / rankedSelfSamples;
 
         // data-cpu-method-expandable / data-cpu-method-target pair mirrors
         // the data-cpu-expandable/data-cpu-target used by caller-tree interior
@@ -298,6 +496,10 @@ function renderHotMethodsTable(cpuProfile: any): string {
         // delegation, which checks .rowHideBtn before
         // [data-cpu-method-expandable].
         rows += `<tr class="typeRow cpuHotMethodRow" ` +
+            // Full precision, for Coverage % to accumulate - see
+            // updateCoverageColumn. The visible cell is rounded to 2dp and
+            // summing 200 of those drifts the running total.
+            `data-self-percent="${selfPercent}" ` +
             `data-cpu-hotmethod-index="${index}" ` +
             `data-cpu-method-expandable="true" ` +
             `data-cpu-method-target="cpuMethodDetail${index}">` +
@@ -307,17 +509,34 @@ function renderHotMethodsTable(cpuProfile: any): string {
             `<td>${selfSamples.toLocaleString()}</td>` +
             `<td>${totalPercent.toFixed(2)}</td>` +
             `<td>${totalSamples.toLocaleString()}</td>` +
+            // Far right, so the existing cells[2..5] indices this table is
+            // read by elsewhere stay put. Computed from SELF samples: self is
+            // the column that partitions the capture's CPU, so it is the one
+            // that can be turned into a share of a core without double
+            // counting a method and its callees.
+            (hasMethodCoreColumn ? `<td class="corePercentCell">${formatCorePercent(selfSamples, methodSamplePeriodMSec, methodWindowDurationMSec)}</td>` : ``) +
+            // Absolute CPU time for this method's own frames. Carries no
+            // information Self % does not - it is selfSamples x the capture's
+            // per-sample quantum, the same linear rescale Core % is - but
+            // seconds is the unit a finding gets written down in.
+            (hasMethodCoreColumn ? `<td class="cpuSecondsCell">${formatCpuSeconds(selfSamples, methodSamplePeriodMSec)}</td>` : ``) +
+            // Running total of Self % down the table AS ORDERED. A property of
+            // the view, not of the row - which is why the column is
+            // unsortable and is recomputed after every sort.
+            `<td class="coveragePercentCell">${cumulativeSelfPercent.toFixed(2)}</td>` +
             `</tr>` +
             // callPathsDetail row starts hidden (CSS: display:none) and is
             // shown (class "expanded") when its method row is clicked.
             // data-cpu-method-lazy stores the method index so the content is
             // built lazily by buildInlineCpuMethodCallerTree on first expand.
             `<tr id="cpuMethodDetail${index}" class="callPathsDetail" data-cpu-method-lazy="${index}">` +
-            `<td colspan="6" class="callerTreeCell"></td>` +
+            // Derived from the column list rather than hand-counted - this
+            // table's column count is now conditional in two places.
+            `<td colspan="${methodColumnCount}" class="callerTreeCell"></td>` +
             `</tr>`;
     }
 
-    const columns: ReadonlyArray<[string, string]> = [
+    const baseMethodColumns: ReadonlyArray<[string, string]> = [
         ["Method", "text"],
         ["Self %", "number"],
         ["Self Samples", "number"],
@@ -325,12 +544,21 @@ function renderHotMethodsTable(cpuProfile: any): string {
         ["Total Samples", "number"],
     ];
 
+    const columns: ReadonlyArray<[string, string]> = (hasMethodCoreColumn
+        ? baseMethodColumns.concat([["\u2248 Core %", "number"], ["CPU (s)", "number"]] as ReadonlyArray<[string, string]>)
+        : baseMethodColumns)
+        // "Coverage %", not "Cum %": in pprof and perf "cum" means INCLUSIVE
+        // time, which is this table's own Total % column sitting three cells
+        // to the left. Reusing the name for cumulative coverage next to the
+        // real inclusive column misread exactly as you would expect.
+        .concat([["Coverage %", "none"]] as ReadonlyArray<[string, string]>);
+
     // renderRankedTableHeader is renderSortableTableHeader plus the hide
     // button's own bare, unsortable leading <th> - see that function for why
     // every ranked table in these webviews is built through it.
     const headerWithHideColumn = renderRankedTableHeader(columns);
 
-    const categoryHtml = renderCpuCategoryTable(cpuProfile["categories"]);
+    const categoryHtml = renderCpuCategoryTable(cpuProfile["categories"], cpuProfile["cpuTime"]);
 
-    return `${categoryHtml}<div class="detailTable cpuHotMethodsTable"><table id="cpuMethodsTable">${headerWithHideColumn}${rows}</table></div>`;
+    return `${categoryHtml}${renderCoverageLine(hotMethods, totalSampleCount)}<div class="detailTable cpuHotMethodsTable"><table id="cpuMethodsTable" data-has-core-percent="${hasMethodCoreColumn ? 'true' : 'false'}">${headerWithHideColumn}${rows}</table></div>`;
 }

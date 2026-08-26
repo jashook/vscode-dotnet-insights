@@ -100,6 +100,30 @@ function sortDetailTableByColumn(table, columnIndex, sortType, ascending) {
         return ascending ? comparison : -comparison;
     });
 
+    // Pairings are resolved BEFORE anything moves. The structural fallback
+    // below reads nextElementSibling, which is only meaningful while the
+    // original order is still intact - resolving lazily inside the move loop
+    // would consult an order the loop itself has already destroyed.
+    var pairedDetailRows = [];
+    for (var pairIndex = 0; pairIndex < dataRows.length; ++pairIndex) {
+        var pairedDetailId = pairedDetailRowIdFor(dataRows[pairIndex]);
+        var pairedDetailRow = pairedDetailId ? document.getElementById(pairedDetailId) : null;
+
+        // A table that pairs by an id convention this helper does not know
+        // about (the CPU category table did) would otherwise have its detail
+        // rows left behind entirely, stranding every tree at the top of the
+        // table - silently, and only after the first sort. Falling back to the
+        // row physically below it degrades that to "still correct".
+        if (!pairedDetailRow) {
+            var nextRow = dataRows[pairIndex].nextElementSibling;
+            if (nextRow && nextRow.classList.contains('callPathsDetail')) {
+                pairedDetailRow = nextRow;
+            }
+        }
+
+        pairedDetailRows.push(pairedDetailRow);
+    }
+
     // appendChild on a node already in the tree moves it - iterating in the
     // desired final order and re-appending each row leaves the header (never
     // touched) first and every data row following in sorted order. Each
@@ -107,13 +131,19 @@ function sortDetailTableByColumn(table, columnIndex, sortType, ascending) {
     // it so it stays correctly associated after the sort.
     for (var rowIndex = 0; rowIndex < dataRows.length; ++rowIndex) {
         tbody.appendChild(dataRows[rowIndex]);
-        var pairedDetailId = pairedDetailRowIdFor(dataRows[rowIndex]);
-        if (pairedDetailId) {
-            var pairedDetailRow = document.getElementById(pairedDetailId);
-            if (pairedDetailRow) {
-                tbody.appendChild(pairedDetailRow);
-            }
+
+        if (pairedDetailRows[rowIndex]) {
+            tbody.appendChild(pairedDetailRows[rowIndex]);
         }
+    }
+
+    // Anything whose value depends on the table's ORDER rather than on a row's
+    // own data has to be rebuilt now - a running total is only true for the
+    // ordering it was accumulated in. Announced as an event rather than called
+    // directly so this file stays a generic table helper with no knowledge of
+    // which views have such a column.
+    if (typeof CustomEvent === 'function') {
+        table.dispatchEvent(new CustomEvent('detailTableSorted', { bubbles: false }));
     }
 }
 
@@ -154,8 +184,20 @@ function wireSortableTableHeaders(table, onSortColumn) {
 
         (function (columnIndex, boundHeaderCell) {
             boundHeaderCell.addEventListener('click', function () {
-                var ascending = (currentSortColumnIndex === columnIndex) ? !currentSortAscending : true;
-                onSortColumn(columnIndex, boundHeaderCell.getAttribute('data-sort'), ascending);
+                var sortType = boundHeaderCell.getAttribute('data-sort');
+
+                // First click on a NUMERIC column sorts descending, on a text
+                // column ascending. Every one of these tables is a ranking, so
+                // "biggest first" is the question being asked of a number and
+                // A-to-Z is the question being asked of a name; a uniform
+                // ascending default made clicking Self Samples show the
+                // COLDEST methods first, which is never what anyone wanted.
+                // Repeat clicks on the same column toggle from there.
+                var ascending = (currentSortColumnIndex === columnIndex)
+                    ? !currentSortAscending
+                    : (sortType !== 'number');
+
+                onSortColumn(columnIndex, sortType, ascending);
 
                 // The row-hide column's own blank <th> (skipped above) has no
                 // .sortIndicator span at all - guard against it here too, since
@@ -180,17 +222,33 @@ function wireSortableTableHeaders(table, onSortColumn) {
     }
 }
 
-// The common case: the first .detailTable table inside `container`, sorted in
-// place by reordering its own rows.
+// Every .detailTable table inside `container`, each sorted in place by
+// reordering its own rows.
+//
+// This used to wire only the FIRST match, which quietly meant "whichever table
+// this view happens to render first". The Profile view renders the CPU
+// CATEGORY table above the methods table and both wear .detailTable, so the
+// category table took the wiring and **not one header on the hot-methods table
+// did anything at all** - they carried correct data-sort attributes and looked
+// clickable throughout. Verified in a browser: clicking Total Samples or
+// Method left the order untouched, while the category table sorted fine.
+//
+// Same first-match-of-a-shared-class trap that had already claimed the zoom
+// filter and the detail-row pairing in this very view. Wiring every table is
+// both the fix and the thing that stops the next table added to a view from
+// silently arriving unsortable.
 function setupDetailTableSortHandlers(container) {
-    var table = container.querySelector(".detailTable table");
-    if (!table) {
-        return;
-    }
+    var tables = container.querySelectorAll(".detailTable table");
 
-    wireSortableTableHeaders(table, function (columnIndex, sortType, ascending) {
-        sortDetailTableByColumn(table, columnIndex, sortType, ascending);
-    });
+    for (var tableIndex = 0; tableIndex < tables.length; ++tableIndex) {
+        // Bound per iteration: the callback below outlives this loop, so a
+        // shared `var` would leave every table sorting the last one.
+        (function (table) {
+            wireSortableTableHeaders(table, function (columnIndex, sortType, ascending) {
+                sortDetailTableByColumn(table, columnIndex, sortType, ascending);
+            });
+        })(tables[tableIndex]);
+    }
 }
 
 // Generic "hide this row and recompute everything else" controller, one

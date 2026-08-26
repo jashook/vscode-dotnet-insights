@@ -36,6 +36,8 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
+using DotnetInsights.NetTrace.Cpu;
+using DotnetInsights.NetTrace.Gc;
 using DotnetInsights.NetTrace.Rundown;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -210,7 +212,15 @@ public static class ContentionJsonExporter
         public int Remaining;
     }
 
-    public static void Write(Utf8JsonWriter writer, List<ContentionEvent> contentionEvents, StackTable stackTable, MethodSymbolTable symbolTable)
+    // gcEvents / cpuSampleTimeline / captureDurationMSec feed the "overview"
+    // section only (Contention/ContentionOverviewBuilder.cs) and are optional:
+    // passing none of them still produces every other section unchanged, with
+    // the CPU and GC overlays simply absent. They are handed in rather than
+    // recomputed because both are already in hand at the one call site
+    // (Gc/GcJsonExporter.WriteToFile) - re-walking 16M samples here to rebuild
+    // a histogram the CPU export already accumulated is exactly the second
+    // per-sample pass CLAUDE.md's own perf notes record removing.
+    public static void Write(Utf8JsonWriter writer, List<ContentionEvent> contentionEvents, StackTable stackTable, MethodSymbolTable symbolTable, List<GcEvent> gcEvents = null, CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline = null, double captureDurationMSec = 0, bool samplingIsCpuTime = false)
     {
         writer.WriteStartObject();
 
@@ -226,6 +236,8 @@ public static class ContentionJsonExporter
             writer.WriteStartArray();
             writer.WriteEndArray();
             writer.WritePropertyName("timeline");
+            writer.WriteNullValue();
+            writer.WritePropertyName("overview");
             writer.WriteNullValue();
             writer.WritePropertyName("lockTimeline");
             writer.WriteNullValue();
@@ -462,6 +474,8 @@ public static class ContentionJsonExporter
             writer.WriteEndObject();
         }
 
+        WriteOverview(writer, ContentionOverviewBuilder.Build(eventsSpan, gcEvents, cpuSampleTimeline, captureDurationMSec, samplingIsCpuTime));
+
         WriteLockTimeline(writer, eventsSpan, minRelativeMSec, maxRelativeMSec, stackTable, symbolTable, frameIdCache, methodNames, methodNameIndexByName);
 
         writer.WritePropertyName("methodNames");
@@ -475,6 +489,183 @@ public static class ContentionJsonExporter
         writer.WriteEndArray();
 
         writer.WriteEndObject();
+    }
+
+    // Writes the "overview" block backing the Contention view's Overview tab.
+    //
+    // Emits raw series, never percentages of anything the renderer would have
+    // to reconstruct: every derived figure the view shows (average threads
+    // blocked per bucket, blocked share of a bucket) is a division the client
+    // does against numbers that are also shown, so a reader can check the
+    // chart against the tiles by hand. The same reason the insight rules
+    // publish their own thresholds.
+    private static void WriteOverview(Utf8JsonWriter writer, ContentionOverview overview)
+    {
+        writer.WritePropertyName("overview");
+
+        if (overview == null || !overview.HasData)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+
+        writer.WriteStartObject();
+
+        writer.WriteNumber("contentionCount", overview.ContentionCount);
+        writer.WriteNumber("totalWaitMSec", overview.TotalWaitMSec);
+        writer.WriteNumber("meanWaitMSec", overview.MeanWaitMSec);
+
+        writer.WritePropertyName("waitPercentiles");
+        writer.WriteStartObject();
+        writer.WriteNumber("p50", overview.P50WaitMSec);
+        writer.WriteNumber("p75", overview.P75WaitMSec);
+        writer.WriteNumber("p90", overview.P90WaitMSec);
+        writer.WriteNumber("p95", overview.P95WaitMSec);
+        writer.WriteNumber("p99", overview.P99WaitMSec);
+        writer.WriteNumber("p999", overview.P999WaitMSec);
+        writer.WriteNumber("max", overview.MaxWaitMSec);
+        writer.WriteNumber("maxStartMSec", overview.MaxWaitStartMSec);
+        writer.WriteNumber("maxThreadId", overview.MaxWaitThreadId);
+        writer.WriteEndObject();
+
+        writer.WriteNumber("blockedWallClockMSec", overview.BlockedWallClockMSec);
+        writer.WriteBoolean("hasCaptureDuration", overview.HasCaptureDuration);
+        writer.WriteNumber("captureDurationMSec", overview.CaptureDurationMSec);
+        writer.WriteNumber("blockedWallClockPercent", overview.BlockedWallClockPercent);
+        writer.WriteNumber("averageThreadsBlocked", overview.AverageThreadsBlocked);
+        writer.WriteNumber("peakThreadsBlocked", overview.PeakThreadsBlocked);
+        writer.WriteNumber("peakThreadsBlockedAtMSec", overview.PeakThreadsBlockedAtMSec);
+
+        writer.WriteNumber("minRelativeMSec", overview.MinRelativeMSec);
+        writer.WriteNumber("bucketDurationMSec", overview.BucketDurationMSec);
+        writer.WriteNumber("bucketCount", overview.BucketCount);
+        writer.WriteString("gridSource", overview.GridSource);
+
+        WriteDoubleArray(writer, "blockedWallClockMSecByBucket", overview.BlockedWallClockMSecByBucket, overview.BucketCount);
+        WriteDoubleArray(writer, "blockedThreadMSecByBucket", overview.BlockedThreadMSecByBucket, overview.BucketCount);
+        WriteIntArray(writer, "peakThreadsBlockedByBucket", overview.PeakThreadsBlockedByBucket, overview.BucketCount);
+        WriteIntArray(writer, "contentionCountByBucket", overview.ContentionCountByBucket, overview.BucketCount);
+        WriteDoubleArray(writer, "p50WaitMSecByBucket", overview.P50WaitMSecByBucket, overview.BucketCount);
+        WriteDoubleArray(writer, "p99WaitMSecByBucket", overview.P99WaitMSecByBucket, overview.BucketCount);
+        WriteDoubleArray(writer, "maxWaitMSecByBucket", overview.MaxWaitMSecByBucket, overview.BucketCount);
+
+        writer.WriteBoolean("hasCpuSamples", overview.HasCpuSamples);
+        writer.WriteBoolean("hasSampleTypeData", overview.HasSampleTypeData);
+        writer.WriteString("samplingSemantics", overview.SamplingSemantics);
+        writer.WriteBoolean("hasCpuTime", overview.HasCpuTime);
+        writer.WriteNumber("samplePeriodMSec", overview.SamplePeriodMSec);
+        writer.WriteNumber("totalCpuMSec", overview.TotalCpuMSec);
+        writer.WriteNumber("averageCoresBusy", overview.AverageCoresBusy);
+
+        if (overview.HasCpuSamples)
+        {
+            WriteIntArray(writer, "cpuBoundSamplesByBucket", overview.CpuBoundSamplesByBucket, overview.BucketCount);
+        }
+        else
+        {
+            writer.WritePropertyName("cpuBoundSamplesByBucket");
+            writer.WriteNullValue();
+        }
+
+        // Every candidate CPU definition, each with its own series and its own
+        // correlation. The view lets the reader switch between them precisely
+        // because a v5 capture cannot say which is right - see
+        // ContentionOverviewBuilder's CpuCorrelationSeries.
+        writer.WritePropertyName("cpuSeries");
+        writer.WriteStartArray();
+
+        for (int seriesIndex = 0; seriesIndex < overview.CpuSeries.Count; ++seriesIndex)
+        {
+            CpuCorrelationSeries series = overview.CpuSeries[seriesIndex];
+
+            writer.WriteStartObject();
+            writer.WriteString("id", series.Id);
+            writer.WriteString("label", series.Label);
+            writer.WriteString("definition", series.Definition);
+            writer.WriteString("bias", series.Bias);
+            writer.WriteNumber("totalSamples", series.TotalSamples);
+            writer.WriteNumber("totalCpuMSec", series.TotalCpuMSec);
+            writer.WriteBoolean("hasCorrelation", series.HasCorrelation);
+
+            if (series.HasCorrelation)
+            {
+                writer.WriteNumber("coefficient", series.Correlation);
+                writer.WriteNumber("bestLagCoefficient", series.BestLagCorrelation);
+                writer.WriteNumber("bestLagBuckets", series.BestLagBuckets);
+                writer.WriteNumber("bestLagMSec", series.BestLagMSec);
+            }
+
+            WriteIntArray(writer, "samplesByBucket", series.SamplesByBucket, overview.BucketCount);
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndArray();
+
+        writer.WriteBoolean("hasGcPauses", overview.HasGcPauses);
+
+        if (overview.HasGcPauses)
+        {
+            WriteDoubleArray(writer, "gcPauseMSecByBucket", overview.GcPauseMSecByBucket, overview.BucketCount);
+        }
+        else
+        {
+            writer.WritePropertyName("gcPauseMSecByBucket");
+            writer.WriteNullValue();
+        }
+
+        // The cross-definition verdict, which is the number that actually
+        // governs what the view is allowed to claim. "disagree" means the
+        // capture does not settle the question and no headline coefficient is
+        // reported at all.
+        writer.WritePropertyName("correlation");
+
+        if (string.IsNullOrEmpty(overview.CorrelationAgreement) || overview.CorrelationAgreement == "none")
+        {
+            writer.WriteNullValue();
+        }
+        else
+        {
+            writer.WriteStartObject();
+            writer.WriteString("agreement", overview.CorrelationAgreement);
+            writer.WriteNumber("minCoefficient", overview.MinCorrelation);
+            writer.WriteNumber("maxCoefficient", overview.MaxCorrelation);
+            writer.WriteNumber("bucketCount", overview.CorrelationBucketCount);
+            writer.WriteEndObject();
+        }
+
+        writer.WriteEndObject();
+    }
+
+    private static void WriteDoubleArray(Utf8JsonWriter writer, string propertyName, double[] values, int count)
+    {
+        writer.WritePropertyName(propertyName);
+        writer.WriteStartArray();
+
+        if (values != null)
+        {
+            for (int index = 0; index < count && index < values.Length; ++index)
+            {
+                writer.WriteNumberValue(values[index]);
+            }
+        }
+
+        writer.WriteEndArray();
+    }
+
+    private static void WriteIntArray(Utf8JsonWriter writer, string propertyName, int[] values, int count)
+    {
+        writer.WritePropertyName(propertyName);
+        writer.WriteStartArray();
+
+        if (values != null)
+        {
+            for (int index = 0; index < count && index < values.Length; ++index)
+            {
+                writer.WriteNumberValue(values[index]);
+            }
+        }
+
+        writer.WriteEndArray();
     }
 
     // Writes the "lockTimeline" block backing the Contention view's Lock

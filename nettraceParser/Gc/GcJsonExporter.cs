@@ -90,7 +90,7 @@ public static class GcJsonExporter
     // back so Binary/CpuBinarySections.cs can encode the SAME values into the
     // binary container in the same run - that shared origin is what lets
     // --json act as an oracle the binary section is diffed against.
-    public static ExportTiming WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, ThreadingSummary threadingSummary, StackTable stackTable, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath, double captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline, DotnetInsights.NetTrace.Universal.UniversalSymbolTable nativeSymbols = null)
+    public static ExportTiming WriteToFile(string outputPath, List<GcEvent> gcEvents, List<AllocationEvent> allocationEvents, List<ExceptionEvent> exceptionEvents, EventOverview eventOverview, List<SampleEvent> sampleEvents, List<ContentionEvent> contentionEvents, ThreadingSummary threadingSummary, StackTable stackTable, MethodSymbolTable symbolTable, string processName, string ticksBinaryPath, double captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline, DotnetInsights.NetTrace.Universal.UniversalSymbolTable nativeSymbols = null, bool samplingIsCpuTime = false, int processorCount = 0)
     {
         // Stays null when this capture has no CPU samples at all - the same
         // condition under which the "cpuProfile" JSON key is never written.
@@ -209,7 +209,7 @@ public static class GcJsonExporter
             writer.WritePropertyName("cpuProfile");
             ProgressReporter.BeginPhase("Exporting CPU profile", subWriterRanges.Cpu.Start, subWriterRanges.Cpu.End);
             subStopwatch.Restart();
-            cpuSampleTimeline = CpuProfileJsonExporter.Write(writer, sampleEvents, stackTable, symbolTable, ProgressReporter.ReportFraction, nativeSymbols);
+            cpuSampleTimeline = CpuProfileJsonExporter.Write(writer, sampleEvents, stackTable, symbolTable, ProgressReporter.ReportFraction, nativeSymbols, samplingIsCpuTime, processorCount);
             cpuMs = subStopwatch.ElapsedMilliseconds;
             ProgressReporter.CompletePhase();
 
@@ -220,7 +220,7 @@ public static class GcJsonExporter
             writer.WritePropertyName("contentionSummary");
             ProgressReporter.BeginPhase("Exporting contention summary", subWriterRanges.Contention.Start, subWriterRanges.Contention.End);
             subStopwatch.Restart();
-            ContentionJsonExporter.Write(writer, contentionEvents, stackTable, symbolTable);
+            ContentionJsonExporter.Write(writer, contentionEvents, stackTable, symbolTable, gcEvents, cpuSampleTimeline, captureDurationMSec, samplingIsCpuTime);
             contentionMs = subStopwatch.ElapsedMilliseconds;
             ProgressReporter.CompletePhase();
 

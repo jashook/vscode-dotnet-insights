@@ -278,6 +278,623 @@ and the rules worth keeping:
   disabled showed *no* read-phase difference. Stack-walk misattribution.
   Confirm a surprising leaf with counters or an A/B before optimizing it.
 
+### Column sorting (`rankedTable.js`)
+
+Two defects, both found by clicking headers in a real browser rather than by
+reading the code.
+
+- **`setupDetailTableSortHandlers` wired only the FIRST `.detailTable table` in
+  a container**, i.e. "whichever table this view happens to render first". The
+  Profile view renders the CPU CATEGORY table above the methods table and both
+  wear `.detailTable`, so the category table took the wiring and **not one
+  header on the hot-methods table did anything** - while carrying correct
+  `data-sort` attributes and looking entirely clickable. Verified: clicking
+  Total Samples or Method left the order untouched; the category table sorted
+  fine. It now wires every table in the container, which also stops the next
+  table added to a view from silently arriving unsortable.
+
+  **This is the same first-match-of-a-shared-class trap that had already
+  claimed the zoom filter (`querySelector('.cpuHotMethodsTable table')` hitting
+  the category table) and the detail-row pairing in this very view.** Three
+  separate bugs, one root cause: `.detailTable` / `.cpuHotMethodsTable` are
+  STYLING classes worn by several tables, and are never a way to identify one.
+  Query by id.
+
+- **First click on a numeric column sorted ASCENDING**, so clicking Self
+  Samples showed the coldest methods first. Every one of these tables is a
+  ranking: a number's question is "biggest first", a name's is "A to Z". First
+  click now descends for `data-sort="number"` and ascends for text; repeat
+  clicks toggle from there. This changes every ranked table in the webviews,
+  deliberately and uniformly.
+
+`Cum %` is deliberately NOT recomputed on sort. It is accumulated down the
+self-time ranking, so each row's value keeps meaning "this method and
+everything hotter than it" whatever column the table is currently ordered by -
+recomputing it as a running total of an arbitrary order would make it
+meaningless. The coverage line says so.
+
+### Hiding a row: what recomputes, and who owns the precise value
+
+`cpuMethodHider`'s onChange runs `rebuildHotMethodsTable` then
+`renderCpuTimeline`, and between them nearly everything already rescoped
+correctly - verified by driving a real hide in a browser: Self % rises against
+the shrunk denominator (1.34 -> 1.36), Coverage % and its summary line
+recompute, the total/ranked tiles drop (1,090,977 -> 1,074,362; 200 -> 199) and
+the timeline redraws.
+
+**`~ Core %` and `CPU (s)` deliberately do NOT change.** They are absolute
+per-method quantities - samples times the capture's CPU quantum - not shares of
+a denominator, so hiding another row cannot alter them. A row's cost in seconds
+is its cost in seconds whatever else is on screen.
+
+**`data-self-percent` is owned by whoever computed the percentage**, never
+re-derived by parsing the rounded cell back. The filter pass used to do exactly
+that on the unzoomed path, which silently reintroduced the 2dp accumulation
+drift on every hide - measured, 1.33797504 becoming 1.36, and the coverage
+total reading 44.80 where the precise answer is 44.85. It is now written in
+`rebuildHotMethodsTable` (unzoomed) and in the zoom branch (zoomed), and nowhere
+else.
+
+**The category table's row-hide is now wired** (it rendered the button and did
+nothing for as long as the table has existed - 16 rows before a click and 16
+after). Hiding a category renormalises the rest, which is a real question -
+"of the CPU that is NOT garbage collection, what is the split" - rather than a
+display filter.
+
+- **Only SELF samples leave the denominator.** Self partitions the capture, so
+  removing a hidden category's self time leaves a denominator the remaining
+  CPU % still sums to 100% against - measured at 100.01% across 15 visible
+  categories after hiding one, and 99.99% across all 16 after Show all.
+  On-stack samples overlap categories and partition nothing; subtracting those
+  would remove the same sample several times over.
+- **It does NOT rebuild the methods table or the timeline.** A category is an
+  aggregation OVER methods, so hiding one says nothing about which methods
+  should still be ranked; dropping methods because their category was hidden
+  would be a far larger claim than the click made.
+- **`Set` membership is strict, and the two sides had different types.** The
+  hider is keyed by whatever `toggle()` is handed - a DOM attribute, always a
+  string - while `category["id"]` is a JSON number, so `has("0")` against `0`
+  never matched and the hide silently did nothing at all. Both sides are now
+  `String()`-normalised. Worth remembering for the next controller keyed off an
+  attribute.
+
+### Adding a ranked column silently breaks its expanded tree
+
+A caller tree's numeric columns are sized as a PERCENTAGE of the inner table,
+which spans the whole ranked row, so they always occupy its rightmost three
+column-widths - and therefore land under whichever three columns the ranked
+table happens to END with. CLAUDE.md already said this alignment is "an
+alignment, not a shared meaning"; what it did not say is that **appending a
+column to the ranked table slides the whole tree right**.
+
+Measured after `~ Core %`, `CPU (s)` and `Coverage %` were added: the sample
+count `16,615` rendered under **`~ Core %`**, `100.0%` under **`CPU (s)`** and
+`1.52%` under **`Coverage %`**, while Self %, Self Samples, Total % and Total
+Samples had nothing beneath them at all - the tree's name cell spanned straight
+across them. Reported as "when the table row is expanded, we lose columns",
+which is exactly what it looks like.
+
+`cpuCallerTreeColgroup(trailingColumns)` pads the RIGHT of the tree with that
+many empty columns so the numerics slide back under the columns they describe.
+The caller passes how many columns its table carries AFTER Total Samples, read
+off the live header (`rows[0].cells.length - 6`) rather than hard-coded, since
+two of them exist only on a CPU-time capture. The CPU category tree, whose
+table ends where the tree does, passes 0 and is untouched.
+
+**BOTH SIDES need padding, and the first fix only did one.** Trailing padding
+alone still left the tree's auto-width NAME cell running from the name column
+straight through the host's first numeric column (Self %), so that column had
+nothing beneath it and the method name overlapped its header - the other half
+of the same complaint. `cpuCallerTreeColgroup(leadingColumns, trailingColumns)`
+now pads both sides. The methods table passes (1, 3): one numeric (Self %)
+precedes the tree's own samples column, three columns follow Total Samples.
+
+**The CPU CATEGORY tree needed it too and was missed the first time**, because
+that table also gained a `~ Core %` column - measured at (0, 0) its name sat
+under Samples, its sample count under CPU %, and its last percentage under
+`~ Core %`. It passes (0, 1): its numerics start immediately after the name.
+Both counts are derived from the live header (`cells.length -
+CPU_CALLER_TREE_BASE_COLUMNS - leading`), so appending further columns needs no
+change - **but inserting one before the tree's own samples column changes the
+LEADING count, which is not derived.**
+
+Verified by measuring laid-out geometry for both trees; there is no assertion
+guarding either.
+
+The method tree now also carries the same legend the category tree has
+("Samples / % of this method / % of capture"), because even when aligned the
+third number is a share of the CAPTURE sitting under a "Total Samples" header.
+The legend goes ABOVE the tree, never as a label row inside it - that changes
+the grid's column pressure and breaks the indentation, which this file already
+records.
+
+### Column width is a per-table budget, not a global constant
+
+`--rankedNumericColumnWidth: 8.5%` is set on `.cpuHotMethodsTable`, which is
+worn by five different tables. That single number was calibrated for
+Contention's own widest header ("Total Wait (ms)", ~115px min-content) across
+FOUR numeric columns. The CPU methods table now has SEVEN, so the same 8.5%
+spent **59.5% of the table** on columns holding about 50px of digits, and the
+method-name column was squeezed to 500px.
+
+Narrowed to **6.2%** for `#cpuMethodsTable`/`#cpuCategoryTable` only, with
+horizontal cell padding cut from 8px/4px to 3px (vertical left alone - row
+height is what makes a long table scannable). Measured: numeric columns
+110px -> 80px, the name column 500px -> **709px**, last column still flush with
+the table edge, no header or body cell clipped, header row 50px because the
+longer labels wrap to two lines - which is the documented graceful degradation,
+not a defect.
+
+Scoped by TABLE ID, deliberately: Contention keeps the wider default because it
+genuinely needs it and has fewer columns to spend it on. The custom property is
+overridden on the `<table>` rather than the wrapper so it inherits down to the
+header cells that read it.
+
+### An unsortable column still needs a WIDTH
+
+`snapshot.css` sizes the ranked tables' numeric columns off
+`th[data-sort="number"]`, which quietly assumes every numeric column is
+sortable. Making `Coverage %` unsortable removed its `data-sort` attribute and
+therefore its width, and under `table-layout: auto` an unsized column takes the
+leftover: measured at **220px against every other numeric column's 110px**,
+squeezing the Method name column from 500px to 390px and dragging every numeric
+column ~110px left. Reported as "the columns are pushed over too much to the
+left".
+
+The right-alignment was never affected - that rule is POSITIONAL
+(`:not(:first-child):not(:nth-child(2))`), not `data-sort`-based - which is why
+the symptom was spacing rather than alignment, and why "right align them" was a
+description of the effect rather than the fix.
+
+`th.unsortableColumn` is now in the width rule alongside
+`th[data-sort="number"]`: **whether a column sorts says nothing about whether it
+holds a number.** Verified by A/B in a browser - all seven numeric columns at
+110px and the last column's right edge flush with the table (0px gap).
+
+### Cumulative coverage ("Coverage %") and the verdict that was NOT shipped
+
+The methods table carries a running total of Self % down the self-time
+ranking - "this method and everything hotter than it" - and a line above it
+restating the same thing at the 10/50/200 marks. It answers the question a
+ranked list cannot answer about itself: whether optimising the top of it can
+matter at all. Reference capture, capture-wide: top 1 **1.52%**, top 10
+**9.75%**, top 50 **25.39%**, top 200 **45.69%**. Both rescope with the zoom
+(48.83% for the top 200 inside a 30s window).
+
+- **Self %, Total % and Coverage % are shares of the ROWS SHOWN**, not of the
+  capture: the denominator is the sum of the visible ranked rows' own self
+  samples, so the Self % column sums to exactly 100% and answers "of the
+  methods I am looking at, how is the cost split". Hiding a row shrinks the
+  denominator and every survivor's share rises.
+  **Total % MUST share that denominator.** It is inclusive, so total >= self
+  for every row; mixing bases (self relative, total absolute) prints rows whose
+  Self % exceeds their own Total %, which is impossible in one basis and reads
+  as a bug rather than as a units mismatch. Pinned by a test, and by a browser
+  check counting rows where Self % > Total % (0 of 200).
+- **The coverage line is the one place the ABSOLUTE share survives**, and it is
+  computed from the capture's own sample total rather than off the Coverage %
+  column beside it. Once the columns are relative, Coverage % ends at 100% by
+  construction - a table of the 200 COLDEST methods would read 100% too - so it
+  can no longer answer "is any of this worth chasing". The line says "of all
+  CPU" out loud so the two bases are not read as one.
+- **NOT called "Cum %".** In pprof and perf `cum` means INCLUSIVE time, which
+  is this table's own `Total %` column three cells to the left. The first cut
+  used the conventional name for cumulative coverage sitting right next to the
+  real inclusive column and it misread immediately, in practice, on the first
+  person to look at it.
+- **It is a property of the ORDER, not of the row**, and both consequences
+  follow from that: the header is deliberately unsortable (`sortType "none"` in
+  `renderSortableTableHeader` - no `data-sort`, no indicator), because sorting
+  BY a running total reorders the table by a number that only existed because
+  of the previous order; and it is RECOMPUTED after every sort, via a
+  `detailTableSorted` CustomEvent `sortDetailTableByColumn` dispatches so
+  `rankedTable.js` stays a generic helper with no knowledge of which views have
+  such a column.
+- **It accumulates FULL-PRECISION percentages, stashed per row as
+  `data-self-percent`, never the rounded cell text.** Summing 200 values each
+  rounded to 2dp drifted the running total by 0.06pp, so the same table read
+  **45.69 before a sort and 45.63 after one** - measured, not theorised. It now
+  reads 45.69 in every ordering.
+- Hidden rows contribute nothing, which is what makes the last visible row read
+  as "coverage of everything shown".
+- **Cells are found by CLASS (`.cumPercentCell`, `.corePercentCell`), not by
+  index.** With an optional core column and a cumulative one after it, a cell
+  index no longer identifies a column - the indexes that remain (`cells[2..5]`)
+  are the fixed prefix only.
+
+**A flat-vs-peaked verdict was designed, measured, and dropped.** It looked
+obviously useful - "top 10 = 9.8%, no hot spot, stop optimising methods" - and
+the threshold does not survive contact with real captures:
+
+| capture | idle-excluded | top-10 share |
+| --- | --- | --- |
+| collect-linux (cpu-clock) | 0.3% | **9.78%** |
+| v5 assets-registry | 82.3% | **95.93%** |
+| v5 ads-retrieval | 67.7% | **95.85%** |
+
+The v5 captures stay extremely peaked even after removing idle frames, because
+a v5 capture symbolicates only MANAGED leaves - thousands of native and kernel
+frames collapse into a handful of rows. The same process therefore reads "flat"
+on v6 and "peaked" on v5 purely by capture mode, so any verdict would be a
+statement about the profiler rather than the program. The figures ship; the
+judgement does not. Pinned by a test asserting no verdict wording is emitted.
+
+### CPU (s), Core % and Self % are one number in three units
+
+`CPU (s)` is `selfSamples x samplePeriodMSec`; `~ Core %` is that over the
+window duration; `Self %` is the same samples over the sample total. All three
+are linear rescalings of one quantity and none carries information the others
+do not - they are all present because they answer differently phrased
+questions: share of the profile, share of a core, and absolute seconds, which
+is the unit a finding gets written into a ticket in. Worth knowing before
+adding a fourth: the methods table now has FOUR numeric columns derived from
+`selfSamples` (Self %, Self Samples, Core %, CPU (s)) and `Self Samples` is the
+least interpretable of them once seconds are on screen.
+
+Confirms the identity worth stating once: the last row's `Coverage %` times the
+capture's total CPU equals the sum of the `CPU (s)` column. Reference capture:
+45.69% x 1091.3s = **498.6s**, which is exactly what the column sums to.
+
+### The per-row "~ Core %" column
+
+Both Profile-view tables carry an approximate per-row CPU cost as a share of
+ONE core: `samples x samplePeriodMSec / windowDurationMSec x 100`. 100% is one
+core saturated, and it is deliberately NOT clamped - a row that ran on several
+cores at once legitimately exceeds it.
+
+- **Only ever rendered when the capture is CPU-time sampled.** On a wall-clock
+  capture the column is ABSENT, not full of dashes and not computed from a
+  thread-time count. `data-has-core-percent` on each table says which, and the
+  client reads that rather than guessing from cell counts.
+- **Computed from SELF samples**, since self is the column that partitions the
+  capture's CPU - using inclusive totals would count a method and its callees
+  twice over.
+- **Appended at the far RIGHT of both tables.** Several places index these rows
+  by cell number (`cells[2]`..`cells[5]`); inserting anywhere else silently
+  shifts every one of them. The detail rows' `colspan` is conditional on the
+  column being present.
+- **It rescopes with the zoom**, against the zoomed window's own wall-clock
+  duration - the difference between "60% of a core during the spike" and the
+  same cost diluted across five minutes.
+- **Sub-0.01% renders as `<0.01%`**, not `0.00%`, so a cheap row stays visibly
+  distinct from a free one.
+
+**EVERY ZOOMED NUMBER IS BUCKET-QUANTISED, and the status bar now says so.**
+The export has 100 buckets over the whole capture, so on a five-minute capture
+a bucket is ~3s and no drag resolves finer. `startBucket` floors and
+`endBucket` ceils so the selection is COVERED rather than truncated (a
+partially-selected bucket's samples are real), which makes the effective window
+up to two buckets wider than the drag. That is fine; hiding it is not. An 8s
+drag on a 3s grid measured a **15s** window while the label read
+"2m47s - 2m55s", so Core % came out ~1.9x lower than the labelled range implied
+and the table looked inconsistent with the chart - which is exactly how it was
+reported. The label now shows the effective range, the bucket count, and the
+raw drag alongside it. There is no finer answer to correct it to, so it is
+reported rather than silently adjusted.
+
+The invariant worth knowing when checking it by hand: **the column sums, across
+all categories, to `averageCoresBusy x 100`.** Verified on the reference
+capture at 364.19% against a reported 3.6421 cores, and 389.54% inside a zoom
+over the CPU spike - correctly higher than the capture average, which is what
+zooming into a spike should do.
+
+The METHODS table does not sum to that, and should not: it ranks the top 200
+only, which cover 45.7% of the reference capture's samples. Measured in a
+30s zoom: categories 389.5% (3.90 cores, the whole window), top-200 methods
+190.2% (1.90 cores, 48.8% of it). A per-row core % far below the chart's cores
+is therefore normal and not a contradiction - one method's share of a core
+against the whole process's - and that question has now been asked once.
+
+One formula lives in two places (`formatCorePercent` in
+`CpuProfileRenderer.ts` for the server-rendered initial value,
+`formatCorePercentForCell` in `snapshotGcStats.js` for the zoom rewrite). That
+is the standing cost of server-rendered tables that also respond to a
+client-side zoom, and it is the same split the Self %/Samples columns already
+live with.
+
+### Zooming the CPU timeline (`filterCpuMethodsTableToZoomRange`)
+
+**`.cpuHotMethodsTable` is worn by TWO tables in the Profile view**, and
+`CpuProfileRenderer.ts` renders the CATEGORY table (`#cpuCategoryTable`) FIRST,
+above the methods table (`#cpuMethodsTable`). A
+`document.querySelector('.cpuHotMethodsTable table')` therefore returns the
+category table, and this function spent its life filtering the wrong one. One
+selector produced both reported symptoms:
+
+- **The categories vanished on the first drag-zoom.** Category rows carry no
+  `data-cpu-hotmethod-index`, so `parseInt` gave NaN, the visibility test could
+  never set `isVisible = true` while zoomed, and every row got
+  `display: none`.
+- **The methods table did not respond to zoom at all**, because it was never
+  the element being filtered.
+
+Query these tables **by id**. The shared class is for styling and carries a
+column contract (see the ranked-table section); it is not an identity.
+
+Two further rules the zoom has to keep, both about the table meaning what it
+says:
+
+- **The NUMBERS move with the zoom, not just the row set.** Hiding rows that
+  scored zero in the window while leaving survivors showing whole-capture
+  counts yields a table that looks scoped and is not - its top row is still
+  whatever dominated the capture. Self %/Self Samples are recomputed from
+  `methodSelfByBucket` over the in-range buckets, against a denominator of
+  `samplesByBucket` over the same range minus hidden rows' in-range self
+  samples (the same "hidden rows leave the denominator" rule
+  `rebuildHotMethodsTable` applies capture-wide).
+- **Inclusive totals CANNOT be scoped and are blanked to an em dash**, not left
+  showing a capture-wide figure beside a scoped one in the same row. The export
+  carries per-bucket SELF samples only; there is no per-bucket inclusive
+  breakdown. The zoom status label says so out loud.
+- **The table is re-ranked by in-range self samples** (descending, on the Self
+  Samples column) in both directions, so un-zooming returns to the exporter's
+  own ordering rather than leaving a stray sort behind.
+- **The category table rescopes too.** It first shipped capture-wide with a
+  note explaining that there was no per-bucket category data to scope it by;
+  there is now. `CpuCategoryBuilder` accumulates `SelfSamplesByBucket` /
+  `OnStackSamplesByBucket` per category inside the per-sample loop it was
+  already running - the self one is a single increment, the on-stack one rides
+  the bitmask walk that loop already performs - so it adds no pass and no
+  per-frame branch. ~20 categories x 100 buckets x 2 arrays is ~16KB, and it
+  measured **+90ms on a 16.24M-sample capture** (1554ms -> 1643ms median of 3;
+  ignore the first run after a build, which came in at 2186ms). Both columns
+  are recomputed against the same in-range denominator the methods table uses,
+  so CPU % still sums to 100% within the window and On-stack % still
+  deliberately exceeds it - verified in a driven zoom at 100.00% and 391.06%.
+  The `#cpuCategoryScopeNote` now names the one thing that still does NOT
+  scope: each row's expandable call-path tree, which is folded over the whole
+  capture and has no per-bucket form.
+- **A ROW MUST CARRY `data-detail-target` OR THE SHARED SORTER LOSES ITS
+  TREE.** `rankedTable.js`'s `pairedDetailRowIdFor` pairs a row with its
+  `callPathsDetail` row by `data-detail-target` (or the two older
+  `data-cpu-method-target` / `data-contention-target` forms). The CPU category
+  table paired by the `cpuCategoryDetail<N>` id convention alone, so the sorter
+  could not see its detail rows at all: `sortDetailTableByColumn` re-appended
+  every data row and left all 16 trees stranded above them. Symptom, once
+  rescoping started sorting this table on every zoom - expanding a category
+  drew its tree somewhere else entirely and clicking again appeared to do
+  nothing, i.e. "the category row goes away and cannot be collapsed".
+  Measured in a browser: row order went `R0,D0,R1,D1,...` to `D0,D1,D2,...`
+  with **16 of 16 rows detached** after one zoom. Fixed by emitting the
+  attribute, and `sortDetailTableByColumn` now resolves every pairing UP FRONT
+  (before any row moves, since its structural fallback reads
+  `nextElementSibling` and the move loop destroys that order) with a fallback
+  to the adjacent `.callPathsDetail` row, so the next table that forgets the
+  attribute degrades to "still correct" rather than "silently scrambled".
+- **`data-cpu-category` IS THE ROW POSITION, NOT THE CATEGORY ID**, because
+  `renderCpuCategoryTable` filters out zero-sample categories and re-sorts by
+  `selfPercent` before emitting rows. Anything looking a row up in
+  `cpuProfile.categories.rows` must key off `data-cpu-category-id` (the
+  category's own stable id); the positional one exists only to pair a row with
+  its `cpuCategoryDetail<N>` element. The rescoping keyed off the positional
+  attribute first and wrote every row's recomputed numbers into whichever
+  category sat at the same index - which is invisible while zoomed and shows up
+  only after un-zooming, as correct-looking counts under the wrong names. This
+  is the third time this exact trap has been hit in this table (see
+  `data-cpu-category-lazy`); it is now pinned by
+  `cpuCategoryRenderer.test.ts`'s "CPU category row identity" tests, which also
+  assert the fixture can actually distinguish the two.
+
+Verified by driving a real drag-zoom over the reference capture's CPU spike
+through CDP, not by reading the code: categories stayed at 16 rows, and the
+methods ranking went from `finish_task_switch.isra.0` (16,615 self) to
+`SVR::gc_heap::background_mark_simple1` (4,275) and
+`SVR::gc_heap::background_sweep` (4,012) - i.e. **the spike is a background
+GC**, a fact the capture-wide ranking does not show at all. Un-zoom restored
+all three original rows and re-hid the note.
+
+### CPU TIME vs thread time, and which captures actually have it
+
+**A sample count is only CPU time if the sampler is driven by CPU time**, and
+in this codebase only one capture shape is. Getting this wrong turns a thread
+count into a fabricated seconds figure that looks entirely plausible.
+
+- **`dotnet-trace collect-linux` samples on perf `cpu-clock`**, which only
+  advances while a thread is on a core. Microsoft's docs: "CPU sampling
+  defaults to once every millisecond (per processor)... read each sample as
+  roughly 1 ms of CPU time". These arrive as `Universal.Events/cpu`.
+- **The runtime's own `Microsoft-DotNETCore-SampleProfiler` is WALL-CLOCK per
+  thread** - it walks every managed thread whether or not it holds a core. No
+  multiple of that count is CPU time.
+- **A v6 file does NOT imply cpu-clock sampling, and `FormatVersion` must not
+  be used to decide.** This was shipped wrong once. `collect-linux` only
+  enables perf CPU sampling when `--profile`, `--providers`, `--clrevents` AND
+  `--perf-events` are all omitted; naming any of them silently falls back to
+  the runtime's wall-clock sampler. Verified on two real collect-linux captures
+  of the SAME service: 21-aug carried 1,090,977 `Universal.Events/cpu` samples,
+  22-aug carried 38,791,404 `Microsoft-DotNETCore-SampleProfiler` samples and
+  no `cpu` events at all. `SampleProfileEventProjector.Project` now reports
+  which sampler won by strict majority, and that flag - never the format
+  version - drives everything downstream.
+
+**The distinction is directly visible in the data**, which is how it was
+confirmed rather than assumed:
+
+- Per-thread sample counts. v5/wall-clock: the top FIVE threads had byte-
+  identical counts (90,133 each) and max/median was 1.5x - only a fixed-rate
+  per-thread sampler does that. v6/cpu-clock: max/median 4.9x, threads ranging
+  from 70.4 samples/sec down to 0.007, i.e. idle threads cost nothing.
+- Inter-sample gaps on the same thread (`Cpu/SamplePeriodEstimator.cs`).
+  cpu-clock produces a razor spike at exactly the period - 102,518 gaps in the
+  two 25us buckets straddling 1000us, against ~7,000 per bucket in the flat
+  tail, a **1507x mode-to-median ratio**. A wall-clock capture has NO spike,
+  just a broad hump around 1450us (the sampler's own walk cadence, smeared).
+
+**Cores busy over time** rides on the Profile view's CPU timeline as a second,
+ZERO-BASED right-hand axis (`cpuTime.coresBusyByBucket`, on the same grid as
+`samplesByBucket`). Two rules it must keep:
+- **Computed from the RAW per-bucket count**, not the idle-adjusted one the
+  samples line uses. On a cpu-clock capture every sample is already on-CPU
+  time - a thread parked in a futex emits none at all - so subtracting "known
+  blocking primitive" leaves would remove real CPU work and understate
+  utilisation. The two lines on that chart therefore mean deliberately
+  different things, and the note above it is the only place that says so.
+- **The axis is not capped at `processorCount`.** A process using 3.64 of 64
+  cores renders as a flat line pinned to the floor, hiding the variation the
+  series exists to show; the share of the machine goes in the tooltip instead.
+
+`SamplePeriodEstimator` recovers the period from that spike rather than
+hardcoding 1ms, because the rate is a capture-time choice and assuming it would
+scale every reported CPU-second by exactly the wrong factor. It measured
+**1.0003ms** on the reference capture, matching the documented default. It
+**declines** (and callers must then report no CPU time at all, never a default)
+when the histogram has no spike - the mode must beat the median by 3x - which
+is what a wall-clock capture looks like. Reported as `cpuProfile.cpuTime`
+(`hasCpuTime`, `sampler`, `samplePeriodMSec`, `totalCpuMSec`,
+`averageCoresBusy`) on every capture. Reference capture: **1091.3 CPU-seconds
+over 299.6s = 3.64 cores busy**, ranging 3.01-6.50 cores across its 100
+buckets (4.7-10.2% of the 64 the box had).
+
+**Whose CPU it is depends on the capture, and nothing currently warns.**
+`collect-linux` is machine-wide by default, so a multi-process capture would
+make this number the MACHINE's utilisation rather than one process's. The
+reference capture happens to describe exactly one process - verified, not
+assumed: all 167 sampled threads map to pid 1 with zero unmapped, and the file
+carries one `ExistingProcess` and no `ProcessCreate`. A capture spanning
+several processes would silently change what the figure means.
+
+**A separate real defect found on the 22-aug capture and NOT yet explained:**
+all 38,791,404 of its samples carry a single thread id, with every one of its
+other 181 threads at zero. That is provably wrong - one thread cannot exceed
+1/period samples per second, and this is 64,700/sec - so its Threading view and
+any per-thread reading of it are meaningless. The capture is a
+`Microsoft-DotNETCore-SampleProfiler` stream inside a v6 container, so the
+suspicion is v6 `ThreadIndex` resolution on that path, but it has not been
+traced. The period estimator refuses it for an unrelated reason (a 12us implied
+period fails the plausibility floor), which is luck, not coverage.
+
+### Lock Overview (`nettraceParser/Contention/ContentionOverviewBuilder.cs`)
+
+The Contention view's default-active **Overview** tab - the lock-side
+counterpart to the GC view's Charts tab. Tiles for the wait-duration
+percentiles and the blocked-time totals, then three charts on ONE shared
+bucket grid: time blocked over time, p50/p99/max wait over time, and lock
+wait against CPU. Built to answer "do long lock waits line up with CPU
+spikes on this machine type".
+
+Rendered by `dotnetInsights/src/ContentionRenderer.ts` +
+`media/contentionOverview.js`; the renderer formats and computes nothing, so
+the CLI's JSON and the webview cannot disagree.
+
+- **TWO blocked-time numbers are emitted and must stay labelled apart.**
+  `blockedWallClockMSecByBucket` is a UNION (wall clock with at least one
+  thread blocked - bounded by the bucket, so it is a real percentage and the
+  honest analogue of a GC pause bar); `blockedThreadMSecByBucket` is a SUM
+  across threads, unbounded, encoding concurrency instead. Collapsing them is
+  the mistake `Overview/TimeBreakdownBuilder.cs` already shipped once as
+  "Contending Locks 426.1%". `averageThreadsBlocked` uses TimeBreakdown's own
+  definition (summed wait / capture duration) verbatim so the two views cannot
+  report different numbers for the same concept - verified at **4.261** here
+  against the 4.26 that file's header records for the same capture.
+- **Wait duration is attributed TWO different ways, on purpose.** The
+  percentile series buckets a wait by where it STARTED ("what did a wait cost
+  if it began here" is what a percentile answers); the blocked-time series
+  SPREADS a wait across every bucket it overlaps. Banking a 4-second stall in
+  the 1.74-second bucket it started in draws the spike in the wrong place,
+  which is the exact misreading this tab exists to prevent. Pinned by
+  `ContentionOverviewTests`.
+- **A wait running past the grid is CLIPPED, not clamped.** Clamping into the
+  final bucket piles the whole remainder there and invents a spike.
+- **Percentiles are nearest-rank, never interpolated** - every value shown is
+  a duration some thread really waited, so it can be found in the Longest
+  Waits list rather than existing only inside the percentile function.
+- **THERE IS NO SINGLE "CPU" SERIES ON A v5 CAPTURE, AND PRETENDING OTHERWISE
+  WAS THE FIRST VERSION'S BUG.** .NET's sample profiler is WALL-CLOCK per
+  thread: it samples every thread whether or not it holds a core, so a raw
+  per-bucket count tracks thread count far more than CPU. Narrowing it is
+  mandatory and every narrowing is wrong in a different direction, because a v5
+  EventPipe capture carries **no native stacks** - the runtime reports a thread
+  in a syscall and a thread inside a native compression loop identically, as
+  `External`. Four definitions therefore ship, each with its own correlation:
+  `allSamples`, `notBlockingPrimitive` (the `CpuIdleWaitClassifier` filter),
+  `managed` (the CLR's own `ThreadSampleType`), `managedRunning` (both).
+  Measured cross-tab on the 3.0GB capture: **79% of the samples
+  `notBlockingPrimitive` counts as CPU are `External`** (91% on ads-retrieval),
+  i.e. in the ambiguous bucket. `CpuIdleWaitClassifier` alone is documented
+  above as scoring six 100%-External gRPC threads "100% running" - it cannot
+  see a native park, so it OVERCOUNTS; `managed` drops all native CPU work, so
+  it UNDERCOUNTS.
+  Accumulated in `CpuProfileJsonExporter`'s existing main loop off the leaf it
+  already resolved. Measured A/B on that capture: **cpu export 1518ms baseline
+  vs 1560ms median**, ~30ms over 16.24M samples, inside the run-to-run spread.
+  Deliberately NOT written into the `cpuProfile` JSON - an in-process handoff
+  only, so neither that section nor `Binary/CpuBinarySections.cs` changes shape.
+- **The definitions can disagree in SIGN, so the view reports the
+  disagreement instead of a coefficient.** On the reference capture r runs
+  **-0.598 (allSamples) to +0.248 (managedRunning)** against the same
+  blocked-time series - the answer to "do lock stalls coincide with CPU spikes"
+  depends entirely on a judgement call the capture cannot settle.
+  `ClassifyAgreement` returns `agree` / `disagree` / `inconclusive` / `single`
+  / `none`; on `disagree` no headline r is rendered at all, only the range and
+  the reason. Signs within +/-0.05 are treated as unsigned so a series at
+  +0.003 does not count as "agreeing" with one at +0.5. This is the same
+  discipline as the three-verdict insight rules: "the data does not answer
+  this" is a real result and must be sayable.
+  **The first cut shipped `notBlockingPrimitive` alone and reported
+  r = -0.534 as the finding.** It was arithmetically correct, and it would have
+  been read as evidence against a hypothesis that the managed-only series
+  actually supports.
+- **`collect-linux` (v6) does not have this problem, and the view says so.**
+  perf samples on `cpu-clock`, which only fires on a thread that actually holds
+  a core, so there every sample IS CPU time and `allSamples` is the answer.
+  `ContentionOverview.SamplingSemantics` (`"cpuTime"`/`"wallClock"`, from
+  `file.FormatVersion >= 6`) drives both the wording and which definition the
+  chart opens on - `allSamples` on perf, the narrowest UNAMBIGUOUS definition
+  (`managedRunning`) on wall-clock, since where the reading is a judgement call
+  the default should be the one whose every sample can be defended.
+  **This is the concrete reason to re-capture with `collect-linux` when the
+  question is about CPU**, and it is the recommendation the panel prints.
+- **Grid source and CPU-series availability are SEPARATE conditions.** Folding
+  them together (the first cut) silently moved every other series onto the
+  fallback grid whenever the histogram was missing. The grid is the CPU sample
+  timeline's own whenever there is one, reused verbatim - resampling either
+  series onto the other's boundaries would put a smoothing artifact directly
+  into the correlation being reported.
+- **GC pause rides along, on its OWN axis.** It is the competing explanation
+  for any CPU spike, and having to open another view to rule it out is how a
+  wrong conclusion gets drawn. It needs its own axis because the magnitudes are
+  incomparable: measured on the reference capture, GC peaks at 239ms in a
+  bucket (13.7% of that bucket - plainly worth seeing) against blocked
+  thread-time's 124,372ms in the same units, **520x larger**. Sharing an axis
+  drew GC as a flat line along zero, which reads as "no GC happened here".
+  Caught by rendering the page, not by reading the code.
+- **The correlation is descriptive and says so.** Pearson r between blocked
+  thread-time and each CPU definition per bucket, plus a lag scan (±25% of the
+  grid, capped at 20 buckets). Both series are heavily autocorrelated - a
+  convoy and a CPU spike each span many buckets - so r is inflated far beyond
+  what 100 independent observations would justify and no p-value against an
+  independence assumption would be honest. Reported with its own n and lag,
+  next to the chart it indexes.
+- **A lag scan maximises r by construction, so it ALWAYS returns a best
+  shift**, and every lag is shown per definition rather than one being promoted
+  into a sentence. On the reference capture the lag fits disagree as badly as
+  the zero-lag ones: `notBlockingPrimitive` peaks at **+19 buckets (+33s)**
+  while `managedRunning` peaks at **-5 buckets**, i.e. opposite directions of
+  causality from the same capture. Pinned by
+  `contentionOverviewRenderer.test.ts`.
+- **The CPU-definition table is NOT a `.detailTable`/`.cpuHotMethodsTable`.**
+  Those carry the column contract this file documents (column 1 the hide
+  gutter, column 2 the wrapping name, 3+ numeric); this table's first column is
+  a name, and borrowing the class reproduces exactly the `.gcdump` census
+  breakage recorded above. It has its own minimal `.cpuSeriesTable` styling.
+  Its bias column also needs `.cpuSeriesTable td.cpuSeriesBias` rather than a
+  bare `.cpuSeriesBias` - `.cpuSeriesTable td` (0,1,1) outranks (0,1,0) and
+  right-aligns the prose.
+- **A negative r is the expected shape, not a bug**: threads blocked on a lock
+  are by definition not running, so blocking and CPU trade off. The broad
+  definitions on the reference capture visibly DIP at every blocked-time spike
+  for exactly this reason - which is also why they cannot settle the question
+  on their own, since that trade-off is arithmetic, not a finding.
+- Zero variance in either series means r is UNDEFINED, and it is reported as
+  such rather than as 0 - "measured, no relationship" and "could not be
+  measured" are different claims.
+- Reference numbers, 3.0GB/35M-event capture, 37,964 contentions: p50
+  **0.054ms**, p99 **203ms**, max **371ms** - a four-thousand-fold spread, and
+  the reason a mean (19.6ms) describes neither population. Blocked wall clock
+  23.17s (13.26% of capture) against 744.41s summed, peak 142 threads blocked
+  at once. Cost: **cont=175ms** total for that capture's whole contention
+  export.
+
 ### Thread classification (`nettraceParser/Threading/ThreadActivityProfiler.cs`)
 
 The Threading view's tables all answer "what stack was this thread in at time

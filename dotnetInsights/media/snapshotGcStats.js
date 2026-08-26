@@ -2171,6 +2171,20 @@ var allocationDatasets = {};
                 wireCpuCategoryTable();
                 setupDetailTableSortHandlers(document.getElementById('profile-tab-hotmethods'));
 
+                // Coverage % is a running total down the table AS ORDERED, so
+                // it stops being true the moment a sort reorders the rows.
+                // Recomputed on every sort rather than frozen in self-time
+                // order: the column describes the view, which is also why its
+                // own header is deliberately unsortable - sorting BY a running
+                // total would reorder the table by a number that only existed
+                // because of the previous order.
+                var methodsTableForSort = document.getElementById('cpuMethodsTable');
+                if (methodsTableForSort) {
+                    methodsTableForSort.addEventListener('detailTableSorted', function () {
+                        updateCoverageColumn(methodsTableForSort);
+                    });
+                }
+
                 // Flame Graph is the default-active inner tab (see
                 // CpuProfileRenderer.ts), so it's built immediately here
                 // rather than deferred to a further click - cpuProfileJson
@@ -2725,11 +2739,41 @@ var allocationDatasets = {};
         if (lazyIndex !== null) {
             var methodIndex = parseInt(lazyIndex, 10);
             var entry = cpuProfileJson["hotMethodDrillDown"] ? cpuProfileJson["hotMethodDrillDown"][methodIndex] : null;
+            // Columns the methods table carries AFTER Total Samples, which is
+            // where the tree's three numerics used to sit. Read off the table
+            // rather than hard-coded, since two of them are conditional on the
+            // capture having a CPU-time quantum. Without this padding the tree
+            // slides right and its numbers land under headers that mean
+            // something else entirely - see cpuCallerTreeColgroup.
+            var methodsTableForTree = document.getElementById('cpuMethodsTable');
+            // The methods table's numerics run Self %, Self Samples, Total %,
+            // Total Samples, then whatever a CPU-time capture adds. The tree's
+            // own samples column belongs under Self Samples, so ONE numeric
+            // precedes it; everything after Total Samples is trailing padding.
+            var methodLeadingColumns = 1;
+            var methodTrailingColumns = methodsTableForTree
+                ? Math.max(0, methodsTableForTree.rows[0].cells.length - CPU_CALLER_TREE_BASE_COLUMNS - methodLeadingColumns)
+                : 0;
+
             var callerHtml = buildInlineCpuMethodCallerTree(
                 entry,
                 cpuProfileJson["methodNames"],
-                cpuProfileJson["totalSampleCount"]);
-            detailRow.querySelector('.callerTreeCell').innerHTML = callerHtml;
+                cpuProfileJson["totalSampleCount"],
+                undefined,
+                methodTrailingColumns,
+                methodLeadingColumns);
+
+            // Legend above the tree, never a label row inside it - a row of
+            // labels changes the grid's column pressure and breaks the
+            // indentation (see buildInlineCpuMethodCallerTree's own comment).
+            // It exists because the tree's columns only ALIGN with the ranked
+            // table's, they do not share its meanings: the third number is a
+            // share of the whole capture sitting under a "Total Samples"
+            // header.
+            detailRow.querySelector('.callerTreeCell').innerHTML =
+                '<div class="cpuCategoryTreeLegend">Columns: <b>Samples</b> &middot; ' +
+                '<b>% of this method</b> &middot; <b>% of capture</b></div>' +
+                callerHtml;
             detailRow.removeAttribute('data-cpu-method-lazy');
         }
 
@@ -3214,6 +3258,21 @@ var allocationDatasets = {};
         renderCpuTimeline(cpuTimelineZoomRange);
     });
 
+    // Categories partition the capture's CPU, so hiding one and renormalising
+    // is a real question - "of the CPU that is NOT garbage collection, what is
+    // the split" - not just a display filter. Keyed by the category's own
+    // stable id, never by row position, for the reason recorded against
+    // data-cpu-category-id.
+    //
+    // It does NOT rebuild the methods table or the timeline: a category is an
+    // aggregation OVER methods, so hiding one says nothing about which methods
+    // should still be ranked, and silently dropping a method from the profile
+    // because its category was hidden would be a much larger claim than the
+    // click made.
+    var cpuCategoryHider = createRowHideController('cpuCategoryHideStatus', 'cpuCategoryHideStatusLabel', function () {
+        filterCpuMethodsTableToZoomRange(cpuTimelineZoomRange);
+    });
+
     function updateCpuTimelineZoomStatusUi(zoomRange) {
         var statusEl = document.getElementById('cpuTimelineZoomStatus');
 
@@ -3238,7 +3297,21 @@ var allocationDatasets = {};
         statusEl.style.display = 'block';
         var labelEl = document.getElementById('cpuTimelineZoomLabel');
         if (labelEl) {
-            labelEl.textContent = `Zoom: ${formatElapsedMs(zoomRange.startMSec)} – ${formatElapsedMs(zoomRange.endMSec)}`;
+            // Reports the EFFECTIVE window - the bucket range the numbers were
+            // actually computed over - not the raw drag, which they never
+            // describe exactly. See effectiveZoomWindow.
+            var effective = effectiveZoomWindow(zoomRange);
+
+            if (effective) {
+                var bucketsUsed = effective.endBucket - effective.startBucket + 1;
+                labelEl.textContent =
+                    `Zoom: ${formatElapsedMs(effective.startMSec)} – ${formatElapsedMs(effective.endMSec)}` +
+                    ` (${bucketsUsed} \u00d7 ${(effective.bucketDurationMSec / 1000).toFixed(1)}s buckets; dragged ` +
+                    `${formatElapsedMs(zoomRange.startMSec)} – ${formatElapsedMs(zoomRange.endMSec)})` +
+                    ` · Methods re-ranked by self samples in range; inclusive totals unavailable when zoomed`;
+            } else {
+                labelEl.textContent = `Zoom: ${formatElapsedMs(zoomRange.startMSec)} – ${formatElapsedMs(zoomRange.endMSec)}`;
+            }
         }
     }
 
@@ -3470,6 +3543,33 @@ var allocationDatasets = {};
             });
         }
 
+        // CPU UTILISATION IN CORES, available only on a capture whose sampler
+        // is driven by CPU time - a `dotnet-trace collect-linux` capture that
+        // actually used perf's cpu-clock sampling. See
+        // Cpu/SamplePeriodEstimator.cs: on a wall-clock capture there is no
+        // per-sample CPU quantum at all, cpuTime.hasCpuTime is false, and this
+        // series is simply absent rather than being faked from a sample count.
+        //
+        // Its own axis, because samples and cores share no unit and the whole
+        // point of the pairing is to read the shapes against each other. The
+        // series comes straight from the exporter (coresBusyByBucket) rather
+        // than being multiplied out here, so the CLI and the chart cannot
+        // disagree about how busy the process was.
+        var cpuTimeInfo = cpuProfileJson ? cpuProfileJson["cpuTime"] : null;
+        var hasCoresSeries = !!(cpuTimeInfo && cpuTimeInfo["hasCpuTime"] && cpuTimeInfo["coresBusyByBucket"] && cpuTimeInfo["coresBusyByBucket"].length === bucketCount);
+        var processorCount = cpuTimeInfo ? (cpuTimeInfo["processorCount"] || 0) : 0;
+        var corePoints = [];
+
+        if (hasCoresSeries) {
+            var coresBusyByBucket = cpuTimeInfo["coresBusyByBucket"];
+            for (var coreBucketIndex = 0; coreBucketIndex < bucketCount; ++coreBucketIndex) {
+                corePoints.push({
+                    x: minRelativeMSec + coreBucketIndex * bucketDurationMSec,
+                    y: coresBusyByBucket[coreBucketIndex]
+                });
+            }
+        }
+
         var xAxisTicks = { callback: formatElapsedMs };
         if (zoomRange) {
             xAxisTicks.min = zoomRange.startMSec;
@@ -3495,13 +3595,25 @@ var allocationDatasets = {};
                     // is no longer counted).
                     label: excludedBucketTotals ? ('CPU Samples (excl. ' + excludedMethodCount + ' method' + (excludedMethodCount === 1 ? '' : 's') + ')') : 'CPU Samples',
                     data: points,
+                    yAxisID: 'ySamples',
                     backgroundColor: 'rgba(72, 83, 136, 0.2)',
                     borderColor: 'rgba(72, 83, 136, 1)',
                     borderWidth: 1,
                     lineTension: 0,
                     pointRadius: 2,
                     pointHoverRadius: 4
-                }]
+                }].concat(hasCoresSeries ? [{
+                    label: 'CPU cores busy',
+                    data: corePoints,
+                    yAxisID: 'yCores',
+                    backgroundColor: 'rgba(60, 140, 90, 0.15)',
+                    borderColor: 'rgba(60, 140, 90, 0.95)',
+                    borderWidth: 2,
+                    lineTension: 0,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                    fill: true
+                }] : [])
             },
             // Chart.js 2.9.4's per-instance plugin array is a TOP-LEVEL config
             // key (config.plugins), a SIBLING of options/data - NOT nested
@@ -3549,8 +3661,41 @@ var allocationDatasets = {};
                     // absolute, view of CPU-bound activity, which is exactly
                     // what "show spikes of CPU-bound work" calls for.
                     yAxes: [{
+                        id: 'ySamples',
+                        position: 'left',
                         scaleLabel: { display: true, labelString: 'CPU Samples (not zero-based - see chart)' }
-                    }]
+                    }].concat(hasCoresSeries ? [{
+                        // Zero-based, unlike the samples axis beside it:
+                        // utilisation is an absolute quantity and "how far
+                        // above zero is this" is the question being asked, so
+                        // the axis that answers it must start at zero. It is
+                        // deliberately NOT capped at processorCount either -
+                        // a process using 3.6 of 64 cores would render as a
+                        // flat line pinned to the floor, hiding exactly the
+                        // variation this series was added to show. The share
+                        // of the machine is put in the tooltip instead.
+                        id: 'yCores',
+                        position: 'right',
+                        gridLines: { drawOnChartArea: false },
+                        ticks: { beginAtZero: true },
+                        scaleLabel: { display: true, labelString: processorCount > 0 ? ('CPU cores busy (of ' + processorCount + ')') : 'CPU cores busy' }
+                    }] : [])
+                },
+                tooltips: {
+                    callbacks: {
+                        label: function (tooltipItem, data) {
+                            var datasetLabel = data.datasets[tooltipItem.datasetIndex].label;
+
+                            if (data.datasets[tooltipItem.datasetIndex].yAxisID !== 'yCores') {
+                                return datasetLabel + ": " + Number(tooltipItem.yLabel).toLocaleString();
+                            }
+
+                            var coresText = datasetLabel + ": " + Number(tooltipItem.yLabel).toFixed(2) + " cores";
+                            return processorCount > 0
+                                ? coresText + " (" + (tooltipItem.yLabel * 100 / processorCount).toFixed(1) + "% of " + processorCount + ")"
+                                : coresText;
+                        }
+                    }
                 }
             }
         });
@@ -3590,17 +3735,33 @@ var allocationDatasets = {};
             return;
         }
 
-        var hiddenSelfSamples = 0;
+        // DENOMINATOR IS THE SUM OF THE VISIBLE ROWS' OWN SELF SAMPLES, so
+        // Self % answers "of the methods on screen, how is the cost split" and
+        // the visible column sums to 100%.
+        //
+        // It is deliberately NOT the capture total minus hidden rows: this
+        // table ranks the top 200 of ~3,200 methods, so that denominator makes
+        // the column sum to 45.69% and every row's number a share of CPU that
+        // is mostly not in the table.
+        //
+        // Total % uses the SAME denominator, and must: it is inclusive, so
+        // total >= self for every row, and a row showing Self 2.93% beside
+        // Total 1.61% (self relative, total absolute) is arithmetically
+        // impossible in one basis and reads as a bug. The absolute share of
+        // the whole capture survives in the coverage line above the table,
+        // which is the one place it is still stated.
+        var visibleSelfSamples = 0;
         var visibleMethodCount = 0;
         for (var sumIndex = 0; sumIndex < hotMethods.length; ++sumIndex) {
             if (cpuMethodHider.isHidden(sumIndex)) {
-                hiddenSelfSamples += hotMethods[sumIndex]["selfSamples"];
-            } else {
-                ++visibleMethodCount;
+                continue;
             }
+
+            visibleSelfSamples += hotMethods[sumIndex]["selfSamples"];
+            ++visibleMethodCount;
         }
 
-        var adjustedTotal = totalSampleCount - hiddenSelfSamples;
+        var adjustedTotal = visibleSelfSamples;
 
         var rows = table.rows;
         for (var rowIndex = 1; rowIndex < rows.length; ++rowIndex) {
@@ -3622,6 +3783,12 @@ var allocationDatasets = {};
             // and Total % (the two columns this function rewrites) are
             // cells[2]/cells[4]; Self Samples/Total Samples (cells[3]/[5])
             // are raw counts, unaffected by hiding.
+            // Full precision alongside the rounded cell, for Coverage % to
+            // accumulate. Set HERE, where the unrounded value exists - the
+            // filter pass below used to re-derive it by parsing this cell
+            // back, which silently reintroduced the 2dp rounding drift on
+            // every hide (measured: 1.33797504 becoming 1.36).
+            row.setAttribute('data-self-percent', String(selfPercent));
             row.cells[2].textContent = selfPercent.toFixed(2);
             row.cells[4].textContent = totalPercent.toFixed(2);
         }
@@ -3645,12 +3812,24 @@ var allocationDatasets = {};
     // callPathsDetail rows follow suit. zoomRange=null restores all rows.
     function filterCpuMethodsTableToZoomRange(zoomRange) {
         var sampleTimeline = cpuProfileJson ? cpuProfileJson["sampleTimeline"] : null;
-        var hotMethodsTable = document.querySelector('.cpuHotMethodsTable table');
+
+        // BY ID, not by class. `.cpuHotMethodsTable` is worn by the CATEGORY
+        // table too (CpuProfileRenderer.ts renders it FIRST, above this one),
+        // so a querySelector on the class returned the category table and this
+        // whole function operated on it: its rows carry no
+        // data-cpu-hotmethod-index, so every one of them failed the visibility
+        // test and got display:none - the categories vanished on the first
+        // drag-zoom - while the methods table it was supposed to be filtering
+        // was never touched at all. One selector, both symptoms.
+        var hotMethodsTable = document.getElementById('cpuMethodsTable');
         if (!hotMethodsTable) {
             return;
         }
 
+        var hotMethods = cpuProfileJson ? cpuProfileJson["hotMethods"] : null;
+        var hasMethodCorePercent = hotMethodsTable.getAttribute('data-has-core-percent') === 'true';
         var methodSelfByBucket = sampleTimeline ? sampleTimeline["methodSelfByBucket"] : null;
+        var samplesByBucket = sampleTimeline ? sampleTimeline["samplesByBucket"] : null;
         var bucketDurationMSec = sampleTimeline ? sampleTimeline["bucketDurationMSec"] : 1;
         var minRelativeMSec = sampleTimeline ? sampleTimeline["minRelativeMSec"] : 0;
         var bucketCount = sampleTimeline ? sampleTimeline["bucketCount"] : 0;
@@ -3662,6 +3841,28 @@ var allocationDatasets = {};
             endBucket = Math.min(bucketCount - 1, Math.ceil((zoomRange.endMSec - minRelativeMSec) / bucketDurationMSec));
         }
 
+        // Denominator for the zoomed Self %: every sample in the visible
+        // range, minus the in-range self samples of manually hidden rows -
+        // the same "hidden rows leave the denominator" rule
+        // rebuildHotMethodsTable applies capture-wide, so the two agree.
+        // The sum of the VISIBLE ranked rows' own in-range self samples - the
+        // same basis rebuildHotMethodsTable uses capture-wide, so Self % sums
+        // to 100% in both states and does not change meaning when a zoom is
+        // applied or cleared.
+        var rangeTotalSamples = 0;
+        if (zoomRange && hotMethods && methodSelfByBucket) {
+            for (var visibleIndex = 0; visibleIndex < hotMethods.length; ++visibleIndex) {
+                if (cpuMethodHider.isHidden(visibleIndex) || !methodSelfByBucket[visibleIndex]) {
+                    continue;
+                }
+
+                var visibleBuckets = methodSelfByBucket[visibleIndex];
+                for (var visibleBucketIndex = startBucket; visibleBucketIndex <= endBucket; ++visibleBucketIndex) {
+                    rangeTotalSamples += visibleBuckets[visibleBucketIndex];
+                }
+            }
+        }
+
         var rows = hotMethodsTable.rows;
         for (var rowIndex = 1; rowIndex < rows.length; ++rowIndex) {
             var row = rows[rowIndex];
@@ -3670,15 +3871,83 @@ var allocationDatasets = {};
             }
 
             var isVisible = !zoomRange;
-            if (!isVisible && methodSelfByBucket) {
-                var methodIndex = parseInt(row.getAttribute('data-cpu-hotmethod-index'), 10);
-                if (!isNaN(methodIndex) && methodSelfByBucket[methodIndex]) {
-                    var methodBuckets = methodSelfByBucket[methodIndex];
-                    for (var bucketIndex = startBucket; bucketIndex <= endBucket; ++bucketIndex) {
-                        if (methodBuckets[bucketIndex] > 0) {
-                            isVisible = true;
-                            break;
-                        }
+            var rowMethodIndex = parseInt(row.getAttribute('data-cpu-hotmethod-index'), 10);
+            var inRangeSelfSamples = 0;
+
+            if (!isNaN(rowMethodIndex) && methodSelfByBucket && methodSelfByBucket[rowMethodIndex]) {
+                var methodBuckets = methodSelfByBucket[rowMethodIndex];
+                for (var bucketIndex = startBucket; bucketIndex <= endBucket; ++bucketIndex) {
+                    inRangeSelfSamples += methodBuckets[bucketIndex];
+                }
+
+                if (inRangeSelfSamples > 0) {
+                    isVisible = true;
+                }
+            }
+
+            // THE NUMBERS HAVE TO MOVE WITH THE ZOOM, not just the row set.
+            // Hiding rows that scored zero in the window while leaving every
+            // surviving row showing its WHOLE-CAPTURE counts produces a table
+            // that looks filtered and reads as if it were scoped - the top row
+            // is still whatever dominated the capture, not the window that was
+            // just dragged over.
+            //
+            // Self columns are recomputed from methodSelfByBucket. Total
+            // (inclusive) columns CANNOT be: there is no per-bucket inclusive
+            // breakdown in the export, only per-bucket SELF. They are blanked
+            // rather than left showing a capture-wide figure beside a scoped
+            // one in the same row, which is precisely the kind of silent
+            // mismatch this codebase has been bitten by before.
+            if (!isNaN(rowMethodIndex) && hotMethods && hotMethods[rowMethodIndex]) {
+                if (zoomRange && methodSelfByBucket && methodSelfByBucket[rowMethodIndex]) {
+                    var inRangeSelfPercent = rangeTotalSamples > 0 ? (inRangeSelfSamples * 100.0) / rangeTotalSamples : 0;
+                    // Stashed at FULL precision. Coverage % accumulates this
+                    // rather than re-parsing the rounded cell text: summing
+                    // 200 values each rounded to 2dp drifted the running total
+                    // by 0.06pp, so the same table read 45.69 before a sort and
+                    // 45.63 after one.
+                    row.setAttribute('data-self-percent', String(inRangeSelfPercent));
+                    row.cells[2].textContent = inRangeSelfPercent.toFixed(2);
+                    row.cells[3].textContent = inRangeSelfSamples.toLocaleString();
+                    row.cells[4].textContent = '\u2014';
+                    row.cells[5].textContent = '\u2014';
+                    row.cells[4].title = 'Inclusive totals are capture-wide only - the export carries no per-bucket inclusive breakdown, so they cannot be scoped to a zoom.';
+                    row.cells[5].title = row.cells[4].title;
+
+                    // By CLASS, not by index: this table now has an optional
+                    // core column and a cumulative one after it, so a cell
+                    // index no longer identifies a column on its own.
+                    var zoomedCoreCell = row.querySelector('.corePercentCell');
+                    if (zoomedCoreCell) {
+                        zoomedCoreCell.textContent = formatCorePercentForCell(inRangeSelfSamples, cpuSamplePeriodMSec(), coreWindowDurationMSec(zoomRange, startBucket, endBucket));
+                    }
+
+                    var zoomedSecondsCell = row.querySelector('.cpuSecondsCell');
+                    if (zoomedSecondsCell) {
+                        zoomedSecondsCell.textContent = formatCpuSecondsForCell(inRangeSelfSamples, cpuSamplePeriodMSec());
+                    }
+                } else {
+                    // Unzoomed: rebuildHotMethodsTable owns the Self %/Total %
+                    // cells (it applies the hidden-row adjustment), so only
+                    // the two raw count columns are restored here.
+                    // data-self-percent is deliberately NOT written here: it
+                    // is owned by whoever computed the percentage
+                    // (rebuildHotMethodsTable unzoomed, the branch above when
+                    // zoomed), and re-deriving it from the rounded cell would
+                    // throw away the precision Coverage % depends on.
+                    row.cells[3].textContent = hotMethods[rowMethodIndex]["selfSamples"].toLocaleString();
+                    row.cells[5].textContent = hotMethods[rowMethodIndex]["totalSamples"].toLocaleString();
+                    row.cells[4].removeAttribute('title');
+                    row.cells[5].removeAttribute('title');
+
+                    var coreCell = row.querySelector('.corePercentCell');
+                    if (coreCell) {
+                        coreCell.textContent = formatCorePercentForCell(hotMethods[rowMethodIndex]["selfSamples"], cpuSamplePeriodMSec(), coreWindowDurationMSec(null, 0, 0));
+                    }
+
+                    var secondsCell = row.querySelector('.cpuSecondsCell');
+                    if (secondsCell) {
+                        secondsCell.textContent = formatCpuSecondsForCell(hotMethods[rowMethodIndex]["selfSamples"], cpuSamplePeriodMSec());
                     }
                 }
             }
@@ -3688,8 +3957,7 @@ var allocationDatasets = {};
             // agree the row should show), so un-zooming never un-hides a row
             // the user hid on purpose, and hiding a row while zoomed in
             // doesn't get silently undone by the next zoom change.
-            var rowIndexForHide = parseInt(row.getAttribute('data-cpu-hotmethod-index'), 10);
-            if (isVisible && !isNaN(rowIndexForHide) && cpuMethodHider.isHidden(rowIndexForHide)) {
+            if (isVisible && !isNaN(rowMethodIndex) && cpuMethodHider.isHidden(rowMethodIndex)) {
                 isVisible = false;
             }
 
@@ -3725,6 +3993,382 @@ var allocationDatasets = {};
                 }
             }
         }
+
+        // Re-rank by what the window actually shows. The rows arrive in
+        // capture-wide self-sample order (that is how the exporter ranks
+        // them), so without this the "hottest" row at the top of a zoomed
+        // table is whatever dominated the whole capture - which is the exact
+        // question a zoom was used to stop asking. Sorting on the Self Samples
+        // column (index 3) descending in both directions means un-zooming
+        // returns to the original order rather than leaving a stray sort
+        // behind. sortDetailTableByColumn moves each row's paired
+        // callPathsDetail row with it (see rankedTable.js).
+        if (typeof sortDetailTableByColumn === 'function') {
+            sortDetailTableByColumn(hotMethodsTable, 3, 'number', false);
+        }
+
+        updateCoverageColumn(hotMethodsTable);
+
+        rescopeCpuCategoryTable(zoomRange, startBucket, endBucket, rangeTotalSamples);
+
+    }
+
+
+    // Client-side twin of CpuProfileRenderer.ts's formatCorePercent. The
+    // server renders the capture-wide value into the initial markup and this
+    // rewrites it whenever the window changes, exactly as the Self %/Samples
+    // columns are handled - keeping one formula in two places is the cost of
+    // server-rendered tables that also respond to a client-side zoom.
+    function formatCorePercentForCell(samples, samplePeriodMSec, windowDurationMSec) {
+        if (!(samples >= 0) || !(samplePeriodMSec > 0) || !(windowDurationMSec > 0)) {
+            return '\u2014';
+        }
+
+        var corePercent = (samples * samplePeriodMSec * 100.0) / windowDurationMSec;
+
+        if (corePercent > 0 && corePercent < 0.01) {
+            return '<0.01%';
+        }
+
+        return corePercent.toFixed(2) + '%';
+    }
+
+    // Wall-clock span the core % is measured over: the zoomed bucket range
+    // when zoomed, the whole sampled span otherwise. Getting this wrong is the
+    // difference between "this method used 60% of a core during the spike" and
+    // the same number diluted across five minutes of capture.
+    // Client twin of CpuProfileRenderer.ts's formatCpuSeconds.
+    function formatCpuSecondsForCell(samples, samplePeriodMSec) {
+        if (!(samples >= 0) || !(samplePeriodMSec > 0)) {
+            return '\u2014';
+        }
+
+        var seconds = (samples * samplePeriodMSec) / 1000.0;
+
+        if (seconds > 0 && seconds < 0.01) {
+            return '<0.01';
+        }
+
+        return seconds.toFixed(2);
+    }
+
+    function coreWindowDurationMSec(zoomRange, startBucket, endBucket) {
+        var sampleTimeline = cpuProfileJson ? cpuProfileJson["sampleTimeline"] : null;
+        if (!sampleTimeline) {
+            return 0;
+        }
+
+        if (!zoomRange) {
+            return sampleTimeline["totalDurationMSec"];
+        }
+
+        return (endBucket - startBucket + 1) * sampleTimeline["bucketDurationMSec"];
+    }
+
+    // The bucket range a zoom actually resolves to, and the wall-clock window
+    // that range covers.
+    //
+    // EVERY zoomed number in this view is bucket-quantised - the export has
+    // 100 buckets over the whole capture, so on a five-minute capture a bucket
+    // is ~3s and no drag can resolve finer than that. startBucket floors and
+    // endBucket ceils so the selection is fully COVERED rather than truncated
+    // (a partially-selected bucket's samples are real and dropping them would
+    // understate the window), which means the effective window is up to two
+    // buckets wider than the drag.
+    //
+    // That is fine as long as it is not hidden: an 8s drag on a 3s grid
+    // measured a 15s window, and the status bar said "2m47s - 2m55s", so the
+    // Core % column read ~1.9x lower than the labelled range implied and the
+    // table looked inconsistent with the chart. Reported, not silently
+    // corrected - there is no finer answer available to correct it to.
+    function effectiveZoomWindow(zoomRange) {
+        var sampleTimeline = cpuProfileJson ? cpuProfileJson["sampleTimeline"] : null;
+
+        if (!sampleTimeline || !zoomRange) {
+            return null;
+        }
+
+        var bucketDurationMSec = sampleTimeline["bucketDurationMSec"];
+        var minRelativeMSec = sampleTimeline["minRelativeMSec"];
+        var bucketCount = sampleTimeline["bucketCount"];
+
+        if (!(bucketDurationMSec > 0) || !(bucketCount > 0)) {
+            return null;
+        }
+
+        var startBucket = Math.max(0, Math.floor((zoomRange.startMSec - minRelativeMSec) / bucketDurationMSec));
+        var endBucket = Math.min(bucketCount - 1, Math.ceil((zoomRange.endMSec - minRelativeMSec) / bucketDurationMSec));
+
+        return {
+            startBucket: startBucket,
+            endBucket: endBucket,
+            startMSec: minRelativeMSec + (startBucket * bucketDurationMSec),
+            endMSec: minRelativeMSec + ((endBucket + 1) * bucketDurationMSec),
+            bucketDurationMSec: bucketDurationMSec
+        };
+    }
+
+    function cpuSamplePeriodMSec() {
+        var cpuTime = cpuProfileJson ? cpuProfileJson["cpuTime"] : null;
+        return cpuTime && cpuTime["hasCpuTime"] ? cpuTime["samplePeriodMSec"] : 0;
+    }
+
+    // Running total of the Self % column, written after the table has been
+    // re-ranked so it accumulates down the self-time ordering - "this method
+    // and everything hotter than it".
+    //
+    // Derived from the Self % cells ALREADY ON SCREEN rather than recomputed
+    // from the payload, so the column cannot disagree with the one it is a
+    // running total of - whatever scoping, hiding or rounding produced those
+    // numbers is inherited automatically. Hidden rows contribute nothing,
+    // which is what makes the last visible row's value read as "the coverage
+    // of everything shown".
+    function updateCoverageColumn(table) {
+        if (!table) {
+            return;
+        }
+
+        var running = 0;
+        var rows = table.rows;
+
+        for (var rowIndex = 1; rowIndex < rows.length; ++rowIndex) {
+            var row = rows[rowIndex];
+
+            if (row.classList.contains('callPathsDetail') || row.style.display === 'none') {
+                continue;
+            }
+
+            var cumulativeCell = row.querySelector('.coveragePercentCell');
+            if (!cumulativeCell) {
+                continue;
+            }
+
+            // The full-precision value stashed when the row was written, if
+            // there is one; the rounded cell text otherwise.
+            var preciseSelfPercent = row.getAttribute('data-self-percent');
+            var selfPercent = preciseSelfPercent !== null
+                ? parseFloat(preciseSelfPercent)
+                : parseFloat(row.cells[2].textContent);
+
+            if (!isNaN(selfPercent)) {
+                running += selfPercent;
+            }
+
+            cumulativeCell.textContent = running.toFixed(2);
+        }
+
+        updateCoverageLine(table);
+    }
+
+    // Restates the "top N = X%" line.
+    //
+    // Computed against the WHOLE CAPTURE's sample count, deliberately NOT off
+    // the Coverage % column beside it. Self %/Coverage % are now shares of the
+    // rows ON SCREEN and so end at 100% by construction - which answers "how is
+    // the cost split among these methods" but can no longer answer "is any of
+    // this worth chasing", since a table showing the 200 COLDEST methods would
+    // read 100% too. This line is the one place the absolute share survives,
+    // and it says "of all CPU" out loud so the two bases are not confused.
+    function updateCoverageLine(table) {
+        var coverageLine = document.getElementById('cpuCoverageLine');
+        var hotMethods = cpuProfileJson ? cpuProfileJson["hotMethods"] : null;
+        var captureTotal = cpuProfileJson ? cpuProfileJson["totalSampleCount"] : 0;
+
+        if (!coverageLine || !table || !hotMethods || !(captureTotal > 0)) {
+            return;
+        }
+
+        var marks = [10, 50, 200];
+        var parts = [];
+        var visibleIndex = 0;
+        var running = 0;
+        var rows = table.rows;
+
+        for (var rowIndex = 1; rowIndex < rows.length; ++rowIndex) {
+            var row = rows[rowIndex];
+
+            if (row.classList.contains('callPathsDetail') || row.style.display === 'none') {
+                continue;
+            }
+
+            var lineMethodIndex = parseInt(row.getAttribute('data-cpu-hotmethod-index'), 10);
+            if (isNaN(lineMethodIndex) || !hotMethods[lineMethodIndex]) {
+                continue;
+            }
+
+            running += hotMethods[lineMethodIndex]["selfSamples"];
+            ++visibleIndex;
+
+            if (marks.indexOf(visibleIndex) !== -1) {
+                parts.push('top ' + visibleIndex + ' = <strong>' + (running * 100.0 / captureTotal).toFixed(1) + '%</strong>');
+            }
+        }
+
+        if (parts.length === 0) {
+            return;
+        }
+
+        coverageLine.innerHTML =
+            'Share of the capture\'s <em>total</em> CPU covered by the rows above: ' + parts.join(', ') + '. ' +
+            'The <em>Self %</em> and <em>Coverage %</em> columns are shares of the rows shown and sum to 100%; these figures are not, ' +
+            'so a low one means the cost is spread far beyond this table.';
+    }
+
+
+    // Rescopes the coarse CPU category table to the timeline zoom.
+    //
+    // Categories used to be left capture-wide with a note saying so, because
+    // the export carried no per-bucket category data. It does now
+    // (Cpu/CpuCategoryBuilder.cs accumulates selfSamplesByBucket /
+    // onStackSamplesByBucket in the loop it was already running), so the
+    // table rescopes properly rather than explaining why it cannot.
+    //
+    // Both columns are recomputed against the SAME in-range denominator the
+    // methods table uses, so "CPU %" still sums to 100% across categories
+    // within the window and "On stack %" still deliberately sums to more.
+    //
+    // What still cannot be scoped is each row's expandable CALL-PATH TREE:
+    // those are folded per category over the whole capture and have no
+    // per-bucket form. The note now says that, and only that.
+    function rescopeCpuCategoryTable(zoomRange, startBucket, endBucket, rangeTotalSamples) {
+        var categoryScopeNote = document.getElementById('cpuCategoryScopeNote');
+        var categoryTable = document.getElementById('cpuCategoryTable');
+        var categories = cpuProfileJson && cpuProfileJson["categories"] ? cpuProfileJson["categories"]["rows"] : null;
+
+        if (!categoryTable || !categories) {
+            return;
+        }
+
+        // A capture whose export predates the per-bucket arrays leaves the
+        // table capture-wide rather than blanking it - "not tracked" and
+        // "tracked and zero" are different answers.
+        var hasBucketData = categories.length > 0 && !!categories[0]["selfSamplesByBucket"];
+
+        if (categoryScopeNote) {
+            categoryScopeNote.style.display = (zoomRange && hasBucketData) ? '' : 'none';
+        }
+
+        if (!hasBucketData) {
+            return;
+        }
+
+        // Keyed by the category's own STABLE id, never by row position:
+        // CpuProfileRenderer.ts filters and re-sorts this list before
+        // rendering it, so data-cpu-category (the row's position, which pairs
+        // it with its cpuCategoryDetail<N> element) does NOT index
+        // categories.rows. Using it did, and wrote each row's numbers into a
+        // different category's row - visible as correct counts under wrong
+        // names after un-zooming.
+        var categoryById = {};
+        for (var lookupIndex = 0; lookupIndex < categories.length; ++lookupIndex) {
+            categoryById[categories[lookupIndex]["id"]] = categories[lookupIndex];
+        }
+
+        // SELF samples only. Self partitions the capture, so removing a hidden
+        // category's self time leaves a denominator the remaining CPU % still
+        // sums to 100% against. On-stack samples overlap categories and do not
+        // partition anything, so subtracting those would remove the same
+        // sample several times over.
+        var hiddenCategorySelfSamples = 0;
+        for (var hiddenScanIndex = 0; hiddenScanIndex < categories.length; ++hiddenScanIndex) {
+            var candidate = categories[hiddenScanIndex];
+
+            if (!cpuCategoryHider.isHidden(String(candidate["id"]))) {
+                continue;
+            }
+
+            if (zoomRange && candidate["selfSamplesByBucket"]) {
+                var hiddenBuckets = candidate["selfSamplesByBucket"];
+                for (var hiddenBucketIndex = startBucket; hiddenBucketIndex <= endBucket; ++hiddenBucketIndex) {
+                    hiddenCategorySelfSamples += hiddenBuckets[hiddenBucketIndex];
+                }
+            } else {
+                hiddenCategorySelfSamples += candidate["selfSamples"];
+            }
+        }
+
+        var rows = categoryTable.rows;
+        for (var rowIndex = 1; rowIndex < rows.length; ++rowIndex) {
+            var row = rows[rowIndex];
+            if (row.classList.contains('callPathsDetail')) {
+                continue;
+            }
+
+            var categoryIndex = parseInt(row.getAttribute('data-cpu-category'), 10);
+            var category = categoryById[row.getAttribute('data-cpu-category-id')];
+
+            if (isNaN(categoryIndex) || !category) {
+                continue;
+            }
+
+            // String() on both sides: the hider's Set is keyed by whatever
+            // toggle() was handed, and that comes from a DOM attribute (always
+            // a string) while category["id"] is a JSON number. Set membership
+            // is strict, so "0" and 0 are different keys and the hide silently
+            // never took effect.
+            var categoryHidden = cpuCategoryHider.isHidden(String(category["id"]));
+            var selfSamples;
+            var onStackSamples;
+            var denominator;
+
+            if (zoomRange) {
+                selfSamples = 0;
+                onStackSamples = 0;
+                var selfBuckets = category["selfSamplesByBucket"];
+                var onStackBuckets = category["onStackSamplesByBucket"];
+
+                for (var bucketIndex = startBucket; bucketIndex <= endBucket; ++bucketIndex) {
+                    selfSamples += selfBuckets[bucketIndex];
+                    onStackSamples += onStackBuckets[bucketIndex];
+                }
+
+                denominator = rangeTotalSamples - hiddenCategorySelfSamples;
+            } else {
+                selfSamples = category["selfSamples"];
+                onStackSamples = category["onStackSamples"];
+                denominator = cpuProfileJson["categories"]["totalSamples"] - hiddenCategorySelfSamples;
+            }
+
+            var selfPercent = denominator > 0 ? (selfSamples * 100.0) / denominator : 0;
+            var onStackPercent = denominator > 0 ? (onStackSamples * 100.0) / denominator : 0;
+
+            // cells: 0 hide, 1 name (carries the bar), 2 Samples, 3 CPU %,
+            // 4 On stack %.
+            row.cells[2].textContent = selfSamples.toLocaleString();
+            row.cells[3].textContent = selfPercent.toFixed(2) + '%';
+            row.cells[4].textContent = onStackPercent.toFixed(2) + '%';
+
+            if (categoryTable.getAttribute('data-has-core-percent') === 'true' && row.cells.length > 5) {
+                row.cells[5].textContent = formatCorePercentForCell(selfSamples, cpuSamplePeriodMSec(), coreWindowDurationMSec(zoomRange, startBucket, endBucket));
+            }
+
+            // The bar IS the CPU % - leaving it at its capture-wide width
+            // while the number beside it moves is worse than not drawing it,
+            // since the eye reads the bar first.
+            var bar = row.cells[1].querySelector('.cpuCategoryBar');
+            if (bar) {
+                bar.style.width = Math.max(0, Math.min(100, selfPercent)).toFixed(2) + '%';
+            }
+
+            // The two conditions compose, same discipline as the methods
+            // table: un-zooming never un-hides a row someone hid on purpose.
+            var isVisible = (!zoomRange || selfSamples > 0 || onStackSamples > 0) && !categoryHidden;
+            row.style.display = isVisible ? '' : 'none';
+
+            var detailRow = document.getElementById('cpuCategoryDetail' + categoryIndex);
+            if (detailRow && !isVisible) {
+                detailRow.style.display = 'none';
+            } else if (detailRow) {
+                detailRow.style.display = '';
+            }
+        }
+
+        // Same reasoning as the methods table: a zoomed breakdown whose top
+        // row is whatever led the whole capture has not answered the question
+        // the zoom asked. Samples is column 2 here.
+        if (typeof sortDetailTableByColumn === 'function') {
+            sortDetailTableByColumn(categoryTable, 2, 'number', false);
+        }
     }
 
     // Expand/collapse for the coarse CPU category summary. Its own delegation
@@ -3741,9 +4385,15 @@ var allocationDatasets = {};
         }
 
         categoryTable.addEventListener('click', function (clickEvent) {
-            // The hide button lives in the same row and has its own handler;
-            // letting this run too would expand a row on its way out.
-            if (clickEvent.target.closest('.rowHideBtn')) {
+            // The hide button lives in the same row and has its own handler
+            // below; letting this run too would expand a row on its way out.
+            var hideButton = clickEvent.target.closest('.rowHideBtn');
+            if (hideButton) {
+                var hideRow = hideButton.closest('.cpuCategoryRow');
+                if (hideRow) {
+                    cpuCategoryHider.toggle(hideRow.getAttribute('data-cpu-category-id'));
+                }
+
                 return;
             }
 
@@ -3782,7 +4432,13 @@ var allocationDatasets = {};
                             entry,
                             cpuProfileJson["methodNames"],
                             cpuProfileJson["totalSampleCount"],
-                            'cpuCallerForestRoot');
+                            'cpuCallerForestRoot',
+                            // This table's numerics start immediately after
+                            // the name (Samples is its first), so nothing
+                            // leads; anything past On stack % - the ~ Core %
+                            // column on a CPU-time capture - trails.
+                            Math.max(0, categoryTable.rows[0].cells.length - CPU_CALLER_TREE_BASE_COLUMNS),
+                            0);
                 }
 
                 detailRow.removeAttribute('data-cpu-category-lazy');
@@ -3796,6 +4452,13 @@ var allocationDatasets = {};
                 marker.innerHTML = (expand ? '\u25be ' : '\u25b8 ') + marker.textContent.trim().slice(2);
             }
         });
+
+        var categoryShowAllBtn = document.getElementById('cpuCategoryShowAllBtn');
+        if (categoryShowAllBtn) {
+            categoryShowAllBtn.addEventListener('click', function () {
+                cpuCategoryHider.reset();
+            });
+        }
     }
 
     function wireProfileInnerTabs() {
@@ -4354,6 +5017,15 @@ var allocationDatasets = {};
         var targetPanel = document.getElementById('contention-tab-' + targetTab);
         if (targetPanel) {
             targetPanel.classList.add('active');
+        }
+
+        if (targetTab === 'overview' && contentionSummaryJson && contentionSummaryJson["overview"]) {
+            // Rebuilt on every switch back, not just on first reveal: a canvas
+            // sized while its panel was display:none has a zero-width backing
+            // store, so a chart drawn before the tab was ever shown comes back
+            // invisible. renderContentionOverviewCharts is idempotent for
+            // exactly this reason.
+            renderContentionOverviewCharts(contentionSummaryJson["overview"]);
         }
 
         if (targetTab === 'locktimeline' && contentionSummaryJson && contentionSummaryJson["lockTimeline"]) {
@@ -5186,6 +5858,15 @@ var allocationDatasets = {};
         }
 
         wireLockTimelinePanel();
+
+        // Overview is the default-active contention tab (ContentionRenderer.ts),
+        // so nothing will click into it - it has to be drawn here, right after
+        // injection. Safe to size the canvases at this point: the view nav
+        // marks #view-contention active BEFORE injecting this markup.
+        if (contentionSummaryJson["overview"]) {
+            wireContentionOverviewControls();
+            renderContentionOverviewCharts(contentionSummaryJson["overview"]);
+        }
 
         var resetZoomBtn = document.getElementById('contentionTimelineResetZoomBtn');
         if (resetZoomBtn) {

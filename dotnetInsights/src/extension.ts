@@ -402,7 +402,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // a cached 1.9.3 binary dies inside FastSerialization with "Not a
     // understood file format", which reads like a corrupt file rather than an
     // out-of-date tool.
-    const latestNettraceParserVersionNumber = "1.9.4";
+    const latestNettraceParserVersionNumber = "1.9.5";
 
     var childProcess: child.ChildProcess | undefined = undefined;
     var startupCallback: any = undefined;
