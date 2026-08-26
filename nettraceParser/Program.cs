@@ -398,6 +398,17 @@ int universalCpuEventId = file.V6UniversalCpuEventId;
 // which process a module mapping belongs to.
 DotnetInsights.NetTrace.V6.V6ThreadTable v6ThreadTable = file.V6Threads;
 bool universalSymbolsAvailable = file.FormatVersion >= DotnetInsights.NetTrace.V6.V6Format.MajorVersion;
+
+// Set by the sample projector task below. NOT derived from FormatVersion: a v6
+// collect-linux capture falls back to the runtime's wall-clock sampler as soon
+// as any of --profile/--providers/--clrevents/--perf-events is named, and only
+// perf's own cpu-clock samples are CPU time.
+int samplingIsCpuTimeFlag = 0;
+
+// Captured before `file` is dropped as a GC root further down (see the
+// `file = null` sites), which is why this is a local rather than a
+// `file.Header` read at the export call.
+int processorCountForJson = file.Header.NumberOfProcessors;
 UniversalSymbolTable universalSymbolTable = null;
 
 // Native symbol resolution. A collect-linux capture names its modules and
@@ -557,7 +568,13 @@ if (isJsonMode)
             expectedSampleCount += completedOverview.Result.CountForEvent(SampleProfileEventProjector.UniversalProviderName, universalCpuEventId);
         }
 
-        List<SampleEvent> projected = SampleProfileEventProjector.Project(eventsForProjection, projectionQpcFrequency, referenceQpc, fraction => Volatile.Write(ref projectorFractions[5], fraction), expectedSampleCount);
+        // Which sampler produced these samples decides whether a sample count
+        // can be read as CPU TIME at all - see SampleProfileEventProjector's
+        // own comment. Published for the export phase, which runs after this
+        // task has completed, so a plain field write is enough.
+        bool projectedSamplingIsCpuTime;
+        List<SampleEvent> projected = SampleProfileEventProjector.Project(eventsForProjection, projectionQpcFrequency, referenceQpc, out projectedSamplingIsCpuTime, fraction => Volatile.Write(ref projectorFractions[5], fraction), expectedSampleCount);
+        Volatile.Write(ref samplingIsCpuTimeFlag, projectedSamplingIsCpuTime ? 1 : 0);
         sampleProjectMs = taskStopwatch.ElapsedMilliseconds;
         return projected;
     }, TaskContinuationOptions.ExecuteSynchronously);
@@ -742,7 +759,7 @@ if (isJsonMode)
     // entirely from inside GcJsonExporter.WriteToFile itself - see that
     // method's own comment for why it calls ProgressReporter directly
     // rather than taking an onProgress parameter like every phase above.
-    ExportTiming exportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, threadingSummaryForJson, stackTable, symbolTable, processName, ticksBinaryPath, captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline, universalSymbolTable);
+    ExportTiming exportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, threadingSummaryForJson, stackTable, symbolTable, processName, ticksBinaryPath, captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline, universalSymbolTable, Volatile.Read(ref samplingIsCpuTimeFlag) != 0, processorCountForJson);
     long exportMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 

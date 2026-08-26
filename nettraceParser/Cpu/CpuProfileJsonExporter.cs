@@ -353,7 +353,12 @@ public static class CpuProfileJsonExporter
     // cross-contaminated by any other test exporting a different capture.
     // nativeSymbols is null for a v5 capture and is used only to tell kernel
     // frames apart when bucketing by category - see Cpu/CpuCategoryBuilder.cs.
-    public static SampleTimeline Write(Utf8JsonWriter writer, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, Action<double> onProgress = null, DotnetInsights.NetTrace.Universal.UniversalSymbolTable nativeSymbols = null)
+    // samplingIsCpuTime says whether this capture's sampler is driven by CPU
+    // time (a perf-based collect-linux capture) rather than a wall clock (the
+    // runtime's own v5 sampler). It gates the CPU-TIME estimate entirely: on a
+    // wall-clock capture no multiple of a sample count is CPU time, so none is
+    // offered - see Cpu/SamplePeriodEstimator.cs.
+    public static SampleTimeline Write(Utf8JsonWriter writer, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, Action<double> onProgress = null, DotnetInsights.NetTrace.Universal.UniversalSymbolTable nativeSymbols = null, bool samplingIsCpuTime = false, int processorCount = 0)
     {
         writer.WriteStartObject();
 
@@ -508,6 +513,29 @@ public static class CpuProfileJsonExporter
         double timelineBucketDurationMSec = timelineBucketCount > 0 ? timelineTotalDurationMSec / timelineBucketCount : 0.0;
 
         int[] samplesByBucket = timelineBucketCount > 0 ? new int[timelineBucketCount] : null;
+        int[] cpuBoundSamplesByBucket = timelineBucketCount > 0 ? new int[timelineBucketCount] : null;
+        int[] managedSamplesByBucket = timelineBucketCount > 0 ? new int[timelineBucketCount] : null;
+        int[] managedRunningSamplesByBucket = timelineBucketCount > 0 ? new int[timelineBucketCount] : null;
+        bool hasSampleTypeData = false;
+
+        // Derived once, before the main loop, off the same span. Only asked
+        // for when the capture's sampler is CPU-time driven; the estimator can
+        // still decline (an unstable or implausible period), and a decline
+        // means no CPU time is reported at all rather than a 1ms default.
+        double samplePeriodMSec = 0;
+        bool hasCpuTime = false;
+
+        if (samplingIsCpuTime)
+        {
+            int gapCount;
+            hasCpuTime = SamplePeriodEstimator.TryEstimatePeriodMSec(sampleEventsSpan, out samplePeriodMSec, out gapCount);
+        }
+
+        // Memoized per DISTINCT leaf frame id, not per sample - the classifier
+        // behind it walks 18 string comparisons, and this loop runs once per
+        // sample in the whole capture (16.24M on a real 3.23GB one). See
+        // Cpu/IdleWaitFrameCache.cs.
+        IdleWaitFrameCache idleWaitCache = new IdleWaitFrameCache(symbolTable);
 
         // Per-LEAF-frame bucket histograms, accumulated in the main loop and
         // reordered into rank order once the ranking exists. Keyed by frame id
@@ -659,6 +687,28 @@ public static class CpuProfileJsonExporter
                 }
 
                 ++selfBuckets[bucketIndex];
+
+                bool isIdleWaitLeaf = idleWaitCache.IsIdleWaitFrame(frameIds[0]);
+
+                if (!isIdleWaitLeaf)
+                {
+                    ++cpuBoundSamplesByBucket[bucketIndex];
+                }
+
+                if (sampleEvent.SampleType != ThreadSampleType.Unknown)
+                {
+                    hasSampleTypeData = true;
+                }
+
+                if (sampleEvent.SampleType == ThreadSampleType.Managed)
+                {
+                    ++managedSamplesByBucket[bucketIndex];
+
+                    if (!isIdleWaitLeaf)
+                    {
+                        ++managedRunningSamplesByBucket[bucketIndex];
+                    }
+                }
             }
 
             int[] distinctFrameIds = cached.DistinctFrameIds;
@@ -716,7 +766,7 @@ public static class CpuProfileJsonExporter
         // frame it needs has already been through symbolTable.ResolveId, so
         // this adds no resolution work of its own.
         Dictionary<int, CpuCategory> categoryByFrameId;
-        CpuCategoryBuilder.CategoryTotals[] categoryTotals = CpuCategoryBuilder.Build(sampleEvents, stackTable, symbolTable, nativeSymbols, out categoryByFrameId);
+        CpuCategoryBuilder.CategoryTotals[] categoryTotals = CpuCategoryBuilder.Build(sampleEvents, stackTable, symbolTable, nativeSymbols, out categoryByFrameId, timelineBucketCount, timelineBucketDurationMSec, minRelativeMSec);
         CpuCategoryBuilder.Write(writer, categoryTotals, sampleEvents.Count, symbolTable);
 
         writer.WritePropertyName("hotMethodDrillDown");
@@ -801,7 +851,13 @@ public static class CpuProfileJsonExporter
         }
         writer.WriteEndArray();
 
-        SampleTimeline sampleTimeline = BuildTimeline(writer, rankedHotMethods, selfBucketsByLeafFrameId, samplesByBucket, timelineBucketCount, timelineBucketDurationMSec, timelineTotalDurationMSec, minRelativeMSec);
+        SampleTimeline sampleTimeline = BuildTimeline(writer, rankedHotMethods, selfBucketsByLeafFrameId, samplesByBucket, cpuBoundSamplesByBucket, managedSamplesByBucket, managedRunningSamplesByBucket, hasSampleTypeData, hasCpuTime, samplePeriodMSec, timelineBucketCount, timelineBucketDurationMSec, timelineTotalDurationMSec, minRelativeMSec);
+
+        // Written after the timeline so it can use the same period the
+        // timeline was built with. The denominator is the SAMPLE time range
+        // rather than the whole capture: cores-busy is a rate, and the rate
+        // over a window nothing was sampled in is not defined.
+        WriteCpuTimeJson(writer, sampleTimeline, sampleEvents.Count, sampleTimeline != null ? sampleTimeline.TotalDurationMSec : 0, processorCount);
 
         writer.WriteEndObject();
 
@@ -820,6 +876,7 @@ public static class CpuProfileJsonExporter
     // fed by ONE computation rather than two that could drift - the whole
     // migration off JSON depends on being able to emit both from the same run
     // and diff them.
+
     public sealed class SampleTimeline
     {
         public double MinRelativeMSec;
@@ -828,6 +885,53 @@ public static class CpuProfileJsonExporter
         public int BucketCount;
         public int[] SamplesByBucket;
         public int[][] MethodSelfByBucket;
+        // THREE candidate "was this thread doing work" histograms, none of
+        // which is authoritative on a v5 capture - which is the whole reason
+        // there are three. All are in-process handoffs to
+        // Contention/ContentionOverviewBuilder.cs and are deliberately NOT
+        // written into the cpuProfile JSON, so neither that section nor
+        // Binary/CpuBinarySections.cs changes shape.
+        //
+        // .NET's sample profiler is WALL-CLOCK per thread: it samples every
+        // thread whether or not it holds a core, so SamplesByBucket tracks
+        // thread COUNT far more than CPU. Narrowing it is necessary, and every
+        // way of narrowing it is wrong in a different direction:
+        //
+        //  - CpuBoundSamplesByBucket excludes leaves that name a known BCL
+        //    blocking primitive. It cannot see a thread parked in a NATIVE
+        //    call, because the managed leaf frame above a P/Invoke reads like
+        //    ordinary running code - CLAUDE.md records six
+        //    Grpc.Core.Internal.GrpcThreadPool.RunHandlerLoop threads, 100%
+        //    External and zero managed, that this test scored "100% running".
+        //    So it OVERCOUNTS.
+        //  - ManagedSamplesByBucket takes the CLR's own per-sample
+        //    ThreadSampleType and keeps only Managed. Every sample in it was
+        //    genuinely executing managed code, but it drops all native CPU work
+        //    (crypto, compression, the GC's own native code), so it
+        //    UNDERCOUNTS - on real captures by a lot, since 79-91% of the
+        //    non-blocking samples measured here are External.
+        //  - ManagedRunningSamplesByBucket is the intersection: unambiguous,
+        //    and the smallest.
+        //
+        // External is the ambiguous mass and NOTHING in a v5 capture resolves
+        // it - a thread in a syscall and a thread in an AVX compression loop
+        // are both simply "not managed". Separating them needs native stacks,
+        // which a v5 EventPipe capture does not carry. Hence all three ship,
+        // each with its own correlation, and the Overview tab reports when they
+        // disagree rather than picking one and sounding certain.
+        public int[] CpuBoundSamplesByBucket;
+        public int[] ManagedSamplesByBucket;
+        public int[] ManagedRunningSamplesByBucket;
+        // True when a real ThreadSampleType was seen on at least one sample. A
+        // capture predating that field yields only CpuBoundSamplesByBucket.
+        public bool HasSampleTypeData;
+
+        // Milliseconds of CPU time one sample stands for, derived from the
+        // capture's own inter-sample gaps (Cpu/SamplePeriodEstimator.cs).
+        // HasCpuTime is false on any capture whose sampler is wall-clock
+        // driven, where no multiple of a sample count is CPU time at all.
+        public bool HasCpuTime;
+        public double SamplePeriodMSec;
     }
 
     // Assembles the timeline from counts the main per-sample loop already
@@ -844,6 +948,12 @@ public static class CpuProfileJsonExporter
         List<KeyValuePair<int, HotMethodStats>> rankedHotMethods,
         FrameIdTable<int[]> selfBucketsByLeafFrameId,
         int[] samplesByBucket,
+        int[] cpuBoundSamplesByBucket,
+        int[] managedSamplesByBucket,
+        int[] managedRunningSamplesByBucket,
+        bool hasSampleTypeData,
+        bool hasCpuTime,
+        double samplePeriodMSec,
         int bucketCount,
         double bucketDurationMSec,
         double totalDurationMSec,
@@ -875,10 +985,64 @@ public static class CpuProfileJsonExporter
         timeline.BucketCount = bucketCount;
         timeline.SamplesByBucket = samplesByBucket;
         timeline.MethodSelfByBucket = methodSelfByBucket;
+        timeline.CpuBoundSamplesByBucket = cpuBoundSamplesByBucket;
+        timeline.ManagedSamplesByBucket = managedSamplesByBucket;
+        timeline.ManagedRunningSamplesByBucket = managedRunningSamplesByBucket;
+        timeline.HasSampleTypeData = hasSampleTypeData;
+        timeline.HasCpuTime = hasCpuTime;
+        timeline.SamplePeriodMSec = samplePeriodMSec;
 
         WriteTimelineJson(writer, timeline);
 
         return timeline;
+    }
+
+    // "cpuTime" - what one sample is worth, and the process totals that follow
+    // from it. Present on every capture; hasCpuTime is false on a wall-clock
+    // one, where no multiple of a sample count is CPU time and the numbers are
+    // deliberately left at zero rather than filled in with something
+    // plausible.
+    private static void WriteCpuTimeJson(Utf8JsonWriter writer, SampleTimeline timeline, long totalSampleCount, double captureDurationMSec, int processorCount)
+    {
+        bool hasCpuTime = timeline != null && timeline.HasCpuTime;
+
+        writer.WritePropertyName("cpuTime");
+        writer.WriteStartObject();
+        writer.WriteBoolean("hasCpuTime", hasCpuTime);
+        writer.WriteString("sampler", hasCpuTime ? "perf cpu-clock" : "runtime wall-clock");
+        writer.WriteNumber("samplePeriodMSec", timeline != null ? timeline.SamplePeriodMSec : 0);
+
+        double totalCpuMSec = hasCpuTime ? totalSampleCount * timeline.SamplePeriodMSec : 0;
+
+        writer.WriteNumber("totalCpuMSec", totalCpuMSec);
+        writer.WriteNumber("averageCoresBusy", captureDurationMSec > 0 ? totalCpuMSec / captureDurationMSec : 0);
+        // From the capture's own header. Lets the view express cores busy as a
+        // share of what the machine had, which is the difference between "3.64
+        // cores" and "5.7% of the box".
+        writer.WriteNumber("processorCount", processorCount);
+
+        // Cores busy per timeline bucket, on the SAME grid as
+        // sampleTimeline.samplesByBucket so the two overlay directly.
+        //
+        // Deliberately computed from the RAW per-bucket sample count, not the
+        // idle-adjusted one the CPU chart's own line uses. On a cpu-clock
+        // capture every sample already IS on-CPU time - a thread parked in a
+        // futex generates no samples at all - so subtracting "known blocking
+        // primitive" leaves here would remove real CPU work (a spin, or a
+        // native frame that merely shares a name) and understate utilisation.
+        writer.WritePropertyName("coresBusyByBucket");
+        writer.WriteStartArray();
+
+        if (hasCpuTime && timeline.BucketCount > 0 && timeline.BucketDurationMSec > 0)
+        {
+            for (int bucketIndex = 0; bucketIndex < timeline.BucketCount; ++bucketIndex)
+            {
+                writer.WriteNumberValue((timeline.SamplesByBucket[bucketIndex] * timeline.SamplePeriodMSec) / timeline.BucketDurationMSec);
+            }
+        }
+
+        writer.WriteEndArray();
+        writer.WriteEndObject();
     }
 
     private static void WriteTimelineJson(Utf8JsonWriter writer, SampleTimeline timeline)

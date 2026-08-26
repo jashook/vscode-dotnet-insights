@@ -147,7 +147,24 @@ public static class SampleProfileEventProjector
     // empty measured 33% of this whole phase - every doubling copies every
     // SampleEvent already added. 0 (the default) just means "unknown", and
     // behaves exactly as before.
-    public static List<SampleEvent> Project(List<EventRecord> events, long qpcFrequency, long referenceQpc, Action<double> onProgress = null, int expectedSampleCount = 0)
+    // samplingIsCpuTime reports which sampler actually produced the samples, and
+// it is NOT the same question as "is this a v6 capture".
+//
+// A collect-linux capture only enables perf's own cpu-clock sampling
+// (Universal.Events/cpu) when --profile, --providers, --clrevents and
+// --perf-events are ALL omitted; naming any of them silently falls back to the
+// runtime's own Microsoft-DotNETCore-SampleProfiler, which is wall-clock. Both
+// therefore appear in v6 files, and only the first is CPU time. Verified on
+// two real collect-linux captures of the same service: one carried 1,090,977
+// Universal.Events/cpu samples, the other 38,791,404 SampleProfiler samples
+// and no cpu events at all.
+public static List<SampleEvent> Project(List<EventRecord> events, long qpcFrequency, long referenceQpc, Action<double> onProgress = null, int expectedSampleCount = 0)
+{
+    bool ignoredSamplingIsCpuTime;
+    return Project(events, qpcFrequency, referenceQpc, out ignoredSamplingIsCpuTime, onProgress, expectedSampleCount);
+}
+
+public static List<SampleEvent> Project(List<EventRecord> events, long qpcFrequency, long referenceQpc, out bool samplingIsCpuTime, Action<double> onProgress = null, int expectedSampleCount = 0)
     {
         List<SampleEvent> result = expectedSampleCount > 0 ? new List<SampleEvent>(expectedSampleCount) : new List<SampleEvent>();
 
@@ -157,6 +174,9 @@ public static class SampleProfileEventProjector
         // GcEventProjector.Project/AllocationEventProjector.Project's own
         // reasoning.
         Span<EventRecord> eventsSpan = CollectionsMarshal.AsSpan(events);
+        int universalSampleCount = 0;
+        int clrSampleCount = 0;
+
         for (int eventIndex = 0; eventIndex < eventsSpan.Length; ++eventIndex)
         {
             if (onProgress != null && (eventIndex & ProgressReporter.IndexProgressMask) == 0)
@@ -193,8 +213,22 @@ public static class SampleProfileEventProjector
             // Threading view's parked/blocked classification.
             ThreadSampleType sampleType = isClrSample ? DecodeSampleType(record) : ThreadSampleType.Unknown;
 
+            if (isUniversalSample)
+            {
+                ++universalSampleCount;
+            }
+            else
+            {
+                ++clrSampleCount;
+            }
+
             result.Add(new SampleEvent(relativeMSec, record.ThreadId, record.StackIndex, sampleType));
         }
+
+        // A strict majority, not "any", so a capture carrying a handful of
+        // stray events of the other kind still reports the sampler that
+        // actually produced its profile.
+        samplingIsCpuTime = universalSampleCount > clrSampleCount;
 
         return result;
     }

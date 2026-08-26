@@ -402,6 +402,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
     const contentionDrillDownScriptUri = mediaWebviewUri(webview, extensionUri, 'contentionDrillDownStats.js');
     const flameGraphScriptUri = mediaWebviewUri(webview, extensionUri, 'flameGraph.js');
     const lockTimelineScriptUri = mediaWebviewUri(webview, extensionUri, 'lockTimeline.js');
+    const contentionOverviewScriptUri = mediaWebviewUri(webview, extensionUri, 'contentionOverview.js');
 
     const chartjs = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'node_modules', 'chart.js', 'dist', 'Chart.min.js'));
 
@@ -755,6 +756,7 @@ export function renderGcSnapshotWebview(document: DotnetInsightsGcDocument, webv
             <script nonce="${nonce}" src="${contentionDrillDownScriptUri}"></script>
             <script nonce="${nonce}" src="${flameGraphScriptUri}"></script>
             <script nonce="${nonce}" src="${lockTimelineScriptUri}"></script>
+            <script nonce="${nonce}" src="${contentionOverviewScriptUri}"></script>
             <script nonce="${nonce}" src="${binaryScriptUri}"></script>
             <script nonce="${nonce}" src="${scriptUri}"></script>
         </body>

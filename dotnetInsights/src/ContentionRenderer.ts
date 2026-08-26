@@ -92,22 +92,382 @@ export function renderContentionView(contentionSummary: any): string {
     const lockTimeline = contentionSummary["lockTimeline"];
     const hasLockTimeline = !!(lockTimeline && lockTimeline["locks"] && lockTimeline["locks"].length > 0);
 
+    const overview = contentionSummary["overview"];
+    const hasOverview = !!overview;
+
     const sitesPanelInner = `${summaryTilesHtml}${timelineHtml}${sitesHideStatusHtml}${sitesTableHtml}`;
 
-    if (!hasLockTimeline) {
+    if (!hasLockTimeline && !hasOverview) {
         return sitesPanelInner;
     }
 
+    // Overview leads, and is default-active: it is the only tab that answers
+    // "is locking a problem in this capture at all" before asking the reader
+    // to pick a row. Same ordering rationale as the GC view putting Charts
+    // ahead of Detailed.
     const tabBarHtml = `
         <div class="heapContentsTabBar">
-            <button class="heapContentsTabButton active" data-contentiontab="sites">Sites</button>
-            <button class="heapContentsTabButton" data-contentiontab="locktimeline">Lock Timeline</button>
+            ${hasOverview ? `<button class="heapContentsTabButton active" data-contentiontab="overview">Overview</button>` : ``}
+            <button class="heapContentsTabButton${hasOverview ? `` : ` active`}" data-contentiontab="sites">Sites</button>
+            ${hasLockTimeline ? `<button class="heapContentsTabButton" data-contentiontab="locktimeline">Lock Timeline</button>` : ``}
         </div>`;
 
-    const sitesPanelHtml = `<div id="contention-tab-sites" class="heapContentsTabPanel active">${sitesPanelInner}</div>`;
-    const lockTimelinePanelHtml = `<div id="contention-tab-locktimeline" class="heapContentsTabPanel">${renderLockTimelinePanel(lockTimeline)}</div>`;
+    const overviewPanelHtml = hasOverview
+        ? `<div id="contention-tab-overview" class="heapContentsTabPanel active">${renderContentionOverviewPanel(overview)}</div>`
+        : ``;
+    const sitesPanelHtml = `<div id="contention-tab-sites" class="heapContentsTabPanel${hasOverview ? `` : ` active`}">${sitesPanelInner}</div>`;
+    const lockTimelinePanelHtml = hasLockTimeline
+        ? `<div id="contention-tab-locktimeline" class="heapContentsTabPanel">${renderLockTimelinePanel(lockTimeline)}</div>`
+        : ``;
 
-    return `${tabBarHtml}${sitesPanelHtml}${lockTimelinePanelHtml}`;
+    return `${tabBarHtml}${overviewPanelHtml}${sitesPanelHtml}${lockTimelinePanelHtml}`;
+}
+
+// Overview tab: the lock-side counterpart to the GC view's Charts tab.
+//
+// Every number here is emitted by
+// nettraceParser/Contention/ContentionOverviewBuilder.cs and rendered
+// verbatim - this function computes nothing beyond formatting, for the same
+// reason InsightsRenderer.ts does not: the CLI and the webview must not be
+// able to disagree about a capture.
+//
+// The three charts are drawn by media/contentionOverview.js (Chart.js 2.x,
+// like every other chart in this webview) on ONE shared bucket grid, which is
+// the CPU sample timeline's own grid whenever the capture has samples - see
+// that builder's header on why resampling was rejected.
+//
+// TWO DIFFERENT BLOCKED-TIME NUMBERS ARE SHOWN SIDE BY SIDE and the labels
+// have to keep them apart, because collapsing them is a mistake this codebase
+// has already shipped once (Overview/TimeBreakdownBuilder.cs rendered
+// "Contending Locks 426.1%"): "Blocked Wall Clock" is a union and is bounded
+// by the capture, "Total Wait" is summed across threads and is not.
+export function renderContentionOverviewPanel(overview: any): string {
+    const percentiles = overview["waitPercentiles"] || {};
+    const contentionCount = overview["contentionCount"] || 0;
+
+    const percentileTilesHtml = `
+        <div class="total">
+            <div>Wait Duration</div>
+            <div>Median (p50)<span>${formatMSec(percentiles["p50"])}</span></div>
+            <div>p90<span>${formatMSec(percentiles["p90"])}</span></div>
+            <div>p99<span>${formatMSec(percentiles["p99"])}</span></div>
+            <div>p99.9<span>${formatMSec(percentiles["p999"])}</span></div>
+            <div>Max<span>${formatMSec(percentiles["max"])}</span></div>
+            <div>Mean<span>${formatMSec(overview["meanWaitMSec"])}</span></div>
+        </div>`;
+
+    const blockedTilesHtml = `
+        <div class="gen0">
+            <div>Time Blocked</div>
+            <div title="Wall-clock time during which at least one thread was blocked on a lock. A union across threads, so it is bounded by the capture.">Blocked Wall Clock<span>${formatMSec(overview["blockedWallClockMSec"])}</span></div>
+            <div title="Blocked wall clock as a share of the whole capture.">% of Capture<span>${overview["hasCaptureDuration"] ? formatPercent(overview["blockedWallClockPercent"]) : "n/a"}</span></div>
+            <div title="Summed across every blocked thread, so this is not a percentage of anything and can exceed the capture duration.">Total Wait (summed)<span>${formatMSec(overview["totalWaitMSec"])}</span></div>
+            <div title="Summed wait divided by capture duration - how many threads were blocked at a typical instant.">Avg Threads Blocked<span>${formatNumber(overview["averageThreadsBlocked"], 2)}</span></div>
+            <div title="The most threads observed blocked on locks at the same instant.">Peak Threads Blocked<span>${(overview["peakThreadsBlocked"] || 0).toLocaleString()}</span></div>
+            <div>Contentions<span>${contentionCount.toLocaleString()}</span></div>
+        </div>`;
+
+    // Only a CPU-time-sampled capture can show this at all - see the CPU
+    // definition table's own note. On every other capture the tile is omitted
+    // rather than filled with a thread-time figure wearing a CPU label.
+    const cpuTimeTileHtml = overview["hasCpuTime"] ? `
+        <div class="total">
+            <div>CPU Time</div>
+            <div title="Total CPU consumed across the capture: samples x the sampling period recovered from this capture.">Total CPU<span>${formatMSec(overview["totalCpuMSec"])}</span></div>
+            <div title="Total CPU time divided by wall-clock time - how many cores were busy on average.">Avg Cores Busy<span>${formatNumber(overview["averageCoresBusy"], 2)}</span></div>
+            <div title="Milliseconds of CPU time one sample stands for, measured from this capture's own inter-sample gaps rather than assumed.">Per Sample<span>${formatNumber(overview["samplePeriodMSec"], 3)} ms</span></div>
+        </div>` : ``;
+
+    const worstWaitHtml = `
+        <div class="gen1">
+            <div>Worst Single Wait</div>
+            <div>Duration<span>${formatMSec(percentiles["max"])}</span></div>
+            <div>Started At<span>${formatElapsedForOverview(percentiles["maxStartMSec"])}</span></div>
+            <div>Blocked Thread<span>${percentiles["maxThreadId"] ? percentiles["maxThreadId"].toLocaleString() : "unknown"}</span></div>
+            <div>Peak Blocked At<span>${formatElapsedForOverview(overview["peakThreadsBlockedAtMSec"])}</span></div>
+        </div>`;
+
+    const tilesHtml = `<div class="summaryGcDiv">${percentileTilesHtml}${blockedTilesHtml}${worstWaitHtml}${cpuTimeTileHtml}</div>`;
+
+    const hasCpu = !!overview["hasCpuSamples"];
+    const correlation = overview["correlation"];
+
+    // The correlation line states its own measurement, its n, and what it is
+    // NOT, per the same house rule the insight rules follow: a reader has to
+    // be able to disagree with the statistic rather than only with the
+    // conclusion drawn from it.
+    const correlationHtml = renderCorrelationNote(hasCpu, correlation, overview);
+
+    // The CPU definition is a CONTROL, not a constant. On a wall-clock capture
+    // there is no single right answer (see renderCorrelationNote), so the view
+    // makes the choice visible and switchable instead of burying it.
+    const cpuSeriesOptions = (overview["cpuSeries"] || []).map((series: any, index: number) =>
+        `<option value="${escapeHtmlForContention(series["id"])}"${index === defaultCpuSeriesIndex(overview) ? ` selected` : ``}>${escapeHtmlForContention(series["label"])}</option>`).join("");
+
+    const cpuChartHtml = hasCpu ? `
+        <div id="contentionOverviewCpuSection">
+            <div class="sectionHeading">Lock Wait vs CPU</div>
+            <div class="lockTimelineNote">
+                GC pause is drawn alongside so a spike that belongs to a collection is not read as a locking one.
+                ${overview["samplingSemantics"] === "cpuTime"
+                    ? `These samples are real CPU time (perf <code>cpu-clock</code>), so this reads as CPU utilisation.`
+                    : `<strong>These samples are not CPU utilisation.</strong> .NET's profiler samples every thread on a wall clock, so "CPU" here is a judgement call &mdash; switch definitions below and see whether your conclusion survives.`}
+            </div>
+            <div class="lockTimelineToolbar">
+                <label class="lockTimelineControl">CPU definition
+                    <select id="contentionOverviewCpuSeriesSelect">${cpuSeriesOptions}</select>
+                </label>
+                <span class="lockTimelineHint" id="contentionOverviewCpuSeriesHint"></span>
+            </div>
+            <div class="cpuTimelineContainer"><canvas id="contentionOverviewCpuChart"></canvas></div>
+            ${correlationHtml}
+        </div>` : `
+        <div id="contentionOverviewCpuSection">
+            <div class="sectionHeading">Lock Wait vs CPU</div>
+            <div class="lockTimelineNote">
+                This capture has no CPU samples, so there is nothing to correlate lock wait against.
+                Re-capture with the CPU sampling provider enabled to use this chart.
+            </div>
+        </div>`;
+
+    return `
+        <div class="lockTimelineNote">
+            Every chart below shares one bucket grid${overview["gridSource"] === "cpu" ? " taken directly from the CPU sample timeline, so the CPU overlay needs no resampling" : " derived from the contention events themselves"}
+            &mdash; ${overview["bucketCount"].toLocaleString()} buckets of ${formatMSec(overview["bucketDurationMSec"])} each.
+        </div>
+        ${tilesHtml}
+        <div class="sectionHeading">Time Blocked Over Time</div>
+        <div class="lockTimelineNote">
+            A wait spanning several buckets is counted in each of them in proportion, not banked at the bucket it started in &mdash;
+            a four-second stall did not happen in one instant.
+            The shaded area is wall clock with at least one thread blocked; the line is how many threads were blocked on average.
+        </div>
+        <div class="cpuTimelineContainer"><canvas id="contentionOverviewBlockedChart"></canvas></div>
+
+        <div class="sectionHeading">Wait Duration Over Time (p50 / p99 / max)</div>
+        <div class="lockTimelineNote">
+            Percentiles of the individual waits that <em>started</em> in each bucket &mdash; the opposite attribution from the chart above, on purpose.
+            Buckets with no contention are gaps rather than zeroes.
+            The scale is logarithmic by default because p50 and p99 routinely differ by three orders of magnitude.
+            <label class="lockTimelineControl" style="margin-left: 8px">
+                <input type="checkbox" id="contentionOverviewLinearScale"> Linear scale
+            </label>
+        </div>
+        <div class="cpuTimelineContainer"><canvas id="contentionOverviewPercentileChart"></canvas></div>
+
+        ${cpuChartHtml}`;
+}
+
+// Says what was measured, over how many points, and what it does not
+// establish. A bare "r = 0.82" invites exactly the causal reading this note
+// exists to withhold.
+//
+// THE HEADLINE NUMBER IS WITHHELD ENTIRELY WHEN THE DEFINITIONS DISAGREE, and
+// that is the most important thing this function does. A .NET v5 capture has
+// no native stacks, so it cannot separate "in a syscall" from "in a native
+// compute loop" - both are just External. On a real 3.0GB production capture
+// 79% of the samples the default definition counts as CPU sit in that
+// ambiguous bucket, and the resulting coefficient runs from -0.598 to +0.248
+// depending on which defensible definition is used. Picking one and printing
+// it would answer a question the capture does not settle.
+function renderCorrelationNote(hasCpu: boolean, correlation: any, overview: any): string {
+    if (!hasCpu) {
+        return ``;
+    }
+
+    if (!correlation) {
+        return `
+        <div class="lockTimelineNote">
+            No correlation reported: one of the two series is flat across the capture, so the coefficient is undefined rather than zero.
+        </div>`;
+    }
+
+    const agreement = correlation["agreement"];
+    const bucketCount = correlation["bucketCount"];
+    const cpuSeries = (overview["cpuSeries"] || []).filter((series: any) => series["hasCorrelation"]);
+
+    const rowsHtml = cpuSeries.map((series: any) => {
+        const lagText = series["bestLagBuckets"] === 0
+            ? "none"
+            : `${series["bestLagBuckets"] > 0 ? "+" : "\u2212"}${formatMSec(Math.abs(series["bestLagMSec"]))}`;
+
+        return `<tr>` +
+            `<td>${escapeHtmlForContention(series["label"])}</td>` +
+            `<td>${series["totalSamples"].toLocaleString()}</td>` +
+            `<td>${formatNumber(series["coefficient"], 3)}</td>` +
+            `<td>${lagText}</td>` +
+            `<td>${formatNumber(series["bestLagCoefficient"], 3)}</td>` +
+            `<td class="cpuSeriesBias">${escapeHtmlForContention(series["bias"])}</td>` +
+            `</tr>`;
+    }).join("");
+
+    // Deliberately NOT .detailTable/.cpuHotMethodsTable. Those carry a column
+    // CONTRACT - column 1 is the row-hide gutter, column 2 the wrapping name
+    // column, 3+ numeric and right-aligned - and this table's first column is
+    // a name. Borrowing the class is exactly how the .gcdump census table
+    // ended up pushing its numeric columns off-screen (see CLAUDE.md). It is a
+    // small static table with no sorting and no expansion, so it gets its own
+    // minimal styling instead.
+    const tableHtml = `
+        <table class="cpuSeriesTable">
+            <thead>
+                <tr><th>CPU definition</th><th>Samples</th><th>r</th><th>Best lag</th><th>r at that lag</th><th>Known bias</th></tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+        </table>`;
+
+    const isWallClock = overview["samplingSemantics"] !== "cpuTime";
+
+    // The root cause, stated once, in the place someone reads when the answer
+    // looks strange. This is not a caveat about precision - it is the reason
+    // the numbers above can point in opposite directions.
+    const samplingNote = isWallClock ? `
+            <p>
+                <strong>Why there is more than one number.</strong>
+                This capture's samples come from .NET's own sample profiler, which is <em>wall-clock per thread</em>: it samples every thread on an interval
+                whether or not that thread held a core. Narrowing those samples down to "was doing work" therefore requires a judgement call, and the capture
+                carries no native stacks to settle it &mdash; the runtime reports a thread in a syscall and a thread inside a native compression loop
+                identically, as <code>External</code>. Each row above resolves that differently, which is why they can disagree.
+                A <code>dotnet-trace collect-linux</code> capture does not have this problem: it samples on <code>cpu-clock</code>, which only fires on a thread
+                that actually holds a core, so there every sample is CPU time and the top row is the answer.
+            </p>` : `
+            <p>
+                <strong>These samples are real CPU time.</strong>
+                This capture is perf-sampled on <code>cpu-clock</code>, which only fires on a thread that actually holds a core, so
+                <em>All samples</em> is a genuine CPU-utilisation series rather than a thread-state count. The narrower rows are subsets of it.
+            </p>`;
+
+    let verdictHtml: string;
+
+    if (agreement === "disagree") {
+        verdictHtml = `
+            <p>
+                <strong>The definitions disagree, so no single coefficient is reported.</strong>
+                Across ${bucketCount.toLocaleString()} buckets, r ranges from <strong>${formatNumber(correlation["minCoefficient"], 3)}</strong>
+                to <strong>${formatNumber(correlation["maxCoefficient"], 3)}</strong> &mdash; opposite signs &mdash; depending only on which rows above you
+                treat as CPU. This capture does not settle whether lock stalls coincide with CPU spikes; read the chart and pick the definition you can defend
+                for the workload, rather than taking a number from here.
+            </p>`;
+    } else if (agreement === "inconclusive") {
+        verdictHtml = `
+            <p>
+                <strong>Every definition agrees, and none shows a meaningful relationship.</strong>
+                Across ${bucketCount.toLocaleString()} buckets, r stays between ${formatNumber(correlation["minCoefficient"], 3)} and
+                ${formatNumber(correlation["maxCoefficient"], 3)}, all below the 0.3 magnitude this view treats as meaningful.
+                Lock stalls and CPU are not tracking each other here on any reading.
+            </p>`;
+    } else if (agreement === "single") {
+        verdictHtml = `
+            <p>
+                Only one CPU definition could be measured on this capture, so there is nothing to cross-check it against and no claim of robustness is made.
+                r = ${formatNumber(correlation["maxCoefficient"], 3)} across ${bucketCount.toLocaleString()} buckets.
+            </p>`;
+    } else {
+        const sharedSign = correlation["maxCoefficient"] > 0 ? "positive" : "negative";
+        verdictHtml = `
+            <p>
+                <strong>Every definition agrees on the sign (${sharedSign}).</strong>
+                Across ${bucketCount.toLocaleString()} buckets, r ranges from ${formatNumber(correlation["minCoefficient"], 3)} to
+                ${formatNumber(correlation["maxCoefficient"], 3)}, and at least one reaches the 0.3 magnitude this view treats as meaningful.
+                ${sharedSign === "negative"
+                    ? `A negative relationship is the expected shape when threads blocked on a lock are simply not running: blocking and CPU trade off rather than one driving the other.`
+                    : `Lock blocking and CPU rise together here. That is consistent with stalls coinciding with CPU spikes, but see the caveat below before reading it as cause.`}
+            </p>`;
+    }
+
+    return `
+        <div class="lockTimelineNote correlationNote">
+            ${verdictHtml}
+            ${tableHtml}
+            ${samplingNote}
+            <p>
+                Whatever the rows say, these are <strong>descriptive statistics, not significance tests, and not evidence of causation</strong>: both series are
+                strongly autocorrelated (a convoy and a CPU spike each span many buckets), which inflates r well beyond what ${bucketCount.toLocaleString()}
+                independent observations would justify. A lag scan also maximises r by construction and will always return some best shift.
+                The charts are the evidence; these numbers are an index into them.
+            </p>
+        </div>`;
+}
+
+// Which CPU definition the chart opens on.
+//
+// On a perf-sampled capture that is "all samples", because there every sample
+// really is CPU time. On a wall-clock capture it is the narrowest UNAMBIGUOUS
+// definition available (managed and not parked) rather than the broadest:
+// where the reading is a judgement call, the default should be the one whose
+// every sample can be defended, and the reader can widen it deliberately.
+function defaultCpuSeriesIndex(overview: any): number {
+    const cpuSeries = overview["cpuSeries"] || [];
+    const preferredId = overview["samplingSemantics"] === "cpuTime" ? "allSamples" : "managedRunning";
+
+    for (let seriesIndex = 0; seriesIndex < cpuSeries.length; ++seriesIndex) {
+        if (cpuSeries[seriesIndex]["id"] === preferredId) {
+            return seriesIndex;
+        }
+    }
+
+    // A capture with no ThreadSampleType has neither managed series; fall back
+    // to the blocking-primitive filter, which is always present.
+    for (let seriesIndex = 0; seriesIndex < cpuSeries.length; ++seriesIndex) {
+        if (cpuSeries[seriesIndex]["id"] === "notBlockingPrimitive") {
+            return seriesIndex;
+        }
+    }
+
+    return 0;
+}
+
+function formatNumber(value: any, digits: number): string {
+    if (typeof value !== "number" || !isFinite(value)) {
+        return "n/a";
+    }
+
+    return value.toFixed(digits);
+}
+
+function formatPercent(value: any): string {
+    if (typeof value !== "number" || !isFinite(value)) {
+        return "n/a";
+    }
+
+    return value.toFixed(2) + "%";
+}
+
+// Durations here span nanoseconds to minutes within one capture, so a single
+// fixed precision either loses the short waits or renders the long ones as an
+// unreadable run of digits.
+function formatMSec(value: any): string {
+    if (typeof value !== "number" || !isFinite(value)) {
+        return "n/a";
+    }
+
+    if (value === 0) {
+        return "0 ms";
+    }
+
+    if (value < 1) {
+        return value.toFixed(3) + " ms";
+    }
+
+    if (value < 1000) {
+        return value.toFixed(2) + " ms";
+    }
+
+    return (value / 1000).toFixed(2) + " s";
+}
+
+function formatElapsedForOverview(value: any): string {
+    if (typeof value !== "number" || !isFinite(value)) {
+        return "n/a";
+    }
+
+    const totalSeconds = value / 1000;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds - (minutes * 60);
+
+    return minutes > 0
+        ? `${minutes}m ${seconds.toFixed(1)}s`
+        : `${seconds.toFixed(2)}s`;
 }
 
 // Lock Timeline tab: a Gantt-style track per lock (y) against capture time
