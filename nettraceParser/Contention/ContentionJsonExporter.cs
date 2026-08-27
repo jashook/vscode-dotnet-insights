@@ -226,6 +226,33 @@ public static class ContentionJsonExporter
 
         writer.WriteNumber("totalContentionCount", contentionEvents.Count);
 
+        // Whether these contentions carry a real CALL PATH - see the identical
+        // note in Gc/AllocationJsonExporter. On a `dotnet-trace collect-linux`
+        // capture every CLR event carries exactly one frame, the kernel's own
+        // user_events write path, so all 8,060 contentions in the verified
+        // capture collapsed into a SINGLE "site" named
+        // `user_events_write_core.isra.0` holding 100% of the wait - a lock
+        // acquisition site that is not a lock, not in this process, and not
+        // actionable. The counts, waits and percentiles beside it are all
+        // genuine; only the attribution is missing, so the flag hides the
+        // attribution rather than the section.
+        // An EMPTY capture reports true, not false: "there were no contentions"
+        // and "the contentions here have no stacks" are different claims, and
+        // only the second one earns the explanatory note. A vacuous false would
+        // tell a user whose capture simply has no lock contention that their
+        // tooling cannot attribute locks.
+        bool contentionHasCallStacks = contentionEvents.Count == 0;
+        for (int contentionIndex = 0; contentionIndex < contentionEvents.Count; ++contentionIndex)
+        {
+            if (stackTable.FramesAt(contentionEvents[contentionIndex].StackIndex).Length >= 2)
+            {
+                contentionHasCallStacks = true;
+                break;
+            }
+        }
+
+        writer.WriteBoolean("hasCallStacks", contentionHasCallStacks);
+
         if (contentionEvents.Count == 0)
         {
             writer.WriteNumber("totalContentionWaitMSec", 0.0);

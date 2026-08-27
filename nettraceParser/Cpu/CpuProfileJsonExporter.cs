@@ -358,7 +358,7 @@ public static class CpuProfileJsonExporter
     // runtime's own v5 sampler). It gates the CPU-TIME estimate entirely: on a
     // wall-clock capture no multiple of a sample count is CPU time, so none is
     // offered - see Cpu/SamplePeriodEstimator.cs.
-    public static SampleTimeline Write(Utf8JsonWriter writer, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, Action<double> onProgress = null, DotnetInsights.NetTrace.Universal.UniversalSymbolTable nativeSymbols = null, bool samplingIsCpuTime = false, int processorCount = 0)
+    public static SampleTimeline Write(Utf8JsonWriter writer, List<SampleEvent> sampleEvents, StackTable stackTable, MethodSymbolTable symbolTable, Action<double> onProgress = null, DotnetInsights.NetTrace.Universal.UniversalSymbolTable nativeSymbols = null, bool samplingIsCpuTime = false, int processorCount = 0, CpuProcessTable processTable = null)
     {
         writer.WriteStartObject();
 
@@ -426,6 +426,16 @@ public static class CpuProfileJsonExporter
         // Dictionary<Int32,__Canon>.FindValue measured 13.4% of this whole
         // phase. See Cpu/FrameIdTable.cs.
         FrameIdTable<HotMethodStats> statsByFrameId = new FrameIdTable<HotMethodStats>();
+
+        // Null unless this capture spans several processes - see the
+        // accumulation site in the per-sample loop, and CpuProcessTable for why
+        // a single-process capture must be untouched by any of this.
+        Dictionary<(int, int), long> selfByFrameAndProcess =
+            processTable != null && processTable.HasMultipleProcesses ? new Dictionary<(int, int), long>() : null;
+        Dictionary<int, long> samplesByProcess =
+            selfByFrameAndProcess != null ? new Dictionary<int, long>() : null;
+        Dictionary<(int, int), int> samplesByStackAndProcess =
+            selfByFrameAndProcess != null ? new Dictionary<(int, int), int>() : null;
 
         // Reused only while computing a NEW distinct stack's own
         // DistinctFrameIds (see CachedStackFrames) - NOT once per sample.
@@ -673,6 +683,45 @@ public static class CpuProfileJsonExporter
             HotMethodStats leafStats = GetOrAddStats(statsByFrameId, frameIds[0]);
             ++leafStats.SelfSamples;
 
+            // Per-process self attribution, for the methods table's process
+            // filter. Only accumulated when the capture actually spans several
+            // processes - a single-process capture pays nothing for a control
+            // it will never be offered.
+            //
+            // Keyed by a (frameId, processId) value tuple rather than an
+            // interpolated string: this runs once per sample, and this file's
+            // own history records composite string keys in a per-sample loop as
+            // a measured cost worth removing.
+            if (selfByFrameAndProcess != null)
+            {
+                int owningProcessId;
+                if (processTable.TryGetProcessId(sampleEvent.ThreadId, out owningProcessId))
+                {
+                    (int, int) processKey = (frameIds[0], owningProcessId);
+
+                    long existingForProcess;
+                    selfByFrameAndProcess.TryGetValue(processKey, out existingForProcess);
+                    selfByFrameAndProcess[processKey] = existingForProcess + 1;
+
+                    long existingForProcessTotal;
+                    samplesByProcess.TryGetValue(owningProcessId, out existingForProcessTotal);
+                    samplesByProcess[owningProcessId] = existingForProcessTotal + 1;
+
+                    // Per (distinct stack, process), which is what lets a
+                    // per-process FLAME TREE be folded later from the deduped
+                    // stack cache instead of rebuilt from raw samples. This is
+                    // one dictionary operation per SAMPLE, not per frame -
+                    // attributing the whole-capture tree's nodes per process
+                    // directly would be depth-many operations per sample, which
+                    // on a 16M-sample capture is hundreds of millions of them.
+                    (int, int) stackProcessKey = (stackIndex, owningProcessId);
+
+                    int existingForStack;
+                    samplesByStackAndProcess.TryGetValue(stackProcessKey, out existingForStack);
+                    samplesByStackAndProcess[stackProcessKey] = existingForStack + 1;
+                }
+            }
+
             // Timeline: this sample's own self time, in its own time bucket.
             // Accumulated HERE, off the leaf frame this loop already resolved,
             // rather than in a second per-sample pass that had to re-find the
@@ -746,12 +795,45 @@ public static class CpuProfileJsonExporter
 
         writer.WriteNumber("totalSampleCount", sampleEvents.Count);
 
-        List<KeyValuePair<int, HotMethodStats>> rankedHotMethods = WriteHotMethods(writer, statsByFrameId, symbolTable, methodNameInterner);
+        // The processes this capture spans, ranked by how much CPU each
+        // contributed. Written BEFORE hotMethods so a reader (and the webview)
+        // has the list in hand before the rows that reference it.
+        //
+        // Absent entirely for a single-process capture: an empty or
+        // one-element control implies a choice that does not exist, and the
+        // renderer keys off its absence rather than guessing.
+        if (samplesByProcess != null && processTable != null)
+        {
+            List<KeyValuePair<int, long>> rankedProcesses = new List<KeyValuePair<int, long>>(samplesByProcess);
+            rankedProcesses.Sort(static (left, right) => right.Value.CompareTo(left.Value));
+
+            writer.WritePropertyName("processes");
+            writer.WriteStartArray();
+
+            for (int processIndex = 0; processIndex < rankedProcesses.Count; ++processIndex)
+            {
+                writer.WriteStartObject();
+                writer.WriteNumber("processId", rankedProcesses[processIndex].Key);
+                writer.WriteString("name", processTable.NameForProcess(rankedProcesses[processIndex].Key));
+                writer.WriteNumber("sampleCount", rankedProcesses[processIndex].Value);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndArray();
+        }
+
+        List<KeyValuePair<int, HotMethodStats>> rankedHotMethods = WriteHotMethods(writer, statsByFrameId, symbolTable, methodNameInterner, selfByFrameAndProcess, samplesByProcess, processTable);
 
         writer.WritePropertyName("flameTree");
         MarkIncludedNodes(root, FlameTreeNodeBudget, bufferPool);
         root.Included = true;
         WriteFlameTreeNode(writer, NoStackFrameId, root, symbolTable, methodNameInterner, bufferPool);
+
+        // Written HERE, immediately after the whole-capture tree and therefore
+        // before methodNames - WriteFlameTreeNode interns names as it walks, so
+        // anything emitted after that array references indices it never
+        // received. Same rule the category drill-down trees already follow.
+        WriteProcessFlameTrees(writer, samplesByProcess, samplesByStackAndProcess, cachedByStackIndex, distinctStackIndices, nodePool, symbolTable, methodNameInterner, bufferPool);
 
         // One caller tree per ranked hot method (same expandable-caller-
         // stack UI drillDownStats.js/exceptionDrillDownStats.js already
@@ -781,6 +863,11 @@ public static class CpuProfileJsonExporter
         }
 
         writer.WriteEndArray();
+
+        // The same trees, per process. Written immediately after the
+        // whole-capture ones and before methodNames, for the interning reason
+        // stated above.
+        WriteProcessHotMethodDrillDowns(writer, rankedHotMethods, samplesByProcess, samplesByStackAndProcess, cachedByStackIndex, distinctStackIndices, nodePool, symbolTable, methodNameInterner, bufferPool);
 
         // One merged caller tree per CATEGORY, so a bucket can be opened into
         // the actual call paths behind it instead of only a flat list of its
@@ -1100,7 +1187,7 @@ public static class CpuProfileJsonExporter
     // ranked list so Write can reuse it (rather than re-ranking a second
     // time) to decide which hot methods get their own caller-tree drilldown
     // via BuildHotMethodCallerTrees.
-    private static List<KeyValuePair<int, HotMethodStats>> WriteHotMethods(Utf8JsonWriter writer, FrameIdTable<HotMethodStats> statsByFrameId, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner)
+    private static List<KeyValuePair<int, HotMethodStats>> WriteHotMethods(Utf8JsonWriter writer, FrameIdTable<HotMethodStats> statsByFrameId, MethodSymbolTable symbolTable, MethodNameInterner methodNameInterner, Dictionary<(int, int), long> selfByFrameAndProcess, Dictionary<int, long> samplesByProcess, CpuProcessTable processTable)
     {
         List<int> frameIds = statsByFrameId.Keys;
         List<KeyValuePair<int, HotMethodStats>> ranked = new List<KeyValuePair<int, HotMethodStats>>(frameIds.Count);
@@ -1148,6 +1235,38 @@ public static class CpuProfileJsonExporter
             writer.WriteNumber("frame", methodNameIndex);
             writer.WriteNumber("selfSamples", stats.SelfSamples);
             writer.WriteNumber("totalSamples", stats.TotalSamples);
+
+            // Self samples split by owning process, so the methods table's
+            // process filter can rescope without a round trip - the same
+            // discipline the zoom filter follows with methodSelfByBucket.
+            //
+            // SPARSE on purpose: in a machine-wide capture almost every method
+            // belongs to exactly one process (each process has its own
+            // binaries), and only shared libraries appear under several.
+            // Emitting a dense row per process would be 724 numbers per method
+            // on the reference host capture, nearly all of them zero.
+            if (selfByFrameAndProcess != null && samplesByProcess != null)
+            {
+                writer.WritePropertyName("selfByProcess");
+                writer.WriteStartArray();
+
+                foreach (KeyValuePair<int, long> processEntry in samplesByProcess)
+                {
+                    long selfForProcess;
+                    if (!selfByFrameAndProcess.TryGetValue((frameId, processEntry.Key), out selfForProcess) || selfForProcess == 0)
+                    {
+                        continue;
+                    }
+
+                    writer.WriteStartArray();
+                    writer.WriteNumberValue(processEntry.Key);
+                    writer.WriteNumberValue(selfForProcess);
+                    writer.WriteEndArray();
+                }
+
+                writer.WriteEndArray();
+            }
+
             writer.WriteEndObject();
         }
 
@@ -1263,6 +1382,262 @@ public static class CpuProfileJsonExporter
     // budget is spent on anything deeper - same reasoning as that method's
     // own comment on why top-level rows must never be starved by one
     // dominant branch.
+    ////////////////////////////////////////////////////////////////////////////
+    // One flame tree per process, so the Profile view's flame graph can be
+    // scoped the same way its methods table is.
+    //
+    // Folded from the DEDUPED distinct-stack cache, exactly as
+    // BuildHotMethodCallerTrees is, rather than rebuilt from raw samples - the
+    // whole-capture tree is accumulated per sample as it walks each stack, and
+    // doing that once per process would multiply a depth-many-operations-per-
+    // sample loop by the process count.
+    //
+    // CAPPED. A machine-wide capture can contain hundreds of processes (279 on
+    // the reference host capture) and almost all of them are a handful of
+    // samples of some daemon. Emitting a tree for every one of them would
+    // multiply this section's size by the count for no readable benefit, so
+    // only the processes that actually hold CPU get one; the view says so for
+    // the rest rather than drawing an empty graph.
+    ////////////////////////////////////////////////////////////////////////////
+    private const int ProcessFlameTreeCap = 32;
+
+    // A second, harder bound, in BYTES - which is the thing actually at risk.
+    // The per-process trees measured 2.0MB on a 6MB/279-process capture against
+    // the whole-capture tree's 0.5MB, and that ratio is a property of the
+    // capture rather than of anything here. The process-count cap alone does
+    // not bound the payload: 32 trees of an enormous capture is still enormous,
+    // and this file's own history includes a capture that failed to open
+    // because a JSON section outgrew Node's string limit.
+    //
+    // Measured against the writer's own counters rather than an estimate, so
+    // the bound holds whatever the names in a given capture look like.
+    private const long ProcessFlameTreeByteBudget = 4L * 1024 * 1024;
+
+    ////////////////////////////////////////////////////////////////////////////
+    // The per-method caller trees, scoped to one process.
+    //
+    // Without these, filtering the methods table to a process rescoped its
+    // ROWS but not their expansions: hotMethodDrillDown is folded from every
+    // distinct stack with no process involvement, so opening a row showed call
+    // paths from the whole machine underneath a row claiming to be one process.
+    // For a frame like the runtime's allocation helper - present in every .NET
+    // process on the box - that silently blends several processes' callers.
+    //
+    // Index-aligned with hotMethods, because the webview opens a row by its
+    // own index. A method with no samples in a given process emits null rather
+    // than an empty tree, so the client can say so instead of drawing nothing.
+    ////////////////////////////////////////////////////////////////////////////
+    private static void WriteProcessHotMethodDrillDowns(
+        Utf8JsonWriter writer,
+        List<KeyValuePair<int, HotMethodStats>> rankedHotMethods,
+        Dictionary<int, long> samplesByProcess,
+        Dictionary<(int, int), int> samplesByStackAndProcess,
+        CachedStackFrames[] cachedByStackIndex,
+        List<int> distinctStackIndices,
+        FlameTreeNodePool nodePool,
+        MethodSymbolTable symbolTable,
+        MethodNameInterner methodNameInterner,
+        ChildBufferPool bufferPool)
+    {
+        if (samplesByProcess == null || samplesByStackAndProcess == null || samplesByProcess.Count < 2)
+        {
+            return;
+        }
+
+        List<KeyValuePair<int, long>> rankedProcesses = new List<KeyValuePair<int, long>>(samplesByProcess);
+        rankedProcesses.Sort(static (left, right) => right.Value.CompareTo(left.Value));
+
+        writer.WritePropertyName("hotMethodDrillDownByProcess");
+        writer.WriteStartObject();
+
+        int emitted = 0;
+        long bytesAtStart = writer.BytesCommitted + writer.BytesPending;
+
+        for (int processIndex = 0; processIndex < rankedProcesses.Count && emitted < ProcessFlameTreeCap; ++processIndex)
+        {
+            long bytesSoFar = writer.BytesCommitted + writer.BytesPending;
+            if (emitted > 0 && bytesSoFar - bytesAtStart > ProcessFlameTreeByteBudget)
+            {
+                break;
+            }
+
+            int processId = rankedProcesses[processIndex].Key;
+
+            FrameIdTable<FlameTreeNode> treeRootByLeafFrameId = new FrameIdTable<FlameTreeNode>();
+            for (int rankIndex = 0; rankIndex < rankedHotMethods.Count; ++rankIndex)
+            {
+                treeRootByLeafFrameId.Set(rankedHotMethods[rankIndex].Key, nodePool.Rent());
+            }
+
+            bool anyStacks = false;
+
+            for (int distinctIndex = 0; distinctIndex < distinctStackIndices.Count; ++distinctIndex)
+            {
+                int stackIndex = distinctStackIndices[distinctIndex];
+
+                int samplesForThisProcess;
+                if (!samplesByStackAndProcess.TryGetValue((stackIndex, processId), out samplesForThisProcess) || samplesForThisProcess == 0)
+                {
+                    continue;
+                }
+
+                CachedStackFrames cached = cachedByStackIndex[stackIndex];
+                if (cached == null)
+                {
+                    continue;
+                }
+
+                int[] frameIds = cached.FrameIds;
+
+                FlameTreeNode treeRoot = treeRootByLeafFrameId.Get(frameIds[0]);
+                if (treeRoot == null)
+                {
+                    continue;
+                }
+
+                anyStacks = true;
+
+                // Leaf-first, matching BuildHotMethodCallerTrees exactly - the
+                // hot method is the root and each successive frame is its
+                // caller. The opposite direction from the flame tree, and the
+                // same convention the allocation and exception drill-downs use.
+                FlameTreeNode current = treeRoot;
+                current.TotalSamples += samplesForThisProcess;
+                ++current.DistinctStackCount;
+
+                for (int frameIndex = 1; frameIndex < frameIds.Length; ++frameIndex)
+                {
+                    current = current.GetOrAddChild(frameIds[frameIndex], nodePool);
+                    current.TotalSamples += samplesForThisProcess;
+                    ++current.DistinctStackCount;
+                }
+            }
+
+            if (!anyStacks)
+            {
+                continue;
+            }
+
+            writer.WritePropertyName(processId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            writer.WriteStartArray();
+
+            for (int rankIndex = 0; rankIndex < rankedHotMethods.Count; ++rankIndex)
+            {
+                int frameId = rankedHotMethods[rankIndex].Key;
+                FlameTreeNode methodRoot = treeRootByLeafFrameId.Get(frameId);
+
+                if (methodRoot == null || methodRoot.TotalSamples == 0)
+                {
+                    writer.WriteNullValue();
+                    continue;
+                }
+
+                MarkIncludedNodes(methodRoot, HotMethodDrillDownNodeBudget, bufferPool);
+                methodRoot.Included = true;
+                WriteFlameTreeNode(writer, frameId, methodRoot, symbolTable, methodNameInterner, bufferPool);
+            }
+
+            writer.WriteEndArray();
+            ++emitted;
+        }
+
+        writer.WriteEndObject();
+    }
+
+    private static void WriteProcessFlameTrees(
+        Utf8JsonWriter writer,
+        Dictionary<int, long> samplesByProcess,
+        Dictionary<(int, int), int> samplesByStackAndProcess,
+        CachedStackFrames[] cachedByStackIndex,
+        List<int> distinctStackIndices,
+        FlameTreeNodePool nodePool,
+        MethodSymbolTable symbolTable,
+        MethodNameInterner methodNameInterner,
+        ChildBufferPool bufferPool)
+    {
+        if (samplesByProcess == null || samplesByStackAndProcess == null || samplesByProcess.Count < 2)
+        {
+            return;
+        }
+
+        List<KeyValuePair<int, long>> rankedProcesses = new List<KeyValuePair<int, long>>(samplesByProcess);
+        rankedProcesses.Sort(static (left, right) => right.Value.CompareTo(left.Value));
+
+        writer.WritePropertyName("flameTreeByProcess");
+        writer.WriteStartObject();
+
+        int emitted = 0;
+        long bytesAtStart = writer.BytesCommitted + writer.BytesPending;
+
+        for (int processIndex = 0; processIndex < rankedProcesses.Count && emitted < ProcessFlameTreeCap; ++processIndex)
+        {
+            int processId = rankedProcesses[processIndex].Key;
+
+            FlameTreeNode processRoot = nodePool.Rent();
+            bool anyStacks = false;
+
+            for (int distinctIndex = 0; distinctIndex < distinctStackIndices.Count; ++distinctIndex)
+            {
+                int stackIndex = distinctStackIndices[distinctIndex];
+
+                int samplesForThisProcess;
+                if (!samplesByStackAndProcess.TryGetValue((stackIndex, processId), out samplesForThisProcess) || samplesForThisProcess == 0)
+                {
+                    continue;
+                }
+
+                CachedStackFrames cached = cachedByStackIndex[stackIndex];
+                if (cached == null)
+                {
+                    continue;
+                }
+
+                int[] frameIds = cached.FrameIds;
+                anyStacks = true;
+
+                // Root-first, matching the whole-capture flame tree's own
+                // direction - the flame graph renderer walks both the same way.
+                // The root is deliberately NOT incremented, matching the
+                // whole-capture tree: its own root carries 0 and the children
+                // sum to the total. A per-process root that carried a total
+                // while the capture-wide one did not would make the two trees
+                // mean different things in the same renderer.
+                FlameTreeNode current = processRoot;
+
+                for (int frameIndex = frameIds.Length - 1; frameIndex >= 0; --frameIndex)
+                {
+                    current = current.GetOrAddChild(frameIds[frameIndex], nodePool);
+                    current.TotalSamples += samplesForThisProcess;
+                    ++current.DistinctStackCount;
+                }
+            }
+
+            if (!anyStacks)
+            {
+                continue;
+            }
+
+            MarkIncludedNodes(processRoot, FlameTreeNodeBudget, bufferPool);
+            processRoot.Included = true;
+
+            // Checked BEFORE writing the next tree rather than after, so the
+            // budget is never exceeded - only approached. The first tree is
+            // always written whatever its size: a view with no flame graph at
+            // all for the dominant process would be worse than a large one.
+            long bytesSoFar = writer.BytesCommitted + writer.BytesPending;
+            if (emitted > 0 && bytesSoFar - bytesAtStart > ProcessFlameTreeByteBudget)
+            {
+                break;
+            }
+
+            writer.WritePropertyName(processId.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            WriteFlameTreeNode(writer, NoStackFrameId, processRoot, symbolTable, methodNameInterner, bufferPool);
+            ++emitted;
+        }
+
+        writer.WriteEndObject();
+    }
+
     private static void MarkIncludedNodes(FlameTreeNode root, int budget, ChildBufferPool bufferPool)
     {
         PriorityQueue<FlameTreeNode, long> candidates = new PriorityQueue<FlameTreeNode, long>(budget);

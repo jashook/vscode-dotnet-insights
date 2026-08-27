@@ -761,6 +761,12 @@ public sealed class V6Reader
         }
     }
 
+    // Process id -> name, from the capture's own ExistingProcess/ProcessCreate
+    // events. Small: one entry per process on the box.
+    private readonly Dictionary<int, string> processNameByProcessId = new Dictionary<int, string>();
+
+    public IReadOnlyDictionary<int, string> ProcessNames => this.processNameByProcessId;
+
     private void AddEvent(ref V6EventHeaderState state, byte[] blockBytes, int payloadStart)
     {
         EventMetadata metadata;
@@ -781,11 +787,26 @@ public sealed class V6Reader
         }
 
         long threadId = 0;
+        int resolvedProcessId = -1;
         V6ThreadTable.ThreadEntry threadEntry;
 
         if (this.threadTable.TryResolve(state.ThreadIndex, out threadEntry))
         {
             threadId = threadEntry.ThreadId;
+
+            // The resolve already knows which process the thread belongs to,
+            // and this used to be thrown away. It is not put on EventRecord -
+            // that struct exists 35M+ times over and four more bytes is
+            // hundreds of MB - but the low-volume Universal.System events below
+            // need it, and this is the only point where it is in hand.
+            resolvedProcessId = threadEntry.ProcessId;
+        }
+        else if (this.threadTable.TryResolve(state.CaptureThreadIndex, out threadEntry))
+        {
+            // A process-scoped state event carries no ThreadIndex of its own;
+            // the CAPTURE thread index is the one that identifies who emitted
+            // it. Tried second so an ordinary event is unaffected.
+            resolvedProcessId = threadEntry.ProcessId;
         }
 
         int labelVersion = -1;
@@ -828,6 +849,35 @@ public sealed class V6Reader
                 new ReadOnlySpan<byte>(blockBytes, payloadStart, (int)state.PayloadSize),
                 metadata.Fields,
                 this.stringPool);
+        }
+
+        // Process names, harvested here because this is the only place where a
+        // Universal.System event's decoded fields and its owning process id are
+        // both available - see CpuProcessTable for what this feeds and why
+        // every other route to a process name failed.
+        if (resolvedProcessId > 0
+            && fields.Count > 0
+            && (metadata.EventName == V6Format.ExistingProcessEventName || metadata.EventName == V6Format.ProcessCreateEventName))
+        {
+            object rawProcessName;
+            if (fields.TryGetValue("Name", out rawProcessName))
+            {
+                string processName = rawProcessName as string;
+                if (!string.IsNullOrEmpty(processName))
+                {
+                    bool isExisting = metadata.EventName == V6Format.ExistingProcessEventName;
+
+                    // ExistingProcess describes the process as it was when the
+                    // capture began and wins over a later ProcessCreate for a
+                    // recycled pid; otherwise first writer wins so the result
+                    // never depends on event order.
+                    string alreadyKnown;
+                    if (isExisting || !this.processNameByProcessId.TryGetValue(resolvedProcessId, out alreadyKnown) || string.IsNullOrEmpty(alreadyKnown))
+                    {
+                        this.processNameByProcessId[resolvedProcessId] = processName;
+                    }
+                }
+            }
         }
 
         EventRecord record = new EventRecord(

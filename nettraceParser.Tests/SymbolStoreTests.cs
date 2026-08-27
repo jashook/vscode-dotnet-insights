@@ -658,10 +658,7 @@ public class SymbolStoreTests
     public void TryGetSymbols_CachesADefinitiveNotFoundSoTheNextOpenSkipsTheNetwork()
     {
         string cache = NewCacheDirectory();
-        HttpListener listener = new HttpListener();
-        int port = GetFreeLoopbackPort();
-        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
-        listener.Start();
+        HttpListener listener = StartLoopbackListener(out int port);
 
         int requestCount = 0;
 
@@ -723,10 +720,7 @@ public class SymbolStoreTests
     public void TryGetSymbols_DoesNotTreatA404AsDefinitiveWhenAnotherServerNeverAnswered()
     {
         string cache = NewCacheDirectory();
-        HttpListener listener = new HttpListener();
-        int port = GetFreeLoopbackPort();
-        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
-        listener.Start();
+        HttpListener listener = StartLoopbackListener(out int port);
 
         Task serverTask = Task.Run(() =>
         {
@@ -759,6 +753,34 @@ public class SymbolStoreTests
             listener.Stop();
             listener.Close();
             Directory.Delete(cache, true);
+        }
+    }
+
+    // Binding to a port found by a SEPARATE probe is a race: the probe has to
+    // release the port before HttpListener can take it, and anything on the
+    // machine - another test, an OS ephemeral allocation - can claim it in the
+    // gap. There is no way to close that window (HttpListener cannot bind port
+    // 0 and take what it is given, the way TcpListener can), so the collision
+    // is retried rather than pretended away. A lost port is then a retry, not
+    // a failed test that reproduces once a fortnight.
+    private static HttpListener StartLoopbackListener(out int port)
+    {
+        for (int attempt = 0; ; ++attempt)
+        {
+            port = GetFreeLoopbackPort();
+            HttpListener listener = new HttpListener();
+            listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+
+            try
+            {
+                listener.Start();
+                return listener;
+            }
+            catch (HttpListenerException) when (attempt < 20)
+            {
+                // Someone else took the port between the probe and the bind.
+                ((IDisposable)listener).Dispose();
+            }
         }
     }
 

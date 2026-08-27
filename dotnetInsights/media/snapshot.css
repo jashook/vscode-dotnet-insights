@@ -1539,6 +1539,26 @@ td.rowHideColumn:hover
     padding: 4px 3px;
 }
 
+/* ...but NOT the cell that hosts a nested caller tree. `.detailTable
+   .callerTreeCell { padding: 0 }` above exists precisely to stop a
+   per-level padding leak, and it is specificity 0-2-0 - which the id in the
+   rule above (1-0-1) silently outranks, reintroducing the very
+   "rightward-narrowing pyramid" that comment describes, on these two tables
+   only.
+
+   The leak is invisible at one level and compounds with depth, because each
+   tree's numeric columns are PERCENTAGES of its own table: 3px of padding
+   per side makes each nested table 6px narrower than its parent, so every
+   column lands slightly left of the one above it and the error grows with
+   both column index and nesting depth. Measured before this rule, against
+   the ranked row: -1.2/-1.5/-1.9px at depth 1, -2.3/-3.0/-3.8px at depth 2,
+   widening from there. Verified back to <=0.4px at every depth after. */
+#cpuMethodsTable td.callerTreeCell,
+#cpuCategoryTable td.callerTreeCell
+{
+    padding: 0;
+}
+
 /* th.unsortableColumn is in here because a column being unsortable says
    nothing about whether it holds a number. Coverage % is deliberately not
    sortable (see renderSortableTableHeader's "none" type) and so carries no

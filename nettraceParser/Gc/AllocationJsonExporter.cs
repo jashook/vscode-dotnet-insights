@@ -484,6 +484,52 @@ public static class AllocationSummaryBuilder
 
         frameIdCache.EnsureCapacity(frameIdCache.Count + distinctStackCountEstimate);
 
+        // Whether these ticks carry a real CALL PATH at all. `dotnet-trace
+        // collect-linux` emits CLR events through the kernel's user_events
+        // mechanism, and perf records only the instruction pointer at the
+        // tracepoint - which is inside the kernel - with no user-space
+        // callchain. Every allocation tick in such a capture therefore carries
+        // exactly ONE frame, the same one for all of them
+        // (`user_events_write_core.isra.0`), while the capture's own perf `cpu`
+        // samples unwind 90 frames deep. Rendering a drill-down from that
+        // produces one row per type naming a kernel function as the allocation
+        // site, which is worse than showing nothing: it is confidently wrong.
+        //
+        // Tested from the DATA (is any stack >= 2 frames?) rather than from the
+        // format version, so a future capture that does carry callchains for
+        // CLR events lights the drill-down up with no further change. A single
+        // frame is not a call path - a caller tree needs callers.
+        // A capture with no ticks at all reports true - see the matching note in
+        // ContentionJsonExporter. Only a capture that HAS events, every one of
+        // which carries a single frame, earns the "no call stacks" claim.
+        bool hasCallStacks = false;
+        bool examinedAnyStack = false;
+        for (int typeIndex = 0; typeIndex < aggregates.ByType.Length && !hasCallStacks; ++typeIndex)
+        {
+            Dictionary<int, StackAggregate> typeStacks = aggregates.ByType[typeIndex];
+            if (typeStacks == null)
+            {
+                continue;
+            }
+
+            foreach (KeyValuePair<int, StackAggregate> stackEntry in typeStacks)
+            {
+                examinedAnyStack = true;
+                if (stackTable.FramesAt(stackEntry.Key).Length >= 2)
+                {
+                    hasCallStacks = true;
+                    break;
+                }
+            }
+        }
+
+        if (!examinedAnyStack)
+        {
+            hasCallStacks = true;
+        }
+
+        writer.WriteBoolean("hasCallStacks", hasCallStacks);
+
         writer.WritePropertyName("drillDown");
         WriteCellDrillDown(writer, aggregates.ByCell, stackTable, symbolTable, methodNameInterner, frameIdCache, nodePool, bufferPool);
 

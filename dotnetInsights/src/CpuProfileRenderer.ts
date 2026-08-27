@@ -403,6 +403,48 @@ export function formatCpuSeconds(samples: number, samplePeriodMSec: number): str
     return seconds.toFixed(2);
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// The process filter.
+//
+// Rendered ONLY when the capture actually spans several processes, which in
+// practice means `dotnet-trace collect-linux` - it captures every process on
+// the box by default. A real host capture measured here carried 279 sampled
+// processes, of which the service anyone opened the file to look at was 1.4%
+// and a security agent was 70%. Without this control the methods table is a
+// ranking of an entire machine.
+//
+// Defaults to "All processes" deliberately, even though that is rarely the
+// most useful view: the flame graph, the category table and the timeline all
+// show the whole capture, and a methods table silently scoped to one process
+// beside panels showing the machine would make them disagree with nothing on
+// screen explaining why. The options are ranked and carry each process's share,
+// so the dominant one is one click away.
+////////////////////////////////////////////////////////////////////////////////
+export function renderProcessFilter(cpuProfile: any): string {
+    const processes = cpuProfile["processes"];
+    if (!processes || processes.length < 2) {
+        return "";
+    }
+
+    const totalSampleCount = cpuProfile["totalSampleCount"] || 0;
+
+    var options = `<option value="">All processes (${processes.length.toLocaleString()})</option>`;
+    for (var index = 0; index < processes.length; ++index) {
+        const process = processes[index];
+        const share = totalSampleCount > 0 ? (process["sampleCount"] * 100.0) / totalSampleCount : 0;
+
+        options += `<option value="${process["processId"]}">` +
+            `${escapeHtmlForCpuProfile(String(process["name"]))} (${process["processId"]}) &mdash; ${share.toFixed(2)}%` +
+            `</option>`;
+    }
+
+    return `<div class="cpuProcessFilterRow">` +
+        `<label for="cpuProcessFilter">Process</label> ` +
+        `<select id="cpuProcessFilter">${options}</select>` +
+        `<span class="lockTimelineNote" id="cpuProcessFilterNote" style="display:none"></span>` +
+        `</div>`;
+}
+
 export function renderCoverageLine(hotMethods: any, totalSampleCount: number): string {
     if (!hotMethods || hotMethods.length === 0 || !(totalSampleCount > 0)) {
         return ``;
@@ -560,5 +602,5 @@ function renderHotMethodsTable(cpuProfile: any): string {
 
     const categoryHtml = renderCpuCategoryTable(cpuProfile["categories"], cpuProfile["cpuTime"]);
 
-    return `${categoryHtml}${renderCoverageLine(hotMethods, totalSampleCount)}<div class="detailTable cpuHotMethodsTable"><table id="cpuMethodsTable" data-has-core-percent="${hasMethodCoreColumn ? 'true' : 'false'}">${headerWithHideColumn}${rows}</table></div>`;
+    return `${categoryHtml}${renderProcessFilter(cpuProfile)}${renderCoverageLine(hotMethods, totalSampleCount)}<div class="detailTable cpuHotMethodsTable"><table id="cpuMethodsTable" data-has-core-percent="${hasMethodCoreColumn ? 'true' : 'false'}">${headerWithHideColumn}${rows}</table></div>`;
 }

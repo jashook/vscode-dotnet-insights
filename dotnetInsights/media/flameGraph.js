@@ -135,7 +135,74 @@ var flameGraphForwardStack = [];
 // time the Flame Graph tab is shown. cpuProfile is
 // gcData["cpuProfile"] (parsed once already - see that file's own
 // cpuProfileJson).
+////////////////////////////////////////////////////////////////////////////////
+// Process scoping.
+//
+// A machine-wide capture (dotnet-trace collect-linux) contains every process on
+// the box, so the whole-capture flame graph is a picture of a machine rather
+// than of a program - on the reference host capture 70% of it was a security
+// agent's eBPF verifier. The methods table's Process control sets this, and
+// both views then describe the same thing.
+//
+// The per-process trees are CAPPED at export time (see WriteProcessFlameTrees),
+// so a process outside that set has no tree. That returns null here rather than
+// silently falling back to the whole-capture tree, which would show the machine
+// under a label naming one process.
+////////////////////////////////////////////////////////////////////////////////
+var flameGraphSelectedProcessId = null;
+
+function setFlameGraphProcessFilter(processId) {
+    flameGraphSelectedProcessId = processId === null || processId === undefined ? null : processId;
+}
+
+function flameGraphRootNode(cpuProfile) {
+    if (flameGraphSelectedProcessId === null) {
+        return cpuProfile.flameTree;
+    }
+
+    var byProcess = cpuProfile.flameTreeByProcess;
+    if (!byProcess) {
+        return null;
+    }
+
+    return byProcess[String(flameGraphSelectedProcessId)] || null;
+}
+
+// The breadcrumb's root label. Names the process when scoped, so a zoomed-out
+// graph never reads "All Samples" while showing one process.
+function flameGraphRootLabel(cpuProfile) {
+    if (flameGraphSelectedProcessId === null) {
+        return "All Samples";
+    }
+
+    var processes = cpuProfile.processes || [];
+    for (var index = 0; index < processes.length; ++index) {
+        if (processes[index].processId === flameGraphSelectedProcessId) {
+            return processes[index].name + " (" + flameGraphSelectedProcessId + ")";
+        }
+    }
+
+    return "pid " + flameGraphSelectedProcessId;
+}
+
 function renderFlameGraph(containerElement, breadcrumbElement, resetButtonElement, tooltipElement, cpuProfile) {
+    // No tree for this process: it fell outside the export's per-process cap.
+    // Said out loud rather than falling back to the whole-capture tree, which
+    // would draw the machine under one process's name.
+    if (flameGraphRootNode(cpuProfile) === null) {
+        containerElement.innerHTML =
+            '<p style="padding:12px;opacity:0.8">No flame graph for this process. ' +
+            'Only the processes holding the most CPU get their own tree - the rest would ' +
+            'multiply the capture\'s size for a graph of a handful of samples. ' +
+            'The methods table above is still scoped to it.</p>';
+
+        if (breadcrumbElement) {
+            breadcrumbElement.textContent = flameGraphRootLabel(cpuProfile);
+        }
+
+        return;
+    }
+
     var dragOverlayElement = document.createElement('div');
     dragOverlayElement.className = 'flameGraphDragOverlay';
 
@@ -145,7 +212,7 @@ function renderFlameGraph(containerElement, breadcrumbElement, resetButtonElemen
         breadcrumbElement: breadcrumbElement,
         resetButtonElement: resetButtonElement,
         tooltipElement: tooltipElement,
-        zoomChain: [{ node: cpuProfile.flameTree, label: "All Samples", isSyntheticRoot: true }],
+        zoomChain: [{ node: flameGraphRootNode(cpuProfile), label: flameGraphRootLabel(cpuProfile), isSyntheticRoot: true }],
         currentFrames: [],
         viewportStart: 0,
         viewportEnd: 100,
@@ -389,7 +456,8 @@ function hideFlameGraphTooltip() {
 // every place that resets to "All Samples" (initial render, Reset Zoom
 // button, swipe-back) so they can't drift apart.
 function makeSyntheticRootZoomChain() {
-    return [{ node: currentFlameGraphState.cpuProfile.flameTree, label: "All Samples", isSyntheticRoot: true }];
+    var profile = currentFlameGraphState.cpuProfile;
+    return [{ node: flameGraphRootNode(profile), label: flameGraphRootLabel(profile), isSyntheticRoot: true }];
 }
 
 // True whenever EITHER zoom mechanism (see currentFlameGraphState's own
