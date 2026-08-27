@@ -2166,6 +2166,7 @@ var allocationDatasets = {};
                 var cpuProfileHtml = cpuProfileHolder.innerHTML.slice(4, cpuProfileHolder.innerHTML.length - 3);
 
                 document.getElementById('view-profile').innerHTML = cpuProfileHtml;
+                wireCpuProcessFilter();
 
                 wireProfileInnerTabs();
                 wireCpuCategoryTable();
@@ -2542,6 +2543,17 @@ var allocationDatasets = {};
                     return;
                 }
 
+                // No call stacks in this capture (a collect-linux v6 file -
+                // see AllocationSummaryRenderer's note): every allocation
+                // event carries one kernel frame, so navigating here would
+                // open a drill-down naming the kernel's user_events write path
+                // as the allocation site for every type. The row still hides
+                // and still sorts; it just does not claim to know where the
+                // allocation came from.
+                if (typeRow.getAttribute('data-no-call-stacks') === 'true') {
+                    return;
+                }
+
                 var isLohRow = typeRow.getAttribute('data-scope') === 'loh';
                 var rowScope = isLohRow ? allocationSummaryJson["loh"] : allocationSummaryJson;
                 onTypeDrillDownClick(parseInt(typeRow.getAttribute('data-type-index'), 10), rowScope, isLohRow ? "LOH Only" : "All Types");
@@ -2738,7 +2750,12 @@ var allocationDatasets = {};
         var lazyIndex = detailRow.getAttribute('data-cpu-method-lazy');
         if (lazyIndex !== null) {
             var methodIndex = parseInt(lazyIndex, 10);
-            var entry = cpuProfileJson["hotMethodDrillDown"] ? cpuProfileJson["hotMethodDrillDown"][methodIndex] : null;
+            // Scoped to the selected process when there is one. Without this
+            // the row's numbers rescope but its call paths do not, so opening
+            // a frame that exists in several processes - the runtime's
+            // allocation helper, say - silently blends their callers under a
+            // row claiming to be one process.
+            var entry = cpuMethodDrillDownEntry(methodIndex);
             // Columns the methods table carries AFTER Total Samples, which is
             // where the tree's three numerics used to sit. Read off the table
             // rather than hard-coded, since two of them are conditional on the
@@ -2755,10 +2772,27 @@ var allocationDatasets = {};
                 ? Math.max(0, methodsTableForTree.rows[0].cells.length - CPU_CALLER_TREE_BASE_COLUMNS - methodLeadingColumns)
                 : 0;
 
+            // A process outside the export's per-process cap has no trees at
+            // all, which is a different statement from "this method has none
+            // in this process" - said separately so the reader is not left
+            // wondering which.
+            if (!cpuHasDrillDownForSelectedProcess()) {
+                detailRow.querySelector('.callerTreeCell').innerHTML =
+                    '<p style="padding:8px;margin:0;opacity:0.8">Call paths are not available for this process. ' +
+                    'Only the processes holding the most CPU get their own call trees; the rest would multiply ' +
+                    'the capture\'s size for a handful of samples. Select <em>All processes</em> to see ' +
+                    'whole-capture call paths.</p>';
+
+                detailRow.removeAttribute('data-cpu-method-lazy');
+                methodRow.classList.add('expanded');
+                detailRow.classList.add('expanded');
+                return;
+            }
+
             var callerHtml = buildInlineCpuMethodCallerTree(
                 entry,
                 cpuProfileJson["methodNames"],
-                cpuProfileJson["totalSampleCount"],
+                cpuMethodDrillDownGrandTotal(),
                 undefined,
                 methodTrailingColumns,
                 methodLeadingColumns);
@@ -2772,7 +2806,9 @@ var allocationDatasets = {};
             // header.
             detailRow.querySelector('.callerTreeCell').innerHTML =
                 '<div class="cpuCategoryTreeLegend">Columns: <b>Samples</b> &middot; ' +
-                '<b>% of this method</b> &middot; <b>% of capture</b></div>' +
+                '<b>% of this method</b> &middot; <b>' +
+                (cpuSelectedProcessId === null ? '% of capture' : '% of this process') +
+                '</b></div>' +
                 callerHtml;
             detailRow.removeAttribute('data-cpu-method-lazy');
         }
@@ -3727,6 +3763,204 @@ var allocationDatasets = {};
     // sort/expand/timeline code that keys off data-cpu-hotmethod-index) -
     // only their text and, via filterCpuMethodsTableToZoomRange at the end,
     // their visibility change.
+    ////////////////////////////////////////////////////////////////////////////
+    // The selected process id, or null for "all". Only ever non-null on a
+    // machine-wide capture - see renderProcessFilter in CpuProfileRenderer.ts.
+    //
+    // MUTUALLY EXCLUSIVE WITH THE ZOOM, deliberately. The zoom rescopes from
+    // per-bucket self samples and this rescopes from per-process ones;
+    // intersecting them would need per-(bucket, process) data the export does
+    // not carry, and quietly showing one filter's numbers while both controls
+    // look active is the kind of wrong that is never noticed. Selecting a
+    // process clears the zoom, and the note says so.
+    ////////////////////////////////////////////////////////////////////////////
+    var cpuSelectedProcessId = null;
+
+    // A method's self samples within the selected process. Absent from
+    // selfByProcess means the method never ran there - the common case, since
+    // each process has its own binaries and the array is sparse.
+    function cpuSelfSamplesForSelectedProcess(method) {
+        if (cpuSelectedProcessId === null) {
+            return method["selfSamples"];
+        }
+
+        var byProcess = method["selfByProcess"];
+        if (!byProcess) {
+            return 0;
+        }
+
+        for (var entryIndex = 0; entryIndex < byProcess.length; ++entryIndex) {
+            if (byProcess[entryIndex][0] === cpuSelectedProcessId) {
+                return byProcess[entryIndex][1];
+            }
+        }
+
+        return 0;
+    }
+
+    // The caller tree for a ranked row, scoped to the selected process. Null
+    // when that process has no samples in the method, and null when the
+    // process fell outside the export's per-process cap - the two are
+    // distinguished by the caller so it can say which.
+    function cpuMethodDrillDownEntry(methodIndex) {
+        if (cpuSelectedProcessId === null) {
+            return cpuProfileJson["hotMethodDrillDown"]
+                ? cpuProfileJson["hotMethodDrillDown"][methodIndex]
+                : null;
+        }
+
+        var byProcess = cpuProfileJson["hotMethodDrillDownByProcess"];
+        var forProcess = byProcess ? byProcess[String(cpuSelectedProcessId)] : null;
+        return forProcess ? forProcess[methodIndex] : null;
+    }
+
+    // The denominator the tree's third column is a share OF. Scoped to the
+    // selected process, it is that process's own sample count - handing it the
+    // capture total would print a number whose label says "% of this process"
+    // and whose value is a share of the machine.
+    function cpuMethodDrillDownGrandTotal() {
+        if (cpuSelectedProcessId === null) {
+            return cpuProfileJson["totalSampleCount"];
+        }
+
+        var processes = cpuProfileJson["processes"] || [];
+        for (var index = 0; index < processes.length; ++index) {
+            if (processes[index]["processId"] === cpuSelectedProcessId) {
+                return processes[index]["sampleCount"];
+            }
+        }
+
+        return cpuProfileJson["totalSampleCount"];
+    }
+
+    function cpuHasDrillDownForSelectedProcess() {
+        if (cpuSelectedProcessId === null) {
+            return true;
+        }
+
+        var byProcess = cpuProfileJson["hotMethodDrillDownByProcess"];
+        return !!(byProcess && byProcess[String(cpuSelectedProcessId)]);
+    }
+
+    // ALREADY-BUILT TREES ARE STALE the moment the process changes: the lazy
+    // expansion caches its HTML in the DOM and drops the data-cpu-method-lazy
+    // attribute, so without this a row opened before the change keeps showing
+    // the previous scope's call paths - and looks authoritative doing it.
+    function resetCpuMethodDrillDowns() {
+        var table = document.getElementById('cpuMethodsTable');
+        if (!table) {
+            return;
+        }
+
+        var rows = table.rows;
+        for (var rowIndex = 1; rowIndex < rows.length; ++rowIndex) {
+            var row = rows[rowIndex];
+            if (!row.classList.contains('callPathsDetail')) {
+                var toggle = row.querySelector('.leafMethodToggle');
+                if (toggle) {
+                    toggle.innerHTML = '&#9656;';
+                }
+
+                row.classList.remove('expanded');
+                continue;
+            }
+
+            var match = /^cpuMethodDetail(\d+)$/.exec(row.id || '');
+            if (!match) {
+                continue;
+            }
+
+            row.classList.remove('expanded');
+            row.setAttribute('data-cpu-method-lazy', match[1]);
+
+            var cell = row.querySelector('.callerTreeCell');
+            if (cell) {
+                cell.innerHTML = '';
+            }
+        }
+    }
+
+    function wireCpuProcessFilter() {
+        var select = document.getElementById('cpuProcessFilter');
+        if (!select || select.getAttribute('data-wired') === 'true') {
+            return;
+        }
+
+        select.setAttribute('data-wired', 'true');
+        select.addEventListener('change', function () {
+            var raw = select.value;
+            cpuSelectedProcessId = raw === '' ? null : parseInt(raw, 10);
+
+            if (cpuSelectedProcessId !== null && cpuTimelineZoomRange !== null) {
+                // See cpuSelectedProcessId's comment: the two scopings cannot
+                // be intersected, so selecting a process drops the zoom rather
+                // than showing one filter's numbers while both look active.
+                cpuTimelineZoomRange = null;
+                renderCpuTimeline(cpuTimelineZoomRange);
+            }
+
+            resetCpuMethodDrillDowns();
+
+            // The flame graph scopes with the table, so both views describe
+            // the same thing. Re-rendered rather than patched: its zoom chain
+            // points into the old tree's nodes, which do not exist in the new
+            // one.
+            if (typeof setFlameGraphProcessFilter === 'function') {
+                setFlameGraphProcessFilter(cpuSelectedProcessId);
+
+                var flameContainer = document.getElementById('flameGraphContainer');
+                if (flameContainer) {
+                    renderFlameGraph(
+                        flameContainer,
+                        document.getElementById('flameGraphBreadcrumb'),
+                        document.getElementById('flameGraphResetZoomBtn'),
+                        document.getElementById('flameGraphTooltip'),
+                        cpuProfileJson);
+                }
+            }
+
+            rebuildHotMethodsTable();
+        });
+    }
+
+    // Says what the table is currently showing, and that zooming will drop it.
+    function updateCpuProcessFilterNote() {
+        var note = document.getElementById('cpuProcessFilterNote');
+        if (!note) {
+            return;
+        }
+
+        if (cpuSelectedProcessId === null) {
+            note.style.display = 'none';
+            note.textContent = '';
+            return;
+        }
+
+        var processes = cpuProfileJson ? cpuProfileJson["processes"] : null;
+        var selectedName = 'pid ' + cpuSelectedProcessId;
+        var selectedSamples = 0;
+
+        if (processes) {
+            for (var processIndex = 0; processIndex < processes.length; ++processIndex) {
+                if (processes[processIndex]["processId"] === cpuSelectedProcessId) {
+                    selectedName = processes[processIndex]["name"] + ' (' + cpuSelectedProcessId + ')';
+                    selectedSamples = processes[processIndex]["sampleCount"];
+                    break;
+                }
+            }
+        }
+
+        var captureTotal = cpuProfileJson ? cpuProfileJson["totalSampleCount"] : 0;
+        var share = captureTotal > 0 ? (selectedSamples * 100.0) / captureTotal : 0;
+
+        note.style.display = '';
+        note.textContent = 'Showing ' + selectedName + ' only - ' + selectedSamples.toLocaleString() +
+            ' samples, ' + share.toFixed(2) + '% of the capture. Self %, Self Samples and Coverage % are ' +
+            'rescoped to this process, and so is the flame graph; inclusive totals cannot be ' +
+            'and read as a dash. The category breakdown and the timeline still show the whole ' +
+            'capture. Zooming the timeline clears this filter.';
+    }
+
     function rebuildHotMethodsTable() {
         var hotMethods = cpuProfileJson ? cpuProfileJson["hotMethods"] : null;
         var totalSampleCount = cpuProfileJson ? cpuProfileJson["totalSampleCount"] : 0;
@@ -3757,7 +3991,16 @@ var allocationDatasets = {};
                 continue;
             }
 
-            visibleSelfSamples += hotMethods[sumIndex]["selfSamples"];
+            var scopedSelf = cpuSelfSamplesForSelectedProcess(hotMethods[sumIndex]);
+
+            // A method with no samples in the selected process leaves the
+            // denominator AND the table - the rule hidden rows already follow,
+            // so Self % still sums to 100% across what is on screen.
+            if (scopedSelf === 0 && cpuSelectedProcessId !== null) {
+                continue;
+            }
+
+            visibleSelfSamples += scopedSelf;
             ++visibleMethodCount;
         }
 
@@ -3776,7 +4019,23 @@ var allocationDatasets = {};
             }
 
             var method = hotMethods[methodIndex];
-            var selfPercent = adjustedTotal > 0 ? (method["selfSamples"] * 100.0) / adjustedTotal : 0;
+            var scopedSelfSamples = cpuSelfSamplesForSelectedProcess(method);
+
+            if (cpuSelectedProcessId !== null && scopedSelfSamples === 0) {
+                row.style.display = 'none';
+
+                var emptyDetailId = row.getAttribute('data-cpu-method-target');
+                var emptyDetail = emptyDetailId ? document.getElementById(emptyDetailId) : null;
+                if (emptyDetail) {
+                    emptyDetail.style.display = 'none';
+                }
+
+                continue;
+            }
+
+            row.style.display = '';
+
+            var selfPercent = adjustedTotal > 0 ? (scopedSelfSamples * 100.0) / adjustedTotal : 0;
             var totalPercent = adjustedTotal > 0 ? (method["totalSamples"] * 100.0) / adjustedTotal : 0;
 
             // cells[0] is the rowHideBtn column, cells[1] is Method - Self %
@@ -3790,7 +4049,21 @@ var allocationDatasets = {};
             // every hide (measured: 1.33797504 becoming 1.36).
             row.setAttribute('data-self-percent', String(selfPercent));
             row.cells[2].textContent = selfPercent.toFixed(2);
-            row.cells[4].textContent = totalPercent.toFixed(2);
+            row.cells[3].textContent = scopedSelfSamples.toLocaleString();
+
+            // INCLUSIVE TOTALS CANNOT BE SCOPED TO A PROCESS, and are blanked
+            // rather than left showing a whole-capture figure beside a scoped
+            // one in the same row. They are not derivable from selfByProcess:
+            // two processes running identical stacks share ONE StackTable
+            // entry, so per-process inclusive needs its own accumulation. Same
+            // rule, and the same dash, the zoom filter already applies.
+            if (cpuSelectedProcessId !== null) {
+                row.cells[4].textContent = '\u2014';
+                row.cells[5].textContent = '\u2014';
+            } else {
+                row.cells[4].textContent = totalPercent.toFixed(2);
+                row.cells[5].textContent = method["totalSamples"].toLocaleString();
+            }
         }
 
         var totalTile = document.getElementById('cpuMethodsTotalTile');
@@ -3803,7 +4076,21 @@ var allocationDatasets = {};
             rankedTile.textContent = visibleMethodCount.toLocaleString();
         }
 
-        filterCpuMethodsTableToZoomRange(cpuTimelineZoomRange);
+        updateCpuProcessFilterNote();
+
+        if (cpuSelectedProcessId === null) {
+            filterCpuMethodsTableToZoomRange(cpuTimelineZoomRange);
+            return;
+        }
+
+        // Re-ranked by self samples WITHIN the selected process, in both
+        // directions - a table keeping the capture-wide ordering while showing
+        // per-process numbers is topped by whatever dominated the machine,
+        // which is the thing this filter exists to get away from.
+        var processScopedTable = document.getElementById('cpuMethodsTable');
+        if (processScopedTable && typeof sortDetailTableByColumn === 'function') {
+            sortDetailTableByColumn(processScopedTable, 3, 'number', false);
+        }
     }
 
     // Shows/hides rows in the CPU hot-methods table based on whether the

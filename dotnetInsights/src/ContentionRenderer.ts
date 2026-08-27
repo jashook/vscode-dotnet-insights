@@ -593,6 +593,24 @@ function renderTopSitesTable(contentionSummary: any): string {
         return `<div class="detailTable"><p>No ranked sites to display.</p></div>`;
     }
 
+    // Unlike the allocation table - whose type names come from the event
+    // payload and stay valid without a stack - a contention SITE is defined
+    // ENTIRELY by its stack's leaf frame. With no call stacks there is no
+    // site, and every contention in the capture collapses into one row named
+    // after the kernel's user_events write path holding 100% of the wait. That
+    // row is not a lock, is not in this process, and cannot be acted on, so it
+    // is replaced outright rather than shown with a caveat beside it. The
+    // counts, waits and percentiles on the Overview tab are measured
+    // independently of stacks and remain correct - which is what this points
+    // at, so the tab is not a dead end.
+    if (contentionSummary["hasCallStacks"] === false) {
+        return `<div class="detailTable"><p>Lock <b>call stacks are not available</b> in this capture, so contention cannot be attributed to
+            individual lock sites. <code>dotnet-trace collect-linux</code> emits CLR events through the kernel's user_events mechanism, which records
+            no user-space call stack - every contention event carries a single kernel frame, so all of them would collapse into one meaningless row.
+            <br><br>The <b>Overview</b> tab is unaffected: contention counts, wait percentiles, blocked-time totals and the timeline are all measured
+            from the events themselves rather than from their stacks. To see which locks are responsible, capture with <code>dotnet-trace collect</code>.</p></div>`;
+    }
+
     var rows = "";
     for (var index = 0; index < topSites.length; ++index) {
         const site = topSites[index];

@@ -100,6 +100,18 @@ export function renderAllocationSummaryTable(allocationSummary: any): string {
 }
 
 function hasAnyDrillDownData(summary: any): boolean {
+    // A capture whose allocation events carry no call stacks has drill-down
+    // DATA - one entry per type - but every one of those entries is a single
+    // kernel frame (the user_events write path the runtime emitted through),
+    // identical for all of them. Gating here rather than at the click site
+    // closes EVERY entry into that panel at once: the Drill Down tab, the
+    // chart-segment click (onDrillDownSegmentClick) and the type-row click.
+    // Gating the row click alone left the other two live, which is exactly how
+    // this came back after the first fix.
+    if (summary["hasCallStacks"] === false) {
+        return false;
+    }
+
     const drillDownCells = summary["drillDown"] && summary["drillDown"]["cells"];
     if (drillDownCells && Object.keys(drillDownCells).length > 0) {
         return true;
@@ -126,6 +138,13 @@ function hasAnyDrillDownData(summary: any): boolean {
 // onTypeDrillDownClick).
 function renderTypeBreakdownPanel(summary: any, scope: string, isActive: boolean, includeToggleWrapper: boolean): string {
     const topTypes = summary["topTypes"];
+
+    // Absent on every source that is not a v6 collect-linux capture (v5
+    // nettrace, .gcinfo XML), so the default must be TRUE - a missing key
+    // means "nobody measured", not "no stacks". See AllocationJsonExporter's
+    // own note: only a capture whose CLR events all carry a single kernel
+    // frame reports false.
+    const hasCallStacks = summary["hasCallStacks"] !== false;
 
     // Matches renderGcDetailTable's mb divisor/labeling convention
     // (GcDetailTableRenderer.ts) so byte-scale numbers agree across tables
@@ -189,7 +208,7 @@ function renderTypeBreakdownPanel(summary: any, scope: string, isActive: boolean
         // navigation on the same click. snapshotGcStats.js's delegated
         // click handler checks .rowHideBtn (with stopPropagation) before
         // its .typeRow fallthrough.
-        rows += `<tr class="typeRow" data-type-index="${index}" data-scope="${scope}"><td class="rowHideColumn"><button class="rowHideBtn" type="button" title="Hide this row">&#10005;</button></td><td>${tdTypeName}</td><td>${tdTotalBytes}</td><td>${tdPercent}</td><td class="ticksOnlyColumn">${tdTickCount}</td><td class="ticksOnlyColumn">${tdSmallCount}</td><td class="ticksOnlyColumn">${tdLargeCount}</td><td class="ticksOnlyColumn">${tdPinnedCount}</td></tr>`;
+        rows += `<tr class="typeRow" data-type-index="${index}" data-scope="${scope}"${hasCallStacks ? "" : ` data-no-call-stacks="true"`}><td class="rowHideColumn"><button class="rowHideBtn" type="button" title="Hide this row">&#10005;</button></td><td>${tdTypeName}</td><td>${tdTotalBytes}</td><td>${tdPercent}</td><td class="ticksOnlyColumn">${tdTickCount}</td><td class="ticksOnlyColumn">${tdSmallCount}</td><td class="ticksOnlyColumn">${tdLargeCount}</td><td class="ticksOnlyColumn">${tdPinnedCount}</td></tr>`;
     }
 
     const header = `<tr class="tableHeader"><th class="rowHideColumn"></th><th>Type Name</th><th>Total Bytes (mb)</th><th>% of Sampled</th><th class="ticksOnlyColumn">Tick Count</th><th class="ticksOnlyColumn">Small</th><th class="ticksOnlyColumn">Large</th><th class="ticksOnlyColumn">Pinned</th></tr>`;
@@ -203,6 +222,19 @@ function renderTypeBreakdownPanel(summary: any, scope: string, isActive: boolean
     // wide/wrapping Type Name column CSS to just this table - other tables
     // sharing .detailTable (GC summary, generation breakdown) have short
     // first-column values (GC numbers) and shouldn't get that treatment.
+    // The type breakdown itself is fully valid without stacks - the type
+    // name, byte totals and tick counts all come from the event PAYLOAD. Only
+    // the per-type drill-down needs a call path, so the note scopes the caveat
+    // to the drill-down rather than casting doubt on the table it sits above.
+    const noCallStacksNote = hasCallStacks
+        ? ""
+        : `<div class="allocationZoomStatus" id="allocationNoCallStacksNote-${scope}">
+            <span class="allocationZoomStatusLabel">Allocation <b>call stacks are not available</b> in this capture, so these rows do not open into allocation sites.
+            <code>dotnet-trace collect-linux</code> emits CLR events through the kernel's user_events mechanism, which records no user-space call stack - every
+            allocation event carries a single kernel frame. The types, bytes and counts below are unaffected. Capture with <code>dotnet-trace collect</code> for
+            allocation call paths.</span>
+        </div>`;
+
     const tableHtml = `<div class="detailTable allocationTypeTable"><table id="allocationTypeTable-${scope}">${header}${rows}</table></div>`;
 
     // Hidden until at least one row in this scope's table is hidden - same
@@ -220,7 +252,7 @@ function renderTypeBreakdownPanel(summary: any, scope: string, isActive: boolean
     // pure CSS show/hide with no chart destroy/recreate involved.
     const chartHtml = `<div class="gcStats"><canvas id="allocationTypeTimelineChart-${scope}"></canvas></div>`;
 
-    const innerHtml = `${summaryTilesHtml}${chartHtml}${hideStatusHtml}${tableHtml}`;
+    const innerHtml = `${summaryTilesHtml}${chartHtml}${hideStatusHtml}${noCallStacksNote}${tableHtml}`;
 
     if (!includeToggleWrapper) {
         return innerHtml;

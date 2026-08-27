@@ -115,6 +115,10 @@ public static class V6Format
 
     public const string UniversalEventsProviderName = "Universal.Events";
     public const string UniversalSystemProviderName = "Universal.System";
+
+    // The two Universal.System events that name a process.
+    public const string ExistingProcessEventName = "ExistingProcess";
+    public const string ProcessCreateEventName = "ProcessCreate";
     public const string ClrProviderName = "Microsoft-Windows-DotNETRuntime";
 
     // Universal.Events identifies its events by NAME, not id:

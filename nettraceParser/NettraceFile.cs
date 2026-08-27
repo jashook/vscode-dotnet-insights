@@ -64,6 +64,11 @@ public class NettraceFile
     // symbolication, which is keyed per process.
     public V6.V6ThreadTable V6Threads { get; private set; }
 
+    // Process id -> name, harvested from the capture's own
+    // ExistingProcess/ProcessCreate events. Empty for a v5 capture, which has
+    // no such events and describes one process anyway.
+    public System.Collections.Generic.IReadOnlyDictionary<int, string> V6ProcessNames { get; private set; }
+
     // Populated only for a v6 capture (null otherwise). Carries the counts
     // behind the writer's own `Error` annotations - see V6/V6LabelListTable.cs.
     public V6.V6LabelListTable V6Labels { get; private set; }
@@ -169,6 +174,7 @@ public class NettraceFile
             file.EventBlockCount = v6Reader.EventBlockCount;
             file.SkippedBlockCount = v6Reader.SkippedBlockCount;
             file.V6Threads = v6Reader.Threads;
+            file.V6ProcessNames = v6Reader.ProcessNames;
             file.V6Labels = v6Reader.Labels;
             file.V6UniversalCpuEventId = v6Reader.UniversalCpuEventId;
             file.V6MalformedBlockCount = v6Reader.MalformedBlockCount;

@@ -733,6 +733,12 @@ if (isJsonMode)
     // EventRecord/SampleEvent's own long[] field anyway.
     StackTable stackTable = file.Stacks;
 
+    // Captured into a local for exactly the reason stackTable above is: the
+    // export runs after `file = null` (a deliberate GC-root drop), so reading
+    // file.V6Threads at the call site is an immediate NullReferenceException.
+    // That is precisely how this was caught.
+    CpuProcessTable cpuProcessTable = CpuProcessTable.Build(file.V6Threads, file.V6ProcessNames);
+
     // Nothing past this point ever reads file/file.Events again -
     // GcEventProjector.Project, AllocationEventProjector.Project,
     // ExceptionEventProjector.Project, EventOverviewBuilder.Build,
@@ -759,7 +765,7 @@ if (isJsonMode)
     // entirely from inside GcJsonExporter.WriteToFile itself - see that
     // method's own comment for why it calls ProgressReporter directly
     // rather than taking an onProgress parameter like every phase above.
-    ExportTiming exportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, threadingSummaryForJson, stackTable, symbolTable, processName, ticksBinaryPath, captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline, universalSymbolTable, Volatile.Read(ref samplingIsCpuTimeFlag) != 0, processorCountForJson);
+    ExportTiming exportTiming = GcJsonExporter.WriteToFile(jsonOutputPath, gcEventsForJson, allocationEventsForJson, exceptionEventsForJson, eventOverviewForJson, sampleEventsForJson, contentionEventsForJson, threadingSummaryForJson, stackTable, symbolTable, processName, ticksBinaryPath, captureDurationMSec, out CpuProfileJsonExporter.SampleTimeline cpuSampleTimeline, universalSymbolTable, Volatile.Read(ref samplingIsCpuTimeFlag) != 0, processorCountForJson, cpuProcessTable);
     long exportMs = phaseStopwatch.ElapsedMilliseconds;
     phaseStopwatch.Restart();
 

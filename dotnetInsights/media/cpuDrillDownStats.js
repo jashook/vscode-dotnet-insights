@@ -241,7 +241,19 @@ function renderCpuCallerRow(node, depth, percentDenominatorSamples, grandTotalSa
         return rowHtml;
     }
 
-    pendingCpuLazySubtrees.set(rowId, { node: node, depth: depth + 1, grandTotalSamples: grandTotalSamples, branchClass: branchClass, methodTotalSamples: methodTotalSamples });
+    // leadingColumns/trailingColumns MUST be carried here. renderCpuTreeRow
+    // above already registered a pending entry for this same rowId WITH them,
+    // and this call overwrites it - so omitting them silently dropped the
+    // padding for every lazily-expanded nested subtree, which then fell back to
+    // (0, 0) in buildLazyCpuDrillDownSubtree.
+    //
+    // The symptom is that the FIRST level of a caller tree lines up correctly
+    // and every level opened below it does not: with no padding the inner
+    // table has 5 columns against the host row's 9, so its three numerics slide
+    // to the far right and land under "~ Core %", "CPU (s)" and "Coverage %".
+    // Measured exactly that way - the top row's samples sat under Self Samples
+    // while its children's sat three columns over.
+    pendingCpuLazySubtrees.set(rowId, { node: node, depth: depth + 1, grandTotalSamples: grandTotalSamples, branchClass: branchClass, methodTotalSamples: methodTotalSamples, leadingColumns: leadingColumns, trailingColumns: trailingColumns });
 
     return rowHtml;
 }
